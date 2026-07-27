@@ -397,6 +397,45 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
   return { nextCaseLibrary: next, added };
 }
 
+export function buildCargoInstructionsManifest(pack, getCaseById = CaseLibrary.getById) {
+  const caseEntries = [];
+  const itemEntries = [];
+  const seenCaseIds = new Set();
+  const instanceCountByCase = new Map();
+
+  (Array.isArray(pack && pack.cases) ? pack.cases : []).forEach(inst => {
+    if (!inst) return;
+    const caseId = String(inst.caseId || '').trim();
+    const caseData = caseId ? getCaseById(caseId) : null;
+    const caseName = String((caseData && caseData.name) || `Missing case (${caseId || 'unknown'})`).trim();
+    const occurrenceKey = caseId || caseName;
+    const occurrence = (instanceCountByCase.get(occurrenceKey) || 0) + 1;
+    instanceCountByCase.set(occurrenceKey, occurrence);
+
+    const caseNotes = String((caseData && caseData.notes) || '').trim();
+    if (caseId && caseNotes && !seenCaseIds.has(caseId)) {
+      seenCaseIds.add(caseId);
+      caseEntries.push({
+        caseId,
+        caseName,
+        caseNotes,
+      });
+    }
+
+    const itemNotes = String(inst.instanceNotes || '').trim();
+    if (itemNotes) {
+      itemEntries.push({
+        instanceId: inst.id || null,
+        caseId: caseId || null,
+        instanceName: `${caseName} #${occurrence}`,
+        itemNotes,
+      });
+    }
+  });
+
+  return { caseEntries, itemEntries };
+}
+
 export function buildPackExportPayload(pack) {
   const exportedPack = {
     ...(pack || {}),

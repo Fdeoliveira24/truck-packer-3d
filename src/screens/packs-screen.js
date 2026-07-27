@@ -30,6 +30,7 @@ export function createPacksScreen({
   ExportService,
   CardDisplayOverlay,
   TruckChangeController,
+  OperationLifecycle,
   featureFlags,
   persistNow,
   toast,
@@ -79,6 +80,55 @@ export function createPacksScreen({
     let foldersButtonEl = null;
     let foldersButtonLabelEl = null;
     let filtersOutsideClickHandler = null;
+
+    function mutationBlockedWhileBusy(title = 'Packs') {
+      if (!OperationLifecycle || !OperationLifecycle.isBusy()) return false;
+      UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title });
+      return true;
+    }
+
+    function requestTruckChange(options) {
+      if (mutationBlockedWhileBusy('Truck')) return { status: 'busy' };
+      const pack = options && options.pack;
+      const token = OperationLifecycle
+        ? OperationLifecycle.beginOperation('changingTruck', { packId: pack && pack.id })
+        : null;
+      if (OperationLifecycle && !token) {
+        mutationBlockedWhileBusy('Truck');
+        return { status: 'busy' };
+      }
+
+      const release = () => {
+        if (token && OperationLifecycle) OperationLifecycle.finishOperation(token);
+      };
+      const restoreControls = options && options.restoreControls;
+      const onCommitted = options && options.onCommitted;
+      let result;
+      try {
+        result = TruckChangeController.request({
+          ...options,
+          restoreControls: (...args) => {
+            try {
+              if (typeof restoreControls === 'function') restoreControls(...args);
+            } finally {
+              release();
+            }
+          },
+          onCommitted: (...args) => {
+            try {
+              if (typeof onCommitted === 'function') onCommitted(...args);
+            } finally {
+              release();
+            }
+          },
+        });
+      } catch (error) {
+        release();
+        throw error;
+      }
+      if (!result || result.status !== 'preview') release();
+      return result;
+    }
 
     function formatTruckDims(truck, lengthUnit) {
       const unit = lengthUnit || 'in';
@@ -201,7 +251,7 @@ export function createPacksScreen({
           icon: 'fa-solid fa-truck',
           onClick: () => {
             const nextTruck = TrailerPresets.applyToTruck(pack.truck, p);
-            TruckChangeController.request({
+            requestTruckChange({
               pack,
               nextTruck,
               successMessage: `Applied preset: ${p.label}`,
@@ -407,6 +457,7 @@ export function createPacksScreen({
     }
 
     function openCreateFolderModal() {
+      if (mutationBlockedWhileBusy()) return;
       const content = document.createElement('div');
       content.classList.add('tp3d-packs-modal-grid');
 
@@ -423,6 +474,7 @@ export function createPacksScreen({
             label: 'Create',
             variant: 'primary',
             onClick: () => {
+              if (mutationBlockedWhileBusy()) return false;
               const folderName = String(name.input.value || '').trim();
               const created = FolderLibrary.createFolder(folderName);
               persistFolderStateNow();
@@ -432,6 +484,7 @@ export function createPacksScreen({
               }
               render();
               UIComponents.showToast('Folder created', 'success');
+              return true;
             },
           },
         ],
@@ -458,14 +511,16 @@ export function createPacksScreen({
             label: 'Save',
             variant: 'primary',
             onClick: () => {
+              if (mutationBlockedWhileBusy()) return false;
               const renamed = FolderLibrary.renameFolder(folderId, name.input.value);
               if (!renamed) {
                 UIComponents.showToast('Could not rename folder', 'warning');
-                return;
+                return true;
               }
               persistFolderStateNow();
               render();
               UIComponents.showToast('Folder renamed', 'success');
+              return true;
             },
           },
         ],
@@ -474,6 +529,7 @@ export function createPacksScreen({
 
     async function deleteFolderWithConfirm(folder) {
       if (!folder || !folder.id) return;
+      if (mutationBlockedWhileBusy()) return;
       const folderId = String(folder.id);
       const folderName = folder.name || 'Untitled Folder';
       const affectedCount = PackLibrary.getPacks().filter(pack => pack && String(pack.folderId || '') === folderId).length;
@@ -484,6 +540,7 @@ export function createPacksScreen({
         okLabel: 'Delete',
       });
       if (!ok) return;
+      if (mutationBlockedWhileBusy()) return;
 
       const deleted = FolderLibrary.deleteFolder(folderId);
       if (!deleted) {
@@ -501,6 +558,7 @@ export function createPacksScreen({
 
     function movePackToFolder(pack, folderIdOrNull) {
       if (!pack || !pack.id) return false;
+      if (mutationBlockedWhileBusy()) return false;
       const moved = FolderLibrary.movePackToFolder(pack.id, folderIdOrNull);
       if (!moved) {
         UIComponents.showToast('Could not move pack to folder', 'warning');
@@ -891,6 +949,7 @@ export function createPacksScreen({
     async function handleBulkDelete() {
       const count = selectedIds.size;
       if (count === 0) return;
+      if (mutationBlockedWhileBusy()) return;
       const idsToDelete = Array.from(selectedIds);
       const ok = await UIComponents.confirm({
         title: 'Delete packs?',
@@ -899,6 +958,7 @@ export function createPacksScreen({
         okLabel: 'Delete',
       });
       if (!ok) return;
+      if (mutationBlockedWhileBusy()) return;
 
       const currentPackId = StateStore.get('currentPackId');
       const isCurrentDeleted = currentPackId && idsToDelete.includes(currentPackId);
@@ -1147,6 +1207,7 @@ export function createPacksScreen({
               label: 'Duplicate',
               icon: 'fa-solid fa-clone',
               onClick: () => {
+                if (mutationBlockedWhileBusy()) return;
                 PackLibrary.duplicate(pack.id);
                 UIComponents.showToast('Pack duplicated', 'success');
               },
@@ -1334,6 +1395,7 @@ export function createPacksScreen({
               label: 'Duplicate',
               icon: 'fa-solid fa-clone',
               onClick: () => {
+                if (mutationBlockedWhileBusy()) return;
                 PackLibrary.duplicate(pack.id);
                 UIComponents.showToast('Pack duplicated', 'success');
               },
@@ -1420,6 +1482,7 @@ export function createPacksScreen({
     }
 
     function openPack(packId) {
+      if (mutationBlockedWhileBusy()) return;
       const pack = PackLibrary.open(packId);
       if (!pack) {
         UIComponents.showToast('Pack not found', 'error');
@@ -1429,6 +1492,7 @@ export function createPacksScreen({
     }
 
     function openNewPackModal() {
+      if (mutationBlockedWhileBusy()) return;
       const content = document.createElement('div');
       content.classList.add('tp3d-packs-modal-grid');
 
@@ -1530,11 +1594,12 @@ export function createPacksScreen({
             label: 'Create',
             variant: 'primary',
             onClick: () => {
+              if (mutationBlockedWhileBusy()) return false;
               const t = String(title.input.value || '').trim();
               if (!t) {
                 UIComponents.showToast('Title is required', 'warning');
                 title.input.focus();
-                return;
+                return true;
               }
               const newTruck = {
                 length: Number(tL.input.value) || 636,
@@ -1558,6 +1623,7 @@ export function createPacksScreen({
               UIComponents.showToast('Pack created', 'success');
               PackLibrary.open(pack.id);
               AppShell.navigate('editor');
+              return true;
             },
           },
         ],
@@ -1761,7 +1827,7 @@ export function createPacksScreen({
                 drawnBy: String(drawnBy.input.value || '').trim(),
                 notes: String(notes.textarea.value || '').trim(),
               };
-              TruckChangeController.request({
+              requestTruckChange({
                 pack,
                 nextTruck,
                 commitWhenUnchanged: true,
@@ -1798,9 +1864,11 @@ export function createPacksScreen({
             variant: 'primary',
             onClick: () => {
               const nextTitle = String(f.input.value || '').trim();
-              if (!nextTitle) return;
+              if (!nextTitle) return true;
+              if (mutationBlockedWhileBusy()) return false;
               PackLibrary.update(packId, { title: nextTitle });
               UIComponents.showToast('Renamed', 'success');
+              return true;
             },
           },
         ],
@@ -1816,6 +1884,7 @@ export function createPacksScreen({
     }
 
     async function deletePack(packId) {
+      if (mutationBlockedWhileBusy()) return;
       const ok = await UIComponents.confirm({
         title: 'Delete pack?',
         message: 'This will permanently delete 1 pack(s). This cannot be undone.',
@@ -1823,12 +1892,16 @@ export function createPacksScreen({
         okLabel: 'Delete',
       });
       if (!ok) return;
+      if (mutationBlockedWhileBusy()) return;
       PackLibrary.remove(packId);
       UIComponents.showToast('Pack deleted', 'info');
     }
 
     function openImportPackDialog() {
-      if (ImportPackDialog && typeof ImportPackDialog.open === 'function') ImportPackDialog.open();
+      if (mutationBlockedWhileBusy()) return;
+      if (ImportPackDialog && typeof ImportPackDialog.open === 'function') {
+        ImportPackDialog.open({ beforeMutate: () => !mutationBlockedWhileBusy() });
+      }
     }
 
     function field(label, type, placeholder, required) {

@@ -1,0 +1,3 @@
+[submodule "openwiki"]
+	path = openwiki
+	url = https://github.com/langchain-ai/openwiki.git

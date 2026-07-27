@@ -59,7 +59,12 @@ function set(patch, options = {}) {
 
 function replace(nextState, options = {}) {
   state = deepClone(withWorkspaceDefaults(nextState));
-  if (!options.skipHistory) pushHistory(historySlice(state));
+  if (options.resetHistory) {
+    history = [historySlice(state)];
+    historyPointer = 0;
+  } else if (!options.skipHistory) {
+    pushHistory(historySlice(state));
+  }
   notify({ _replace: true }, state);
 }
 

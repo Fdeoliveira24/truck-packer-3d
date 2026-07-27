@@ -21,7 +21,9 @@
  *  UIComponents?: any,
  *  ImportExport?: any,
  *  PackLibrary?: any,
- *  Utils?: any
+ *  Utils?: any,
+ *  OperationLifecycle?: any,
+ *  beforeMutate?: () => boolean|void
  * }} [opts]
  */
 export function createImportPackDialog({
@@ -30,6 +32,8 @@ export function createImportPackDialog({
   ImportExport,
   PackLibrary,
   Utils,
+  OperationLifecycle = null,
+  beforeMutate = null,
 } = {}) {
   const doc = documentRef;
 
@@ -37,10 +41,20 @@ export function createImportPackDialog({
   // SECTION: open()
   // ---------------------------------------------------------------------------
 
-  function open() {
+  function open({ beforeMutate: openBeforeMutate = null } = {}) {
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedPayload = null; // { type: 'single'|'batch', payload, file }
     let activeCaseFilter = 'all'; // all | ready | duplicates | invalid
+
+    function mutationAllowed() {
+      const guard = typeof openBeforeMutate === 'function' ? openBeforeMutate : beforeMutate;
+      if (typeof guard === 'function' && guard() === false) return false;
+      if (OperationLifecycle && OperationLifecycle.isBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Import' });
+        return false;
+      }
+      return true;
+    }
 
     // Hidden file input.
     const fileInput = doc.createElement('input');
@@ -1057,6 +1071,7 @@ export function createImportPackDialog({
 
       if (parsedPayload.type === 'single') {
         try {
+          if (!mutationAllowed()) return;
           const result = PackLibrary.importPackPayload(parsedPayload.payload);
           const renamed = result && Array.isArray(result.caseConflicts) ? result.caseConflicts.length : 0;
           UIComponents.showToast(
@@ -1076,7 +1091,12 @@ export function createImportPackDialog({
       let imported = 0;
       let skipped = 0;
       let renamedTotal = 0;
-      (parsedPayload.payloads || []).forEach(payload => {
+      let blocked = false;
+      for (const payload of parsedPayload.payloads || []) {
+        if (!mutationAllowed()) {
+          blocked = true;
+          break;
+        }
         try {
           const result = PackLibrary.importPackPayload(payload);
           if (result && Array.isArray(result.caseConflicts)) renamedTotal += result.caseConflicts.length;
@@ -1084,7 +1104,17 @@ export function createImportPackDialog({
         } catch {
           skipped++;
         }
-      });
+      }
+      if (blocked) {
+        if (imported > 0) {
+          UIComponents.showToast(
+            'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '') + ' before the operation started',
+            'warning'
+          );
+          modalObj.close();
+        }
+        return;
+      }
       let msg = skipped > 0
         ? 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '') + ' · ' + skipped + ' skipped'
         : 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '');

@@ -939,6 +939,11 @@ export function buildSafeDuplicateInstances(pack, sourceInstances, caseLibrary =
     next.hidden = false;
     next.placement = placementState;
     if (placementState === 'staged') delete next.packedProfile;
+    // Item Notes describe this one physical unit (e.g. "this one arrived
+    // dented") — never true of a freshly created duplicate, so a duplicated
+    // instance must not inherit the source's instanceNotes even though the
+    // deep clone above would otherwise carry it over.
+    next.instanceNotes = null;
     return next;
   });
 

@@ -71,7 +71,7 @@ export function normalizeCase(data) {
     stopGroup: String(d.stopGroup || '').trim(),
     keepTogetherGroup: String(d.keepTogetherGroup || '').trim(),
     canFlip: cargo.canFlip,
-    notes: String(d.notes || ''),
+    notes: cargo.notes,
     color: String(d.color || '#ff9f1c'),
     createdAt: Number.isFinite(Number(d.createdAt)) ? Number(d.createdAt) : now,
     updatedAt: now,

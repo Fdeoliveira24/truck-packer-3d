@@ -28,6 +28,7 @@ export function createCasesScreen({
   ImportCasesDialog,
   createTableFooter,
   CardDisplayOverlay,
+  OperationLifecycle,
 }) {
   const CasesUI = (() => {
     const searchEl = /** @type {HTMLInputElement} */ (document.getElementById('cases-search'));
@@ -66,6 +67,18 @@ export function createCasesScreen({
     let filteredCases = [];
     let filtersOutsideClickHandler = null;
 
+    function mutationBlockedWhileBusy({ notify = true } = {}) {
+      if (!OperationLifecycle || typeof OperationLifecycle.isBusy !== 'function' || !OperationLifecycle.isBusy()) {
+        return false;
+      }
+      if (notify) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Cases' });
+      }
+      return true;
+    }
+
+    const beforeMutate = () => !mutationBlockedWhileBusy();
+
     function initCasesUI() {
       searchEl.addEventListener(
         'input',
@@ -76,10 +89,12 @@ export function createCasesScreen({
       );
       btnNew.addEventListener('click', () => openCaseModal(null));
       btnTemplate.addEventListener('click', () => ImportExport.downloadCasesTemplate());
-      btnImport.addEventListener(
-        'click',
-        () => ImportCasesDialog && ImportCasesDialog.open && ImportCasesDialog.open()
-      );
+      btnImport.addEventListener('click', () => {
+        if (mutationBlockedWhileBusy()) return;
+        if (ImportCasesDialog && ImportCasesDialog.open) {
+          ImportCasesDialog.open({ beforeMutate });
+        }
+      });
       btnManageCats &&
         btnManageCats.addEventListener('click', ev => {
           ev.stopPropagation();
@@ -204,6 +219,7 @@ export function createCasesScreen({
       const ids = Array.from(selectedIds);
       const count = ids.length;
       if (!count) return;
+      if (mutationBlockedWhileBusy()) return;
 
       const ok = await UIComponents.confirm({
         title: 'Delete cases?',
@@ -212,6 +228,7 @@ export function createCasesScreen({
         okLabel: 'Delete',
       });
       if (!ok) return;
+      if (mutationBlockedWhileBusy()) return;
 
       const idSet = new Set(ids);
       const nextCaseLibrary = CaseLibrary.getCases().filter(c => !idSet.has(c.id));
@@ -498,6 +515,7 @@ export function createCasesScreen({
               label: 'Duplicate',
               icon: 'fa-solid fa-clone',
               onClick: () => {
+                if (mutationBlockedWhileBusy()) return;
                 CaseLibrary.duplicate(c.id);
                 UIComponents.showToast('Case duplicated', 'success');
               },
@@ -533,7 +551,10 @@ export function createCasesScreen({
 
     function renderFilters() {
       const cases = CaseLibrary.getCases();
-      if (CategoryService.resetToDefaultIfNoCases(cases)) {
+      if (
+        !mutationBlockedWhileBusy({ notify: false }) &&
+        CategoryService.resetToDefaultIfNoCases(cases)
+      ) {
         activeCategories.clear();
       }
       const list = CategoryService.listWithCounts(cases);
@@ -768,6 +789,7 @@ export function createCasesScreen({
               label: 'Duplicate',
               icon: 'fa-solid fa-clone',
               onClick: () => {
+                if (mutationBlockedWhileBusy()) return;
                 CaseLibrary.duplicate(c.id);
                 UIComponents.showToast('Case duplicated', 'success');
               },
@@ -855,6 +877,7 @@ export function createCasesScreen({
     }
 
     function openCaseModal(existing) {
+      if (mutationBlockedWhileBusy()) return;
       openSharedCaseModal({
         existing,
         Utils,
@@ -862,6 +885,7 @@ export function createCasesScreen({
         PreferencesManager,
         CaseLibrary,
         CategoryService,
+        beforeMutate,
         onSaved: () => render(),
       });
     }
@@ -955,6 +979,7 @@ export function createCasesScreen({
     }
 
     function createCategoryAndEdit() {
+      if (mutationBlockedWhileBusy()) return;
       const baseName = 'New Category';
       let idx = 1;
       let name = baseName;
@@ -1014,6 +1039,7 @@ export function createCasesScreen({
                   label: 'Delete',
                   variant: 'danger',
                   onClick: () => {
+                    if (mutationBlockedWhileBusy()) return false;
                     UIComponents.confirm({
                       title: `Delete "${initial.name}"?`,
                       message: 'All cases in this category will be moved to Default.',
@@ -1021,6 +1047,7 @@ export function createCasesScreen({
                       danger: true,
                     }).then(ok => {
                       if (!ok) return;
+                      if (mutationBlockedWhileBusy()) return;
                       CategoryService.remove(initial.key);
                       render();
                       UIComponents.showToast(`Deleted "${initial.name}"`, 'info');
@@ -1035,6 +1062,7 @@ export function createCasesScreen({
             label: 'Save',
             variant: 'primary',
             onClick: () => {
+              if (mutationBlockedWhileBusy()) return false;
               const nextName = String(name.value || '').trim();
               if (!nextName) {
                 UIComponents.showToast('Name is required', 'warning');
@@ -1102,6 +1130,7 @@ export function createCasesScreen({
           saveBtn.innerHTML = '<i class="fa-solid fa-floppy-disk"></i>';
           saveBtn.setAttribute('data-tooltip', 'Save changes');
           saveBtn.addEventListener('click', () => {
+            if (mutationBlockedWhileBusy()) return;
             const duplicate = findDuplicateCategoryName(name.value, cat.key);
             if (duplicate) {
               UIComponents.showToast(`Category "${duplicate.name}" already exists. Choose a unique name.`, 'warning');
@@ -1122,6 +1151,7 @@ export function createCasesScreen({
             delBtn.innerHTML = '<i class="fa-solid fa-trash"></i>';
             delBtn.setAttribute('data-tooltip', 'Delete category');
             delBtn.addEventListener('click', async () => {
+              if (mutationBlockedWhileBusy()) return;
               const ok = await UIComponents.confirm({
                 title: `Delete "${cat.name}"?`,
                 message: 'All cases in this category will be moved to Default.',
@@ -1129,6 +1159,7 @@ export function createCasesScreen({
                 danger: true,
               });
               if (!ok) return;
+              if (mutationBlockedWhileBusy()) return;
               CategoryService.remove(cat.key);
               renderList();
               render();
@@ -1151,6 +1182,7 @@ export function createCasesScreen({
       addBtn.classList.add('tp3d-cases-catmgr-add-full');
       addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> New Category';
       addBtn.addEventListener('click', () => {
+        if (mutationBlockedWhileBusy()) return;
         const baseName = 'New Category';
         let idx = 1;
         let name = baseName;
@@ -1179,6 +1211,7 @@ export function createCasesScreen({
     async function deleteCase(caseId) {
       const caseData = CaseLibrary.getById(caseId);
       if (!caseData) return;
+      if (mutationBlockedWhileBusy()) return;
       const packsUsing = PackLibrary.getPacks().filter(p => (p.cases || []).some(i => i.caseId === caseId));
       const msg = packsUsing.length
         ? `This case is used in ${packsUsing.length} pack(s). Deleting it will remove it from those packs.`
@@ -1190,6 +1223,7 @@ export function createCasesScreen({
         okLabel: 'Delete',
       });
       if (!ok) return;
+      if (mutationBlockedWhileBusy()) return;
 
       const nextCaseLibrary = CaseLibrary.getCases().filter(c => c.id !== caseId);
       const nextPackLibrary = PackLibrary.getPacks().map(p => {

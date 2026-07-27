@@ -4460,6 +4460,7 @@ export function createEditorScreen({
     }
 
     function openEditorNewCaseModal() {
+      if (editorMutationBlocked()) return;
       openSharedCaseModal({
         existing: null,
         Utils,
@@ -4467,6 +4468,7 @@ export function createEditorScreen({
         PreferencesManager,
         CaseLibrary,
         CategoryService,
+        beforeMutate: () => !editorMutationBlocked(),
         onSaved: () => {
           if (caseSearchEl) caseSearchEl.value = '';
           browserCats.clear();
@@ -4876,15 +4878,18 @@ export function createEditorScreen({
           scope: 'everywhere',
           label: 'Everywhere',
           iconClass: 'fa-solid fa-layer-group',
+          fullWidth: true,
         },
-      ].forEach(({ scope, label, iconClass, iconHtml }) => {
-        row.appendChild(makeActionButton({
+      ].forEach(({ scope, label, iconClass, iconHtml, fullWidth }) => {
+        const btn = makeActionButton({
           label,
           iconClass,
           iconHtml,
           disabled: !buckets[scope].length,
           onClick: () => selectCategoryGroup(pack, categoryKey, scope),
-        }));
+        });
+        if (fullWidth) btn.classList.add('tp3d-editor-action-grid-span-full');
+        row.appendChild(btn);
       });
       card.appendChild(row);
       return card;
@@ -4899,6 +4904,7 @@ export function createEditorScreen({
         iconClass: showSelection ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash',
         disabled: !instances.length,
         onClick: () => {
+          if (editorMutationBlocked()) return;
           instances.forEach(inst => PackLibrary.updateInstance(pack.id, inst.id, { hidden: !showSelection }));
         },
       });
@@ -4929,6 +4935,7 @@ export function createEditorScreen({
     }
 
     function openSetCategoryModal(pack, selectedIds) {
+      if (editorMutationBlocked()) return;
       const selected = Array.isArray(selectedIds) ? selectedIds : [];
       const selectedCaseIds = new Set();
       const currentKeys = new Set();
@@ -5030,6 +5037,7 @@ export function createEditorScreen({
             label: 'Apply',
             variant: 'primary',
             onClick: () => {
+              if (editorMutationBlocked()) return false;
               const name = String(nameInput.value || '').trim();
               if (!name) {
                 UIComponents.showToast('Category name is required', 'warning');
@@ -5059,6 +5067,248 @@ export function createEditorScreen({
           },
         ],
       });
+    }
+
+    // Single Notes modal for the Inspector's single selected Pack instance,
+    // presenting both Cargo Instructions tiers together for progressive
+    // disclosure while keeping their ownership and mutation paths entirely
+    // separate: Standard Instructions (Case-owned) is always read-only here —
+    // the Cases-screen Case editor remains its only editing location — and
+    // Item Notes (Pack-instance-owned) is the only editable part of this
+    // modal, saved exclusively through PackLibrary.updateInstance, never
+    // CaseLibrary.upsert. Both packId and instanceId are captured up front so
+    // the draft can never migrate to a different instance if the selection
+    // changes while the modal is open, and either being missing (deleted/
+    // synced away while the modal is open) fails safely instead of writing
+    // anywhere.
+    function openNotesModal(pack, inst) {
+      const packId = pack.id;
+      const instanceId = inst.id;
+      const caseId = inst.caseId;
+
+      // Escape-to-close scoped to this modal only, mirroring the same local
+      // pattern already used in truck-change-controller.js's
+      // showManagedModal rather than changing the shared
+      // UIComponents.showModal primitive for every caller.
+      function showNotesModal(config) {
+        let modalRef = null;
+        function handleEscape(ev) {
+          if (ev.key === 'Escape' && config.dismissible !== false && modalRef) {
+            ev.preventDefault();
+            modalRef.close();
+          }
+        }
+        modalRef = UIComponents.showModal({
+          ...config,
+          onClose: () => {
+            document.removeEventListener('keydown', handleEscape);
+            if (typeof config.onClose === 'function') config.onClose();
+          },
+        });
+        modalRef.modal.classList.add('tp3d-notes-modal');
+        const heading = modalRef.modal.querySelector('.modal-title');
+        if (heading) {
+          heading.textContent = '';
+          heading.classList.add('tp3d-notes-modal-heading');
+
+          const headingIcon = document.createElement('span');
+          headingIcon.className = 'tp3d-notes-modal-heading-icon';
+          headingIcon.setAttribute('aria-hidden', 'true');
+          const headingIconGlyph = document.createElement('i');
+          headingIconGlyph.className = 'fa-regular fa-file-lines';
+          headingIcon.appendChild(headingIconGlyph);
+
+          const headingCopy = document.createElement('span');
+          headingCopy.className = 'tp3d-notes-modal-heading-copy';
+          const headingTitle = document.createElement('span');
+          headingTitle.className = 'tp3d-notes-modal-heading-title';
+          headingTitle.textContent = config.title || 'Notes';
+          const headingSubtitle = document.createElement('span');
+          headingSubtitle.className = 'tp3d-notes-modal-heading-subtitle';
+          headingSubtitle.textContent = config.subtitle || 'Case';
+          headingCopy.appendChild(headingTitle);
+          headingCopy.appendChild(headingSubtitle);
+
+          heading.appendChild(headingIcon);
+          heading.appendChild(headingCopy);
+        }
+        document.addEventListener('keydown', handleEscape);
+        return modalRef;
+      }
+
+      function resolveInstance() {
+        const currentPack = PackLibrary.getById(packId);
+        if (!currentPack) return null;
+        const currentInst = (currentPack.cases || []).find(i => i.id === instanceId);
+        return currentInst || null;
+      }
+
+      // Re-resolved fresh on every open so an edit made elsewhere (Cases
+      // screen) while this modal is closed is never stale, and so a Case
+      // deleted out from under an open modal degrades to "—" instead of
+      // throwing.
+      function buildStandardInstructionsSection() {
+        const caseData = CaseLibrary.getById(caseId);
+        const section = document.createElement('div');
+        section.className = 'tp3d-editor-standard-instructions tp3d-notes-section';
+        const label = document.createElement('div');
+        label.classList.add('tp3d-editor-fw-semibold');
+        label.textContent = 'Standard Case Instructions';
+        section.appendChild(label);
+        const note = String((caseData && caseData.notes) || '').trim();
+        const value = document.createElement('div');
+        if (note) {
+          value.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read');
+          value.textContent = note;
+        } else {
+          value.classList.add('muted', 'tp3d-editor-sub-sm');
+          value.textContent = 'No standard instructions.';
+        }
+        section.appendChild(value);
+        return section;
+      }
+
+      function buildItemNotesHeader() {
+        const label = document.createElement('div');
+        label.classList.add('tp3d-editor-fw-semibold');
+        label.textContent = 'Item Notes';
+        return label;
+      }
+
+      function open(state) {
+        const current = resolveInstance();
+        if (!current) {
+          UIComponents.showToast('This item no longer exists.', 'error', { title: 'Notes' });
+          return;
+        }
+        const caseData = CaseLibrary.getById(caseId);
+        const note = String(current.instanceNotes || '').trim();
+        const resolvedState = state === 'auto' ? (note ? 'read' : 'empty') : state;
+        const caseName = (caseData && caseData.name) || 'Case';
+        const hasCaseNotes = Boolean(String((caseData && caseData.notes) || '').trim());
+
+        const wrap = document.createElement('div');
+        wrap.className = 'tp3d-notes-modal-content';
+
+        if (resolvedState === 'empty') {
+          if (!hasCaseNotes) {
+            const emptyState = document.createElement('div');
+            emptyState.className = 'tp3d-notes-empty-state';
+            const emptyIcon = document.createElement('span');
+            emptyIcon.className = 'tp3d-notes-empty-state-icon';
+            emptyIcon.setAttribute('aria-hidden', 'true');
+            const emptyIconGlyph = document.createElement('i');
+            emptyIconGlyph.className = 'fa-regular fa-file-lines';
+            emptyIcon.appendChild(emptyIconGlyph);
+            const emptyMessage = document.createElement('div');
+            emptyMessage.className = 'muted';
+            emptyMessage.textContent = 'No notes for this case yet.';
+            emptyState.appendChild(emptyIcon);
+            emptyState.appendChild(emptyMessage);
+            wrap.appendChild(emptyState);
+          } else {
+            wrap.appendChild(buildStandardInstructionsSection());
+            const itemSection = document.createElement('div');
+            itemSection.className = 'tp3d-notes-section';
+            itemSection.appendChild(buildItemNotesHeader());
+            const msg = document.createElement('div');
+            msg.className = 'muted';
+            msg.textContent = 'No notes for this item yet.';
+            itemSection.appendChild(msg);
+            wrap.appendChild(itemSection);
+          }
+          showNotesModal({
+            title: 'Notes',
+            subtitle: caseName,
+            content: wrap,
+            actions: [
+              { label: 'Add Note', variant: 'primary', onClick: () => { open('edit'); return true; } },
+            ],
+          });
+          return;
+        }
+
+        if (resolvedState === 'read') {
+          wrap.appendChild(buildStandardInstructionsSection());
+          const itemSection = document.createElement('div');
+          itemSection.className = 'tp3d-notes-section';
+          itemSection.appendChild(buildItemNotesHeader());
+          const content = document.createElement('div');
+          content.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read', 'tp3d-notes-item-read');
+          content.textContent = note;
+          itemSection.appendChild(content);
+          const currentPackForEdited = PackLibrary.getById(packId);
+          if (currentPackForEdited && currentPackForEdited.lastEdited) {
+            const lastEdited = document.createElement('div');
+            lastEdited.className = 'muted tp3d-notes-last-edited';
+            lastEdited.textContent = `Last edited ${Utils.formatRelativeTime(currentPackForEdited.lastEdited)}`;
+            itemSection.appendChild(lastEdited);
+          }
+          wrap.appendChild(itemSection);
+          showNotesModal({
+            title: 'Notes',
+            subtitle: caseName,
+            content: wrap,
+            actions: [
+              { label: 'Close', variant: 'ghost' },
+              { label: 'Edit', variant: 'primary', onClick: () => { open('edit'); return true; } },
+            ],
+          });
+          return;
+        }
+
+        // Edit state: a fresh textarea seeded from the current saved note.
+        // Cancel, Escape, and backdrop click all discard this draft without
+        // touching storage — only Save writes through
+        // PackLibrary.updateInstance, and closing the dialog any other way
+        // never deletes a previously saved note.
+        wrap.appendChild(buildStandardInstructionsSection());
+        const itemSection = document.createElement('div');
+        itemSection.className = 'tp3d-notes-section';
+        itemSection.appendChild(buildItemNotesHeader());
+        const fieldWrap = document.createElement('div');
+        fieldWrap.className = 'field';
+        const textarea = document.createElement('textarea');
+        textarea.className = 'input tp3d-textarea-minh-60';
+        textarea.placeholder = 'Add notes specific to this item (condition, delivery note, etc.)...';
+        textarea.value = note;
+        fieldWrap.appendChild(textarea);
+        itemSection.appendChild(fieldWrap);
+        wrap.appendChild(itemSection);
+        showNotesModal({
+          title: 'Notes',
+          subtitle: caseName,
+          content: wrap,
+          actions: [
+            { label: 'Cancel', variant: 'ghost', onClick: () => { open('auto'); return true; } },
+            {
+              label: 'Save',
+              variant: 'primary',
+              onClick: () => {
+                if (editorMutationBlocked()) return false;
+                if (!resolveInstance()) {
+                  // Save failure: keep the draft and stay in edit state — do
+                  // not close (returning false leaves this same modal, with
+                  // the user's typed text still in the textarea, open).
+                  UIComponents.showToast('This item no longer exists.', 'error', { title: 'Notes' });
+                  return false;
+                }
+                const trimmed = textarea.value.trim();
+                // A single updateInstance call here is one Pack update and
+                // one Undo/Redo history entry (packLibrary is in
+                // StateStore's significant-state list) — never loop this
+                // over multiple instances. Standard Instructions is never
+                // touched by this handler — it has no Save action of its own.
+                PackLibrary.updateInstance(packId, instanceId, { instanceNotes: trimmed || null });
+                open('auto');
+                return true;
+              },
+            },
+          ],
+        });
+      }
+
+      open('auto');
     }
 
     // Every editor truck writer delegates to the shared, single-flight
@@ -5633,20 +5883,35 @@ export function createEditorScreen({
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
-      // Header: name + subtitle
-      const header = document.createElement('div');
+      // Header: name (+ Notes) row, then subtitle. titleRow is appended
+      // directly to .card (not wrapped) so it picks up the existing
+      // "#inspector-body .card>.row.space-between" sizing/min-width rule.
+      const titleRow = document.createElement('div');
+      titleRow.className = 'row space-between tp3d-editor-inspector-title-row';
       const title = document.createElement('div');
       title.classList.add('tp3d-editor-title-lg-semibold');
       title.textContent = caseData.name || '—';
+      const hasAnyNotes = Boolean(String(caseData.notes || '').trim()) || Boolean(String(inst.instanceNotes || '').trim());
+      const notesButton = makeActionButton({
+        label: 'Notes',
+        iconClass: 'fa-regular fa-file-lines',
+        onClick: () => openNotesModal(pack, inst),
+      });
+      if (hasAnyNotes) {
+        const notesIndicator = document.createElement('span');
+        notesIndicator.className = 'tp3d-notes-indicator-dot';
+        notesButton.appendChild(notesIndicator);
+      }
+      titleRow.appendChild(title);
+      titleRow.appendChild(notesButton);
+      card.appendChild(titleRow);
       const sub = document.createElement('div');
       sub.className = 'muted';
       sub.classList.add('tp3d-editor-sub-sm');
       const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
       sub.textContent = `${mfg} • ${Utils.formatDims(d, lengthUnit)}`;
-      header.appendChild(title);
-      header.appendChild(sub);
-      card.appendChild(header);
+      card.appendChild(sub);
       card.appendChild(makeMiniCategoryChip(caseData.category));
 
       // Handling rules: case-level policy and this-instance lock, shown separately.
@@ -5717,6 +5982,7 @@ export function createEditorScreen({
       savePos.type = 'button';
       savePos.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Apply position';
       savePos.addEventListener('click', () => {
+        if (editorMutationBlocked()) return;
         const nextPos = {
           x: Utils.unitToInches(Number(fX.input.value) || 0, lengthUnit),
           y: Utils.unitToInches(Number(fY.input.value) || 0, lengthUnit),

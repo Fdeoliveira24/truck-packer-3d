@@ -110,6 +110,16 @@ export function parseCargoShape(raw) {
   return { value: 'box', valid: false };
 }
 
+// Notes are free text, not a cargo rule, but they route through the same single
+// source of truth as every other case field so a case-template note is stored the
+// same way (string, or null when absent) whether it comes from the Inspector
+// Notes modal, CaseLibrary.upsert, or spreadsheet import.
+export function parseCargoNotes(raw) {
+  if (typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  return trimmed ? trimmed : null;
+}
+
 // Storage-safe canonical cargo fields. Invalid inputs become the documented safe
 // default/clamp. Used by case model normalization, app/workspace normalization,
 // and CaseLibrary.upsert so storage is always typed and consistent.
@@ -126,6 +136,7 @@ export function canonicalCargoForStorage(raw) {
     loadPriority: parseCargoLoadPriority(c.loadPriority).value,
     orientationLock: canonicalOrientationLock(c.orientationLock),
     shape: parseCargoShape(c.shape).value,
+    notes: parseCargoNotes(c.notes),
   };
 }
 

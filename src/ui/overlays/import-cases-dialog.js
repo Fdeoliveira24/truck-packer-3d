@@ -24,7 +24,9 @@ import { getCaseHandlingSummary } from '../../services/case-rule-summary.js';
  *  UIComponents?: any,
  *  ImportExport?: any,
  *  StateStore?: any,
- *  Utils?: any
+ *  Utils?: any,
+ *  OperationLifecycle?: any,
+ *  beforeMutate?: () => boolean|void
  * }} [opts]
  */
 export function createImportCasesDialog({
@@ -33,6 +35,8 @@ export function createImportCasesDialog({
   ImportExport,
   StateStore,
   Utils,
+  OperationLifecycle = null,
+  beforeMutate = null,
 } = {}) {
   const doc = documentRef;
 
@@ -40,10 +44,20 @@ export function createImportCasesDialog({
   // SECTION: open()
   // ---------------------------------------------------------------------------
 
-  function open() {
+  function open({ beforeMutate: openBeforeMutate = null } = {}) {
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedResult = null;
     let activeFilter = 'all'; // 'all' | 'valid' | 'duplicate' | 'invalid'
+
+    function mutationAllowed() {
+      const guard = typeof openBeforeMutate === 'function' ? openBeforeMutate : beforeMutate;
+      if (typeof guard === 'function' && guard() === false) return false;
+      if (OperationLifecycle && OperationLifecycle.isBusy()) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Import' });
+        return false;
+      }
+      return true;
+    }
 
     // Hidden file input (detached from DOM; still triggers native picker).
     const fileInput = doc.createElement('input');
@@ -654,6 +668,7 @@ export function createImportCasesDialog({
     function doImport() {
       if (!parsedResult || parsedResult.valid.length === 0) return;
       const result = ImportExport.importCaseRows(parsedResult.valid);
+      if (!mutationAllowed()) return;
       StateStore.set({ caseLibrary: result.nextCaseLibrary });
       const dupCount = parsedResult.duplicateRows
         ? parsedResult.duplicateRows.length

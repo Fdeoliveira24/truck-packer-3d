@@ -45,8 +45,26 @@ function makeXlsxFile(aoa, name = 'cases.xlsx') {
 const billingServiceUrl = new URL('../../src/data/services/billing.service.js', import.meta.url);
 const accountOverlayPath = new URL('../../src/ui/overlays/account-overlay.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
+const billingServicePath = new URL('../../src/services/billing-service.js', import.meta.url);
+const organizationServicePath = new URL('../../src/services/organization-service.js', import.meta.url);
+const authServicePath = new URL('../../src/services/auth-service.js', import.meta.url);
+const accountSwitcherPath = new URL('../../src/account-switcher.js', import.meta.url);
+// Stage 1/2/3/5: the Billing, Organization/Workspace, and Authentication domains moved to
+// src/services/{billing,organization,auth}-service.js and the AccountSwitcher UI moved to
+// src/account-switcher.js. Source-pattern audits read app.js + those modules together so
+// assertions on the moved implementation (now in the modules) and on retained call sites /
+// facades (in app.js) both resolve. The combined text is ~= the pre-extraction app.js
+// content, so unrelated source audits are unaffected.
+async function readAppSource() {
+  return (await fs.readFile(appPath, 'utf8'))
+    + '\n\n' + (await fs.readFile(billingServicePath, 'utf8'))
+    + '\n\n' + (await fs.readFile(organizationServicePath, 'utf8'))
+    + '\n\n' + (await fs.readFile(authServicePath, 'utf8'))
+    + '\n\n' + (await fs.readFile(accountSwitcherPath, 'utf8'));
+}
 const indexHtmlPath = new URL('../../index.html', import.meta.url);
 const storagePath = new URL('../../src/core/storage.js', import.meta.url);
+const browserPath = new URL('../../src/core/browser.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const importCasesDialogPath = new URL('../../src/ui/overlays/import-cases-dialog.js', import.meta.url);
 const folderLibraryPath = new URL('../../src/services/folder-library.js', import.meta.url);
@@ -59,9 +77,14 @@ const packingCorePath = new URL('../../src/packing-core/index.js', import.meta.u
 const packingCoreValidationPath = new URL('../../src/packing-core/validation.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
+const trailerGeometryPath = new URL('../../src/editor/trailer-geometry.js', import.meta.url);
+const keyboardManagerPath = new URL('../../src/ui/keyboard-manager.js', import.meta.url);
+const recoverableErrorOverlayPath = new URL('../../src/ui/recoverable-error-overlay.js', import.meta.url);
+const debuggerPath = new URL('../../src/debugger.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
+const settingsScreenPath = new URL('../../src/screens/settings-screen.js', import.meta.url);
 const categoryServicePath = new URL('../../src/services/category-service.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
@@ -278,7 +301,7 @@ test('phase 0.6D-pre request-account-deletion remains present as the supported p
 });
 
 test('phase 0.6D-pre 4B login gate blocks deletion_status requested regardless of banned_until', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf("if (profileStatus && profileStatus.deletion_status === 'requested')");
   const end = src.indexOf('// Clear any previously set forced-disabled latch', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -348,7 +371,7 @@ test('phase 0.6D-pre 4B request-account-deletion still blocks last owner', async
 
 test('phase 0.6D-pre 4B request deletion changes avoid Stripe billing workspace lifecycle and reload scope creep', async () => {
   const requestSrc = await fs.readFile(requestAccountDeletionPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const supabaseSrc = await fs.readFile(supabasePath, 'utf8');
 
   const requestStart = requestSrc.indexOf('const { data: existingProfile');
@@ -605,39 +628,44 @@ test('phase 0.6D-pre 4B-2a account deletion functions use no wildcard CORS', asy
 });
 
 test('app init keeps explicit single-flight/idempotency guards', async () => {
-  const source = await fs.readFile(appPath, 'utf8');
+  const source = await readAppSource();
   assert.match(source, /let\s+initInFlightPromise\s*=\s*null/);
   assert.match(source, /let\s+initCompleted\s*=\s*false/);
   assert.match(source, /if\s*\(initInFlightPromise\)\s*return\s+initInFlightPromise/);
 });
 
 test('logout actions use canonical helper and avoid timed reload after signOut', async () => {
-  const source = await fs.readFile(appPath, 'utf8');
+  const source = await readAppSource();
   assert.match(source, /async function performUserInitiatedLogout\(/);
   assert.match(source, /performUserInitiatedLogout\(\{ source: 'trial-expired-modal' \}\)/);
   assert.match(source, /performUserInitiatedLogout\(\{ source: 'trial-welcome' \}\)/);
-
-  const timedReloadAfterSignOut =
-    /SupabaseClient\.signOut\([\s\S]{0,600}setTimeout\([\s\S]{0,250}location\.reload\(/;
-  assert.equal(timedReloadAfterSignOut.test(source), false);
+  const start = source.indexOf('let logoutActionPromise = null;');
+  const end = source.indexOf('// Show small toasts on connectivity changes', start);
+  const logoutBlock = start >= 0 && end > start ? source.slice(start, end) : '';
+  assert.ok(logoutBlock, 'logout implementation block must be extractable');
+  assert.doesNotMatch(logoutBlock, /logoutFallbackTimer|LOGOUT_FALLBACK_RELOAD_DELAY_MS|scheduleLogoutFallbackReload/,
+    'logout must not retain its timer fallback state or helper');
+  assert.doesNotMatch(logoutBlock, /setTimeout\(|location\.reload\(/,
+    'logout must not schedule or trigger a page reload');
 });
 
 test('org context cross-tab sync includes user + epoch metadata and stale guards', async () => {
-  const source = await fs.readFile(appPath, 'utf8');
+  const source = await readAppSource();
   assert.equal(source.includes("const ORG_CONTEXT_SYNC_KEY = 'tp3d:org-context-sync'"), true);
   assert.match(source, /dispatchOrgContextChanged\([\s\S]*userId/);
   assert.match(source, /dispatchOrgContextChanged\([\s\S]*epoch/);
   assert.match(source, /dispatchOrgContextChanged\([\s\S]*timestamp/);
   assert.match(source, /window\.addEventListener\('storage'[\s\S]*ORG_CONTEXT_SYNC_KEY/);
   assert.match(source, /detailUserId && truth\.userId && detailUserId !== truth\.userId/);
-  assert.match(source, /detailEpoch && detailEpoch < lastAppliedOrgContextVersion/);
+  assert.match(source, /getOrgContextEffectiveVersion\(detail\)/);
+  assert.match(source, /compareOrgContextOrder\(detailEpoch, detailTabId\) < 0/);
 });
 
 // ── Cross-tab auth proof & bundle noise elimination ────────────────────
 
 test('auth proof fast-path gates prevent repeated cross-tab timeout calls', async () => {
   const sc = await fs.readFile(supabasePath, 'utf8');
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // isAuthProven helper exists with TTL check
   assert.match(sc, /function isAuthProven\b/);
@@ -716,7 +744,7 @@ test('validateSessionOrSignOut never signs out on timeout — only on auth-revok
 });
 
 test('billing pump never runs without proven auth or usable session', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // maybeScheduleBillingRefresh has an auth gate before any orgId/retry logic
   assert.match(app, /function maybeScheduleBillingRefresh[\s\S]*?isAuthProven[\s\S]*?skip:auth-not-proven/);
@@ -726,7 +754,7 @@ test('billing pump never runs without proven auth or usable session', async () =
 });
 
 test('phase 1 P0 cross-profile logout: billing-status 401 triggers local sign-out cleanup', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
@@ -744,7 +772,7 @@ test('phase 1 P0 cross-profile logout: billing-status 401 triggers local sign-ou
 });
 
 test('phase 1 P0 cross-profile logout: billing 401 path does not catch non-auth errors or leak token data', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
@@ -766,7 +794,7 @@ test('phase 1 P0 cross-profile logout: billing 401 path does not catch non-auth 
 });
 
 test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate server auth', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   assert.match(app, /const AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS = 5000/,
     'visible auth revocation check must use the approved short release-gate interval');
@@ -786,12 +814,12 @@ test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate 
     'signed-in auth flow must start the visible auth validation loop');
   assert.match(app, /stopVisibleAuthRevocationCheck\(\)/,
     'signed-out cleanup must stop the visible auth validation loop');
-  assert.match(app, /const shouldClearSignedOutOrgHint = Boolean\(userInitiatedSignOut \|\| treatAsSignedOut \|\| authBlockState\)[\s\S]{0,180}clearLocalOrgHint: shouldClearSignedOutOrgHint/,
+  assert.match(app, /const shouldClearSignedOutOrgHint = Boolean\(userInitiatedSignOut \|\| treatAsSignedOut \|\| AuthService\.getAuthBlockState\(\)\)[\s\S]{0,180}clearLocalOrgHint: shouldClearSignedOutOrgHint/,
     'confirmed signed-out cleanup must clear stale active org hints');
 });
 
 test('P0 billing retry reliability C: refreshBilling only reuses successful shared snapshots and force bypasses them', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
@@ -814,7 +842,7 @@ test('P0 billing retry reliability C: refreshBilling only reuses successful shar
 });
 
 test('P0 billing retry reliability C: cross-tab billing ignores failed snapshots and still accepts successful scoped snapshots', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const handlerStart = app.indexOf('function _handleCrossTabBillingResult(orgId, state, fromTabId)');
   const handlerEnd = app.indexOf('\nfunction _extractOrgIdFromStorageKey', handlerStart);
   const handler = handlerStart >= 0 && handlerEnd > handlerStart ? app.slice(handlerStart, handlerEnd) : '';
@@ -844,7 +872,7 @@ test('P0 billing retry reliability C: Settings Billing Retry and Refresh keep pr
 });
 
 test('P0 billing retry reliability C: queued forced refreshes have a completion repaint path without duplicate subscriptions', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const settings = await fs.readFile(settingsOverlayPath, 'utf8');
 
   assert.match(app, /let _billingRefreshQueuedWaiters = \[\]/,
@@ -880,7 +908,7 @@ test('P0 billing retry reliability C: billing-status Stripe calls have timeout p
 });
 
 test('P0 billing retry reliability C: changed billing logs do not expose tokens or API keys', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
   const billingStatus = await fs.readFile(billingStatusPath, 'utf8');
   const failedSharedLog = app.match(/billing:cross-tab:discard-failed-shared[\s\S]{0,220}/)?.[0] || '';
   const safeFieldsHelper = app.match(/function _billingSharedSnapshotDebugFields\(orgId, state\) \{[\s\S]*?\n\}/)?.[0] || '';
@@ -4209,9 +4237,10 @@ test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', a
   const packSrc = await fs.readFile(packLibraryPath, 'utf8');
   const solverSrc = await fs.readFile(autoPackSolverPath, 'utf8');
   const validationSrc = await fs.readFile(packingCoreValidationPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  const productionSrc = [packSrc, solverSrc, validationSrc, appSrc, editorSrc].join('\n');
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
+  const productionSrc = [packSrc, solverSrc, validationSrc, appSrc, editorSrc, trailerGeometrySrc].join('\n');
 
   const definitions = productionSrc.match(/\b(?:export\s+)?const\s+CONTAINMENT_EPS_INCHES\s*=/g) || [];
   assert.equal(definitions.length, 1,
@@ -4229,16 +4258,16 @@ test('3B-GEOMETRY-TOLERANCE uses one shared inch-space containment tolerance', a
   assert.match(solverSrc, /\bisAabbContainedInAnyZone\(/,
     'autopack-solver.js must call the canonical containment helper instead of a local tolerance');
 
-  const appHelperStart = appSrc.indexOf('function isAabbContainedInAnyZone(aabb, zones)');
-  const appHelperEnd = appSrc.indexOf('\n      function zonesInchesToWorld', appHelperStart);
+  const appHelperStart = trailerGeometrySrc.indexOf('function isAabbContainedInAnyZone(aabb, zones)');
+  const appHelperEnd = trailerGeometrySrc.indexOf('\n    function zonesInchesToWorld', appHelperStart);
   const appHelperBlock = appHelperStart >= 0 && appHelperEnd > appHelperStart
-    ? appSrc.slice(appHelperStart, appHelperEnd)
+    ? trailerGeometrySrc.slice(appHelperStart, appHelperEnd)
     : '';
-  assert.ok(appHelperBlock, 'app.js TrailerGeometry containment helper must be present');
+  assert.ok(appHelperBlock, 'trailer-geometry.js TrailerGeometry containment helper must be present');
   assert.match(appHelperBlock, /CorePackLibrary\.CONTAINMENT_EPS_INCHES/,
-    'app.js TrailerGeometry containment helper must reference the shared inch tolerance');
+    'trailer-geometry.js TrailerGeometry containment helper must reference the shared inch tolerance');
   assert.doesNotMatch(appHelperBlock, /0\.01/,
-    'app.js TrailerGeometry containment helper must not retain the old 0.01 world-unit tolerance');
+    'trailer-geometry.js TrailerGeometry containment helper must not retain the old 0.01 world-unit tolerance');
 
   const editorHelperStart = editorSrc.indexOf('function isInsideTruck(aabb)');
   const editorHelperEnd = editorSrc.indexOf('\n    function checkCollision', editorHelperStart);
@@ -4465,12 +4494,12 @@ test('A1.1B AutoPack engine defaults every truck mode to front-first loading', a
 // getFrontBonusBlockedZones) and is never usable.
 
 test('G2.2-CAB-OVERHANG getFrontBonusZone() returns the raised deck starting at y=bonusHeight (deck height / cab clearance)', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
-  const start = appSrc.indexOf('function getFrontBonusZone(truck)');
-  const end = appSrc.indexOf('\n      function getFrontBonusBlockedZones', start);
-  const block = start >= 0 && end > start ? appSrc.slice(start, end) : '';
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
+  const start = trailerGeometrySrc.indexOf('function getFrontBonusZone(truck)');
+  const end = trailerGeometrySrc.indexOf('\n    function getFrontBonusBlockedZones', start);
+  const block = start >= 0 && end > start ? trailerGeometrySrc.slice(start, end) : '';
 
-  assert.ok(block, 'getFrontBonusZone must be defined in app.js TrailerGeometry');
+  assert.ok(block, 'getFrontBonusZone must be defined in trailer-geometry.js TrailerGeometry');
   assert.match(
     block,
     /zone\(\{ x: L, y: bonusHeight, z: -W \/ 2 \}, \{ x: L \+ bonusLength, y: H, z: W \/ 2 \}\)/,
@@ -4495,7 +4524,7 @@ test('G2.2-CAB-OVERHANG getFrontBonusZone() returns the raised deck starting at 
 
 test('G2.2-CAB-OVERHANG getFrontBonusBlockedZones() returns the cab void below the deck (pack-library.js and app.js)', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
 
   const truck = {
     length: 200,
@@ -4524,10 +4553,10 @@ test('G2.2-CAB-OVERHANG getFrontBonusBlockedZones() returns the cab void below t
     'frontBonus with bonusLength=0 must not have a cab void'
   );
 
-  assert.match(appSrc, /function getFrontBonusBlockedZones\(truck\)/,
-    'app.js TrailerGeometry must define getFrontBonusBlockedZones for visual/settle use');
-  assert.match(appSrc, /getFrontBonusBlockedZones,\n\s*\};/,
-    'app.js TrailerGeometry must export getFrontBonusBlockedZones from its returned object');
+  assert.match(trailerGeometrySrc, /function getFrontBonusBlockedZones\(truck\)/,
+    'trailer-geometry.js TrailerGeometry must define getFrontBonusBlockedZones for visual/settle use');
+  assert.match(trailerGeometrySrc, /getFrontBonusBlockedZones,\n\s*\};/,
+    'trailer-geometry.js TrailerGeometry must export getFrontBonusBlockedZones from its returned object');
 });
 
 test('G2.2-CAB-OVERHANG scene-runtime accounts for total visual length including the front overhang', async () => {
@@ -7376,7 +7405,7 @@ test('AUTO-PACK-A1-R6.5 repeated same-footprint heavy groups reserve floor befor
 });
 
 test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the runtime engine only', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const solutionSrc = await fs.readFile(new URL('../../src/packing-core/solution.js', import.meta.url), 'utf8');
 
@@ -7418,7 +7447,7 @@ test('AUTO-PACK-A1-R6 live adapter preserves runtime gates, zones, and orientati
 });
 
 test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const itemBuilderSrc = await fs.readFile(autoPackItemBuilderPath, 'utf8');
 
@@ -7437,7 +7466,7 @@ test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', as
 });
 
 test('AUTO-PACK-A1-CLEAN-2 app delegates AutoPack runtime without carrying orchestration inline', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
 
   assert.match(appSrc, /import \{ createAutoPackEngine \} from '\.\/services\/autopack-engine\.js';/,
@@ -7636,10 +7665,10 @@ test('EDITOR inspector unit labels follow preferences and repaint on preference 
 });
 
 test('PREFERENCES remove millimeter selection and use hidden-opacity slider', async () => {
-  const [settingsSrc, indexSrc, appSrc, utilsSrc, utilsIndexSrc] = await Promise.all([
+  const [settingsSrc, indexSrc, settingsScreenSrc, utilsSrc, utilsIndexSrc] = await Promise.all([
     fs.readFile(settingsOverlayPath, 'utf8'),
     fs.readFile(indexHtmlPath, 'utf8'),
-    fs.readFile(appPath, 'utf8'),
+    fs.readFile(settingsScreenPath, 'utf8'),
     fs.readFile(coreUtilsPath, 'utf8'),
     fs.readFile(coreUtilsIndexPath, 'utf8'),
   ]);
@@ -7668,11 +7697,11 @@ test('PREFERENCES remove millimeter selection and use hidden-opacity slider', as
     'legacy settings markup must also use a range slider for hidden opacity');
   assert.match(indexSrc, /id="pref-hidden-opacity-value"[\s\S]*0\.30/,
     'legacy settings markup must show the hidden opacity value beside the slider');
-  assert.match(appSrc, /const elHiddenValue[\s\S]*document\.getElementById\('pref-hidden-opacity-value'\)/,
+  assert.match(settingsScreenSrc, /const elHiddenValue[\s\S]*document\.getElementById\('pref-hidden-opacity-value'\)/,
     'legacy settings controller must bind the hidden opacity value readout');
-  assert.match(appSrc, /elHidden\.addEventListener\('input', syncHiddenOpacityValue\)/,
+  assert.match(settingsScreenSrc, /elHidden\.addEventListener\('input', syncHiddenOpacityValue\)/,
     'hidden opacity readout must update while the slider moves');
-  assert.match(appSrc, /elHiddenValue\.textContent = Number\(elHidden\.value\)\.toFixed\(2\)/,
+  assert.match(settingsScreenSrc, /elHiddenValue\.textContent = Number\(elHidden\.value\)\.toFixed\(2\)/,
     'legacy settings controller must format the hidden opacity readout consistently');
 });
 
@@ -9267,8 +9296,12 @@ test('RECON every production truck writer routes through the shared controller',
     'Editor owns ephemeral truck and cargo scene rendering');
   assert.doesNotMatch(editor, /PackLibrary\.update\(pack\.id, \{ truck/,
     'Editor has no direct truck writer');
-  assert.equal((packs.match(/TruckChangeController\.request\(\{/g) || []).length, 2,
-    'Packs toolbar preset and Edit Pack Save both use the controller');
+  assert.match(packs, /function requestTruckChange\(options\)/,
+    'Packs routes truck changes through its operation-lifecycle wrapper');
+  assert.equal((packs.match(/TruckChangeController\.request\(\{/g) || []).length, 1,
+    'the operation-lifecycle wrapper has one shared controller delegation');
+  assert.equal((packs.match(/\brequestTruckChange\(\{/g) || []).length, 2,
+    'Packs toolbar preset and Edit Pack Save both use the guarded wrapper');
   assert.doesNotMatch(packs, /PackLibrary\.update\(pack\.id, \{ truck/,
     'Packs toolbar has no direct truck writer');
   assert.match(controller, /PackLibrary\.reconcilePlacementsForTruck\(pack, nextTruck, caseLibrary\)/);
@@ -12808,13 +12841,13 @@ test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front
 });
 
 test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
 
   assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
     'AutoPack must continue deriving usable zones from trailer geometry');
-  assert.match(appSrc, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
-    'app-local trailer geometry must keep frontBonus and wheelWells branches');
+  assert.match(trailerGeometrySrc, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
+    'trailer-geometry.js must keep frontBonus and wheelWells branches');
 });
 
 test('AUTO-PACK-A0B normalizeInstance preserves manual orientation lock metadata', async () => {
@@ -12946,15 +12979,15 @@ test('AUTO-PACK-A0B app and pack import paths do not strip orientation locks', a
 });
 
 test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock metadata', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(keyboardManagerPath, 'utf8');
   const duplicateStart = src.indexOf('function duplicateSelected()');
-  const duplicateEnd = src.indexOf('\n      function copySelected()', duplicateStart);
+  const duplicateEnd = src.indexOf('\n    function copySelected()', duplicateStart);
   const duplicateBlock = duplicateStart >= 0 && duplicateEnd > duplicateStart ? src.slice(duplicateStart, duplicateEnd) : '';
   const copyStart = src.indexOf('function copySelected()');
-  const copyEnd = src.indexOf('\n      function pasteClipboard()', copyStart);
+  const copyEnd = src.indexOf('\n    function pasteClipboard()', copyStart);
   const copyBlock = copyStart >= 0 && copyEnd > copyStart ? src.slice(copyStart, copyEnd) : '';
   const pasteStart = src.indexOf('function pasteClipboard()');
-  const pasteEnd = src.indexOf('\n      function focusSelected(', pasteStart);
+  const pasteEnd = src.indexOf('\n    function focusSelected(', pasteStart);
   const pasteBlock = pasteStart >= 0 && pasteEnd > pasteStart ? src.slice(pasteStart, pasteEnd) : '';
   const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
   const safeStart = packLibSrc.indexOf('export function buildSafeDuplicateInstances(');
@@ -12974,22 +13007,22 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
 });
 
 test('EDITOR keyboard shortcut ownership keeps bare F for Flip only', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
 
-  const shortcutsStart = appSrc.indexOf('\n      shortcuts = {\n');
-  const shortcutsEnd = appSrc.indexOf('\n      };', shortcutsStart);
+  const shortcutsStart = keyboardSrc.indexOf('\n    shortcuts = {\n');
+  const shortcutsEnd = keyboardSrc.indexOf('\n    };', shortcutsStart);
   assert.ok(shortcutsStart >= 0 && shortcutsEnd > shortcutsStart, 'KeyboardManager shortcuts block must exist');
-  const shortcutsBlock = appSrc.slice(shortcutsStart, shortcutsEnd);
+  const shortcutsBlock = keyboardSrc.slice(shortcutsStart, shortcutsEnd);
   assert.equal(/\n\s*f:\s*focusSelected,/.test(shortcutsBlock), false,
     'app-level KeyboardManager must not bind bare F');
   assert.match(shortcutsBlock, /'shift\+f': focusSelected,/,
     'app-level focus selected may use Shift+F instead of bare F');
 
-  const focusStart = appSrc.indexOf('function focusSelected(');
-  const focusEnd = appSrc.indexOf('\n      function toggleGrid()', focusStart);
+  const focusStart = keyboardSrc.indexOf('function focusSelected(');
+  const focusEnd = keyboardSrc.indexOf('\n    function toggleGrid()', focusStart);
   assert.ok(focusStart >= 0 && focusEnd > focusStart, 'focusSelected handler must exist');
-  const focusBlock = appSrc.slice(focusStart, focusEnd);
+  const focusBlock = keyboardSrc.slice(focusStart, focusEnd);
   assert.match(focusBlock, /event && typeof event\.stopPropagation === 'function'[\s\S]*event\.stopPropagation\(\)/,
     'Shift+F focus must stop propagation so the editor flip handler does not also run');
 
@@ -13048,7 +13081,7 @@ test('phase 1 P0 cross-profile logout: server auth validation only clears on con
 });
 
 test('TrialExpiredModal upgrades in-place when role resolves and never reads legacy session storage', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // upgradeTrialModalToOwner helper exists for in-place DOM upgrade
   assert.match(app, /const upgradeTrialModalToOwner\s*=/);
@@ -13056,8 +13089,8 @@ test('TrialExpiredModal upgrades in-place when role resolves and never reads leg
   // Guard logic upgrades in-place instead of close/reopen
   assert.match(app, /if \(canManageBilling && !_trialModalCanManageBilling\)\s*\{\s*upgradeTrialModalToOwner\(/);
 
-  // applyOrgContextFromBundle re-applies billing gate after role resolves
-  assert.match(app, /applyAccessGateFromBilling\(getBillingState\(\),\s*\{\s*reason:\s*'bundle-role-resolved'\s*\}\)/);
+  // applyOrgContextFromBundle re-applies billing gate after role resolves (delegated to BillingService in Stage 1)
+  assert.match(app, /BillingService\.applyAccessGateFromBilling\(BillingService\.getBillingState\(\),\s*\{\s*reason:\s*'bundle-role-resolved'\s*\}\)/);
 
   // resolveCanManageBillingForOrg never reads truckPacker3d:session:v1
   const fnMatch = app.match(/function resolveCanManageBillingForOrg\b[\s\S]*?return result;/);
@@ -13067,7 +13100,7 @@ test('TrialExpiredModal upgrades in-place when role resolves and never reads leg
 });
 
 test('upgradeTrialModalToOwner is idempotent — uses data-trial-upgrade-btn guard', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // The upgrade function checks for an existing button before inserting
   assert.match(app, /data-trial-upgrade-btn/,
@@ -13077,7 +13110,7 @@ test('upgradeTrialModalToOwner is idempotent — uses data-trial-upgrade-btn gua
 });
 
 test('TrialExpiredModal shows immediately once billing confirms trial_expired', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   assert.doesNotMatch(app, /TRIAL_MODAL_ROLE_DEFER_MS/,
     'confirmed trial_expired billing truth must not wait on a role-resolution timer');
@@ -13095,7 +13128,7 @@ test('TrialExpiredModal shows immediately once billing confirms trial_expired', 
 });
 
 test('legacy org-sync handler is hint-only and does not call handleIncomingOrgContextSync', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // The legacy-active-org-id string must still exist (as a log label)
   assert.match(app, /legacy-hint/,
@@ -13119,7 +13152,7 @@ test('legacy org-sync handler is hint-only and does not call handleIncomingOrgCo
 });
 
 test('TrialExpiredModal no longer uses deferred latch state', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   assert.doesNotMatch(app, /_trialModalDeferAttemptedForOrg/,
     'trial_expired modal should not retain deferred latch state');
@@ -13130,7 +13163,7 @@ test('TrialExpiredModal no longer uses deferred latch state', async () => {
 });
 
 test('resolveCanManageBillingForOrg has early-out guard for missing orgId or userId', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // Extract the function body
   const fnMatch = app.match(/function resolveCanManageBillingForOrg\b[\s\S]*?return result;/);
@@ -13151,7 +13184,7 @@ test('resolveCanManageBillingForOrg has early-out guard for missing orgId or use
 });
 
 test('bundle-inflight flag remains scoped to org context sync', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // Variable exists
   assert.match(app, /let _orgBundleFetchInflightForOrg\s*=\s*null/,
@@ -13180,7 +13213,7 @@ test('bundle-inflight flag remains scoped to org context sync', async () => {
 });
 
 test('tp3dDebug-only billing accessor is guarded by isTp3dDebugEnabled', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // window['getBillingState'] assignment must be inside isTp3dDebugEnabled guard
   const debugAccessorMatch = app.match(/if \(isTp3dDebugEnabled\(\)\) \{[\s\S]*?window\['getBillingState'\]/);
@@ -13251,7 +13284,7 @@ test('auth overlay renderSignIn passes _fieldPassword as value to password field
 // ── Auth settled state ────────────────────────────────────────────────────────
 
 test('authGate settled is set true on signedIn, signedOutConfirmed, and bootstrap-no-session', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // settled:set log must appear at every _authGate.settled = true site
   const settledSetCount = (app.match(/settled:set/g) || []).length;
@@ -13267,13 +13300,16 @@ test('authGate settled is set true on signedIn, signedOutConfirmed, and bootstra
     'bootstrapAuthGate must set settled on no-session path');
   assert.ok(bootstrapBlock.includes('bootstrap-cantconnect'),
     'bootstrapAuthGate must set settled on cantconnect path');
-  // Guard: only set when no pending timer
-  assert.ok(bootstrapBlock.includes('!_authGate.signedOutTimer'),
-    'bootstrap settled must check for pending signedOutTimer');
+  // Guard: only set when no pending timer — the guard now lives in the semantic
+  // AuthService.markSignedOutSettledIfIdle method that the bootstrap paths delegate to.
+  assert.ok(bootstrapBlock.includes('markSignedOutSettledIfIdle'),
+    'bootstrap settled must delegate to AuthService.markSignedOutSettledIfIdle');
+  assert.match(app, /function markSignedOutSettledIfIdle\(source\) \{\s*if \(!_authGate\.settled && !_authGate\.signedOutTimer\)/,
+    'markSignedOutSettledIfIdle must set settled only when idle (no pending signedOutTimer)');
 });
 
 test('auth settled is never set false after initialization', async () => {
-  const app = await fs.readFile(appPath, 'utf8');
+  const app = await readAppSource();
 
   // Only one place should have settled: false (the initial declaration)
   const settledFalseCount = (app.match(/_authGate\.settled\s*=\s*false|settled:\s*false/g) || []).length;
@@ -13284,7 +13320,7 @@ test('auth settled is never set false after initialization', async () => {
 // ── Phase 3C2: cross-tab sign-out "Checking session…" hang ───────────────────
 
 test('phase 3C2 bootstrapAuthGate resets overlay phase to form before hiding on successful sign-in', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('bootstrapAuthGate = async');
   const end = src.indexOf('\n      };', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13305,9 +13341,9 @@ test('phase 3C2 bootstrapAuthGate resets overlay phase to form before hiding on 
 });
 
 test('phase 3C2 authGateSignedOutCandidate fallback guard requires _wrapperSignedIn to block cleanup', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function authGateSignedOutCandidate(');
-  const end = src.indexOf('\n    function ', start + 1);
+  const end = src.indexOf('\n  function ', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(block.length > 0, 'authGateSignedOutCandidate must be extractable');
@@ -13323,7 +13359,7 @@ test('phase 3C2 authGateSignedOutCandidate fallback guard requires _wrapperSigne
 });
 
 test('phase 3C2 signed-out cleanup calls setPhase form and show on non-user-initiated sign-out', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function _executeSignedOutCleanup(');
   const end = src.indexOf('function sanitizeInviteHandoffMessage(', start);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13924,7 +13960,7 @@ test('phase 3A Settings preserves Copy Link fallback and reports invite email st
 });
 
 test('phase 3C1 app maps invite accept failures to persistent handoff copy', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('const inviteHandoffNoticeId');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13942,7 +13978,7 @@ test('phase 3C1 app maps invite accept failures to persistent handoff copy', asy
     'invite accept failure mapper must classify expired responses');
   assert.match(inviteBlock, /includes\('no longer valid'\) \|\| lower\.includes\('revoked'\)[\s\S]*inviteRevokedMessage/,
     'invite accept failure mapper must classify revoked/no-longer-valid responses');
-  assert.match(inviteBlock, /includes\('email does not match'\)[\s\S]*inviteWrongEmailMessage/,
+  assert.match(inviteBlock, /includes\('invite email does not match'\)[\s\S]*inviteWrongEmailMessage/,
     'invite accept failure mapper must preserve email mismatch responses');
   // Rejection failures no longer call setInviteHandoffNotice (toast-only for signed-in users).
   // They must call clearInviteHandoffNotice() to clean up stale state, and show a toast.
@@ -13955,7 +13991,7 @@ test('phase 3C1 app maps invite accept failures to persistent handoff copy', asy
 });
 
 test('phase 3C1 invite handoff notice does not expose raw tokens or scope into billing', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('const inviteHandoffNoticeId');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const inviteBlock = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -13976,7 +14012,7 @@ test('phase 3C1 invite handoff notice does not expose raw tokens or scope into b
 });
 
 test('phase 3C1 renderInviteHandoffNotice guards auth overlay visibility before inserting notice', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function renderInviteHandoffNotice(');
   const end = src.indexOf('function setInviteHandoffNotice(', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14007,7 +14043,7 @@ test('phase 3C1 renderInviteHandoffNotice guards auth overlay visibility before 
 });
 
 test('phase 3C1 renderInviteHandoffNotice does not create blocking banner or set z-index above auth overlay', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function renderInviteHandoffNotice(');
   const end = src.indexOf('function setInviteHandoffNotice(', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14028,7 +14064,7 @@ test('phase 3C1 renderInviteHandoffNotice does not create blocking banner or set
 });
 
 test('phase 3C1 invite handoff visibility fix adds no token logging or reload side-effects', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   // Scope checks to the renderInviteHandoffNotice function only — this is the function modified by the fix.
   const fnStart = src.indexOf('function renderInviteHandoffNotice(');
   const fnEnd = src.indexOf('function setInviteHandoffNotice(', fnStart);
@@ -14056,11 +14092,11 @@ test('phase 3C1 invite handoff visibility fix adds no token logging or reload si
 });
 
 test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale notice persisting over auth overlay', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Find the onAuthStateChange handler — locate the isSignedOutEvent clearBillingState block
   const handlerStart = src.indexOf('SupabaseClient.onAuthStateChange(');
-  const handlerEnd = src.indexOf('const authTruthForEvent = getAuthTruthSnapshot()', handlerStart);
+  const handlerEnd = src.indexOf('const authTruthForEvent = AuthService.getAuthTruthSnapshot()', handlerStart);
   const handlerBlock = handlerStart >= 0 && handlerEnd > handlerStart
     ? src.slice(handlerStart, handlerEnd)
     : '';
@@ -14079,7 +14115,7 @@ test('phase 3C1 SIGNED_OUT event clears invite handoff notice to prevent stale n
 });
 
 test('phase 3C1 signed-in invite rejection clears notice state instead of setting persistent error notice', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('async function tryAcceptPendingInvite(');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14087,8 +14123,8 @@ test('phase 3C1 signed-in invite rejection clears notice state instead of settin
   assert.ok(fnBody.length > 0, 'tryAcceptPendingInvite must be extractable');
 
   // Rejection branches (result.ok=false and catch) must call clearInviteHandoffNotice, not set error notice
-  const elseIdx = fnBody.indexOf('const inviteMessage = mapInviteAcceptFailureMessage(result');
-  const catchIdx = fnBody.indexOf('const inviteMessage = mapInviteAcceptFailureMessage(err');
+  const elseIdx = fnBody.indexOf("const inviteError = result && result.error ? result.error : '';");
+  const catchIdx = fnBody.indexOf("const inviteError = err && err.message ? err.message : '';");
   assert.ok(elseIdx > 0, 'result.ok=false branch must be locatable');
   assert.ok(catchIdx > elseIdx, 'catch branch must be locatable after else branch');
 
@@ -14114,7 +14150,7 @@ test('phase 3C1 signed-in invite rejection clears notice state instead of settin
 });
 
 test('phase 3C1 invite rejection failure path does not log token or JWT values', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('async function tryAcceptPendingInvite(');
   const end = src.indexOf('if (!authListenerInstalled)', start);
   const fnBody = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14168,7 +14204,7 @@ test('settings members shows pending invite expiration state without new CSS', a
 });
 
 test('app access-loss handler is active-org 403 only and ignores transient billing states', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /function isConfirmedActiveOrgAccessDeniedResult\b/,
     'app must have a narrow confirmed access-denied classifier');
@@ -14185,7 +14221,7 @@ test('app access-loss handler is active-org 403 only and ignores transient billi
 });
 
 test('app access-loss handler verifies auth and active org, rate-limits, dispatches event, and refreshes org context', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /let _orgAccessLossHandler = null/,
     'module-level handler slot must exist for refreshBilling');
@@ -14195,7 +14231,7 @@ test('app access-loss handler verifies auth and active org, rate-limits, dispatc
     'access-loss rate limit must be bounded');
   assert.match(src, /function handleOrgAccessLoss\(orgId, meta = \{\}\)[\s\S]*if \(!truth \|\| !truth\.isSignedIn \|\| !truth\.userId\) return false/,
     'handler must require signed-in auth truth');
-  assert.match(src, /const activeOrgId = getActiveOrgIdNow\(\)[\s\S]*if \(!activeOrgId \|\| activeOrgId !== lostOrgId\) return false/,
+  assert.match(src, /const activeOrgId = OrganizationService\.getActiveOrgIdNow\(\)[\s\S]*if \(!activeOrgId \|\| activeOrgId !== lostOrgId\) return false/,
     'handler must confirm the lost org is still the active org');
   assert.match(src, /_orgAccessLossLastAt\.set\(lostOrgId, now\)/,
     'handler must record rate-limit state by org');
@@ -14410,7 +14446,7 @@ test('phase 0.6A billing service exports leaveWorkspace wrapper', async () => {
 });
 
 test('phase 0.6A app exposes handleWorkspaceLeft and refreshes org context without logout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14459,7 +14495,7 @@ test('phase 0.6A settings general uses safe leave workspace UI', async () => {
 test('phase 0.6A does not introduce restore transfer delete or export workspace flows', async () => {
   const edgeSrc = await fs.readFile(orgLeaveWorkspacePath, 'utf8');
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const appStart = appSrc.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
   const helper = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
@@ -14480,7 +14516,7 @@ test('phase 0.6A does not introduce restore transfer delete or export workspace 
 });
 
 test('phase 0.6A-2 handleWorkspaceLeft syncs UI around forced org refresh', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -14503,12 +14539,12 @@ test('phase 0.6A-2 handleWorkspaceLeft syncs UI around forced org refresh', asyn
 });
 
 test('phase 0.6A-2 account switcher chip uses workspace initials instead of user initials', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const displayStart = src.indexOf('function getDisplay()');
   const displayEnd = src.indexOf('function renderButton(buttonEl)', displayStart);
   const displayFn = displayStart >= 0 && displayEnd > displayStart ? src.slice(displayStart, displayEnd) : '';
   const renderStart = src.indexOf('function renderButton(buttonEl)');
-  const renderEnd = src.indexOf('function _showComingSoon()', renderStart);
+  const renderEnd = src.indexOf('function createWorkspacePrompt()', renderStart);
   const renderFn = renderStart >= 0 && renderEnd > renderStart ? src.slice(renderStart, renderEnd) : '';
 
   assert.match(src, /function getActiveWorkspaceInitials\(\)[\s\S]*orgContext && orgContext\.activeOrg[\s\S]*name\.charAt\(0\)\.toUpperCase\(\)/,
@@ -14535,12 +14571,12 @@ test('phase 0.6A-2 bottom-left workspace chip avatar is circular', async () => {
 });
 
 test('phase 0.6A-2 chip sync patch does not add Stripe billing-status or reload behavior', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const start = appSrc.indexOf('function handleWorkspaceLeft(leftOrgId, options = {})');
   const end = appSrc.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? appSrc.slice(start, end) : '';
   const renderStart = appSrc.indexOf('function renderButton(buttonEl)');
-  const renderEnd = appSrc.indexOf('function _showComingSoon()', renderStart);
+  const renderEnd = appSrc.indexOf('function createWorkspacePrompt()', renderStart);
   const renderFn = renderStart >= 0 && renderEnd > renderStart ? appSrc.slice(renderStart, renderEnd) : '';
 
   assert.doesNotMatch(helper + renderFn, /billing-status|billing_customers|subscriptions|stripe_customers|webhook_events|stripe|checkout|portal/i,
@@ -15043,7 +15079,7 @@ test('phase 0.6D-pre direct client mutation guards avoid lifecycle billing and r
 });
 
 test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context without logout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15073,7 +15109,7 @@ test('phase 0.6C app exposes handleWorkspaceArchived and refreshes org context w
 });
 
 test('workspace rename live-refresh: handleWorkspaceUpdated reconciles org context locally without a network refetch', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceUpdated(updatedOrg, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15179,7 +15215,7 @@ test('phase 0.6C Settings Archive UI is primary-owner-only and uses safe confirm
 });
 
 test('phase 0.6C does not add restore transfer permanent delete billing-status Stripe CSS router or package scope', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
   const billingSrc = await fs.readFile(billingServiceUrl, 'utf8');
   const appStart = appSrc.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
@@ -15288,14 +15324,14 @@ test('false-no-workspace: getUserOrganizations preserves its array contract for 
 });
 
 test('false-no-workspace: account bundle confirms zero workspaces only from a non-partial authoritative result', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('async function applyOrgContextFromBundle(');
   const end = src.indexOf('async function refreshOrgContext(', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'applyOrgContextFromBundle must be extractable');
   // A partial bundle with a known workspace hint must retain the workspace, not clear it.
-  assert.match(fn, /if \(bundle && bundle\.partial && readLocalOrgId\(\)\) \{[\s\S]*?return null;/,
+  assert.match(fn, /if \(bundle && bundle\.partial && OrganizationService\.readLocalOrgId\(\)\) \{[\s\S]*?return null;/,
     'a partial bundle with a known workspace hint must retain the workspace');
   // confirmedNoOrg may only be derived from a non-partial empty result.
   assert.match(fn, /confirmedNoOrg: Boolean\(!bundle\?\.partial && Array\.isArray\(resolved\.orgs\) && resolved\.orgs\.length === 0\)/,
@@ -15306,7 +15342,7 @@ test('false-no-workspace: account bundle confirms zero workspaces only from a no
 });
 
 test('false-no-workspace: no-org banner requires a resolved confirmed-empty result and is suppressed while busy', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function applyOrgRequiredUi(');
   const anchor = src.indexOf('const showNoOrgBanner', start);
   const fn = start >= 0 && anchor > start ? src.slice(start, anchor + 600) : '';
@@ -15338,7 +15374,7 @@ test('phase 0.6C-2 account bundle does not expose stale profile or membership or
 });
 
 test('phase 0.6C-2 app clears org state when resolved org is not in active org rows', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
   const resolverEnd = src.indexOf('// ── Workspace-ready event replay buffer', resolverStart);
   const resolver = resolverStart >= 0 && resolverEnd > resolverStart ? src.slice(resolverStart, resolverEnd) : '';
@@ -15359,7 +15395,7 @@ test('phase 0.6C-2 app clears org state when resolved org is not in active org r
 });
 
 test('phase 0.6C-2 app exposes confirmed no-active bundle before clearing org context', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const applyStart = src.indexOf('async function applyOrgContextFromBundle');
   const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
   const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
@@ -15422,7 +15458,7 @@ test('phase 0.6C-2 Settings re-resolves modal org on open to avoid stale cross-u
 });
 
 test('phase 0.6C-2 archive fallback avoids logout reload destructive data and billing scope', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
   const applyStart = appSrc.indexOf('async function applyOrgContextFromBundle');
   const applyEnd = appSrc.indexOf('async function refreshOrgContext', applyStart);
@@ -15451,7 +15487,7 @@ test('phase 0.6C-2 archive fallback avoids logout reload destructive data and bi
 });
 
 test('phase 0.6C-3 dispatchOrgContextChanged allows empty orgId only with confirmed opt-in', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function dispatchOrgContextChanged(options = {})');
   const end = src.indexOf('function parseOrgContextSyncPayload', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15468,7 +15504,7 @@ test('phase 0.6C-3 dispatchOrgContextChanged allows empty orgId only with confir
 });
 
 test('phase 0.6C-3 clearOrgContext dispatches confirmed empty-org event', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function clearOrgContext(');
   const end = src.indexOf('let orgScopedRenderTimer', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15483,7 +15519,7 @@ test('phase 0.6C-3 clearOrgContext dispatches confirmed empty-org event', async 
 });
 
 test('phase 0.6C-3 orgContextResolved is set on active apply and reset on uncertain auth clears', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const applyStart = src.indexOf('async function applyOrgContextFromBundle');
   const applyEnd = src.indexOf('async function refreshOrgContext', applyStart);
   const applyFn = applyStart >= 0 && applyEnd > applyStart ? src.slice(applyStart, applyEnd) : '';
@@ -15509,7 +15545,7 @@ test('phase 0.6C-3 orgContextResolved is set on active apply and reset on uncert
 });
 
 test('phase 0.6C-3 AccountSwitcher loading state is gated by unresolved org context', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function getDisplay()');
   const end = src.indexOf('function renderButton(buttonEl)', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15522,7 +15558,7 @@ test('phase 0.6C-3 AccountSwitcher loading state is gated by unresolved org cont
 });
 
 test('phase 0.6C-3 AccountSwitcher has neutral confirmed no-active workspace display', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function getDisplay()');
   const end = src.indexOf('function renderButton(buttonEl)', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15538,8 +15574,85 @@ test('phase 0.6C-3 AccountSwitcher has neutral confirmed no-active workspace dis
     'confirmed no-active chip avatar must not reuse user/account initials');
 });
 
+test('AccountSwitcher bind is idempotent and unmount releases its listener + subscription (mount-leak characterization)', async () => {
+  // Stage 5 extracted the AccountSwitcher to src/account-switcher.js; this proves the
+  // mount/unmount lifecycle used by the sidebar button and the settings-overlay mount
+  // (which binds on open and calls the returned unmount on close). Imports the real
+  // module (no logic copied) and drives it with fakes.
+  const { createAccountSwitcher } = await import('../../src/account-switcher.js');
+
+  let liveSubscriptions = 0;
+  const SessionManager = {
+    subscribe() {
+      liveSubscriptions += 1;
+      let active = true;
+      return () => { if (active) { active = false; liveSubscriptions -= 1; } };
+    },
+  };
+
+  function makeButton() {
+    const clickFns = new Set();
+    return {
+      dataset: {},
+      clickListenerCount: () => clickFns.size,
+      querySelector: () => ({ textContent: '' }),
+      addEventListener: (type, fn) => { if (type === 'click') clickFns.add(fn); },
+      removeEventListener: (type, fn) => { if (type === 'click') clickFns.delete(fn); },
+      getBoundingClientRect: () => ({ width: 0 }),
+    };
+  }
+
+  let renderCount = 0;
+  const switcher = createAccountSwitcher({
+    documentRef: { getElementById: () => null, querySelector: () => null },
+    UIComponents: { showToast() {}, openDropdown() {}, closeAllDropdowns() {} },
+    SessionManager,
+    getOrgContext: () => ({ activeOrg: { name: 'W', role: 'owner' }, orgs: [], activeOrgId: '' }),
+    isOrgContextResolved: () => true,
+    isOrgContextInFlight: () => false,
+    getAuthRehydratePromise: () => null,
+    getSidebarAvatarView: () => ({ isAuthed: true, displayName: 'U', initials: 'U' }),
+    getActiveWorkspaceInitials: () => { renderCount += 1; return 'W'; },
+    renderSidebarBrandMarks: () => {},
+    closeDropdowns: () => {},
+    openSettingsOverlay: () => {},
+    openCreateWorkspaceFlow: () => {},
+    setActiveOrgId: () => Promise.resolve(),
+    performUserInitiatedLogout: () => Promise.resolve(),
+  });
+
+  const btn = makeButton();
+  assert.strictEqual(liveSubscriptions, 0, 'baseline: no live subscriptions');
+
+  const unmount1 = switcher.bind(btn);
+  assert.strictEqual(btn.clickListenerCount(), 1, 'bind adds exactly one click listener');
+  assert.strictEqual(liveSubscriptions, 1, 'bind adds exactly one session subscription');
+
+  const unmount2 = switcher.bind(btn);
+  assert.strictEqual(unmount2, unmount1, 'second bind of the same button returns the existing unmount (idempotent)');
+  assert.strictEqual(btn.clickListenerCount(), 1, 'second bind does not add a duplicate click listener');
+  assert.strictEqual(liveSubscriptions, 1, 'second bind does not add a duplicate subscription');
+
+  unmount1();
+  assert.strictEqual(btn.clickListenerCount(), 0, 'unmount removes the exact click listener it added');
+  assert.strictEqual(liveSubscriptions, 0, 'unmount releases the session subscription');
+
+  // Repeated bind/unmount cycles (mirrors repeated Settings open/close) must not leak.
+  for (let i = 0; i < 5; i += 1) {
+    const u = switcher.bind(btn);
+    u();
+  }
+  assert.strictEqual(liveSubscriptions, 0, 'repeated bind/unmount cycles leave zero live subscriptions');
+  assert.strictEqual(btn.clickListenerCount(), 0, 'repeated bind/unmount cycles leave zero click listeners');
+
+  // refresh() must not re-render a button that is no longer mounted.
+  const renderBefore = renderCount;
+  switcher.refresh();
+  assert.strictEqual(renderCount, renderBefore, 'refresh does not re-render an unmounted button');
+});
+
 test('phase 0.6C-3 org-changed listener handles confirmed no-active without auth refresh', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf("window.addEventListener('tp3d:org-changed', ev => {");
   const end = src.indexOf('AppShell.init();', start);
   const listener = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -15549,7 +15662,7 @@ test('phase 0.6C-3 org-changed listener handles confirmed no-active without auth
     'listener must detect confirmed empty-org events');
   assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*AccountSwitcher[\s\S]*refresh\(\)/,
     'confirmed no-active event must refresh the workspace chip');
-  assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*applyAccessGateFromBilling\(getBillingState\(\), \{[\s\S]*reason: 'org-cleared'[\s\S]*activeOrgId: null/,
+  assert.match(listener, /if \(isClearedEvent\) \{[\s\S]*BillingService\.applyAccessGateFromBilling\(BillingService\.getBillingState\(\), \{[\s\S]*reason: 'org-cleared'[\s\S]*activeOrgId: null/,
     'confirmed no-active event must reapply access gate with no active org');
 
   const branchStart = listener.indexOf('if (isClearedEvent) {');
@@ -15612,13 +15725,13 @@ test('phase 0.6C billing workspace limit copy includes archived workspaces', asy
 });
 
 test('phase 0.6C-3 no-workspace banner remains gated by settled auth state', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function applyOrgRequiredUi(');
   const end = src.indexOf('// \u2500\u2500 Install workspace-ready listener early', start);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'applyOrgRequiredUi must be extractable');
-  assert.match(fn, /const authNotSettled = !authGateIsSettled\(\)/,
+  assert.match(fn, /const authNotSettled = !AuthService\.authGateIsSettled\(\)/,
     'no-workspace banner logic must remain gated by settled auth state');
   assert.match(fn, /const orgContextBusy = Boolean\(orgContextInFlight \|\| authRehydratePromise\)/,
     'no-workspace banner must know whether auth or org context work is still in flight');
@@ -15631,7 +15744,7 @@ test('phase 0.6C-3 no-workspace banner remains gated by settled auth state', asy
 });
 
 test('phase 0.6C-3 frontend stability fix avoids backend billing and destructive scope creep', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const settingsSrc = await fs.readFile(settingsOverlayPath, 'utf8');
 
   const appSnippets = [
@@ -15658,7 +15771,7 @@ test('phase 0.6C-3 frontend stability fix avoids backend billing and destructive
 });
 
 test('phase 0.6C-4 archive refresh fallback commits a remaining active workspace', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const helperStart = src.indexOf('function handleWorkspaceArchived(archivedOrgId, options = {})');
   const helperEnd = src.indexOf('// Expose billing pump globally', helperStart);
   const helper = helperStart >= 0 && helperEnd > helperStart ? src.slice(helperStart, helperEnd) : '';
@@ -16348,7 +16461,7 @@ test('billing safety transfer client production-helper runtime maps structured g
 });
 
 test('phase 0.6D Batch C app exposes handleOwnershipTransferred without signout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleOwnershipTransferred(orgId, options = {})');
   const end = src.indexOf('// Expose billing pump globally', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -16407,7 +16520,7 @@ test('phase 0.6D Batch C transfer implementation avoids forbidden scope', async 
   const billingStart = billingSrc.indexOf('export async function transferOwnership(orgId, newOwnerId)');
   const billingEnd = billingSrc.indexOf('/**\n * Leave a workspace', billingStart);
   const billingWrapper = billingStart >= 0 && billingEnd > billingStart ? billingSrc.slice(billingStart, billingEnd) : '';
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const appStart = appSrc.indexOf('function handleOwnershipTransferred(orgId, options = {})');
   const appEnd = appSrc.indexOf('// Expose billing pump globally', appStart);
   const appHandler = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
@@ -16549,7 +16662,7 @@ test('phase 0.6D Batch B service and client expose restore/list wrappers', async
 });
 
 test('phase 0.6D Batch B app exposes handleWorkspaceRestored without signout or reload', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function handleWorkspaceRestored(restoredOrgId, options = {})');
   const end = src.indexOf('function handleOwnershipTransferred', start);
   const helper = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -16596,7 +16709,7 @@ test('phase 0.6D Batch B restore implementation avoids forbidden scope', async (
   const billingStart = billingSrc.indexOf('export async function restoreWorkspace(orgId)');
   const billingEnd = billingSrc.indexOf('/**\n * Archive a workspace', billingStart);
   const billingWrapper = billingStart >= 0 && billingEnd > billingStart ? billingSrc.slice(billingStart, billingEnd) : '';
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const appStart = appSrc.indexOf('function handleWorkspaceRestored(restoredOrgId, options = {})');
   const appEnd = appSrc.indexOf('function handleOwnershipTransferred', appStart);
   const appHandler = appStart >= 0 && appEnd > appStart ? appSrc.slice(appStart, appEnd) : '';
@@ -17004,7 +17117,7 @@ test('phase 0.7A-2 parseWorkspaceImportJSON validates case and pack arrays', asy
 });
 
 test('phase 0.7A-2 app exposes workspace export modal using existing download path', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const start = src.indexOf('function openExportWorkspaceModal(');
   const end = src.indexOf('\n    function openImportAppDialog', start + 1);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
@@ -17045,7 +17158,7 @@ test('phase 0.7A-2 Settings includes archive export reminder without forcing arc
 });
 
 test('phase 0.7A-2 workspace export integration is wired into settings overlay only', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /onExportWorkspace:\s*openExportWorkspaceModal/,
     'app must wire openExportWorkspaceModal into settings overlay');
@@ -17177,8 +17290,8 @@ test('phase 0.7B-1B storage saves and loads folderLibrary only in workspace payl
     : '';
 
   assert.ok(loadFn, 'load must be extractable');
-  assert.match(loadFn, /folderLibrary:[\s\S]{0,140}workspacePayload\.folderLibrary/,
-    'load must return folderLibrary from workspace payload');
+  assert.match(loadFn, /folderLibrary:[\s\S]{0,140}effectiveWorkspacePayload\.folderLibrary/,
+    'load must return folderLibrary from the effective workspace payload');
   assert.ok(fn, 'saveNow must be extractable');
   assert.doesNotMatch(userPayload, /folderLibrary/,
     'folderLibrary must not be saved in user-scoped preferences payload');
@@ -17573,7 +17686,7 @@ test('production readiness settings billing fallback requires isPro and isActive
 });
 
 test('phase 0.7C-pre folderLibrary changes participate in autosave with packLibrary changes', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const saveCall = 'Storage.saveSoon();';
   const saveCallIndex = src.indexOf(saveCall);
   const conditionStart = src.lastIndexOf('if (', saveCallIndex);
@@ -17592,7 +17705,7 @@ test('phase 0.7C-pre folderLibrary changes participate in autosave with packLibr
 });
 
 test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with packLibrary changes', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const renderCall = 'PacksUI.render();';
   const renderCallIndex = src.indexOf(renderCall, src.indexOf('StateStore.subscribe(changes =>'));
   const conditionStart = src.lastIndexOf('if (', renderCallIndex);
@@ -17609,7 +17722,7 @@ test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with pack
 });
 
 test('phase 0.7C-pre persistence render guard does not import folder UI or touch forbidden scope', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
 
   assert.doesNotMatch(appSrc, /import\s+\*\s+as\s+FolderLibrary|from ['"]\.\/services\/folder-library\.js['"]/,
     'Phase 0.7C-pre must not import FolderLibrary into app.js');
@@ -18229,7 +18342,7 @@ test('phase 0.7C-4 avoids native dialogs and preserves no-caret folder button', 
 // ============================================================================
 
 test('phase 0.7C-4B app local state reload and reset paths preserve folderLibrary', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const seedStart = src.indexOf('function seedIfEmpty()');
   const resetStart = src.indexOf('function resetAppStateToEmpty()');
   const loadStart = src.indexOf('function loadScopedStateOrSeed');
@@ -18250,7 +18363,7 @@ test('phase 0.7C-4B app local state reload and reset paths preserve folderLibrar
 });
 
 test('phase 0.7C-4B folder mutations flush workspace persistence immediately', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
   const createStart = packsSrc.indexOf('function openCreateFolderModal()');
   const createEnd = packsSrc.indexOf('\n    function openRenameFolderModal', createStart + 1);
@@ -19688,7 +19801,7 @@ test('OPERATION-LIFECYCLE: truck dropdowns update pending state and only Update 
 // ---------------------------------------------------------------------------
 test('OPERATION-LIFECYCLE-AMEND InteractionManager receives the lifecycle and guards its mutating actions', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
 
   // Factory accepts the lifecycle and app.js injects it at construction.
   const factory = editorSrc.match(/export function createInteractionManager\(\{[\s\S]*?\}\) \{/);
@@ -19713,17 +19826,17 @@ test('OPERATION-LIFECYCLE-AMEND InteractionManager receives the lifecycle and gu
 });
 
 test('OPERATION-LIFECYCLE-AMEND global keyboard mutations are blocked while busy', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
-  assert.match(appSrc, /function mutationBlockedWhileBusy\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
+  const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
+  assert.match(keyboardSrc, /function mutationBlockedWhileBusy\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
     'app keyboard manager must have a busy-guard helper backed by the lifecycle');
   for (const fn of ['function duplicateSelected()', 'function pasteClipboard()', 'function undo()', 'function redo()']) {
-    const start = appSrc.indexOf(fn);
+    const start = keyboardSrc.indexOf(fn);
     assert.ok(start >= 0, `${fn} must exist`);
-    const block = appSrc.slice(start, start + 260);
+    const block = keyboardSrc.slice(start, start + 260);
     assert.match(block, /if \(mutationBlockedWhileBusy\(\)\) return;/, `${fn} must be blocked while busy`);
   }
   // Delete shortcut routes through InteractionManager.deleteSelection (guarded above).
-  assert.match(appSrc, /function deleteSelected\(\)[\s\S]*?InteractionManager\.deleteSelection\(\)/,
+  assert.match(keyboardSrc, /function deleteSelected\(\)[\s\S]*?InteractionManager\.deleteSelection\(\)/,
     'delete shortcut must route through the guarded InteractionManager.deleteSelection');
 });
 
@@ -20680,7 +20793,7 @@ test('AUTOPACK-MAX-A preserves physical geometry, support, blocked bodies, stabi
 // ── Runtime hardening: post-boot rejection toast + missing-pack guard ────────
 
 test('HARDEN-P1A post-boot unhandledrejection handler shows toast for any non-abort rejection', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Locate the handler body between its declaration and the subsequent addEventListener calls
   const handlerDecl = src.indexOf('const handleRuntimeUnhandledRejection = ev =>');
@@ -20714,7 +20827,7 @@ test('HARDEN-P1A post-boot unhandledrejection handler shows toast for any non-ab
 });
 
 test('HARDEN-P1A boot-time unhandledrejection still shows fatal overlay when appReady is false', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const handlerDecl = src.indexOf('const handleRuntimeUnhandledRejection = ev =>');
   const addListenerAnchor = src.indexOf("window.addEventListener('error', handleRuntimeError", handlerDecl);
@@ -20733,7 +20846,7 @@ test('HARDEN-P1A boot-time unhandledrejection still shows fatal overlay when app
 });
 
 test('HARDEN-P1B queueOrgScopedRender calls syncRecoverableErrorOverlay after EditorUI.render', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('function queueOrgScopedRender(');
   assert.ok(fnStart >= 0, 'queueOrgScopedRender function found');
@@ -20761,7 +20874,7 @@ test('HARDEN-P1B queueOrgScopedRender calls syncRecoverableErrorOverlay after Ed
 });
 
 test('HARDEN-P1B hasMissingEditorPack and syncRecoverableErrorOverlay implement pack-not-found path', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await fs.readFile(recoverableErrorOverlayPath, 'utf8');
 
   // Both functions must be present
   assert.match(src, /function hasMissingEditorPack\(\)/, 'hasMissingEditorPack function present');
@@ -20796,7 +20909,7 @@ test('HARDEN-P1B hasMissingEditorPack and syncRecoverableErrorOverlay implement 
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('BUG-01-A renderAuthState delegates confirmed user switches to the centralized isolation helper', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   assert.match(src, /_isConfirmedUserSwitch/, '_isConfirmedUserSwitch variable present');
 
@@ -20819,7 +20932,7 @@ test('BUG-01-A renderAuthState delegates confirmed user switches to the centrali
 });
 
 test('BUG-01-A2 user-switch guard requires actual identity change, not same-user token refresh', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
   assert.ok(guardIdx >= 0, 'guard assignment found');
@@ -20831,7 +20944,7 @@ test('BUG-01-A2 user-switch guard requires actual identity change, not same-user
 });
 
 test('BUG-01-A3 isolation runs BEFORE readLocalOrgId() and BEFORE network-dependent work in renderAuthState', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // The clear must precede the org-hint read so the new user never inherits the
   // stale key, and must precede await checkProfileStatus() so no network wait
@@ -20841,7 +20954,7 @@ test('BUG-01-A3 isolation runs BEFORE readLocalOrgId() and BEFORE network-depend
 
   const isolationIdx = src.indexOf('applyUserSwitchIsolation(', renderAuthStart);
   const profileIdx = src.indexOf('await checkProfileStatus()', renderAuthStart);
-  const readIdx = src.indexOf('const hintedOrgId = readLocalOrgId()', renderAuthStart);
+  const readIdx = src.indexOf('const hintedOrgId = OrganizationService.readLocalOrgId()', renderAuthStart);
   assert.ok(isolationIdx > 0 && profileIdx > 0 && readIdx > 0, 'isolation call, profile await, and org-hint read found in renderAuthState');
   assert.ok(isolationIdx < profileIdx, 'isolation precedes await checkProfileStatus() (no pre-clear network window)');
   assert.ok(isolationIdx < readIdx, 'isolation precedes readLocalOrgId() — stale key cannot be inherited');
@@ -20854,7 +20967,7 @@ test('BUG-01-A3 isolation runs BEFORE readLocalOrgId() and BEFORE network-depend
 });
 
 test('BUG-01-B clearBillingState bumps _billingEpoch so any in-flight request from prior user epoch is discarded', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const clearStart = src.indexOf('function clearBillingState()');
   assert.ok(clearStart >= 0, 'clearBillingState function found');
@@ -20874,7 +20987,7 @@ test('BUG-01-B clearBillingState bumps _billingEpoch so any in-flight request fr
 });
 
 test('BUG-01-B2 refreshBilling re-checks active org after fetch to discard result started under prior user org', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   assert.match(src, /_activeOrgIdAfterFetch/, 'active org re-read after fetch completes');
   assert.match(src, /refresh:discard-stale-org/, 'stale-org discard path logged in refreshBilling');
   // requestedOrgId compared against post-fetch active org ID
@@ -20975,7 +21088,7 @@ test('BUG-01-F legitimate same-user startup: org hint is promotable when no swit
 });
 
 test('BUG-01-G same-user workspace switch is not affected by the user-switch guard', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // _isConfirmedUserSwitch = false when lastAuthUserId === user.id
   // (same-user workspace switch: isUserSwitch might be false, lastAuthUserId matches)
@@ -20991,12 +21104,12 @@ test('BUG-01-G same-user workspace switch is not affected by the user-switch gua
   const setActiveRegion = src.slice(setActiveStart, setActiveStart + 2000);
   assert.match(setActiveRegion, /writeLocalOrgId/, 'setActiveOrgId calls writeLocalOrgId (workspace switch path)');
   // The null-clear must NOT be inside setActiveOrgId; it belongs only in the user-switch guard
-  const setActiveNullIdx = setActiveRegion.indexOf('writeLocalOrgId(null)');
+  const setActiveNullIdx = setActiveRegion.indexOf('OrganizationService.writeLocalOrgId(null)');
   assert.strictEqual(setActiveNullIdx, -1, 'setActiveOrgId does not call writeLocalOrgId(null)');
 });
 
 test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   // Verify that the guard expression is a Boolean AND of two conditions,
   // meaning it is false when either isUserSwitch is false AND IDs match.
   const guardIdx = src.indexOf('const _isConfirmedUserSwitch =');
@@ -21015,16 +21128,19 @@ test('BUG-01-H cross-tab same-user refresh: guard is false when user IDs match',
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function createBillingPumpRuntimeHarness() {
-  const src = await fs.readFile(appPath, 'utf8');
-  const authoritativeStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
-  const authoritativeEnd = src.indexOf('function normalizeBillingEntitlementStatus(', authoritativeStart);
+  const appSrc = await fs.readFile(appPath, 'utf8');
+  const billingSrc = await fs.readFile(billingServicePath, 'utf8');
+  // Stage 1: the authoritative-refresh block moved into the extracted billing service.
+  const authoritativeStart = billingSrc.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
+  const authoritativeEnd = billingSrc.indexOf('function nullableFiniteNumber(', authoritativeStart);
   assert.ok(authoritativeStart >= 0 && authoritativeEnd > authoritativeStart,
-    'production authoritative-refresh state block is extractable');
-  const authoritativeSource = src.slice(authoritativeStart, authoritativeEnd);
-  const pumpStart = src.indexOf('const BILLING_PUMP_RETRY_MS = 200;');
-  const pumpEnd = src.indexOf('function handleOrgAccessLoss(', pumpStart);
+    'production authoritative-refresh state block is extractable from billing-service');
+  const authoritativeSource = billingSrc.slice(authoritativeStart, authoritativeEnd);
+  // The retained billing pump still lives in app.js and now delegates to BillingService.*
+  const pumpStart = appSrc.indexOf('const BILLING_PUMP_RETRY_MS = 200;');
+  const pumpEnd = appSrc.indexOf('function handleOrgAccessLoss(', pumpStart);
   assert.ok(pumpStart >= 0 && pumpEnd > pumpStart, 'production billing-pump block is extractable');
-  const pumpSource = src.slice(pumpStart, pumpEnd);
+  const pumpSource = appSrc.slice(pumpStart, pumpEnd);
 
   const context = {
     __now: 100000,
@@ -21119,6 +21235,27 @@ async function createBillingPumpRuntimeHarness() {
     let _lastBillingKeyAt = 0;
     ${authoritativeSource}
     ${pumpSource}
+    // Stage 1: the retained pump delegates to BillingService.*; map each call to the
+    // eval'd authoritative fn (real) or the controlled mock, matching pre-extraction behavior.
+    globalThis.BillingService = {
+      refreshBilling: (...a) => refreshBilling(...a),
+      getBillingState: () => _billingState,
+      _applySharedBillingSnapshot: (...a) => _applySharedBillingSnapshot(...a),
+      _getSharedBillingFreshness: (...a) => _getSharedBillingFreshness(...a),
+      _readShareableBillingResult: (...a) => _readShareableBillingResult(...a),
+      _readSharedBillingResult: (...a) => _readSharedBillingResult(...a),
+      _shouldApplySharedBillingSnapshotForOrg: (...a) => _shouldApplySharedBillingSnapshotForOrg(...a),
+      abbreviateBillingLifecycleId: (...a) => abbreviateBillingLifecycleId(...a),
+      billingAuthLifecycleDebugLog: (...a) => billingAuthLifecycleDebugLog(...a),
+      getCurrentBillingAuthUserId: (...a) => getCurrentBillingAuthUserId(...a),
+      getBillingAuthoritativeRefreshToken: (...a) => getBillingAuthoritativeRefreshToken(...a),
+      isBillingAuthoritativeRefreshInFlight: (...a) => isBillingAuthoritativeRefreshInFlight(...a),
+      resetRefreshDedupForUserSwitch: () => { _lastBillingKey = ''; _lastBillingKeyAt = 0; },
+    };
+    // Stage 2 CP2: the pump resolves the active org via OrganizationService.getActiveOrgIdNow.
+    globalThis.OrganizationService = {
+      getActiveOrgIdNow: (...a) => getActiveOrgIdNow(...a),
+    };
     globalThis.__authoritative = {
       begin: token => beginBillingAuthoritativeRefreshAttempt(token),
       complete: token => clearBillingAuthoritativeRefreshRequirement(token),
@@ -21234,7 +21371,7 @@ async function createBillingPumpRuntimeHarness() {
 }
 
 test('BUG-01-Q cross-user isolation resets every prior-user billing-pump and burst owner', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const resetStart = src.indexOf('function resetBillingPumpForUserSwitch()');
   const resetEnd = src.indexOf('function maybeScheduleBillingRefresh(', resetStart);
   const resetFn = resetStart >= 0 && resetEnd > resetStart ? src.slice(resetStart, resetEnd) : '';
@@ -21246,8 +21383,12 @@ test('BUG-01-Q cross-user isolation resets every prior-user billing-pump and bur
   assert.match(resetFn, /_billingPumpEverRan = false/, 'new identity receives first-run force behavior');
   assert.match(resetFn, /_billingPumpLastByReason\.clear\(\)/, 'soft cooldown owners are cleared');
   assert.match(resetFn, /_billingPumpLastRunAtMs = 0/, 'global hard cooldown owner is cleared');
-  assert.match(resetFn, /_lastBillingKey = ''/, '300ms request-burst owner key is cleared');
-  assert.match(resetFn, /_lastBillingKeyAt = 0/, '300ms request-burst timestamp is cleared');
+  assert.match(resetFn, /BillingService\.resetRefreshDedupForUserSwitch\(\)/,
+    '300ms request-burst owner reset delegates to BillingService (Stage 1)');
+  const dedupStart = src.indexOf('function resetRefreshDedupForUserSwitch()');
+  const dedupFn = dedupStart >= 0 ? src.slice(dedupStart, src.indexOf('}', dedupStart) + 1) : '';
+  assert.match(dedupFn, /_lastBillingKey = ''/, '300ms request-burst owner key is cleared in BillingService');
+  assert.match(dedupFn, /_lastBillingKeyAt = 0/, '300ms request-burst timestamp is cleared in BillingService');
   assert.doesNotMatch(resetFn, /setTimeout|setInterval|_clearSharedBillingResult|localStorage/, 'reset adds no polling and preserves durable org snapshots');
 
   const helperStart = src.indexOf('function applyUserSwitchIsolation(');
@@ -21323,7 +21464,7 @@ test('BUG-01-S same-user workspace switching keeps existing pump throttling', as
   pump.run('org-context');
   assert.strictEqual(calls.length, 2, 'post-switch duplicate remains throttled');
 
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const setActiveStart = src.indexOf('async function setActiveOrgId(');
   const setActiveEnd = src.indexOf('const OrgContext = {', setActiveStart);
   const setActiveFn = src.slice(setActiveStart, setActiveEnd);
@@ -21364,7 +21505,7 @@ test('BUG-01-T rapid A→B→A and failure recovery remain generation-safe and b
 });
 
 test('BUG-01-U source contract owns one post-switch authoritative billing resolution', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const stateStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
   const stateEnd = src.indexOf('function normalizeBillingEntitlementStatus(', stateStart);
   const stateBlock = src.slice(stateStart, stateEnd);
@@ -21546,7 +21687,7 @@ test('BUG-01-Z production pump runtime keeps authoritative failure fail-closed w
 });
 
 test('BUG-01-AA source contract transfers explicit sign-out at every confirmed authenticated boundary', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const stateStart = src.indexOf('let _billingAuthoritativeRefreshGeneration = 0;');
   const stateEnd = src.indexOf('function normalizeBillingEntitlementStatus(', stateStart);
   const stateBlock = src.slice(stateStart, stateEnd);
@@ -21823,16 +21964,16 @@ test('BUG-01-AG transferred requirement survives provisional shared state and cl
 });
 
 test('BUG-01-AH source contract bypasses only the per-reason cooldown for a new authoritative attempt', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const pumpStart = src.indexOf('function maybeScheduleBillingRefresh(');
   const pumpEnd = src.indexOf('function handleOrgAccessLoss(', pumpStart);
   const pumpFn = src.slice(pumpStart, pumpEnd);
 
   assert.match(pumpFn,
-    /const authoritativeRefresh = getBillingAuthoritativeRefreshToken\(activeOrgId\)/,
+    /const authoritativeRefresh = BillingService\.getBillingAuthoritativeRefreshToken\(activeOrgId\)/,
     'the scheduler resolves a current-user/current-org/current-epoch token before cooldown checks');
   assert.match(pumpFn,
-    /authoritativeRefreshRequired && isBillingAuthoritativeRefreshInFlight\(authoritativeRefresh\)[\s\S]*return;/,
+    /authoritativeRefreshRequired && BillingService\.isBillingAuthoritativeRefreshInFlight\(authoritativeRefresh\)[\s\S]*return;/,
     'a matching in-flight generation exits before any second request can start');
   assert.match(pumpFn,
     /const authoritativeRefreshMustStart = Boolean\([\s\S]*authoritativeRefreshRequired && !authoritativeRefresh\.attemptedAt/,
@@ -21963,7 +22104,7 @@ test('BUG-01-AK rapid alternating identities bypass inherited cooldown without a
 });
 
 test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation contract', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const defCount = src.split('function applyUserSwitchIsolation(').length - 1;
   assert.strictEqual(defCount, 1, 'exactly one definition of applyUserSwitchIsolation');
@@ -21991,7 +22132,7 @@ test('BUG-01-I applyUserSwitchIsolation is the single authoritative isolation co
 });
 
 test('BUG-01-J auth listener, renderAuthState, and rehydrateAuthState all use the same helper (no second cleanup contract)', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const defIdx = src.indexOf('function applyUserSwitchIsolation(');
   assert.ok(defIdx >= 0, 'helper definition found');
@@ -22022,7 +22163,7 @@ test('BUG-01-J auth listener, renderAuthState, and rehydrateAuthState all use th
 });
 
 test('BUG-01-K rehydrateAuthState never erases prior-user evidence without full isolation', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('async function rehydrateAuthState(');
   assert.ok(fnStart >= 0, 'rehydrateAuthState found');
@@ -22074,7 +22215,7 @@ test('BUG-01-N delayed prior-user account bundles remain rejected by auth epoch/
 });
 
 test('BUG-01-O pending-flag lifecycle: transition/failure setters and terminal clears remain explicit', async () => {
-  const appSrc = await fs.readFile(appPath, 'utf8');
+  const appSrc = await readAppSource();
   const svcSrc = await fs.readFile(billingServiceUrl, 'utf8');
 
   const setTrue = appSrc.split('__TP3D_USER_SWITCH_PENDING = true').length - 1;
@@ -22115,7 +22256,7 @@ test('BUG-01-O pending-flag lifecycle: transition/failure setters and terminal c
 });
 
 test('BUG-01-P same-user refresh and same-user workspace switch never invoke isolation', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Workspace switch path must not isolate.
   const setActiveStart = src.indexOf('async function setActiveOrgId(');
@@ -22145,7 +22286,7 @@ test('BUG-01-P same-user refresh and same-user workspace switch never invoke iso
 });
 
 async function createOrgContextApplyRuntimeHarness() {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
   const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
   const applyStart = src.indexOf('async function applyOrgContextFromBundle(');
   const applyEnd = src.indexOf('async function refreshOrgContext(', applyStart);
@@ -22163,6 +22304,7 @@ async function createOrgContextApplyRuntimeHarness() {
     __workspaceApplies: [],
     __workspaceResets: [],
     __accessGateCalls: 0,
+    __legacyMigrationFinalizations: 0,
     console: { info() { }, warn() { }, error() { } },
     document: { hidden: false },
     window: {},
@@ -22190,6 +22332,9 @@ async function createOrgContextApplyRuntimeHarness() {
       orgChangedEmitted: 0,
     };
     const SupabaseClient = {};
+    const Storage = {
+      finalizeLegacyMigration: () => { globalThis.__legacyMigrationFinalizations += 1; },
+    };
     const AccountSwitcher = {
       refresh: () => { globalThis.__accountSwitcherRefreshes += 1; },
     };
@@ -22202,6 +22347,20 @@ async function createOrgContextApplyRuntimeHarness() {
     const maybeScheduleBillingRefresh = reason => { globalThis.__billingReasons.push(reason); };
     const applyAccessGateFromBilling = () => { globalThis.__accessGateCalls += 1; };
     const getBillingState = () => ({ ok: false });
+    const BillingService = {
+      applyAccessGateFromBilling: (...a) => applyAccessGateFromBilling(...a),
+      getBillingState: (...a) => getBillingState(...a),
+      clearBillingAuthoritativeRefreshRequirement: () => {},
+    };
+    // Stage 2 CP2: storage mirrors + facade reads moved to OrganizationService.
+    const OrganizationService = {
+      readLocalOrgId: (...a) => readLocalOrgId(...a),
+      writeLocalOrgId: (...a) => writeLocalOrgId(...a),
+      getActiveOrgId: () => orgContext.activeOrgId,
+      getActiveOrgIdNow: () => orgContext.activeOrgId,
+      // Stage 2 CP3: org-changed publication moved to OrganizationService.
+      dispatchOrgContextChanged: (...a) => dispatchOrgContextChanged(...a),
+    };
     const getAuthTruthSnapshot = () => ({ status: 'signed_in', isSignedIn: true });
     const isTp3dDebugEnabled = () => false;
     const dispatchOrgContextChanged = () => { };
@@ -22247,6 +22406,8 @@ test('BUG-01-AL runtime: delayed cross-tab active bundle apply clears the stale 
   assert.strictEqual(state.orgContext.activeOrg.name, org.name, 'the switcher has the resolved workspace label');
   assert.strictEqual(state.accountSwitcherRefreshes, 1,
     'the state owner refreshes the mounted switcher after the delayed active apply');
+  assert.strictEqual(runtime.calls.__legacyMigrationFinalizations, 1,
+    'a full authoritative bundle may finalize a pending legacy migration');
   assert.deepStrictEqual(Array.from(runtime.calls.__orgRequiredCalls), [true],
     'the active-workspace UI is enabled before the final switcher refresh');
 });
@@ -22265,6 +22426,8 @@ test('BUG-01-AM runtime: partial bundle stays conservative and a later full bund
   assert.strictEqual(runtime.snapshot().orgContextResolved, false, 'partial bundle leaves resolution conservative');
   assert.strictEqual(runtime.snapshot().accountSwitcherRefreshes, 0,
     'partial bundle cannot replace Loading with an unproven workspace');
+  assert.strictEqual(runtime.calls.__legacyMigrationFinalizations, 0,
+    'partial bundle cannot finalize a legacy migration');
 
   const org = { id: 'org-test1', name: 'test1 Workspace', role: 'owner' };
   await runtime.apply({
@@ -22282,16 +22445,18 @@ test('BUG-01-AM runtime: partial bundle stays conservative and a later full bund
   assert.strictEqual(recovered.orgContext.activeOrgId, org.id, 'the replacement belongs to the current identity');
   assert.strictEqual(recovered.accountSwitcherRefreshes, 1,
     'recovery produces exactly one final switcher refresh, not a loop');
+  assert.strictEqual(runtime.calls.__legacyMigrationFinalizations, 1,
+    'the later full bundle finalizes a pending legacy migration exactly once');
 });
 
 // ─── BUG-07: sidebar billing DOM must be cleared at the source, not CSS-hidden ─
 
 test('BUG-07-A updateSidebarNotice clears stale markup on every hide path', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('const updateSidebarNotice = (s) => {');
   assert.ok(fnStart >= 0, 'updateSidebarNotice found');
-  const fnEnd = src.indexOf('_billingGateApplier = updateSidebarNotice', fnStart);
+  const fnEnd = src.indexOf('BillingService.setBillingGateApplier(updateSidebarNotice)', fnStart);
   assert.ok(fnEnd > fnStart, 'updateSidebarNotice span resolved');
   const fn = src.slice(fnStart, fnEnd);
 
@@ -22348,7 +22513,7 @@ test('BUG-07-B synthetic: the hide contract leaves no stale child markup', () =>
 // /billing-status response.
 
 test('F1-A _applySharedBillingSnapshot never applies user-specific canManageBilling from a shared snapshot', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   const fnStart = src.indexOf('function _applySharedBillingSnapshot(');
   assert.ok(fnStart >= 0, '_applySharedBillingSnapshot found');
@@ -22409,7 +22574,7 @@ test('F1-B synthetic: owner-written snapshot cannot grant member owner UI; role 
 });
 
 test('F1-C role fallbacks that replace the snapshot boolean exist in sidebar and Settings paths', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
+  const src = await readAppSource();
 
   // Sidebar: backend value only when boolean; otherwise current-role
   // resolution; forced false while role hydration is in flight.
@@ -23307,4 +23472,1122 @@ test('BILLING-UNMAPPED-8 billing-status returns sanitized errors only', async ()
     'the fatal handler returns a fixed sanitized error string');
   assert.match(src, /console\.error\("billing-status fatal:", e\);/,
     'raw error stays in server logs');
+});
+
+function createStabilizationMemoryStorage() {
+  const values = new Map();
+  let failingKey = null;
+  return {
+    values,
+    setFailingKey(key) {
+      failingKey = key;
+    },
+    get length() {
+      return values.size;
+    },
+    getItem(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      if (failingKey && key === failingKey) throw new Error('quota');
+      values.set(key, String(value));
+    },
+    removeItem(key) {
+      values.delete(key);
+    },
+    key(index) {
+      return Array.from(values.keys())[index] || null;
+    },
+  };
+}
+
+test('APP-STABILIZATION-PHASE1 StateStore boundary replacement rebases history without changing same-scope undo', async () => {
+  const StateStore = await import(`${stateStorePath.href}?phase1-history=${Date.now()}-${Math.random()}`);
+
+  StateStore.init({ caseLibrary: [{ id: 'A-1' }], packLibrary: [], folderLibrary: [], preferences: {} });
+  StateStore.set({ caseLibrary: [{ id: 'A-2' }] });
+  assert.equal(StateStore.undo(), true, 'ordinary same-scope undo remains available');
+  assert.deepEqual(StateStore.get('caseLibrary'), [{ id: 'A-1' }]);
+  assert.equal(StateStore.redo(), true, 'ordinary same-scope redo remains available');
+
+  let undoAvailableDuringNotification = null;
+  StateStore.subscribe(changes => {
+    if (changes && changes._replace) undoAvailableDuringNotification = StateStore.undo();
+  });
+  StateStore.replace(
+    { caseLibrary: [{ id: 'B-1' }], packLibrary: [], folderLibrary: [], preferences: {} },
+    { skipHistory: true, resetHistory: true }
+  );
+
+  assert.equal(undoAvailableDuringNotification, false,
+    'history is reset before replacement subscribers are notified');
+  assert.equal(StateStore.undo(), false, 'prior-scope history is unreachable after replacement');
+  assert.equal(StateStore.redo(), false, 'prior-scope redo history is unreachable after replacement');
+  assert.deepEqual(StateStore.get('caseLibrary'), [{ id: 'B-1' }]);
+});
+
+test('APP-STABILIZATION-PHASE1 debounce flush invokes the latest call once and cancel drops pending work', async () => {
+  const originalWindow = globalThis.window;
+  const timers = new Map();
+  let nextTimerId = 0;
+  globalThis.window = {
+    setTimeout(fn) {
+      nextTimerId += 1;
+      timers.set(nextTimerId, fn);
+      return nextTimerId;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+  };
+
+  try {
+    const { debounce } = await import(`${browserPath.href}?phase1-debounce=${Date.now()}-${Math.random()}`);
+    const calls = [];
+    const receiver = { label: 'latest' };
+    const debounced = debounce(function(value) {
+      calls.push([this.label, value]);
+    }, 250);
+
+    debounced.call({ label: 'old' }, 'old');
+    debounced.call(receiver, 'new');
+    debounced.flush();
+    assert.deepEqual(calls, [['latest', 'new']]);
+    assert.equal(timers.size, 0, 'flush clears the delayed callback');
+
+    debounced.call(receiver, 'cancelled');
+    debounced.cancel();
+    for (const fn of timers.values()) fn();
+    assert.deepEqual(calls, [['latest', 'new']], 'cancelled work never executes');
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 pending autosave flushes into the outgoing scope before replacement', async () => {
+  const originalWindow = globalThis.window;
+  const localStorage = createStabilizationMemoryStorage();
+  const timers = new Map();
+  let nextTimerId = 0;
+  globalThis.window = {
+    localStorage,
+    setTimeout(fn) {
+      nextTimerId += 1;
+      timers.set(nextTimerId, fn);
+      return nextTimerId;
+    },
+    clearTimeout(id) {
+      timers.delete(id);
+    },
+  };
+
+  try {
+    const StateStore = await import(stateStorePath.href);
+    const Storage = await import(`${storagePath.href}?phase1-autosave=${Date.now()}-${Math.random()}`);
+    StateStore.init({ caseLibrary: [{ id: 'A-old' }], packLibrary: [], folderLibrary: [], preferences: {} });
+    Storage.setStorageScope('user-A');
+    Storage.setWorkspaceScope('org-A');
+    Storage.saveNow();
+
+    StateStore.set({ caseLibrary: [{ id: 'A-new' }] });
+    Storage.saveSoon();
+    Storage.flushPendingSave();
+    assert.equal(timers.size, 0, 'flush removes the pending timer before scope changes');
+
+    Storage.setStorageScope('user-B');
+    Storage.setWorkspaceScope('org-B');
+    StateStore.replace(
+      { caseLibrary: [{ id: 'B' }], packLibrary: [], folderLibrary: [], preferences: {} },
+      { skipHistory: true, resetHistory: true }
+    );
+    Storage.saveNow();
+    for (const fn of timers.values()) fn();
+
+    const savedA = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-A:workspace:org-A'));
+    const savedB = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-B:workspace:org-B'));
+    assert.deepEqual(savedA.caseLibrary, [{ id: 'A-new' }]);
+    assert.deepEqual(savedB.caseLibrary, [{ id: 'B' }]);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 legacy combined storage stays intact until authoritative finalization', async () => {
+  const originalWindow = globalThis.window;
+  const localStorage = createStabilizationMemoryStorage();
+  globalThis.window = {
+    localStorage,
+    setTimeout,
+    clearTimeout,
+  };
+  const legacy = {
+    version: 'legacy',
+    savedAt: 7,
+    preferences: { theme: 'dark' },
+    caseLibrary: [{ id: 'legacy-case' }],
+    packLibrary: [{ id: 'legacy-pack' }],
+    folderLibrary: [{ id: 'legacy-folder' }],
+    currentPackId: 'legacy-pack',
+  };
+  const legacyRaw = JSON.stringify(legacy);
+
+  try {
+    localStorage.setItem('truckPacker3d:v1', legacyRaw);
+    const StateStore = await import(stateStorePath.href);
+    const Storage = await import(`${storagePath.href}?phase1-legacy=${Date.now()}-${Math.random()}`);
+
+    const anonLoaded = Storage.load();
+    assert.deepEqual(anonLoaded.caseLibrary, legacy.caseLibrary);
+    assert.deepEqual(anonLoaded.packLibrary, legacy.packLibrary);
+    assert.equal(localStorage.getItem('truckPacker3d:v1'), legacyRaw,
+      'anonymous loading never removes or rewrites the legacy source');
+
+    Storage.setStorageScope('user-1');
+    Storage.setWorkspaceScope('org-1');
+    const scopedLoaded = Storage.load();
+    StateStore.init({
+      caseLibrary: scopedLoaded.caseLibrary,
+      packLibrary: scopedLoaded.packLibrary,
+      folderLibrary: scopedLoaded.folderLibrary,
+      currentPackId: scopedLoaded.currentPackId,
+      preferences: scopedLoaded.preferences,
+    });
+    const migrated = Storage.finalizeLegacyMigration();
+
+    assert.equal(migrated.ok, true);
+    assert.equal(localStorage.getItem('truckPacker3d:v1'), null,
+      'base source is removed only after both split payloads verify');
+    const userPayload = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-1'));
+    const workspacePayload = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-1:workspace:org-1'));
+    assert.deepEqual(userPayload.preferences, legacy.preferences);
+    assert.deepEqual(workspacePayload.caseLibrary, legacy.caseLibrary);
+    assert.deepEqual(workspacePayload.packLibrary, legacy.packLibrary);
+    assert.deepEqual(workspacePayload.folderLibrary, legacy.folderLibrary);
+    assert.equal(workspacePayload.currentPackId, legacy.currentPackId);
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 failed or conflicting legacy migration preserves its source', async () => {
+  const originalWindow = globalThis.window;
+  const combined = {
+    preferences: { theme: 'light' },
+    caseLibrary: [{ id: 'legacy-case' }],
+    packLibrary: [{ id: 'legacy-pack' }],
+    folderLibrary: [],
+    currentPackId: 'legacy-pack',
+  };
+  const combinedRaw = JSON.stringify(combined);
+
+  try {
+    const failingStorage = createStabilizationMemoryStorage();
+    globalThis.window = { localStorage: failingStorage, setTimeout, clearTimeout };
+    failingStorage.setItem('truckPacker3d:v1:user-fail', combinedRaw);
+    const StateStore = await import(stateStorePath.href);
+    const FailingStorage = await import(`${storagePath.href}?phase1-failure=${Date.now()}-${Math.random()}`);
+    FailingStorage.setStorageScope('user-fail');
+    FailingStorage.setWorkspaceScope('org-fail');
+    const loaded = FailingStorage.load();
+    StateStore.init({ ...loaded, selectedInstanceIds: [], currentScreen: 'packs' });
+    failingStorage.setFailingKey('truckPacker3d:v1:user-fail:workspace:org-fail');
+    assert.equal(FailingStorage.finalizeLegacyMigration().ok, false);
+    assert.equal(failingStorage.getItem('truckPacker3d:v1:user-fail'), combinedRaw,
+      'failed workspace write leaves the only combined source byte-for-byte intact');
+
+    const conflictStorage = createStabilizationMemoryStorage();
+    globalThis.window = { localStorage: conflictStorage, setTimeout, clearTimeout };
+    conflictStorage.setItem('truckPacker3d:v1', combinedRaw);
+    conflictStorage.setItem('truckPacker3d:v1:user-conflict', JSON.stringify({ preferences: {} }));
+    const existingWorkspaceRaw = JSON.stringify({ caseLibrary: [{ id: 'existing' }], packLibrary: [] });
+    conflictStorage.setItem('truckPacker3d:v1:user-conflict:workspace:org-conflict', existingWorkspaceRaw);
+    const ConflictStorage = await import(`${storagePath.href}?phase1-conflict=${Date.now()}-${Math.random()}`);
+    ConflictStorage.setStorageScope('user-conflict');
+    ConflictStorage.setWorkspaceScope('org-conflict');
+    ConflictStorage.load();
+    const conflict = ConflictStorage.finalizeLegacyMigration();
+    assert.equal(conflict.reason, 'workspace-exists');
+    assert.equal(conflictStorage.getItem('truckPacker3d:v1'), combinedRaw,
+      'conflicting legacy source remains available for recovery');
+    assert.equal(conflictStorage.getItem('truckPacker3d:v1:user-conflict:workspace:org-conflict'), existingWorkspaceRaw,
+      'an existing valid workspace is never overwritten');
+
+    const changedSourceStorage = createStabilizationMemoryStorage();
+    globalThis.window = { localStorage: changedSourceStorage, setTimeout, clearTimeout };
+    changedSourceStorage.setItem('truckPacker3d:v1', combinedRaw);
+    const ChangedSourceStorage = await import(`${storagePath.href}?phase1-source-change=${Date.now()}-${Math.random()}`);
+    ChangedSourceStorage.setStorageScope('user-changed');
+    ChangedSourceStorage.setWorkspaceScope('org-changed');
+    ChangedSourceStorage.load();
+    const newerSourceRaw = JSON.stringify({ ...combined, savedAt: 99 });
+    changedSourceStorage.setItem('truckPacker3d:v1', newerSourceRaw);
+    const sourceChanged = ChangedSourceStorage.finalizeLegacyMigration();
+    assert.equal(sourceChanged.reason, 'source-changed');
+    assert.equal(changedSourceStorage.getItem('truckPacker3d:v1'), newerSourceRaw,
+      'a source changed by another tab is never removed or overwritten');
+    assert.equal(changedSourceStorage.getItem('truckPacker3d:v1:user-changed:workspace:org-changed'), null,
+      'a changed source is not copied into a destination under stale assumptions');
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped boundaries', async () => {
+  const src = await readAppSource();
+  const workspaceScopeStart = src.indexOf('function setWorkspaceStorageScope(');
+  const workspaceScopeEnd = src.indexOf('\n    function applyWorkspaceScopedLocalState(', workspaceScopeStart);
+  const workspaceScopeFn = src.slice(workspaceScopeStart, workspaceScopeEnd);
+  assert.ok(workspaceScopeFn.indexOf('flushPendingStorageSave()') < workspaceScopeFn.indexOf('Storage.setWorkspaceScope(scope)'),
+    'workspace pending save flushes before the scope changes');
+
+  const resetStart = src.indexOf('function resetAppStateToEmpty(');
+  const resetEnd = src.indexOf('\n    function loadScopedStateOrSeed(', resetStart);
+  const resetFn = src.slice(resetStart, resetEnd);
+  assert.match(resetFn, /resetHistory:\s*true/,
+    'empty-state replacement rebases history');
+
+  const loadStart = src.indexOf('function loadScopedStateOrSeed(');
+  const loadEnd = src.indexOf('\n    \/\/ =+', loadStart);
+  const loadFn = src.slice(loadStart, loadEnd);
+  assert.equal((loadFn.match(/resetHistory:\s*true/g) || []).length, 3,
+    'loaded, seeded, and empty workspace replacements all rebase history');
+
+  const bundleStart = src.indexOf('async function applyOrgContextFromBundle(');
+  const bundleEnd = src.indexOf('\n    async function refreshOrgContext(', bundleStart);
+  const bundleFn = src.slice(bundleStart, bundleEnd);
+  assert.match(bundleFn, /bundle\.partial !== true[\s\S]*nextOrgInActiveList[\s\S]*Storage\.finalizeLegacyMigration\(\)/,
+    'legacy migration finalizes only after a full bundle confirms active membership');
+});
+
+async function createPhase2OrgOrderingHarness() {
+  const src = await readAppSource();
+  const helperStart = src.indexOf('function parseOrgContextVersion(');
+  const helperEnd = src.indexOf('\n  /**\n   * @param {{', helperStart);
+  const handleStart = src.indexOf('function handleIncomingOrgContextSync(');
+  const handleEnd = src.indexOf('\n    // ── Billing org-ready pump', handleStart);
+  assert.ok(helperStart >= 0 && helperEnd > helperStart && handleStart >= 0 && handleEnd > handleStart,
+    'Phase 2 org ordering functions are extractable');
+
+  const context = {
+    __dispatches: [],
+    __appliedOrgs: [],
+    __writes: [],
+    console: { info() { }, warn() { }, error() { } },
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let orgContextVersion = 0;
+    let lastAppliedOrgContextVersion = 0;
+    let lastAppliedOrgContextTabId = '';
+    let orgContext = { activeOrgId: null, activeOrg: null, orgs: [], role: null, updatedAt: 0 };
+    let orgContextQueued = false;
+    let _orgBundleFetchInflightForOrg = null;
+    const orgContextTabId = 'tab-local';
+    const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    const _ORG_ROLE_GRACE_MS = 1000;
+    const _orgRoleHydrationGraceUntilByOrg = new Map();
+    const getSignedInUserIdStrict = () => 'user-1';
+    const isTp3dDebugEnabled = () => false;
+    const beginWorkspaceSwitch = () => {};
+    const writeLocalOrgId = orgId => { globalThis.__writes.push(orgId); };
+    const applyWorkspaceScopedLocalState = orgId => { globalThis.__appliedOrgs.push(orgId); };
+    const resetWorkspaceScopedUiState = () => {};
+    const reconcileBillingStateForActiveOrg = () => {};
+    const markWorkspaceSwitchReady = () => {};
+    const markWorkspaceSwitchOrgReadyIfResolved = () => {};
+    const markWorkspaceSwitchBillingReadyIfSettled = () => {};
+    const getBillingState = () => ({});
+    const dispatchOrgContextChanged = options => { globalThis.__dispatches.push(options); };
+    const applyOrgRequiredUi = () => {};
+    const queueOrgScopedRender = () => {};
+    const maybeScheduleBillingRefresh = () => {};
+    const isLogoutInProgress = () => true;
+    const authGateIsSettled = () => true;
+    // Stage 3 CP1: handleIncomingOrgContextSync reaches auth truth/gate via AuthService.
+    const AuthService = {
+      getSignedInUserIdStrict: (...a) => getSignedInUserIdStrict(...a),
+      authGateIsSettled: (...a) => authGateIsSettled(...a),
+    };
+    const refreshOrgContext = () => Promise.resolve();
+    const BillingService = {
+      getBillingState: (...a) => getBillingState(...a),
+      reconcileBillingStateForActiveOrg: (...a) => reconcileBillingStateForActiveOrg(...a),
+    };
+    // Stage 2 CP1: the workspace-switch state machine moved to OrganizationService.
+    // handleIncomingOrgContextSync now reaches switch marks via OrganizationService.*.
+    // This test asserts org-context ordering, not switch behavior, so the switch
+    // methods stay no-ops (mapped to the existing bare mocks) — invariant unchanged.
+    const OrganizationService = {
+      beginWorkspaceSwitch: (...a) => beginWorkspaceSwitch(...a),
+      markWorkspaceSwitchReady: (...a) => markWorkspaceSwitchReady(...a),
+      markWorkspaceSwitchOrgReadyIfResolved: (...a) => markWorkspaceSwitchOrgReadyIfResolved(...a),
+      markWorkspaceSwitchBillingReadyIfSettled: (...a) => markWorkspaceSwitchBillingReadyIfSettled(...a),
+      // Stage 2 CP2: storage mirrors + facade reads also moved to OrganizationService.
+      writeLocalOrgId: (...a) => writeLocalOrgId(...a),
+      readLocalOrgId: () => null,
+      getActiveOrgId: () => orgContext.activeOrgId,
+      getActiveOrgIdNow: () => orgContext.activeOrgId,
+      // Stage 2 CP3: version ordering + org-changed publication moved to OrganizationService.
+      // handleIncomingOrgContextSync reaches them here; version helpers map to the eval'd
+      // slice below (hoisted), dispatch maps to the local recording mock.
+      markOrgContextVersion: (...a) => markOrgContextVersion(...a),
+      compareOrgContextOrder: (...a) => compareOrgContextOrder(...a),
+      getOrgContextEffectiveVersion: (...a) => getOrgContextEffectiveVersion(...a),
+      dispatchOrgContextChanged: (...a) => dispatchOrgContextChanged(...a),
+    };
+    ${src.slice(helperStart, helperEnd)}
+    ${src.slice(handleStart, handleEnd)}
+    globalThis.__handle = handleIncomingOrgContextSync;
+    globalThis.__effective = getOrgContextEffectiveVersion;
+    globalThis.__compare = compareOrgContextOrder;
+    globalThis.__next = nextOrgContextVersion;
+    globalThis.__setOrder = (version, tabId) => {
+      orgContextVersion = Number(version) || 0;
+      lastAppliedOrgContextVersion = Number(version) || 0;
+      lastAppliedOrgContextTabId = String(tabId || '');
+    };
+    globalThis.__snapshot = () => ({
+      orgContextVersion,
+      lastAppliedOrgContextVersion,
+      lastAppliedOrgContextTabId,
+      activeOrgId: orgContext.activeOrgId,
+    });
+  `, context);
+
+  return {
+    handle: payload => context.__handle(payload, { source: 'phase2-test' }),
+    effective: payload => context.__effective(payload),
+    next: () => context.__next(),
+    setOrder: (version, tabId) => context.__setOrder(version, tabId),
+    snapshot: () => context.__snapshot(),
+    calls: context,
+  };
+}
+
+test('APP-STABILIZATION-PHASE2 fresh-tab timestamps outrank old local counters while stale and unsafe payloads stay rejected', async () => {
+  const runtime = await createPhase2OrgOrderingHarness();
+  const orgA = '11111111-1111-4111-8111-111111111111';
+  const orgB = '22222222-2222-4222-8222-222222222222';
+  runtime.setOrder(8, 'tab-established');
+
+  assert.equal(runtime.handle({
+    orgId: orgA,
+    userId: 'user-1',
+    tabId: 'tab-fresh',
+    epoch: 1,
+    ts: 100,
+  }), true, 'a fresh tab uses its newer timestamp instead of losing on epoch 1');
+  assert.equal(runtime.snapshot().lastAppliedOrgContextVersion, 100);
+  assert.equal(runtime.snapshot().activeOrgId, orgA);
+  assert.equal(runtime.calls.__dispatches[0].tabId, 'tab-fresh',
+    'the accepted origin tab id is preserved through the local relay');
+
+  assert.equal(runtime.handle({
+    orgId: orgB,
+    userId: 'user-1',
+    tabId: 'tab-stale',
+    epoch: 9,
+    timestamp: 90,
+  }), false, 'a genuinely older logical version stays rejected');
+  assert.equal(runtime.handle({
+    orgId: orgB,
+    userId: 'another-user',
+    tabId: 'tab-z',
+    epoch: 101,
+  }), false, 'wrong-user payload stays rejected');
+  assert.equal(runtime.handle({
+    orgId: orgB,
+    userId: 'user-1',
+    tabId: 'tab-local',
+    epoch: 101,
+  }), false, 'self-origin payload stays rejected');
+  assert.equal(runtime.handle({
+    orgId: 'not-an-org',
+    userId: 'user-1',
+    tabId: 'tab-z',
+    epoch: 101,
+  }), false, 'malformed organization payload stays rejected');
+  assert.equal(runtime.snapshot().activeOrgId, orgA);
+});
+
+test('APP-STABILIZATION-PHASE2 equal versions converge by tab id and the next local version advances past remote state', async () => {
+  const orgA = '11111111-1111-4111-8111-111111111111';
+  const orgB = '22222222-2222-4222-8222-222222222222';
+  const payloadA = { orgId: orgA, userId: 'user-1', tabId: 'tab-a', epoch: 500, ts: 500 };
+  const payloadZ = { orgId: orgB, userId: 'user-1', tabId: 'tab-z', epoch: 500, ts: 500 };
+
+  const first = await createPhase2OrgOrderingHarness();
+  assert.equal(first.handle(payloadA), true);
+  assert.equal(first.handle(payloadZ), true);
+  assert.equal(first.snapshot().lastAppliedOrgContextTabId, 'tab-z');
+  assert.equal(first.snapshot().activeOrgId, orgB);
+
+  const second = await createPhase2OrgOrderingHarness();
+  assert.equal(second.handle(payloadZ), true);
+  assert.equal(second.handle(payloadA), false);
+  assert.equal(second.snapshot().lastAppliedOrgContextTabId, 'tab-z');
+  assert.equal(second.snapshot().activeOrgId, orgB,
+    'both arrival orders choose the same tab-id winner');
+
+  const futureVersion = Date.now() + 60000;
+  second.setOrder(futureVersion, 'tab-z');
+  assert.equal(second.next(), futureVersion + 1,
+    'a later local dispatch advances beyond the last applied remote version');
+});
+
+test('APP-STABILIZATION-PHASE2 canonical sync cancels the legacy fallback only after acceptance', async () => {
+  const src = await readAppSource();
+  const canonicalStart = src.indexOf('if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {');
+  const canonicalEnd = src.indexOf('if (key === WORKSPACE_SWITCH_SYNC_KEY', canonicalStart);
+  const canonicalBlock = src.slice(canonicalStart, canonicalEnd);
+  assert.ok(canonicalBlock, 'canonical storage handler is extractable');
+  assert.match(canonicalBlock, /const accepted = payload[\s\S]*handleIncomingOrgContextSync/,
+    'canonical handling records whether the payload was actually accepted');
+  assert.match(canonicalBlock, /if \(accepted && _legacyOrgSyncTimer\) \{[\s\S]*clearTimeout\(_legacyOrgSyncTimer\)/,
+    'only an accepted canonical payload cancels the legacy backend-refresh fallback');
+  assert.doesNotMatch(canonicalBlock, /canonical-arrived/,
+    'mere arrival is no longer treated as successful reconciliation');
+});
+
+async function createPhase2BillingLockHarness() {
+  const src = await readAppSource();
+  const keyStart = src.indexOf('function _billingLockKey(');
+  const keyEnd = src.indexOf('/**\n * Try to acquire a cross-tab billing lock', keyStart);
+  const readStart = src.indexOf('function _readStorageJson(', keyEnd);
+  const acquireStart = src.indexOf('function _tryAcquireBillingLock(', readStart);
+  const releaseStart = src.indexOf('function _releaseBillingLock(', acquireStart);
+  assert.ok(keyStart >= 0 && keyEnd > keyStart && readStart >= 0 && acquireStart > readStart && releaseStart > acquireStart,
+    'Phase 2 billing lock helpers are extractable');
+
+  const localStorage = createStabilizationMemoryStorage();
+  const context = { window: { localStorage }, __now: 100000 };
+  vm.createContext(context);
+  vm.runInContext(`
+    const _BILLING_LOCK_TTL_MS = 20000;
+    const _BILLING_LOCK_RETRY_MIN_MS = 1200;
+    const _BILLING_LOCK_RETRY_GRACE_MS = 100;
+    const _billingTabId = 'tab-current';
+    const billingDebugLog = () => {};
+    const Date = { now: () => globalThis.__now };
+    ${src.slice(keyStart, keyEnd)}
+    ${src.slice(readStart, acquireStart)}
+    ${src.slice(acquireStart, releaseStart)}
+    globalThis.__delay = _getBillingLockRetryDelay;
+    globalThis.__acquire = _tryAcquireBillingLock;
+    globalThis.__key = _billingLockKey;
+    globalThis.__legacyKey = _billingLegacyLockKey;
+  `, context);
+
+  return {
+    localStorage,
+    setNow: now => { context.__now = now; },
+    delay: orgId => context.__delay(orgId, context.__now),
+    acquire: orgId => context.__acquire(orgId, 'phase2-test'),
+    key: orgId => context.__key(orgId),
+    legacyKey: orgId => context.__legacyKey(orgId),
+  };
+}
+
+test('APP-STABILIZATION-PHASE2 dead billing lock retry waits through TTL and can acquire after expiry', async () => {
+  const runtime = await createPhase2BillingLockHarness();
+  const orgId = '11111111-1111-4111-8111-111111111111';
+  runtime.localStorage.setItem(runtime.key(orgId), JSON.stringify({ tabId: 'dead-tab', at: 100000 }));
+
+  assert.equal(runtime.delay(orgId), 20100,
+    'fresh foreign lock waits for the full remaining TTL plus expiry grace');
+  assert.equal(runtime.acquire(orgId), false, 'the foreign lock is still valid before the retry');
+
+  runtime.setNow(120100);
+  assert.equal(runtime.acquire(orgId), true, 'the same bounded retry can acquire after expiry');
+  assert.equal(JSON.parse(runtime.localStorage.getItem(runtime.key(orgId))).tabId, 'tab-current');
+
+  runtime.localStorage.values.clear();
+  runtime.setNow(200000);
+  runtime.localStorage.setItem(runtime.legacyKey(orgId), JSON.stringify({ tabId: 'older-tab', at: 180100 }));
+  assert.equal(runtime.delay(orgId), 1200,
+    'an almost-expired compatible legacy lock retains the bounded minimum delay');
+  runtime.localStorage.values.clear();
+  assert.equal(runtime.delay(orgId), 1200, 'missing or invalid locks use the same bounded minimum');
+});
+
+test('APP-STABILIZATION-PHASE2 billing retry remains single, epoch-scoped, org-scoped, and non-forced', async () => {
+  const src = await readAppSource();
+  const retryStart = src.indexOf("if (!String(reason || '').startsWith('cross-tab-retry:')) {");
+  const retryEnd = src.indexOf('\n    return getBillingState();', retryStart);
+  const retryBlock = src.slice(retryStart, retryEnd);
+  assert.ok(retryBlock, 'billing lock retry block is extractable');
+  assert.match(retryBlock, /retryDelayMs = _getBillingLockRetryDelay\(retryOrgId\)/,
+    'retry delay derives from the live compatible lock');
+  assert.match(retryBlock, /if \(_billingEpoch !== retryBillingEpoch\) return/,
+    'identity/billing epoch changes invalidate the delayed retry');
+  assert.match(retryBlock, /getActiveOrgIdForBilling\(\)[\s\S]*!== retryOrgId\) return/,
+    'workspace changes invalidate the old-org retry');
+  assert.match(retryBlock, /refreshBilling\(\{ force: false, reason: 'cross-tab-retry:' \+ reason \}\)/,
+    'the one retry remains non-forced so a shared success can satisfy it');
+  assert.equal((retryBlock.match(/setTimeout\(/g) || []).length, 1,
+    'the lock path schedules one bounded retry rather than a polling loop');
+});
+
+test('APP-STABILIZATION-PHASE3 app shares one lifecycle with screens, dialogs, editor, and preview clearing', async () => {
+  const src = await readAppSource();
+  const constructionStart = src.indexOf('const ImportPackDialog = createImportPackDialog({');
+  const constructionEnd = src.indexOf('// SECTION: SCREEN UI (UPDATES)', constructionStart);
+  const construction = src.slice(constructionStart, constructionEnd);
+  assert.ok(construction, 'screen and dialog construction block is extractable');
+  for (const factory of [
+    'createImportPackDialog',
+    'createImportCasesDialog',
+    'createPacksScreen',
+    'createCasesScreen',
+    'createEditorScreen',
+  ]) {
+    const start = construction.indexOf(`${factory}({`);
+    const end = construction.indexOf('\n    });', start);
+    assert.ok(start >= 0 && end > start, `${factory} construction is extractable`);
+    assert.match(construction.slice(start, end), /OperationLifecycle/,
+      `${factory} receives the single authoritative lifecycle`);
+  }
+
+  const clearStart = src.indexOf('function clearPackPreview(');
+  const clearEnd = src.indexOf('\n      function captureScreenshot(', clearStart);
+  const clearFn = src.slice(clearStart, clearEnd);
+  assert.ok(clearFn.indexOf('OperationLifecycle.isBusy()') < clearFn.indexOf('PackLibrary.getById(packId)'),
+    'preview clearing rejects busy state before reading or mutating the pack');
+  assert.ok(clearFn.indexOf('OperationLifecycle.isBusy()') < clearFn.indexOf('PackLibrary.update(packId'),
+    'preview clearing cannot race an active capture or editor operation');
+});
+
+test('APP-STABILIZATION-PHASE3 Packs truck preview owns and releases the lifecycle token at every terminal', async () => {
+  const src = await fs.readFile(packsScreenPath, 'utf8');
+  const requestStart = src.indexOf('function requestTruckChange(');
+  const requestEnd = src.indexOf('\n    function formatTruckDims(', requestStart);
+  const requestSource = src.slice(requestStart, requestEnd);
+  assert.ok(requestSource, 'Packs truck lifecycle wrapper is extractable');
+
+  const { createOperationLifecycle } = await import(
+    `${operationLifecyclePath.href}?phase3-packs=${Date.now()}-${Math.random()}`
+  );
+  const OperationLifecycle = createOperationLifecycle({ now: () => 123 });
+  const context = {
+    OperationLifecycle,
+    __controllerCalls: 0,
+    __lastOptions: null,
+    __status: 'preview',
+    __busyNotices: 0,
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    const mutationBlockedWhileBusy = () => {
+      const blocked = OperationLifecycle.isBusy();
+      if (blocked) globalThis.__busyNotices += 1;
+      return blocked;
+    };
+    const TruckChangeController = {
+      request(options) {
+        globalThis.__controllerCalls += 1;
+        globalThis.__lastOptions = options;
+        return { status: globalThis.__status };
+      },
+    };
+    ${requestSource}
+    globalThis.__requestTruckChange = requestTruckChange;
+  `, context);
+
+  const pack = { id: 'pack-1' };
+  assert.equal(context.__requestTruckChange({ pack }).status, 'preview');
+  assert.equal(OperationLifecycle.currentOperation().kind, 'changingTruck',
+    'preview keeps the lifecycle slot for its full modal lifetime');
+  assert.equal(context.__requestTruckChange({ pack }).status, 'busy',
+    'a second truck mutation is rejected while preview owns the slot');
+  assert.equal(context.__controllerCalls, 1, 'busy request never reaches the controller');
+
+  context.__lastOptions.restoreControls();
+  assert.equal(OperationLifecycle.isBusy(), false, 'cancel/close restoration releases the token');
+
+  context.__status = 'committed';
+  context.__requestTruckChange({ pack });
+  assert.equal(OperationLifecycle.isBusy(), false, 'non-preview terminal releases immediately');
+
+  context.__status = 'preview';
+  context.__requestTruckChange({ pack });
+  assert.equal(OperationLifecycle.isBusy(), true);
+  context.__lastOptions.onCommitted({ id: pack.id });
+  assert.equal(OperationLifecycle.isBusy(), false, 'preview commit callback releases the token');
+});
+
+test('APP-STABILIZATION-PHASE3 Packs and Cases re-check guarded mutation commit edges', async () => {
+  const [packsSrc, casesSrc] = await Promise.all([
+    fs.readFile(packsScreenPath, 'utf8'),
+    fs.readFile(casesScreenPath, 'utf8'),
+  ]);
+
+  assert.match(packsSrc, /function openPack\(packId\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;\s*const pack = PackLibrary\.open/,
+    'active pack switching is guarded at the mutation edge');
+  assert.match(packsSrc, /function openNewPackModal\(\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;/,
+    'new-pack entry is guarded');
+  assert.match(packsSrc, /async function handleBulkDelete\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.remove/,
+    'bulk pack delete checks both before and after confirmation');
+  assert.match(packsSrc, /async function deletePack\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.remove/,
+    'single pack delete checks both before and after confirmation');
+  assert.match(packsSrc, /ImportPackDialog\.open\(\{ beforeMutate: \(\) => !mutationBlockedWhileBusy\(\) \}\)/,
+    'pack import receives a commit-time lifecycle callback');
+  for (const mutation of [
+    'FolderLibrary.createFolder',
+    'FolderLibrary.renameFolder',
+    'FolderLibrary.deleteFolder',
+    'FolderLibrary.movePackToFolder',
+    'PackLibrary.duplicate',
+  ]) {
+    const index = packsSrc.indexOf(mutation);
+    assert.ok(index >= 0, `${mutation} remains wired`);
+    assert.match(packsSrc.slice(Math.max(0, index - 260), index), /mutationBlockedWhileBusy\(\)/,
+      `${mutation} is preceded by the shared busy guard`);
+  }
+
+  assert.match(casesSrc, /function openCaseModal\(existing\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;[\s\S]*beforeMutate/,
+    'case create/edit entry and modal commit share the guard');
+  assert.match(casesSrc, /ImportCasesDialog\.open\(\{ beforeMutate \}\)/,
+    'case import receives a commit-time lifecycle callback');
+  assert.match(casesSrc, /async function bulkDeleteSelected\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*StateStore\.set/,
+    'bulk case delete checks both before and after confirmation');
+  assert.match(casesSrc, /async function deleteCase\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*StateStore\.set/,
+    'single case delete checks both before and after confirmation');
+  assert.match(casesSrc, /!mutationBlockedWhileBusy\(\{ notify: false \}\)[\s\S]*CategoryService\.resetToDefaultIfNoCases/,
+    'render-time empty-category normalization cannot mutate while busy');
+});
+
+test('APP-STABILIZATION-PHASE3 dialog guards sit immediately before import, category, and case commits', async () => {
+  const [packDialog, casesDialog, caseModal] = await Promise.all([
+    fs.readFile(importPackDialogPath, 'utf8'),
+    fs.readFile(importCasesDialogPath, 'utf8'),
+    fs.readFile(caseModalPath, 'utf8'),
+  ]);
+
+  assert.match(packDialog, /if \(!mutationAllowed\(\)\) return;\s*const result = PackLibrary\.importPackPayload/,
+    'single pack import re-checks immediately before commit');
+  assert.match(packDialog, /for \(const payload[\s\S]*if \(!mutationAllowed\(\)\)[\s\S]*PackLibrary\.importPackPayload\(payload\)/,
+    'each batch pack import row re-checks before commit');
+  assert.match(casesDialog, /const result = ImportExport\.importCaseRows\(parsedResult\.valid\);\s*if \(!mutationAllowed\(\)\) return;\s*StateStore\.set/,
+    'case import computes a pure plan then checks immediately before state commit');
+
+  const addCategory = caseModal.slice(
+    caseModal.indexOf("newCatSave.addEventListener('click'"),
+    caseModal.indexOf('catWrap.appendChild(catCreateRow)'),
+  );
+  assert.ok(addCategory.indexOf('beforeMutate() === false') < addCategory.indexOf('CategoryService.upsert'),
+    'shared modal checks before adding a category');
+  const saveStart = caseModal.indexOf("label: 'Save'", caseModal.indexOf('UIComponents.showModal({'));
+  const saveBlock = caseModal.slice(saveStart, saveStart + 4200);
+  const saveGuard = saveBlock.indexOf('beforeMutate() === false');
+  assert.ok(saveGuard >= 0, 'shared modal Save has a lifecycle guard');
+  assert.ok(saveGuard < saveBlock.indexOf('CategoryService.upsert'), 'Save guards the category commit');
+  assert.ok(saveGuard < saveBlock.indexOf('CaseLibrary.upsert'), 'Save guards the case commit');
+});
+
+test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMutationBlocked', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const newCase = src.slice(
+    src.indexOf('function openEditorNewCaseModal()'),
+    src.indexOf('function setCaseFiltersVisible', src.indexOf('function openEditorNewCaseModal()')),
+  );
+  assert.match(newCase, /editorMutationBlocked\(\)[\s\S]*beforeMutate: \(\) => !editorMutationBlocked\(\)/,
+    'editor New Case checks both modal entry and Save/Add Category commits');
+
+  const visibility = src.slice(
+    src.indexOf('function makeVisibilityButton('),
+    src.indexOf('function duplicateSelection(', src.indexOf('function makeVisibilityButton(')),
+  );
+  assert.ok(visibility.indexOf('editorMutationBlocked()') < visibility.indexOf('PackLibrary.updateInstance'),
+    'visibility mutation is guarded before any instance write');
+
+  const category = src.slice(
+    src.indexOf('function openSetCategoryModal('),
+    src.indexOf('// Single Notes modal', src.indexOf('function openSetCategoryModal(')),
+  );
+  assert.match(category, /function openSetCategoryModal[\s\S]*editorMutationBlocked\(\)/,
+    'Set Category entry is guarded');
+  assert.ok(category.lastIndexOf('editorMutationBlocked()') < category.indexOf('CategoryService.upsert'),
+    'Set Category Apply re-checks before its first write');
+
+  const notesSave = src.slice(
+    src.indexOf("label: 'Save'", src.indexOf('function openNotesModal(')),
+    src.indexOf('// Every editor truck writer', src.indexOf('function openNotesModal(')),
+  );
+  assert.ok(notesSave.indexOf('editorMutationBlocked()') < notesSave.indexOf('PackLibrary.updateInstance'),
+    'Item Notes Save re-checks before the instance write');
+
+  const applyPosition = src.slice(
+    src.indexOf("savePos.addEventListener('click'"),
+    src.indexOf('transformCard.appendChild(savePos)', src.indexOf("savePos.addEventListener('click'")),
+  );
+  assert.match(applyPosition, /savePos\.addEventListener\('click', \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;/,
+    'manual position Apply rejects busy state before scene or pack mutation');
+});
+
+test('APP-STABILIZATION-PHASE4 invite failures distinguish terminal responses from retryable failures', async () => {
+  const src = await readAppSource();
+  const start = src.indexOf('function isTerminalInviteAcceptFailure(');
+  const end = src.indexOf('\n\n      function clearPendingInviteToken(', start);
+  const classifierSource = src.slice(start, end);
+  assert.ok(start >= 0 && end > start, 'terminal invite classifier is extractable');
+
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(`
+    ${classifierSource}
+    globalThis.__isTerminal = isTerminalInviteAcceptFailure;
+  `, context);
+
+  for (const message of [
+    'Invite not found or expired.',
+    'This invite link has expired.',
+    'Invite email does not match the signed-in account.',
+    'Invite is no longer valid.',
+    'Invite was revoked.',
+    'Invite has an invalid role.',
+    'Missing invite token',
+  ]) {
+    assert.equal(context.__isTerminal(message), true, `${message} is terminal`);
+  }
+  for (const message of [
+    'Network error',
+    'Failed to fetch',
+    'Request timed out',
+    'Internal server error',
+    'Invite acceptance failed',
+    'Unexpected response',
+    'JWT expired',
+    'Function not found',
+    'Invite acceptance request expired',
+    'Invite acceptance failed: JWT expired',
+    'Invite function not found',
+    '',
+  ]) {
+    assert.equal(context.__isTerminal(message), false, `${message || 'empty failure'} remains retryable`);
+  }
+});
+
+async function createPhase4InviteHarness({ response = null, throwMessage = '' } = {}) {
+  const src = await readAppSource();
+  const constantsStart = src.indexOf('const inviteHandoffSigninMessage');
+  const constantsEnd = src.indexOf('let inviteHandoffNotice = null;', constantsStart);
+  const mapStart = src.indexOf('function mapInviteAcceptFailureMessage(', constantsEnd);
+  const terminalStart = src.indexOf('function isTerminalInviteAcceptFailure(', mapStart);
+  const clearTokenStart = src.indexOf('function clearPendingInviteToken(', terminalStart);
+  const clearNoticeStart = src.indexOf('function clearInviteHandoffNotice(', clearTokenStart);
+  const tryStart = src.indexOf('async function tryAcceptPendingInvite(', clearNoticeStart);
+  const tryEnd = src.indexOf('\n\n      if (!authListenerInstalled)', tryStart);
+  assert.ok(
+    constantsStart >= 0 && constantsEnd > constantsStart &&
+    mapStart > constantsEnd && terminalStart > mapStart &&
+    clearTokenStart > terminalStart && clearNoticeStart > clearTokenStart &&
+    tryStart > clearNoticeStart && tryEnd > tryStart,
+    'Phase 4 invite helpers are extractable',
+  );
+
+  const sessionStorage = createStabilizationMemoryStorage();
+  sessionStorage.setItem('tp3d:pending_invite_token', 'phase4-secret-token');
+  const context = {
+    window: { sessionStorage },
+    __response: response,
+    __throwMessage: throwMessage,
+    __toasts: [],
+    __tokenAtRefresh: undefined,
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let pendingInviteToken = 'phase4-secret-token';
+    let inviteAcceptInFlight = false;
+    const inviteTokenStorageKey = 'tp3d:pending_invite_token';
+    ${src.slice(constantsStart, constantsEnd)}
+    ${src.slice(mapStart, terminalStart)}
+    ${src.slice(terminalStart, clearTokenStart)}
+    ${src.slice(clearTokenStart, clearNoticeStart)}
+    const SupabaseClient = { getSession: () => ({ access_token: 'session-access-token' }) };
+    const UIComponents = {
+      showToast(message) { globalThis.__toasts.push(String(message)); },
+    };
+    const acceptOrgInvite = async () => {
+      if (globalThis.__throwMessage) throw new Error(globalThis.__throwMessage);
+      return globalThis.__response;
+    };
+    const clearInviteHandoffNotice = () => {};
+    const setInviteHandoffNotice = () => {};
+    const scheduleInviteHandoffNoticeRender = () => {};
+    const refreshOrgContext = async () => {
+      globalThis.__tokenAtRefresh = pendingInviteToken;
+    };
+    const setActiveOrgId = async () => {};
+    const requestAuthRefresh = () => {};
+    const SettingsOverlay = { open() {} };
+    ${src.slice(tryStart, tryEnd)}
+    globalThis.__run = tryAcceptPendingInvite;
+    globalThis.__getToken = () => pendingInviteToken;
+  `, context);
+  return { context, sessionStorage };
+}
+
+test('APP-STABILIZATION-PHASE4 invite token clears only on success or confirmed terminal failure', async () => {
+  const success = await createPhase4InviteHarness({
+    response: { ok: true, organization_id: '11111111-1111-4111-8111-111111111111' },
+  });
+  await success.context.__run({ access_token: 'session-access-token' });
+  assert.equal(success.context.__getToken(), null, 'success clears the in-memory token');
+  assert.equal(success.sessionStorage.getItem('tp3d:pending_invite_token'), null,
+    'success clears the session-storage copy');
+  assert.equal(success.context.__tokenAtRefresh, null,
+    'success clears the token before refreshing or switching organization context');
+
+  const terminal = await createPhase4InviteHarness({
+    response: { ok: false, error: 'Invite email does not match the signed-in account.' },
+  });
+  await terminal.context.__run({ access_token: 'session-access-token' });
+  assert.equal(terminal.context.__getToken(), null, 'terminal rejection clears the in-memory token');
+  assert.equal(terminal.sessionStorage.getItem('tp3d:pending_invite_token'), null,
+    'terminal rejection clears the session-storage copy');
+
+  const retryableResult = await createPhase4InviteHarness({
+    response: { ok: false, error: 'Internal server error' },
+  });
+  await retryableResult.context.__run({ access_token: 'session-access-token' });
+  assert.equal(retryableResult.context.__getToken(), 'phase4-secret-token',
+    'retryable server result retains the in-memory token');
+  assert.equal(retryableResult.sessionStorage.getItem('tp3d:pending_invite_token'), 'phase4-secret-token',
+    'retryable server result retains the session-storage copy');
+
+  const retryableThrow = await createPhase4InviteHarness({ throwMessage: 'Failed to fetch' });
+  await retryableThrow.context.__run({ access_token: 'session-access-token' });
+  assert.equal(retryableThrow.context.__getToken(), 'phase4-secret-token',
+    'retryable thrown failure retains the in-memory token');
+  assert.equal(retryableThrow.sessionStorage.getItem('tp3d:pending_invite_token'), 'phase4-secret-token',
+    'retryable thrown failure retains the session-storage copy');
+
+  for (const runtime of [success, terminal, retryableResult, retryableThrow]) {
+    assert.equal(runtime.context.__toasts.some(message => message.includes('phase4-secret-token')), false,
+      'invite feedback never renders the raw token');
+  }
+});
+
+async function createPhase4LogoutHarness(mode = 'resolve') {
+  const src = await readAppSource();
+  const finalizerStart = src.indexOf('function finalizeSignedOutLocally(');
+  const finalizerEnd = src.indexOf('\n\n    async function performUserInitiatedLogout(', finalizerStart);
+  const performStart = src.indexOf('async function performUserInitiatedLogout(', finalizerEnd);
+  const performEnd = src.indexOf('\n\n    // Listen for auth signed-out events', performStart);
+  assert.ok(finalizerStart >= 0 && finalizerEnd > finalizerStart && performStart > finalizerEnd && performEnd > performStart,
+    'Phase 4 logout functions are extractable');
+
+  const context = { __mode: mode, __calls: null };
+  vm.createContext(context);
+  vm.runInContext(`
+    let logoutActionPromise = null;
+    let logoutInProgress = false;
+    let logoutStartedAt = 0;
+    let signedOutFinalized = false;
+    let signedOutFinalizationInFlight = false;
+    const calls = {
+      resets: 0,
+      cleanupAttempts: 0,
+      cleanups: [],
+      signOuts: 0,
+      signOutOptions: null,
+      authIntents: [],
+    };
+    const bootstrapAuthGate = () => {};
+    const applyPostLogoutLocalStateReset = () => { calls.resets += 1; };
+    const isLogoutInProgress = () => logoutInProgress;
+    const setLogoutInProgress = next => {
+      logoutInProgress = Boolean(next);
+      logoutStartedAt = logoutInProgress ? Date.now() : 0;
+    };
+    const _executeSignedOutCleanup = options => {
+      calls.cleanupAttempts += 1;
+      if (globalThis.__cleanupFailuresRemaining > 0) {
+        globalThis.__cleanupFailuresRemaining -= 1;
+        throw new Error('cleanup failed');
+      }
+      calls.cleanups.push(options);
+    };
+    const UIComponents = { closeAllDropdowns() {} };
+    const SettingsOverlay = { close() {} };
+    const AccountOverlay = { close() {} };
+    const isTp3dDebugEnabled = () => false;
+    const SupabaseClient = {
+      setAuthIntent(intent) { calls.authIntents.push(intent); },
+      async signOut(options) {
+        calls.signOuts += 1;
+        calls.signOutOptions = options;
+        if (globalThis.__mode === 'event') {
+          finalizeSignedOutLocally({
+            source: 'tp3d:auth-signed-out',
+            userInitiatedSignOut: isLogoutInProgress(),
+          });
+        }
+        if (globalThis.__mode === 'throw') throw new Error('offline sign-out failure');
+        return { ok: true, offline: false };
+      },
+    };
+    ${src.slice(finalizerStart, finalizerEnd)}
+    ${src.slice(performStart, performEnd)}
+    globalThis.__run = performUserInitiatedLogout;
+    globalThis.__finalize = finalizeSignedOutLocally;
+    globalThis.__calls = calls;
+  `, context);
+  return context;
+}
+
+test('APP-STABILIZATION-PHASE4 logout finalizes once for event, missing-event, throw, and cross-tab paths', async () => {
+  for (const mode of ['resolve', 'event', 'throw']) {
+    const runtime = await createPhase4LogoutHarness(mode);
+    await runtime.__run({ source: `phase4-${mode}` });
+    assert.equal(runtime.__calls.signOuts, 1, `${mode} path calls canonical signOut once`);
+    assert.equal(runtime.__calls.resets, 1, `${mode} path applies the local reset once`);
+    assert.equal(runtime.__calls.cleanups.length, 1, `${mode} path runs canonical cleanup once`);
+    assert.equal(runtime.__calls.cleanups[0].event, 'SIGNED_OUT');
+    assert.equal(runtime.__calls.cleanups[0].treatAsSignedOut, true);
+    assert.equal(runtime.__calls.cleanups[0].userInitiatedSignOut, true);
+    assert.equal(runtime.__calls.signOutOptions.global, true);
+    assert.equal(runtime.__calls.signOutOptions.allowOffline, true);
+    assert.equal(runtime.__calls.signOutOptions.userInitiated, true);
+  }
+
+  const crossTab = await createPhase4LogoutHarness('resolve');
+  assert.equal(crossTab.__finalize({ source: 'cross-tab', userInitiatedSignOut: false }), true);
+  assert.equal(crossTab.__finalize({ source: 'cross-tab-duplicate', userInitiatedSignOut: false }), false);
+  assert.equal(crossTab.__calls.resets, 1, 'duplicate cross-tab delivery does not repeat local reset');
+  assert.equal(crossTab.__calls.cleanups.length, 1, 'duplicate cross-tab delivery does not repeat cleanup');
+  assert.equal(crossTab.__calls.cleanups[0].userInitiatedSignOut, false,
+    'standalone cross-tab sign-out remains non-user-initiated');
+
+  const recovery = await createPhase4LogoutHarness('resolve');
+  recovery.__cleanupFailuresRemaining = 1;
+  assert.throws(
+    () => recovery.__finalize({ source: 'first-delivery', userInitiatedSignOut: false }),
+    /cleanup failed/,
+    'a failed essential cleanup remains observable',
+  );
+  assert.equal(recovery.__finalize({ source: 'retry-delivery', userInitiatedSignOut: false }), true,
+    'a later delivery can retry finalization after cleanup failure');
+  assert.equal(recovery.__calls.cleanupAttempts, 2, 'cleanup is retried after the failed attempt');
+  assert.equal(recovery.__calls.cleanups.length, 1, 'only the successful cleanup is finalized');
+});
+
+test('APP-STABILIZATION-PHASE4 logout source has no reload fallback and shares deterministic cleanup', async () => {
+  const src = await readAppSource();
+  const start = src.indexOf('let logoutActionPromise = null;');
+  const end = src.indexOf('// Show small toasts on connectivity changes', start);
+  const logoutBlock = src.slice(start, end);
+  assert.ok(start >= 0 && end > start, 'logout source block is extractable');
+  assert.doesNotMatch(logoutBlock, /logoutFallbackTimer|LOGOUT_FALLBACK_RELOAD_DELAY_MS|scheduleLogoutFallbackReload/,
+    'timer fallback state and helper are removed');
+  assert.doesNotMatch(logoutBlock, /setTimeout\(|location\.reload\(/,
+    'logout source cannot schedule or force a reload');
+
+  const finalizerStart = logoutBlock.indexOf('function finalizeSignedOutLocally(');
+  const performStart = logoutBlock.indexOf('async function performUserInitiatedLogout(', finalizerStart);
+  const listenerStart = logoutBlock.indexOf("window.addEventListener('tp3d:auth-signed-out'", performStart);
+  const finalizer = logoutBlock.slice(finalizerStart, performStart);
+  const perform = logoutBlock.slice(performStart, listenerStart);
+  const listener = logoutBlock.slice(listenerStart);
+  assert.match(finalizer, /applyPostLogoutLocalStateReset\(\)[\s\S]*_executeSignedOutCleanup\(\{\s*event,\s*treatAsSignedOut/,
+    'one finalizer owns both local reset and canonical signed-out cleanup');
+  assert.ok(finalizer.indexOf('_executeSignedOutCleanup({') < finalizer.indexOf('signedOutFinalized = true'),
+    'finalization is marked complete only after essential cleanup succeeds');
+  assert.match(perform, /SupabaseClient\.signOut\(\{ global: true, allowOffline: true, userInitiated: true \}\)[\s\S]*catch \(err\)[\s\S]*finalizeSignedOutLocally\(\{ source, userInitiatedSignOut: true \}\)/,
+    'settled and thrown signOut paths converge on the shared finalizer');
+  assert.match(listener, /const userInitiatedSignOut = isLogoutInProgress\(\);[\s\S]*finalizeSignedOutLocally\(\{[\s\S]*userInitiatedSignOut/,
+    'custom event captures user intent before finalization releases the latch');
+  assert.match(src, /if \(session && session\.access_token\) \{\s*if \(!isLogoutInProgress\(\) && !logoutActionPromise\) signedOutFinalized = false;/,
+    'only an authenticated lifecycle outside the active logout action re-arms finalization');
+
+  const renderStart = src.indexOf('async function renderAuthState(');
+  const cleanupStart = src.indexOf('function _executeSignedOutCleanup(', renderStart);
+  const renderAuth = src.slice(renderStart, cleanupStart);
+  assert.equal((renderAuth.match(/finalizeSignedOutLocally\(\{/g) || []).length, 2,
+    'immediate and stability-gated signed-out rendering share the same idempotence boundary');
+  assert.doesNotMatch(renderAuth, /^\s*_executeSignedOutCleanup\(\{/m,
+    'renderAuthState cannot bypass the shared signed-out finalizer');
+});
+
+// ─── P0 DOMAIN CONTRACT PINS (pre-extraction) ────────────────────────────────
+// These lock the exact CURRENT facade / copy / wrapping / assignment-timing
+// contracts that the coordinated Organization/Billing/Auth extraction must
+// preserve. They are structural (source-pattern) assertions of present behavior;
+// the runtime copy/wrap behavior is additionally exercised by the browser
+// characterization suite. See docs/engineering/p0-domain-module-contract.md.
+
+test('P0-CONTRACT window.__TP3D_BILLING exposes exactly the current member set (pickCheckoutInterval added later)', async () => {
+  const app = await readAppSource();
+  const start = app.indexOf('window.__TP3D_BILLING = {');
+  assert.ok(start >= 0, 'window.__TP3D_BILLING object literal must exist');
+  const end = app.indexOf('\n  };', start);
+  assert.ok(end > start, 'billing facade literal must close at its top-level brace');
+  const facade = app.slice(start, end);
+
+  for (const member of [
+    'getBillingState', 'subscribeBilling', 'refreshBilling', 'clearBillingState',
+    'canUseProFeatures', 'getProRuleSet', 'getCheckoutPlanOptions',
+    'startCheckout', 'openPortal', 'selfTest',
+  ]) {
+    assert.match(facade, new RegExp('\\n    ' + member + '[,:]'),
+      `billing facade must expose ${member} as a top-level member`);
+  }
+  // Exactly ten top-level members (4-space indent); selfTest body is deeper-indented.
+  const topLevelMembers = (facade.match(/\n {4}[a-zA-Z]+[,:]/g) || []).length;
+  assert.equal(topLevelMembers, 10, 'billing facade must expose exactly ten initial members');
+
+  // pickCheckoutInterval is NOT in the initial literal; it is added at the init point.
+  assert.doesNotMatch(facade, /pickCheckoutInterval/,
+    'pickCheckoutInterval must not appear in the initial billing facade literal');
+  assert.match(app, /window\.__TP3D_BILLING\.pickCheckoutInterval = pickCheckoutInterval/,
+    'pickCheckoutInterval must be added to the facade at the later initialization point');
+});
+
+test('P0-CONTRACT getBillingState returns a fresh object literal, not the live _billingState reference', async () => {
+  const app = await readAppSource();
+  const start = app.indexOf('function getBillingState() {');
+  const end = app.indexOf('\nfunction subscribeBilling', start);
+  assert.ok(start >= 0 && end > start, 'getBillingState body must be locatable');
+  const body = app.slice(start, end);
+  assert.match(body, /return \{/, 'getBillingState must return a fresh object literal (copy semantics)');
+  assert.doesNotMatch(body, /return _billingState\b/,
+    'getBillingState must not return the live _billingState reference');
+  assert.match(body, /_billingState\.\w+/, 'getBillingState must copy fields off _billingState');
+});
+
+test('P0-CONTRACT refreshBilling is a reassignable facade member wrappable in place by diagnostics', async () => {
+  const app = await readAppSource();
+  const dbg = await fs.readFile(debuggerPath, 'utf8');
+  const start = app.indexOf('window.__TP3D_BILLING = {');
+  const facade = app.slice(start, app.indexOf('\n  };', start));
+  assert.match(facade, /\n    refreshBilling: BillingService\.refreshBilling,/,
+    'refreshBilling must be a plain (writable) facade member delegating to BillingService so diagnostics can wrap it in place');
+  assert.match(dbg, /billing\.refreshBilling\.bind\(billing\)/,
+    'debugger must capture the original refreshBilling before wrapping');
+  assert.match(dbg, /billing\.refreshBilling = function/,
+    'debugger must wrap by reassigning the facade member in place');
+});
+
+test('P0-CONTRACT window.OrgContext exposes exactly four members and no unresolved facade methods', async () => {
+  const app = await readAppSource();
+  const start = app.indexOf('const OrgContext = {');
+  assert.ok(start >= 0, 'OrgContext object literal must exist');
+  const end = app.indexOf('\n    };', start);
+  assert.ok(end > start, 'OrgContext literal must close');
+  const facade = app.slice(start, end);
+
+  for (const m of ['getActiveOrgId', 'setActiveOrgId', 'hydrateActiveOrgId', 'getActiveRole']) {
+    assert.match(facade, new RegExp('\\n {6}' + m + '[,:]'), `OrgContext must expose ${m}`);
+  }
+  const members = (facade.match(/\n {6}[a-zA-Z]+[,:]/g) || []).length;
+  assert.equal(members, 4, 'OrgContext must expose exactly four members');
+  for (const absent of ['handleWorkspaceLeft', 'handleOwnershipTransferred', 'notifyOrgAccessLoss']) {
+    assert.doesNotMatch(facade, new RegExp(absent),
+      `OrgContext must not expose the unresolved member ${absent}`);
+  }
+  assert.match(app, /window\.OrgContext = OrgContext/, 'OrgContext assignment timing must be preserved');
 });

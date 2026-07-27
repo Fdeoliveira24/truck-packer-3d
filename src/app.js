@@ -54,13 +54,20 @@ import { createErrorOverlay } from './ui/error-overlay.js';
 import { Router } from './router.js';
 import { createUIComponents } from './ui/ui-components.js';
 import { createTruckChangeController } from './ui/truck-change-controller.js';
+import { createKeyboardManager } from './ui/keyboard-manager.js';
+import { createAppShell } from './ui/app-shell.js';
+import { createRecoverableErrorOverlay } from './ui/recoverable-error-overlay.js';
 import { createOperationLifecycle } from './core/operation-lifecycle.js';
 import { createTableFooter } from './ui/table-footer.js';
 import { TrailerPresets } from './data/trailer-presets.js';
 import { createSceneRuntime } from './editor/scene-runtime.js';
+import { createTrailerGeometry } from './editor/trailer-geometry.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from './screens/editor-screen.js';
 import { createPacksScreen } from './screens/packs-screen.js';
 import { createCasesScreen } from './screens/cases-screen.js';
+import { createSettingsScreen } from './screens/settings-screen.js';
+import { createUpdatesScreen } from './screens/updates-screen.js';
+import { createRoadmapScreen } from './screens/roadmap-screen.js';
 import * as CoreUtils from './core/utils/index.js';
 import * as BrowserUtils from './core/browser.js';
 import * as CoreDefaults from './core/defaults.js';
@@ -92,6 +99,10 @@ import {
   createPortalSession,
   acceptOrgInvite,
 } from './data/services/billing.service.js';
+import { createBillingService } from './services/billing-service.js';
+import { createOrganizationService } from './services/organization-service.js';
+import { createAuthService } from './services/auth-service.js';
+import { createAccountSwitcher } from './account-switcher.js';
 
 // ============================================================================
 // SECTION: INITIALIZATION
@@ -103,36 +114,6 @@ initTP3DDebugger();
 // SECTION: BILLING STATE (edge function)
 // ============================================================================
 
-const _billingState = {
-  pending: true,
-  loading: false,
-  ok: false,
-  plan: null,
-  status: null,
-  entitlementStatus: null,
-  billingOwnerUserId: null,
-  workspaceIncluded: false,
-  workspaceCount: null,
-  workspaceLimit: null,
-  canManageBilling: null,
-  orgId: null,
-  isPro: false,
-  isActive: false,
-  interval: null,
-  trialEndsAt: null,
-  currentPeriodEnd: null,
-  cancelAtPeriodEnd: false,
-  cancelAt: null,
-  portalAvailable: false,
-  paymentProblem: false,
-  paymentGraceUntil: null,
-  paymentGraceRemainingDays: null,
-  action: null,
-  data: null,
-  error: null,
-  lastFetchedAt: 0,
-};
-const _billingSubscribers = new Set();
 const BILLING_ENTITLEMENT_STATUSES = new Set([
   'active',
   'trialing',
@@ -142,671 +123,21 @@ const BILLING_ENTITLEMENT_STATUSES = new Set([
   'owner_subscription_required',
   'billing_unavailable',
 ]);
-const BILLING_THROTTLE_MS = 30000;
-const BILLING_REQUEST_TIMEOUT_MS = 15000;
 const BILLING_FOCUS_REFRESH_COOLDOWN_MS = 300000; // 5 minutes — do not spam refresh on every focus
 const AUTH_REVOCATION_VISIBLE_CHECK_INTERVAL_MS = 5000;
 const AUTH_REVOCATION_MIN_CHECK_GAP_MS = 2000;
-let _billingRefreshQueued = false;
-let _billingRefreshQueuedWaiters = [];
-let _billingPendingRetry = { orgId: null, count: 0, timer: null };
-let _billingLastFocusRefreshAt = 0;
-let _lastBillingKey = '';
-let _lastBillingKeyAt = 0;
-let _billingTraceSeq = 0;
-let _billingEpoch = 0; // incremented on sign-out; late refresh results are ignored when epoch changes
-let _billingAuthoritativeRefreshGeneration = 0;
-/** @type {null|{generation:number,userId:string|null,epoch:number,attemptedAt:number}} */
-let _billingAuthoritativeRefreshRequired = null;
-/** @type {null|{generation:number,userId:string,orgId:string,epoch:number}} */
-let _billingAuthoritativeRefreshInFlight = null;
-let _billingRequireAuthoritativeOnNextSignIn = false;
 let _authRevocationCheckTimer = null;
 let _authRevocationCheckInFlight = false;
 let _authRevocationCheckLastAt = 0;
 let _authRevocationCheckInstalled = false;
 const _bootStartedAtMs = Date.now();
-/** @type {null|((snapshot:any, meta?:{reason?:string, activeOrgId?:string|null})=>void)} */
-let _billingGateApplier = null;
-/** @type {null|((orgId:string, meta?:{reason?:string,status?:number|null,message?:string|null})=>boolean)} */
-let _orgAccessLossHandler = null;
 const _orgAccessLossLastAt = new Map();
 const ORG_ACCESS_LOSS_COOLDOWN_MS = 30000;
-
-function abbreviateBillingLifecycleId(value) {
-  const normalized = value ? String(value) : '';
-  return normalized ? normalized.slice(-6) : null;
-}
-
-function getBillingAuthoritativeLifecycleDebugState() {
-  const requirement = _billingAuthoritativeRefreshRequired;
-  return {
-    nextSignInMarker: _billingRequireAuthoritativeOnNextSignIn,
-    generation: requirement ? requirement.generation : null,
-    requirementUserIdTail: requirement ? abbreviateBillingLifecycleId(requirement.userId) : null,
-    requirementEpoch: requirement ? requirement.epoch : null,
-    billingEpoch: _billingEpoch,
-    inFlightGeneration: _billingAuthoritativeRefreshInFlight
-      ? _billingAuthoritativeRefreshInFlight.generation
-      : null,
-  };
-}
-
-function billingAuthLifecycleDebugLog(step, details = {}) {
-  const payload = {
-    ...details,
-    ...getBillingAuthoritativeLifecycleDebugState(),
-  };
-  billingDebugLog(`billing:auth-lifecycle:${step}`, JSON.stringify(payload));
-}
-
-function getCurrentBillingAuthUserId() {
-  const truth = typeof _authTruthSnapshotAccessor === 'function' ? _authTruthSnapshotAccessor() : null;
-  return truth && truth.userId ? String(truth.userId) : '';
-}
-
-function requireBillingAuthoritativeRefreshForUserSwitch(userId = null) {
-  _billingAuthoritativeRefreshGeneration += 1;
-  _billingAuthoritativeRefreshRequired = {
-    generation: _billingAuthoritativeRefreshGeneration,
-    userId: userId ? String(userId) : null,
-    epoch: _billingEpoch,
-    attemptedAt: 0,
-  };
-  _billingAuthoritativeRefreshInFlight = null;
-  billingAuthLifecycleDebugLog('requirement-created', {
-    userIdTail: abbreviateBillingLifecycleId(userId),
-  });
-}
-
-function markBillingAuthoritativeRefreshForNextSignIn() {
-  _billingRequireAuthoritativeOnNextSignIn = true;
-  billingAuthLifecycleDebugLog('next-sign-in-marker-set');
-}
-
-function transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
-  userId = null,
-  source = 'unknown',
-  authEvent = null,
-} = {}) {
-  const normalizedUserId = userId ? String(userId) : '';
-  billingAuthLifecycleDebugLog('transfer-enter', {
-    source,
-    authEvent,
-    userIdTail: abbreviateBillingLifecycleId(normalizedUserId),
-  });
-  if (!_billingRequireAuthoritativeOnNextSignIn || !normalizedUserId) {
-    billingAuthLifecycleDebugLog('transfer-skip', {
-      source,
-      authEvent,
-      userIdTail: abbreviateBillingLifecycleId(normalizedUserId),
-      reason: !_billingRequireAuthoritativeOnNextSignIn ? 'marker-false' : 'missing-user',
-    });
-    return false;
-  }
-  try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
-  requireBillingAuthoritativeRefreshForUserSwitch(normalizedUserId);
-  _billingRequireAuthoritativeOnNextSignIn = false;
-  billingAuthLifecycleDebugLog('transfer-complete', {
-    source,
-    authEvent,
-    userIdTail: abbreviateBillingLifecycleId(normalizedUserId),
-  });
-  return true;
-}
-
-function clearBillingAuthoritativeRefreshRequirement(token = null, reason = 'unspecified') {
-  if (
-    token &&
-    (!_billingAuthoritativeRefreshRequired ||
-      token.generation !== _billingAuthoritativeRefreshRequired.generation ||
-      token.epoch !== _billingAuthoritativeRefreshRequired.epoch)
-  ) {
-    billingAuthLifecycleDebugLog('requirement-clear-rejected', {
-      reason,
-      tokenGeneration: token && token.generation ? token.generation : null,
-      tokenEpoch: token && Number.isFinite(token.epoch) ? token.epoch : null,
-    });
-    return false;
-  }
-  billingAuthLifecycleDebugLog('requirement-clear', {
-    reason,
-    tokenGeneration: token && token.generation ? token.generation : null,
-    tokenEpoch: token && Number.isFinite(token.epoch) ? token.epoch : null,
-  });
-  _billingAuthoritativeRefreshRequired = null;
-  _billingAuthoritativeRefreshInFlight = null;
-  return true;
-}
-
-function getBillingAuthoritativeRefreshToken(orgId) {
-  const requirement = _billingAuthoritativeRefreshRequired;
-  const currentUserId = getCurrentBillingAuthUserId();
-  const normalizedOrgId = normalizeOrgIdForBilling(orgId || '');
-  if (!requirement || requirement.epoch !== _billingEpoch || !currentUserId || !normalizedOrgId) return null;
-  if (requirement.userId && requirement.userId !== currentUserId) return null;
-  if (!requirement.userId) requirement.userId = currentUserId;
-  return {
-    generation: requirement.generation,
-    userId: currentUserId,
-    orgId: normalizedOrgId,
-    epoch: requirement.epoch,
-    attemptedAt: requirement.attemptedAt,
-  };
-}
-
-function isCurrentBillingAuthoritativeRefreshToken(token, orgId = null) {
-  if (!token || !_billingAuthoritativeRefreshRequired) return false;
-  const currentUserId = getCurrentBillingAuthUserId();
-  const expectedOrgId = normalizeOrgIdForBilling(orgId || token.orgId || '');
-  return Boolean(
-    currentUserId &&
-    token.generation === _billingAuthoritativeRefreshRequired.generation &&
-    token.epoch === _billingAuthoritativeRefreshRequired.epoch &&
-    token.epoch === _billingEpoch &&
-    token.userId === currentUserId &&
-    (!expectedOrgId || token.orgId === expectedOrgId)
-  );
-}
-
-function isBillingAuthoritativeRefreshInFlight(token) {
-  return Boolean(
-    token &&
-    _billingAuthoritativeRefreshInFlight &&
-    token.generation === _billingAuthoritativeRefreshInFlight.generation &&
-    token.epoch === _billingAuthoritativeRefreshInFlight.epoch
-  );
-}
-
-function beginBillingAuthoritativeRefreshAttempt(token) {
-  if (!isCurrentBillingAuthoritativeRefreshToken(token, token && token.orgId)) return false;
-  _billingAuthoritativeRefreshRequired.attemptedAt = Date.now();
-  _billingAuthoritativeRefreshInFlight = token;
-  return true;
-}
-
-function finishBillingAuthoritativeRefreshAttempt(token) {
-  if (
-    token &&
-    _billingAuthoritativeRefreshInFlight &&
-    token.generation === _billingAuthoritativeRefreshInFlight.generation &&
-    token.epoch === _billingAuthoritativeRefreshInFlight.epoch
-  ) {
-    _billingAuthoritativeRefreshInFlight = null;
-  }
-}
-
-function preserveUserSwitchPendingForBillingFailure(token) {
-  if (!isCurrentBillingAuthoritativeRefreshToken(token, token && token.orgId)) return;
-  try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
-}
-
-function isBillingAuthoritativeRefreshRequired() {
-  return Boolean(_billingAuthoritativeRefreshRequired);
-}
-
 function normalizeBillingEntitlementStatus(value) {
   const raw = String(value || '').trim().toLowerCase();
   return BILLING_ENTITLEMENT_STATUSES.has(raw) ? raw : null;
 }
-
-function nullableFiniteNumber(value) {
-  if (value == null || value === '') return null;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : null;
-}
-
-function resetBillingEntitlementFields(status = null) {
-  _billingState.entitlementStatus = normalizeBillingEntitlementStatus(status);
-  _billingState.billingOwnerUserId = null;
-  _billingState.workspaceIncluded = false;
-  _billingState.workspaceCount = null;
-  _billingState.workspaceLimit = null;
-  _billingState.canManageBilling = null;
-}
-
-function applyBillingEntitlementFields(source, fallbackStatus = null) {
-  const s = source && typeof source === 'object' ? source : {};
-  _billingState.entitlementStatus = normalizeBillingEntitlementStatus(s.entitlementStatus) || normalizeBillingEntitlementStatus(fallbackStatus);
-  _billingState.billingOwnerUserId = s.billingOwnerUserId ? String(s.billingOwnerUserId) : null;
-  _billingState.workspaceIncluded = Boolean(s.workspaceIncluded);
-  _billingState.workspaceCount = nullableFiniteNumber(s.workspaceCount);
-  _billingState.workspaceLimit = nullableFiniteNumber(s.workspaceLimit);
-  _billingState.canManageBilling = typeof s.canManageBilling === 'boolean' ? s.canManageBilling : null;
-}
-
-function isEntitlementAllowed(status) {
-  const normalized = normalizeBillingEntitlementStatus(status);
-  return normalized === 'active' || normalized === 'trialing' || normalized === 'included_in_plan';
-}
-
-// ============================================================================
-// SECTION: CROSS-TAB BILLING COORDINATION (Rule C)
-// ============================================================================
-const _BILLING_LOCK_TTL_MS = 20000;      // lock expires after 20s (dead-tab safety)
 const _BILLING_SHARED_FRESH_MS = 90000;   // shared result considered fresh for 90s (cross-tab window)
-let _billingTabId = '';
-/** @type {BroadcastChannel|null} */
-let _billingBroadcast = null;
-let _lastAppliedBillingLfa = 0; // dedupe: last cross-tab lastFetchedAt we applied
-/** @type {Map<string, string>} per-org dedupe: orgId -> JSON signature of last processed cross-tab snapshot */
-const _lastProcessedBillingSigByOrg = new Map();
-
-// Generate a unique per-tab ID
-try {
-  if (typeof window !== 'undefined' && window.sessionStorage) {
-    _billingTabId = window.sessionStorage.getItem('__tp3d_billing_tab') || '';
-    if (!_billingTabId) {
-      _billingTabId = 'tab_' + Math.random().toString(36).slice(2, 10) + '_' + Date.now();
-      window.sessionStorage.setItem('__tp3d_billing_tab', _billingTabId);
-    }
-  }
-} catch (_) { _billingTabId = 'tab_' + Math.random().toString(36).slice(2, 10); }
-
-function _billingLockKey(orgId) { return 'billing:inflight:' + orgId; }
-function _billingFreshKey(orgId) { return 'billing:lastFetchedAt:' + orgId; }
-function _billingResultKey(orgId) { return 'billing:lastState:' + orgId; }
-function _billingLegacyLockKey(orgId) { return 'tp3d:billing:lock:' + orgId; }
-function _billingLegacyFreshKey(orgId) { return 'tp3d:billing:fresh:' + orgId; }
-function _billingLegacyResultKey(orgId) { return 'tp3d:billing:result:' + orgId; }
-
-/**
- * Try to acquire a cross-tab billing lock for the given org.
- * Returns true if this tab may proceed with fetching, false if blocked.
- */
-function _readStorageJson(key) {
-  try {
-    const raw = window.localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && typeof parsed === 'object' ? parsed : null;
-  } catch (_) { return null; }
-}
-
-function _tryAcquireBillingLock(orgId, reason = 'manual') {
-  try {
-    const now = Date.now();
-    const lock = _readStorageJson(_billingLockKey(orgId)) || _readStorageJson(_billingLegacyLockKey(orgId));
-    if (
-      lock &&
-      lock.tabId &&
-      lock.tabId !== _billingTabId &&
-      lock.at &&
-      (now - Number(lock.at)) < _BILLING_LOCK_TTL_MS
-    ) {
-      billingDebugLog('billing:cross-tab-lock:skip-inflight', {
-        reason,
-        orgId,
-        holder: lock.tabId,
-        ageMs: now - Number(lock.at),
-      });
-      return false;
-    }
-
-    const lockPayload = JSON.stringify({ tabId: _billingTabId, at: now, reason: String(reason || '') });
-    window.localStorage.setItem(_billingLockKey(orgId), lockPayload);
-    // Keep legacy key writable for older tabs that still read tp3d:* keys.
-    window.localStorage.setItem(_billingLegacyLockKey(orgId), lockPayload);
-
-    // Read-after-write verify to reduce races where two tabs set nearly simultaneously.
-    const verify = _readStorageJson(_billingLockKey(orgId));
-    if (!verify || verify.tabId !== _billingTabId || Number(verify.at) !== now) {
-      billingDebugLog('billing:cross-tab-lock:skip-inflight', {
-        reason,
-        orgId,
-        holder: verify && verify.tabId ? verify.tabId : 'unknown',
-      });
-      return false;
-    }
-    billingDebugLog('billing:cross-tab-lock:acquired', { reason, orgId, tabId: _billingTabId });
-    return true;
-  } catch (_) { return true; } // fail-open
-}
-
-function _releaseBillingLock(orgId, reason = 'manual') {
-  try {
-    const key = _billingLockKey(orgId);
-    const legacyKey = _billingLegacyLockKey(orgId);
-    const lock = _readStorageJson(key) || _readStorageJson(legacyKey);
-    if (lock && lock.tabId === _billingTabId) {
-      window.localStorage.removeItem(key);
-      window.localStorage.removeItem(legacyKey);
-      billingDebugLog('billing:cross-tab-lock:released', { reason, orgId, tabId: _billingTabId });
-    }
-  } catch (_) { /* ignore */ }
-}
-
-function _getSharedBillingFreshness(orgId) {
-  try {
-    const primary = Number(window.localStorage.getItem(_billingFreshKey(orgId)) || 0);
-    if (primary > 0) return primary;
-    return Number(window.localStorage.getItem(_billingLegacyFreshKey(orgId)) || 0);
-  } catch (_) { return 0; }
-}
-
-function _writeSharedBillingResult(orgId, state) {
-  try {
-    if (!_isBillingSnapshotScopedToOrg(orgId, state)) return;
-    if (!_isShareableBillingSnapshot(orgId, state)) {
-      _clearSharedBillingResult(orgId);
-      return;
-    }
-    const fetchedAt = Number(state && state.lastFetchedAt) || Date.now();
-    window.localStorage.setItem(_billingFreshKey(orgId), String(fetchedAt));
-    // Keep legacy key writable for older tabs that still read tp3d:* keys.
-    window.localStorage.setItem(_billingLegacyFreshKey(orgId), String(fetchedAt));
-    // Write a minimal snapshot (avoid storing large data blobs)
-    const mini = {
-      ok: state.ok, plan: state.plan, status: state.status, orgId: state.orgId,
-      entitlementStatus: state.entitlementStatus, billingOwnerUserId: state.billingOwnerUserId,
-      workspaceIncluded: state.workspaceIncluded, workspaceCount: state.workspaceCount,
-      workspaceLimit: state.workspaceLimit, canManageBilling: state.canManageBilling,
-      isPro: state.isPro, isActive: state.isActive, interval: state.interval,
-      trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
-      cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
-      portalAvailable: state.portalAvailable, error: state.error,
-      paymentProblem: state.paymentProblem, paymentGraceUntil: state.paymentGraceUntil,
-      paymentGraceRemainingDays: state.paymentGraceRemainingDays, action: state.action,
-      lastFetchedAt: fetchedAt,
-    };
-    const payload = JSON.stringify(mini);
-    window.localStorage.setItem(_billingResultKey(orgId), payload);
-    // Keep legacy key writable for older tabs that still read tp3d:* keys.
-    window.localStorage.setItem(_billingLegacyResultKey(orgId), payload);
-  } catch (_) { /* ignore */ }
-}
-
-function _readSharedBillingResult(orgId) {
-  return _readStorageJson(_billingResultKey(orgId)) || _readStorageJson(_billingLegacyResultKey(orgId));
-}
-
-function _isBillingSnapshotScopedToOrg(orgId, state) {
-  const targetOrgId = normalizeOrgIdForBilling(orgId);
-  const rawSnapshotOrgId = state && state.orgId ? String(state.orgId).trim() : '';
-  const snapshotOrgId = normalizeOrgIdForBilling(rawSnapshotOrgId);
-  return Boolean(targetOrgId && (!rawSnapshotOrgId || (snapshotOrgId && snapshotOrgId === targetOrgId)));
-}
-
-function _clearSharedBillingResult(orgId) {
-  try {
-    if (!normalizeOrgIdForBilling(orgId)) return;
-    window.localStorage.removeItem(_billingFreshKey(orgId));
-    window.localStorage.removeItem(_billingLegacyFreshKey(orgId));
-    window.localStorage.removeItem(_billingResultKey(orgId));
-    window.localStorage.removeItem(_billingLegacyResultKey(orgId));
-  } catch (_) { /* ignore */ }
-}
-
-function _billingSharedSnapshotDebugFields(orgId, state) {
-  return {
-    orgId: normalizeOrgIdForBilling(orgId) || null,
-    status: state && Object.prototype.hasOwnProperty.call(state, 'status') ? state.status : null,
-    entitlementStatus: state && state.entitlementStatus ? state.entitlementStatus : null,
-    ok: Boolean(state && state.ok === true),
-  };
-}
-
-function _isShareableBillingSnapshot(orgId, state) {
-  if (!state || typeof state !== 'object') return false;
-  if (!_isBillingSnapshotScopedToOrg(orgId, state)) return false;
-  if (state.ok !== true) return false;
-  const entitlementStatus = normalizeBillingEntitlementStatus(state.entitlementStatus);
-  if (entitlementStatus === 'billing_unavailable') return false;
-  if (state.error) return false;
-  const rawStatus = Object.prototype.hasOwnProperty.call(state, 'status') ? state.status : null;
-  if (rawStatus === null || typeof rawStatus === 'undefined') return false;
-  const numericStatus = Number(rawStatus);
-  if (Number.isFinite(numericStatus) && numericStatus === 408) return false;
-  const statusText = String(rawStatus || '').toLowerCase();
-  if (statusText === 'timeout' || statusText === 'network_error' || statusText === 'network') return false;
-  return true;
-}
-
-function _readShareableBillingResult(orgId, _reason = 'shared-read') {
-  const shared = _readSharedBillingResult(orgId);
-  if (!shared) return null;
-  if (_isShareableBillingSnapshot(orgId, shared)) return shared;
-  billingDebugLog('billing:cross-tab:discard-failed-shared', {
-    ..._billingSharedSnapshotDebugFields(orgId, shared),
-  });
-  if (_isBillingSnapshotScopedToOrg(orgId, shared)) _clearSharedBillingResult(orgId);
-  return null;
-}
-
-function _applySharedBillingSnapshot(orgId, state, reason = 'cross-tab-shared') {
-  if (!state || typeof state !== 'object') return false;
-  if (!_isBillingSnapshotScopedToOrg(orgId, state)) {
-    billingDebugLog('billing:cross-tab:discard-org-mismatch', {
-      reason,
-      keyOrgId: orgId || null,
-      stateOrgId: state && state.orgId ? state.orgId : null,
-    });
-    return false;
-  }
-  if (!_isShareableBillingSnapshot(orgId, state)) {
-    billingDebugLog('billing:cross-tab:discard-failed-shared', {
-      ..._billingSharedSnapshotDebugFields(orgId, state),
-    });
-    return false;
-  }
-  clearBillingPendingRetry(orgId);
-  _billingState.pending = false;
-  _billingState.loading = false;
-  _billingState.ok = Boolean(state.ok);
-  _billingState.plan = state.plan || null;
-  _billingState.status = state.status || null;
-  applyBillingEntitlementFields(state, state.ok ? null : 'billing_unavailable');
-  // F1 (BUG-01 follow-up): canManageBilling is user-specific authority — the
-  // requesting user's role — not an organization-scoped fact. A snapshot
-  // written by another user (same-org A → B switch) or another tab must never
-  // grant it. Leave it unresolved so current-role resolution
-  // (resolveCanManageBillingForOrg / role fallbacks in Settings and
-  // getProRuleSet) derives it for the signed-in user; only a direct
-  // /billing-status fetch applies the server's per-user answer.
-  _billingState.canManageBilling = null;
-  _billingState.orgId = state.orgId || orgId;
-  _billingState.isPro = Boolean(state.isPro);
-  _billingState.isActive = Boolean(state.isActive);
-  _billingState.interval = state.interval || null;
-  _billingState.trialEndsAt = state.trialEndsAt || null;
-  _billingState.currentPeriodEnd = state.currentPeriodEnd || null;
-  _billingState.cancelAtPeriodEnd = Boolean(state.cancelAtPeriodEnd);
-  _billingState.cancelAt = state.cancelAt || null;
-  _billingState.portalAvailable = Boolean(state.portalAvailable);
-  _billingState.paymentProblem = Boolean(state.paymentProblem);
-  _billingState.paymentGraceUntil = state.paymentGraceUntil || null;
-  _billingState.paymentGraceRemainingDays = state.paymentGraceRemainingDays != null ? Number(state.paymentGraceRemainingDays) : null;
-  _billingState.action = state.action || null;
-  _billingState.error = state.error || null;
-  _billingState.data = null;
-  _billingState.lastFetchedAt = Number(state.lastFetchedAt) || _getSharedBillingFreshness(orgId) || Date.now();
-  _notifyBilling();
-  applyAccessGateFromBilling(getBillingState(), { reason, activeOrgId: orgId });
-  return true;
-}
-
-function _shouldApplySharedBillingSnapshotForOrg(orgId, sharedFreshAt = 0) {
-  const targetOrgId = normalizeOrgIdForBilling(orgId);
-  if (!targetOrgId) return false;
-  const currentBillingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
-  if (currentBillingOrgId !== targetOrgId) return true;
-  if (!_billingState.lastFetchedAt) return true;
-  return Boolean(sharedFreshAt && _billingState.lastFetchedAt < sharedFreshAt);
-}
-
-function _clearBillingSnapshotForOrgTransition(orgId, reason = 'org-transition') {
-  const targetOrgId = normalizeOrgIdForBilling(orgId);
-  if (!targetOrgId) return false;
-  const currentBillingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
-  if (currentBillingOrgId === targetOrgId) return false;
-  clearBillingPendingRetry();
-  _billingState.loading = false;
-  _billingState.pending = true;
-  _billingState.ok = false;
-  _billingState.plan = null;
-  _billingState.status = null;
-  resetBillingEntitlementFields(null);
-  _billingState.orgId = targetOrgId;
-  _billingState.isPro = false;
-  _billingState.isActive = false;
-  _billingState.interval = null;
-  _billingState.trialEndsAt = null;
-  _billingState.currentPeriodEnd = null;
-  _billingState.cancelAtPeriodEnd = false;
-  _billingState.cancelAt = null;
-  _billingState.portalAvailable = false;
-  _billingState.paymentProblem = false;
-  _billingState.paymentGraceUntil = null;
-  _billingState.paymentGraceRemainingDays = null;
-  _billingState.action = null;
-  _billingState.data = null;
-  _billingState.error = null;
-  _billingState.lastFetchedAt = 0;
-  _notifyBilling();
-  applyAccessGateFromBilling(getBillingState(), { reason, activeOrgId: targetOrgId });
-  return true;
-}
-
-function reconcileBillingStateForActiveOrg(reason = 'active-org-reconcile') {
-  const activeOrgId = getActiveOrgIdForBilling();
-  if (!activeOrgId) return false;
-  const currentBillingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
-  if (!currentBillingOrgId || currentBillingOrgId === activeOrgId) return false;
-  const shared = _readShareableBillingResult(activeOrgId, 'reconcile:' + reason);
-  if (shared) {
-    return _applySharedBillingSnapshot(activeOrgId, shared, 'reconcile-shared:' + reason);
-  }
-  return _clearBillingSnapshotForOrgTransition(activeOrgId, 'reconcile-pending:' + reason);
-}
-
-function _broadcastBillingResult(orgId, state) {
-  if (!_billingBroadcast) return;
-  if (!_isShareableBillingSnapshot(orgId, state)) return;
-  try {
-    _billingBroadcast.postMessage({ type: 'billing-result', orgId, state: {
-      ok: state.ok, plan: state.plan, status: state.status, orgId: state.orgId,
-      entitlementStatus: state.entitlementStatus, billingOwnerUserId: state.billingOwnerUserId,
-      workspaceIncluded: state.workspaceIncluded, workspaceCount: state.workspaceCount,
-      workspaceLimit: state.workspaceLimit, canManageBilling: state.canManageBilling,
-      isPro: state.isPro, isActive: state.isActive, interval: state.interval,
-      trialEndsAt: state.trialEndsAt, currentPeriodEnd: state.currentPeriodEnd,
-      cancelAtPeriodEnd: state.cancelAtPeriodEnd, cancelAt: state.cancelAt,
-      portalAvailable: state.portalAvailable, error: state.error,
-      paymentProblem: state.paymentProblem, paymentGraceUntil: state.paymentGraceUntil,
-      paymentGraceRemainingDays: state.paymentGraceRemainingDays, action: state.action,
-      lastFetchedAt: state.lastFetchedAt,
-    }, tabId: _billingTabId });
-  } catch (_) { /* ignore */ }
-}
-
-function _buildCrossTabBillingSig(orgId, state) {
-  return JSON.stringify({
-    orgId: orgId || '',
-    lastFetchedAt: (state && Number(state.lastFetchedAt)) || 0,
-    ok: state && state.ok === true,
-    pending: state && state.pending === true,
-    plan: (state && state.plan) || null,
-    status: (state && state.status) || null,
-    entitlementStatus: (state && state.entitlementStatus) || null,
-    billingOwnerUserId: (state && state.billingOwnerUserId) || null,
-    workspaceIncluded: state && state.workspaceIncluded === true,
-    workspaceCount: (state && state.workspaceCount != null) ? Number(state.workspaceCount) : null,
-    workspaceLimit: (state && state.workspaceLimit != null) ? Number(state.workspaceLimit) : null,
-    canManageBilling: (state && typeof state.canManageBilling === 'boolean') ? state.canManageBilling : null,
-    isActive: state && state.isActive === true,
-    interval: (state && state.interval) || null,
-    trialEndsAt: (state && state.trialEndsAt) || null,
-    currentPeriodEnd: (state && state.currentPeriodEnd) || null,
-    cancelAtPeriodEnd: state && state.cancelAtPeriodEnd === true,
-    cancelAt: (state && state.cancelAt) || null,
-    portalAvailable: state && state.portalAvailable === true,
-    paymentProblem: state && state.paymentProblem === true,
-    paymentGraceRemainingDays: (state && state.paymentGraceRemainingDays != null) ? Number(state.paymentGraceRemainingDays) : null,
-  });
-}
-
-/** Returns true if this sig was already seen for this org (skip). Otherwise marks + returns false (process). */
-function _ctSigSeenOrMark(orgId, sig) {
-  if (_lastProcessedBillingSigByOrg.get(orgId) === sig) return true;
-  _lastProcessedBillingSigByOrg.set(orgId, sig);
-  return false;
-}
-
-function _handleCrossTabBillingResult(orgId, state, fromTabId) {
-  const currentOrgId = getActiveOrgIdForBilling();
-  if (!currentOrgId || currentOrgId !== orgId) return;
-  if (_billingState.loading) return; // don't overwrite an in-flight local fetch
-  if (!_isShareableBillingSnapshot(orgId, state)) {
-    billingDebugLog('billing:cross-tab:discard-failed-shared', {
-      ..._billingSharedSnapshotDebugFields(orgId, state),
-    });
-    return;
-  }
-
-  const _ctSig = _buildCrossTabBillingSig(orgId, state);
-  if (_ctSigSeenOrMark(orgId, _ctSig)) return; // silent exit (already applied/processed)
-
-  // Log only after dedupe proves it's truly new data
-  if (fromTabId === 'storage') {
-    billingDebugLog('billing:cross-tab-storage:received', { orgId, localTabId: _billingTabId });
-  } else {
-    billingDebugLog('billing:cross-tab-broadcast:received', { orgId, fromTabId, localTabId: _billingTabId });
-  }
-
-  // Dedupe: skip if we already applied a snapshot with the same lastFetchedAt
-  const incomingLfa = Number(state && state.lastFetchedAt) || 0;
-  if (incomingLfa && incomingLfa === _lastAppliedBillingLfa && incomingLfa === _billingState.lastFetchedAt) {
-    billingDebugLog('billing:cross-tab:skip-already-applied', { orgId, lastFetchedAt: incomingLfa, from: fromTabId });
-    return;
-  }
-
-  _applySharedBillingSnapshot(orgId, state, fromTabId === 'storage' ? 'cross-tab-storage' : 'cross-tab-broadcast');
-  _lastAppliedBillingLfa = _billingState.lastFetchedAt || incomingLfa;
-}
-
-function _extractOrgIdFromStorageKey(key, prefix) {
-  if (!key || !prefix || !key.startsWith(prefix)) return '';
-  const raw = key.slice(prefix.length).trim();
-  return normalizeOrgIdForBilling(raw);
-}
-
-function _handleCrossTabBillingStorageEvent(ev) {
-  try {
-    if (!ev || !ev.key) return;
-    const orgId = _extractOrgIdFromStorageKey(ev.key, 'billing:lastState:')
-      || _extractOrgIdFromStorageKey(ev.key, 'tp3d:billing:result:')
-      || _extractOrgIdFromStorageKey(ev.key, 'billing:lastFetchedAt:')
-      || _extractOrgIdFromStorageKey(ev.key, 'tp3d:billing:fresh:');
-    if (!orgId) return;
-    const currentOrgId = getActiveOrgIdForBilling();
-    if (!currentOrgId || currentOrgId !== orgId) return;
-    if (_billingState.loading) return;
-    const state = _readShareableBillingResult(orgId, 'storage');
-    if (!state) return;
-    _handleCrossTabBillingResult(orgId, state, 'storage');
-  } catch (_) { /* ignore */ }
-}
-
-// Initialize BroadcastChannel listener
-try {
-  if (typeof BroadcastChannel !== 'undefined') {
-    _billingBroadcast = new BroadcastChannel('tp3d-billing');
-    _billingBroadcast.onmessage = (ev) => {
-      if (!ev || !ev.data || ev.data.type !== 'billing-result') return;
-      const msg = ev.data;
-      if (msg.orgId && msg.state && msg.tabId !== _billingTabId) {
-        _handleCrossTabBillingResult(msg.orgId, msg.state, msg.tabId);
-      }
-    };
-  }
-} catch (_) { _billingBroadcast = null; }
-
-try {
-  if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
-    window.addEventListener('storage', _handleCrossTabBillingStorageEvent);
-  }
-} catch (_) { /* ignore */ }
-
 function isTp3dDebugEnabled() {
   try {
     if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') return true;
@@ -828,7 +159,6 @@ function billingDebugLog(step, details) {
   }
   console.info('[Billing][App]', step, details);
 }
-
 function isVisibleAuthRevocationCheckSignedIn() {
   try {
     const authState =
@@ -905,7 +235,6 @@ function installVisibleAuthRevocationCheck() {
     // ignore
   }
 }
-
 const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function normalizeOrgIdForBilling(value) {
@@ -914,238 +243,6 @@ function normalizeOrgIdForBilling(value) {
   if (raw.toLowerCase() === 'personal') return '';
   return ORG_UUID_RE.test(raw) ? raw : '';
 }
-
-function getActiveOrgIdForBilling() {
-  try {
-    if (typeof window !== 'undefined' && window.OrgContext && typeof window.OrgContext.getActiveOrgId === 'function') {
-      const id = normalizeOrgIdForBilling(window.OrgContext.getActiveOrgId());
-      if (id) return id;
-    }
-  } catch (_) {
-    // ignore
-  }
-  // Fallback: localStorage hint (same UUID validation as OrgContext path)
-  try {
-    if (typeof window !== 'undefined' && window.localStorage) {
-      const raw = String(window.localStorage.getItem('tp3d:active-org-id') || '').trim();
-      if (raw && ORG_UUID_RE.test(raw)) return raw;
-    }
-  } catch (_) {
-    // ignore
-  }
-  return '';
-}
-
-function applyAccessGateFromBilling(billingSnapshot, meta = {}) {
-  if (typeof _billingGateApplier !== 'function') return;
-  try {
-    _billingGateApplier(billingSnapshot || getBillingState(), meta);
-  } catch (_) {
-    // gate application must never break app flow
-  }
-}
-
-function _notifyBilling() {
-  const snapshot = getBillingState();
-  _billingSubscribers.forEach(fn => { try { fn(snapshot); } catch (_) { /* ignore */ } });
-}
-
-function getBillingState() {
-  return {
-    loading: _billingState.loading,
-    ok: _billingState.ok,
-    plan: _billingState.plan,
-    status: _billingState.status,
-    entitlementStatus: _billingState.entitlementStatus,
-    billingOwnerUserId: _billingState.billingOwnerUserId,
-    workspaceIncluded: _billingState.workspaceIncluded,
-    workspaceCount: _billingState.workspaceCount,
-    workspaceLimit: _billingState.workspaceLimit,
-    canManageBilling: _billingState.canManageBilling,
-    orgId: _billingState.orgId,
-    pending: _billingState.pending,
-    isPro: _billingState.isPro,
-    isActive: _billingState.isActive,
-    interval: _billingState.interval,
-    trialEndsAt: _billingState.trialEndsAt,
-    currentPeriodEnd: _billingState.currentPeriodEnd,
-    cancelAtPeriodEnd: _billingState.cancelAtPeriodEnd,
-    cancelAt: _billingState.cancelAt,
-    portalAvailable: _billingState.portalAvailable,
-    paymentProblem: _billingState.paymentProblem,
-    paymentGraceUntil: _billingState.paymentGraceUntil,
-    paymentGraceRemainingDays: _billingState.paymentGraceRemainingDays,
-    action: _billingState.action,
-    data: _billingState.data,
-    error: _billingState.error,
-    lastFetchedAt: _billingState.lastFetchedAt,
-  };
-}
-
-function subscribeBilling(fn) {
-  if (typeof fn === 'function') _billingSubscribers.add(fn);
-  return () => _billingSubscribers.delete(fn);
-}
-
-function _waitForQueuedBillingRefresh() {
-  return new Promise(resolve => {
-    _billingRefreshQueuedWaiters.push(resolve);
-  });
-}
-
-function _resolveBillingRefreshQueuedWaiters(snapshot = getBillingState()) {
-  const waiters = _billingRefreshQueuedWaiters;
-  _billingRefreshQueuedWaiters = [];
-  waiters.forEach(resolve => {
-    try {
-      resolve(snapshot);
-    } catch {
-      // ignore
-    }
-  });
-}
-
-function clearBillingPendingRetry(orgId = null) {
-  const targetOrgId = orgId ? String(orgId) : null;
-  if (targetOrgId && _billingPendingRetry.orgId && _billingPendingRetry.orgId !== targetOrgId) return;
-  if (_billingPendingRetry.timer) {
-    try {
-      clearTimeout(_billingPendingRetry.timer);
-    } catch {
-      // ignore
-    }
-  }
-  _billingPendingRetry = { orgId: null, count: 0, timer: null };
-}
-
-function settleBillingPendingRetryExhausted(requestedOrgId, reason) {
-  const targetOrgId = requestedOrgId ? String(requestedOrgId) : '';
-  if (!targetOrgId) return;
-  const activeOrgId = getActiveOrgIdForBilling();
-  if ((activeOrgId || '') !== targetOrgId) {
-    clearBillingPendingRetry(targetOrgId);
-    return;
-  }
-  if ((_billingState.orgId || '') !== targetOrgId || (!_billingState.pending && !_billingState.loading)) {
-    clearBillingPendingRetry(targetOrgId);
-    return;
-  }
-  billingDebugLog('refresh:pending-retry-exhausted', {
-    reason,
-    requestedOrgId: targetOrgId,
-    attempts: _billingPendingRetry.count,
-  });
-  clearBillingPendingRetry(targetOrgId);
-  _billingRefreshQueued = false;
-  _billingState.loading = false;
-  _billingState.pending = false;
-  _billingState.ok = false;
-  _billingState.orgId = targetOrgId;
-  _billingState.lastFetchedAt = 0;
-  _billingState.data = null;
-  _billingState.plan = null;
-  _billingState.status = null;
-  resetBillingEntitlementFields('billing_unavailable');
-  _billingState.isPro = false;
-  _billingState.isActive = false;
-  _billingState.interval = null;
-  _billingState.trialEndsAt = null;
-  _billingState.currentPeriodEnd = null;
-  _billingState.cancelAtPeriodEnd = false;
-  _billingState.cancelAt = null;
-  _billingState.portalAvailable = false;
-  _billingState.paymentProblem = false;
-  _billingState.paymentGraceUntil = null;
-  _billingState.paymentGraceRemainingDays = null;
-  _billingState.action = null;
-  _billingState.error = {
-    message: 'Billing is still syncing. Retry when you are back online.',
-    status: null,
-  };
-  _notifyBilling();
-  applyAccessGateFromBilling(getBillingState(), {
-    reason: 'pending-retry-exhausted:' + reason,
-    activeOrgId: targetOrgId,
-  });
-  _resolveBillingRefreshQueuedWaiters(getBillingState());
-}
-
-function scheduleBillingPendingRetry(requestedOrgId, reason) {
-  const targetOrgId = requestedOrgId ? String(requestedOrgId) : '';
-  if (!targetOrgId) return;
-  if (_billingPendingRetry.orgId && _billingPendingRetry.orgId !== targetOrgId) clearBillingPendingRetry();
-  const nextCount = _billingPendingRetry.orgId === targetOrgId ? _billingPendingRetry.count + 1 : 1;
-  if (_billingPendingRetry.timer) return;
-  if (nextCount > 2) {
-    settleBillingPendingRetryExhausted(targetOrgId, reason);
-    return;
-  }
-  _billingPendingRetry = {
-    orgId: targetOrgId,
-    count: nextCount,
-    timer: setTimeout(() => {
-      if (_billingPendingRetry.orgId !== targetOrgId) return;
-      _billingPendingRetry = {
-        ..._billingPendingRetry,
-        timer: null,
-      };
-      const activeOrgId = getActiveOrgIdForBilling();
-      if ((activeOrgId || '') !== targetOrgId) {
-        clearBillingPendingRetry(targetOrgId);
-        return;
-      }
-      refreshBilling({ force: true, reason: `pending-retry:${nextCount}:${reason}` }).catch(() => { });
-    }, 2500),
-  };
-}
-
-function clearBillingState() {
-  clearBillingPendingRetry();
-  _billingState.loading = false;
-  _billingState.pending = false;
-  _billingState.ok = false;
-  _billingState.plan = null;
-  _billingState.status = null;
-  resetBillingEntitlementFields(null);
-  _billingState.orgId = null;
-  _billingState.isPro = false;
-  _billingState.isActive = false;
-  _billingState.interval = null;
-  _billingState.trialEndsAt = null;
-  _billingState.currentPeriodEnd = null;
-  _billingState.cancelAtPeriodEnd = false;
-  _billingState.cancelAt = null;
-  _billingState.portalAvailable = false;
-  _billingState.paymentProblem = false;
-  _billingState.paymentGraceUntil = null;
-  _billingState.paymentGraceRemainingDays = null;
-  _billingState.action = null;
-  _billingState.data = null;
-  _billingState.error = null;
-  _billingState.lastFetchedAt = 0;
-  _billingLastFocusRefreshAt = 0;
-  _lastAppliedBillingLfa = 0;
-  _billingRefreshQueued = false;
-  _resolveBillingRefreshQueuedWaiters(getBillingState());
-  _lastProcessedBillingSigByOrg.clear();
-  _billingEpoch++;
-  _notifyBilling();
-  applyAccessGateFromBilling(getBillingState(), { reason: 'clear' });
-}
-
-function isConfirmedActiveOrgAccessDeniedResult(result, requestedOrgId) {
-  const requestOrgId = normalizeOrgIdForBilling(requestedOrgId || '');
-  if (!requestOrgId || !result || result.pending) return false;
-  if (Number(result.status) !== 403) return false;
-
-  const resultOrgId = normalizeOrgIdForBilling(result && result.orgId ? result.orgId : '');
-  const resultDataOrgId = normalizeOrgIdForBilling(result && result.data && result.data.orgId ? result.data.orgId : '');
-  if (resultOrgId && resultOrgId !== requestOrgId) return false;
-  if (resultDataOrgId && resultDataOrgId !== requestOrgId) return false;
-  return true;
-}
-
-// ── Workspace readiness helper: prevents "create workspace" banner from sticking during auth wobble ──
 let _workspaceReadyInflight = false;
 /** @type {() => boolean} Module-level accessor, set by IIFE once auth gate is initialized. */
 let _authGateIsSettledAccessor = () => false;
@@ -1218,775 +315,43 @@ async function ensureWorkspaceReadyForUI({ timeoutMs = 2500, pollMs = 80, forceF
   }
 }
 
-async function refreshBilling({ force = false, reason = 'manual', authoritativeRefresh = null } = {}) {
-  const requestedOrgId = getActiveOrgIdForBilling();
-  const currentAuthoritativeRefresh = isCurrentBillingAuthoritativeRefreshToken(authoritativeRefresh, requestedOrgId)
-    ? authoritativeRefresh
-    : getBillingAuthoritativeRefreshToken(requestedOrgId);
-  if (currentAuthoritativeRefresh) force = true;
-  const now = Date.now();
-  const billingKey = `${requestedOrgId || ''}|${String(reason || 'manual')}|${force ? '1' : '0'}`;
-  if (!currentAuthoritativeRefresh && _lastBillingKey === billingKey && (now - _lastBillingKeyAt) < 300) {
-    billingDebugLog('refresh:skip-burst', {
-      reason,
-      force,
-      requestedOrgId: requestedOrgId || null,
-      ageMs: now - _lastBillingKeyAt,
-    });
-    return getBillingState();
-  }
-  _lastBillingKey = billingKey;
-  _lastBillingKeyAt = now;
-
-  if (!requestedOrgId) {
-    clearBillingPendingRetry();
-    _billingState.loading = false;
-    _billingState.pending = true;
-    billingDebugLog('refresh:skip-no-org', { reason, force });
-    return getBillingState();
-  }
-
-  if (_billingState.loading) {
-    if (force) {
-      _billingRefreshQueued = true;
-    }
-    billingDebugLog('refresh:skip-loading', { reason, force, requestedOrgId: requestedOrgId || null });
-    return force ? _waitForQueuedBillingRefresh() : getBillingState();
-  }
-  if (
-    !currentAuthoritativeRefresh &&
-    force &&
-    requestedOrgId &&
-    _billingState.orgId &&
-    requestedOrgId === _billingState.orgId &&
-    _billingState.lastFetchedAt &&
-    (now - _billingState.lastFetchedAt) < 5000 &&
-    reason !== 'manual' &&
-    (reason === 'org-changed' || reason === 'auth-change' || reason === 'render-auth-state' || reason === 'token-refresh' || reason === 'settings-open' || reason === 'queued')
-  ) {
-    billingDebugLog('refresh:skip-recent-forced', {
-      reason,
-      requestedOrgId,
-      ageMs: now - _billingState.lastFetchedAt,
-    });
-    return getBillingState();
-  }
-  if (
-    reason === 'manual' &&
-    _billingState.ok &&
-    requestedOrgId &&
-    requestedOrgId === _billingState.orgId &&
-    _billingState.lastFetchedAt &&
-    (now - _billingState.lastFetchedAt) < 15000
-  ) {
-    billingDebugLog('refresh:skip-manual-recent', {
-      requestedOrgId,
-      ageMs: now - _billingState.lastFetchedAt,
-    });
-    return getBillingState();
-  }
-  if (
-    !force &&
-    !_billingState.pending &&
-    requestedOrgId &&
-    _billingState.orgId &&
-    requestedOrgId === _billingState.orgId &&
-    _billingState.lastFetchedAt &&
-    (now - _billingState.lastFetchedAt) < BILLING_THROTTLE_MS
-  ) {
-    billingDebugLog('refresh:skip-throttle', {
-      reason,
-      requestedOrgId: requestedOrgId || null,
-      ageMs: now - _billingState.lastFetchedAt,
-    });
-    applyAccessGateFromBilling(getBillingState(), { reason: 'throttled:' + reason, activeOrgId: requestedOrgId || null });
-    return getBillingState();
-  }
-
-  // ── Cross-tab shared freshness: skip if another tab recently fetched for this org ──
-  // force:true bypasses this guard so manual Retry/Refresh always triggers a real fetch.
-  // Failed snapshots (ok:false, billing_unavailable, timeout) are never reused — only
-  // successful ok:true snapshots are eligible for cross-tab freshness reuse.
-  if (requestedOrgId) {
-    const sharedFreshAt = _getSharedBillingFreshness(requestedOrgId);
-    if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
-      const shared = _readShareableBillingResult(requestedOrgId, 'refresh:' + reason);
-      if (!force && shared) {
-        billingDebugLog('billing:cross-tab-lock:skip-fresh', {
-          reason,
-          orgId: requestedOrgId,
-          sharedAgeMs: now - sharedFreshAt,
-        });
-        if (_shouldApplySharedBillingSnapshotForOrg(requestedOrgId, sharedFreshAt)) {
-          _applySharedBillingSnapshot(requestedOrgId, shared, 'shared-fresh:' + reason);
-        }
-        return getBillingState();
-      } else if (!force) {
-        const unshareableShared = _readSharedBillingResult(requestedOrgId);
-        if (unshareableShared) {
-          billingDebugLog('billing:cross-tab-lock:ignore-fresh-org-mismatch', {
-            reason,
-            orgId: requestedOrgId,
-            stateOrgId: unshareableShared && unshareableShared.orgId ? unshareableShared.orgId : null,
-          });
-        }
-      }
-    }
-  }
-
-  // ── Cross-tab lock: only one tab may fetch at a time per org ──
-  let _acquiredCrossTabLock = false;
-  if (requestedOrgId && !currentAuthoritativeRefresh) {
-    _acquiredCrossTabLock = _tryAcquireBillingLock(requestedOrgId, reason);
-  }
-  if (requestedOrgId && !currentAuthoritativeRefresh && !_acquiredCrossTabLock) {
-    // Another tab is fetching — check if shared result is available
-    const shared = _readShareableBillingResult(requestedOrgId, 'cross-tab-locked:' + reason);
-    if (shared) {
-      _applySharedBillingSnapshot(requestedOrgId, shared, 'cross-tab-locked:' + reason);
-    }
-    // Broadcast/storage listeners should update soon; keep one bounded retry for stale browsers.
-    if (!String(reason || '').startsWith('cross-tab-retry:')) {
-      setTimeout(() => {
-        refreshBilling({ force: false, reason: 'cross-tab-retry:' + reason }).catch(() => { });
-      }, 1200);
-    }
-    return getBillingState();
-  }
-
-  if (currentAuthoritativeRefresh) {
-    if (isBillingAuthoritativeRefreshInFlight(currentAuthoritativeRefresh)) {
-      billingDebugLog('refresh:skip-authoritative-inflight', {
-        reason,
-        requestedOrgId: requestedOrgId || null,
-        generation: currentAuthoritativeRefresh.generation,
-      });
-      return getBillingState();
-    }
-    if (!beginBillingAuthoritativeRefreshAttempt(currentAuthoritativeRefresh)) return getBillingState();
-  }
-
-  try {
-    const _epochAtStart = _billingEpoch;
-    billingDebugLog('refresh:start', { reason, force, requestedOrgId: requestedOrgId || null });
-    // ── BillingTrace (debug-only) ──
-    if (isTp3dDebugEnabled()) {
-      _billingTraceSeq += 1;
-      const _tid = _billingTraceSeq;
-      const callerHint = 'APP:' + (reason || 'manual');
-      try { window.__TP3D_BILLING_TRACE_CURRENT_ID__ = _tid; } catch { /* ignore */ }
-      const tracePayload = {
-        id: _tid,
-        reason,
-        force,
-        requestedOrgId: requestedOrgId || null,
-        ageFromInitMs: now - _bootStartedAtMs,
-        callerHint,
-      };
-      if (_tid <= 10) {
-        try {
-          const st = (new Error()).stack || '';
-          const frames = st.split('\n').filter(l => l.trim()).slice(1, 5);
-          tracePayload.stack = frames.map(f => f.trim());
-        } catch { /* ignore */ }
-      }
-      console.info('[BillingTrace] start', tracePayload);
-    }
-    if (
-      requestedOrgId &&
-      (!_billingState.orgId || _billingState.orgId !== requestedOrgId)
-    ) {
-      const staleShared = _readShareableBillingResult(requestedOrgId, 'stale-cache-warmup:' + reason);
-      if (staleShared) {
-        _applySharedBillingSnapshot(requestedOrgId, staleShared, 'stale-cache-warmup:' + reason);
-      }
-    }
-    _billingState.loading = true;
-    _billingState.error = null;
-    if (!_billingState.orgId || _billingState.orgId !== (requestedOrgId || null)) {
-      _billingState.pending = true;
-      _billingState.ok = false;
-      _billingState.lastFetchedAt = 0;
-      _billingState.data = null;
-      _billingState.plan = null;
-      _billingState.status = null;
-      resetBillingEntitlementFields(null);
-      _billingState.isPro = false;
-      _billingState.isActive = false;
-      _billingState.interval = null;
-      _billingState.trialEndsAt = null;
-      _billingState.currentPeriodEnd = null;
-      _billingState.cancelAtPeriodEnd = false;
-      _billingState.cancelAt = null;
-      _billingState.portalAvailable = false;
-    }
-    _billingState.orgId = requestedOrgId || null;
-    _notifyBilling();
-    applyAccessGateFromBilling(getBillingState(), { reason: 'loading:' + reason, activeOrgId: requestedOrgId || null });
-
-    // ── BillingTrace pre-fetch (debug-only) ──
-    if (isTp3dDebugEnabled()) {
-      const _pfTid = _billingTraceSeq; // already incremented above
-      const _pfPayload = {
-        id: _pfTid,
-        reason,
-        force,
-        requestedOrgId: requestedOrgId || null,
-        stateOrgId: _billingState.orgId || null,
-      };
-      if (_pfTid <= 8) {
-        try {
-          const st = (new Error()).stack || '';
-          const frames = st.split('\n').filter(l => l.trim()).slice(1, 5);
-          _pfPayload.stack = frames.map(f => f.trim());
-        } catch { /* ignore */ }
-      }
-      console.info('[BillingTrace] pre-fetch', _pfPayload);
-    }
-
-    let result;
-    try {
-      result = await Promise.race([
-        fetchBillingStatus(),
-        new Promise(resolve => {
-          setTimeout(() => {
-            resolve({
-              ok: false,
-              status: 408,
-              data: null,
-              error: { message: 'Billing request timed out', status: 408 },
-            });
-          }, BILLING_REQUEST_TIMEOUT_MS);
-        }),
-      ]);
-    } catch (err) {
-      result = { ok: false, status: null, data: null, error: { message: err && err.message ? err.message : 'Unknown error', status: null } };
-    }
-
-    _billingState.loading = false;
-
-    // Epoch guard: if a sign-out (clearBillingState) happened while this fetch was in-flight,
-    // discard the result so we don't re-hydrate billing state for a signed-out user.
-    if (_billingEpoch !== _epochAtStart) {
-      billingDebugLog('refresh:discard-epoch', { reason, epochAtStart: _epochAtStart, currentEpoch: _billingEpoch });
-      return getBillingState();
-    }
-
-    const _activeOrgIdAfterFetch = getActiveOrgIdForBilling();
-    if ((_activeOrgIdAfterFetch || '') !== (requestedOrgId || '')) {
-      billingDebugLog('refresh:discard-stale-org', {
-        reason,
-        requestedOrgId: requestedOrgId || null,
-        activeOrgId: _activeOrgIdAfterFetch || null,
-      });
-      clearBillingPendingRetry(requestedOrgId);
-      _billingRefreshQueued = false;
-      _resolveBillingRefreshQueuedWaiters(getBillingState());
-      setTimeout(() => {
-        refreshBilling({ force: true, reason: 'queued' }).catch(() => { });
-      }, 0);
-      return getBillingState();
-    }
-
-    if (
-      currentAuthoritativeRefresh &&
-      !isCurrentBillingAuthoritativeRefreshToken(currentAuthoritativeRefresh, requestedOrgId)
-    ) {
-      billingDebugLog('refresh:discard-authoritative-owner', {
-        reason,
-        requestedOrgId: requestedOrgId || null,
-        generation: currentAuthoritativeRefresh.generation,
-      });
-      return getBillingState();
-    }
-
-    const resultOrgId = normalizeOrgIdForBilling(result && result.orgId ? result.orgId : '');
-    const resultDataOrgId = normalizeOrgIdForBilling(result && result.data && result.data.orgId ? result.data.orgId : '');
-    if (
-      result &&
-      result.ok &&
-      requestedOrgId &&
-      (
-        (resultOrgId && resultOrgId !== requestedOrgId) ||
-        (resultDataOrgId && resultDataOrgId !== requestedOrgId)
-      )
-    ) {
-      billingDebugLog('refresh:discard-result-org-mismatch', {
-        reason,
-        requestedOrgId,
-        resultOrgId: resultOrgId || null,
-        resultDataOrgId: resultDataOrgId || null,
-      });
-      _billingState.loading = false;
-      _billingState.pending = true;
-      _billingState.ok = false;
-      _billingState.orgId = requestedOrgId || null;
-      _billingState.lastFetchedAt = 0;
-      _billingState.data = null;
-      _billingState.plan = null;
-      _billingState.status = null;
-      resetBillingEntitlementFields(null);
-      _billingState.isPro = false;
-      _billingState.isActive = false;
-      _billingState.interval = null;
-      _billingState.trialEndsAt = null;
-      _billingState.currentPeriodEnd = null;
-      _billingState.cancelAtPeriodEnd = false;
-      _billingState.cancelAt = null;
-      _billingState.portalAvailable = false;
-      _billingState.error = null;
-      _notifyBilling();
-      applyAccessGateFromBilling(getBillingState(), { reason: 'stale-result:' + reason, activeOrgId: requestedOrgId || null });
-      preserveUserSwitchPendingForBillingFailure(currentAuthoritativeRefresh);
-      scheduleBillingPendingRetry(requestedOrgId, 'result-org-mismatch:' + reason);
-      return getBillingState();
-    }
-
-    const resultUserId = result && result.data && result.data.userId ? String(result.data.userId) : '';
-    if (
-      currentAuthoritativeRefresh &&
-      result &&
-      result.ok &&
-      resultUserId !== currentAuthoritativeRefresh.userId
-    ) {
-      billingDebugLog('refresh:discard-authoritative-user-mismatch', {
-        reason,
-        requestedOrgId: requestedOrgId || null,
-        generation: currentAuthoritativeRefresh.generation,
-      });
-      result = {
-        ok: false,
-        pending: false,
-        status: null,
-        data: null,
-        error: { message: 'Billing response identity mismatch', status: null },
-        orgId: requestedOrgId || null,
-      };
-    }
-
-    if (!(result && result.pending)) {
-      _billingState.lastFetchedAt = Date.now();
-    }
-
-    if (result && result.pending) {
-      _billingState.pending = true;
-      _billingState.ok = false;
-      _billingState.plan = null;
-      _billingState.status = null;
-      resetBillingEntitlementFields(null);
-      _billingState.orgId = requestedOrgId || null;
-      _billingState.isPro = false;
-      _billingState.isActive = false;
-      _billingState.interval = null;
-      _billingState.trialEndsAt = null;
-      _billingState.currentPeriodEnd = null;
-      _billingState.cancelAtPeriodEnd = false;
-      _billingState.cancelAt = null;
-      _billingState.portalAvailable = false;
-      _billingState.data = null;
-      _billingState.error = null;
-      _notifyBilling();
-      applyAccessGateFromBilling(getBillingState(), { reason: 'pending:' + reason, activeOrgId: requestedOrgId || null });
-      preserveUserSwitchPendingForBillingFailure(currentAuthoritativeRefresh);
-      scheduleBillingPendingRetry(requestedOrgId, reason);
-      return getBillingState();
-    }
-
-    // Cross-profile session revocation: billing-status 401 means the server rejected our session.
-    // BroadcastChannel/localStorage cannot cross isolated Chrome profiles, so this is the
-    // detection point for a profile whose server session was revoked elsewhere.
-    if (result && !result.pending && !result.skipped && Number(result.status) === 401) {
-      billingDebugLog('refresh:session-revoked-401', { reason, requestedOrgId: requestedOrgId || null });
-      if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-        void SupabaseClient.signOut({ global: false, allowOffline: true }).catch(() => { /* ignore */ });
-      }
-      return getBillingState();
-    }
-
-    if (isConfirmedActiveOrgAccessDeniedResult(result, requestedOrgId)) {
-      const handled = _orgAccessLossHandler
-        ? _orgAccessLossHandler(requestedOrgId, {
-          reason,
-          status: result.status,
-          message: result && result.error && result.error.message ? String(result.error.message) : null,
-        })
-        : false;
-      if (handled) return getBillingState();
-      if (!handled) {
-        try {
-          const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
-          if (_uic && typeof _uic.showToast === 'function') {
-            _uic.showToast(
-              'You no longer have access to this workspace. Switch workspace or contact the owner.',
-              'warning',
-              { title: 'Access Denied' },
-            );
-          }
-        } catch (_) { /* toast must not throw from billing handler */ }
-      }
-    }
-
-    _billingState.pending = false;
-    clearBillingPendingRetry(requestedOrgId);
-    _billingState.ok = Boolean(result && result.ok);
-
-    if (result && result.ok && result.data) {
-      // Edge function now returns a flat payload: { ok, userId, plan, status, isActive, trialEndsAt, currentPeriodEnd, ... }
-      const p = result.data;
-      _billingState.data = p;
-      const planRaw = p.plan ? String(p.plan) : 'free';
-      let isActive = Boolean(p.isActive);
-      let isPro = planRaw === 'pro' && isActive;
-      let plan = planRaw === 'pro' ? 'Pro' : 'Free';
-
-      // Dev-only per-user plan override (localhost/127.0.0.1 + debug only)
-      try {
-        const _ls = typeof window !== 'undefined' && window.localStorage ? window.localStorage : null;
-        const _loc = typeof window !== 'undefined' ? window.location : null;
-        const _isLocal = _loc && (_loc.hostname === 'localhost' || _loc.hostname === '127.0.0.1');
-        const _isDebug = _ls && _ls.getItem('tp3dDebug') === '1';
-        if (_isLocal && _isDebug && _ls) {
-          // Legacy tp3dForceTrial support
-          if (_ls.getItem('tp3dForceTrial') === '1' && !isActive) {
-            plan = 'Pro'; isActive = true; isPro = true;
-          }
-          // Per-user override: tp3dDevUserPlanOverride = JSON { "<userId>": { plan, status } }
-          const overrideRaw = _ls.getItem('tp3dDevUserPlanOverride');
-          if (overrideRaw && p.userId) {
-            const overrides = JSON.parse(overrideRaw);
-            const userOv = overrides[String(p.userId)];
-            if (userOv && userOv.plan) {
-              const ovPlan = String(userOv.plan);
-              plan = ovPlan === 'pro' || ovPlan === 'trial' ? 'Pro' : 'Free';
-              isActive = userOv.status === 'active' || userOv.status === 'trialing';
-              isPro = isActive && (plan === 'Pro');
-              console.info('[Billing][DEV] Per-user override applied:', { userId: p.userId, plan, isActive, isPro });
-            }
-          }
-        }
-      } catch { /* ignore */ }
-
-      _billingState.plan = plan;
-      _billingState.status = p.status ? String(p.status) : null;
-      applyBillingEntitlementFields(p, null);
-      _billingState.orgId = p.orgId ? String(p.orgId) : (requestedOrgId || null);
-      _billingState.isPro = isPro;
-      _billingState.isActive = isActive;
-      _billingState.interval = p.interval ? String(p.interval) : null;
-      _billingState.trialEndsAt = p.trialEndsAt ? String(p.trialEndsAt) : null;
-      _billingState.currentPeriodEnd = p.currentPeriodEnd ? String(p.currentPeriodEnd) : null;
-      _billingState.cancelAtPeriodEnd = Boolean(p.cancelAtPeriodEnd);
-      _billingState.cancelAt = p.cancelAt ? String(p.cancelAt) : null;
-      _billingState.portalAvailable = Boolean(p.portalAvailable);
-      _billingState.paymentProblem = Boolean(p.paymentProblem);
-      _billingState.paymentGraceUntil = p.paymentGraceUntil ? String(p.paymentGraceUntil) : null;
-      _billingState.paymentGraceRemainingDays = p.paymentGraceRemainingDays != null ? Number(p.paymentGraceRemainingDays) : null;
-      _billingState.action = p.action ? String(p.action) : null;
-      _billingState.error = null;
-    } else {
-      _billingState.data = result ? result.data : null;
-      _billingState.plan = null;
-      _billingState.status = null;
-      resetBillingEntitlementFields('billing_unavailable');
-      _billingState.orgId = requestedOrgId || null;
-      _billingState.isPro = false;
-      _billingState.isActive = false;
-      _billingState.interval = null;
-      _billingState.trialEndsAt = null;
-      _billingState.currentPeriodEnd = null;
-      _billingState.cancelAtPeriodEnd = false;
-      _billingState.cancelAt = null;
-      _billingState.portalAvailable = false;
-      _billingState.paymentProblem = false;
-      _billingState.paymentGraceUntil = null;
-      _billingState.paymentGraceRemainingDays = null;
-      _billingState.action = null;
-      _billingState.error = result && result.error ? result.error : { message: 'Unknown error', status: null };
-    }
-
-    if (_billingState.ok && currentAuthoritativeRefresh) {
-      clearBillingAuthoritativeRefreshRequirement(currentAuthoritativeRefresh, 'matching-direct-success');
-    } else {
-      preserveUserSwitchPendingForBillingFailure(currentAuthoritativeRefresh);
-    }
-
-    _notifyBilling();
-    applyAccessGateFromBilling(getBillingState(), { reason: 'refreshed:' + reason, activeOrgId: requestedOrgId || null });
-
-    // Trial enforcement: if trial expired and not active, show upgrade notice
-    try {
-      const _bs = getBillingState();
-      const _entitlementStatus = normalizeBillingEntitlementStatus(_bs.entitlementStatus);
-      const _isTrueTrialExpired = _entitlementStatus
-        ? _entitlementStatus === 'trial_expired'
-        : Boolean(!_bs.isActive && _bs.trialEndsAt);
-      if (_bs.ok && _isTrueTrialExpired && _bs.trialEndsAt) {
-        const endMs = new Date(_bs.trialEndsAt).getTime();
-        if (Number.isFinite(endMs) && endMs < Date.now()) {
-          // Trial has expired — show persistent upgrade notice (use global ref since refreshBilling is outside IIFE)
-          const _uic = typeof window !== 'undefined' && window.__TP3D_UI ? window.__TP3D_UI : null;
-          if (_uic && typeof _uic.showToast === 'function') {
-            _uic.showToast(
-              'Your free trial has ended. Upgrade to Pro to continue using premium features.',
-              'warning',
-              { title: 'Trial Expired', duration: 10000 },
-            );
-          }
-        }
-      }
-    } catch (_) { /* ignore */ }
-
-    try {
-      if (typeof window !== 'undefined' && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1') {
-        const _dbgState = getBillingState();
-        const _dbgData = _dbgState.data || {};
-        console.info('[Billing] refreshed', _dbgState);
-        console.info('[Billing][DEV] userId:', _dbgData.userId || 'unknown', '| orgId:', _dbgData.orgId || 'none');
-        console.info('[Billing][DEV] To override, set: localStorage.tp3dDevUserPlanOverride = \'{"' + (_dbgData.userId || '<userId>') + '": {"plan":"pro","status":"active"}}\'');
-      }
-    } catch (_) { /* ignore */ }
-
-    // ── Cross-tab: write shared result and broadcast ──
-    if (requestedOrgId) {
-      _writeSharedBillingResult(requestedOrgId, getBillingState());
-      _broadcastBillingResult(requestedOrgId, getBillingState());
-    }
-
-    if (_billingRefreshQueued) {
-      _billingRefreshQueued = false;
-      setTimeout(() => {
-        refreshBilling({ force: true, reason: 'queued' })
-          .then(snapshot => {
-            _resolveBillingRefreshQueuedWaiters(snapshot);
-          })
-          .catch(() => {
-            _resolveBillingRefreshQueuedWaiters(getBillingState());
-          });
-      }, 0);
-    }
-    return getBillingState();
-  } finally {
-    finishBillingAuthoritativeRefreshAttempt(currentAuthoritativeRefresh);
-    if (requestedOrgId && _acquiredCrossTabLock) {
-      _releaseBillingLock(requestedOrgId, reason);
-    }
-  }
-}
-
-/** @param {object} billingSnapshot – from getBillingState() */
-function canUseProFeatures(billingSnapshot) {
-  const s = billingSnapshot || getBillingState();
-  return Boolean(getProRuleSet(s).canUseProFeature);
-}
-
-/**
- * Single source of truth for Pro-only feature gates.
- * Returns billing + role state needed by all Pro-gated actions.
- * @param {object} [billingSnapshot] - from getBillingState(); defaults to current state.
- * @param {string} [userRole] - override; defaults to orgContext.role in module scope.
- * @returns {{
- *   isProActive: boolean,
- *   isTrial: boolean,
- *   isTrialExpired: boolean,
- *   isPaymentProblem: boolean,
- *   canUseProFeature: boolean,
- *   blockReason: string,
- *   uxMessage: string,
- *   isOwner: boolean,
- *   isWorkspaceLimitReached: boolean,
- *   isOwnerSubRequired: boolean,
- *   isBillingUnavailable: boolean
- * }}
- */
-function getProRuleSet(billingSnapshot, userRole) {
-  const s = billingSnapshot || getBillingState();
-  const authoritativeRefreshRequired = isBillingAuthoritativeRefreshRequired();
-  const rawRole = String(userRole != null ? userRole : '').toLowerCase();
-  const entitlementStatus = normalizeBillingEntitlementStatus(s.entitlementStatus);
-  const isOwner = typeof s.canManageBilling === 'boolean' ? s.canManageBilling : rawRole === 'owner';
-
-  const isTrial = entitlementStatus
-    ? entitlementStatus === 'trialing'
-    : Boolean(s.ok && s.isPro && s.isActive && s.status === 'trialing');
-  const isTrialExpired = entitlementStatus
-    ? entitlementStatus === 'trial_expired'
-    : Boolean(s.ok && !s.isActive && s.status === 'trial_expired');
-  const isPaymentProblem = Boolean(s.ok && s.paymentProblem);
-  const canUseProFeature = entitlementStatus
-    ? Boolean(!authoritativeRefreshRequired && s.ok && isEntitlementAllowed(entitlementStatus))
-    : Boolean(!authoritativeRefreshRequired && s.ok && s.isPro && s.isActive); // trial OR paid Pro
-  const isProActive = entitlementStatus
-    ? Boolean(!authoritativeRefreshRequired && s.ok && (entitlementStatus === 'active' || entitlementStatus === 'included_in_plan'))
-    : Boolean(!authoritativeRefreshRequired && s.ok && s.isPro && s.isActive && !isTrial);
-  const isWorkspaceLimitReached = entitlementStatus === 'workspace_limit_reached';
-  const isOwnerSubRequired = entitlementStatus === 'owner_subscription_required';
-  const isBillingUnavailable = authoritativeRefreshRequired || entitlementStatus === 'billing_unavailable' || !s.ok;
-
-  let blockReason = '';
-  let uxMessage = '';
-  if (isBillingUnavailable) {
-    blockReason = 'billing_unavailable';
-    uxMessage = 'Billing unavailable. Please try again.';
-  } else if (isTrialExpired) {
-    blockReason = 'trial_expired';
-    // TODO: replace support@pxl360.com with the real support email later.
-    uxMessage = isOwner
-      ? 'Your free trial has ended. Upgrade to Pro to continue.'
-      : 'Ask your owner to upgrade this workspace or contact support: support@pxl360.com';
-  } else if (isPaymentProblem && !s.isActive) {
-    blockReason = 'payment_failed';
-    uxMessage = isOwner
-      ? 'Payment issue \u2014 fix your payment method to restore Pro features.'
-      : 'Payment issue \u2014 ask the workspace owner to update billing.';
-  } else if (isWorkspaceLimitReached) {
-    blockReason = 'workspace_limit_reached';
-    uxMessage = isOwner
-      ? 'Workspace limit reached. Upgrade your plan or free a workspace slot to use this Pro feature.'
-      : 'This workspace is not included in the owner plan. Ask the workspace owner to include it.';
-  } else if (isOwnerSubRequired) {
-    blockReason = 'owner_subscription_required';
-    uxMessage = isOwner
-      ? 'Start a subscription to use this Pro feature.'
-      : 'The workspace owner needs to start or restore a subscription before this Pro feature is available.';
-  } else if (!canUseProFeature) {
-    blockReason = 'not_pro';
-    // TODO: replace support@pxl360.com with the real support email later.
-    uxMessage = isOwner
-      ? 'This is a Pro feature. Upgrade to continue.'
-      : 'Ask your owner to upgrade this workspace or contact support: support@pxl360.com';
-  }
-
-  return {
-    isProActive,
-    isTrial,
-    isTrialExpired,
-    isPaymentProblem,
-    canUseProFeature,
-    blockReason,
-    uxMessage,
-    isOwner,
-    isWorkspaceLimitReached,
-    isOwnerSubRequired,
-    isBillingUnavailable,
-  };
-}
-
-/**
- * @param {unknown} value
- * @returns {'month'|'year'}
- */
-function normalizeCheckoutInterval(value) {
-  const raw = String(value || '').trim().toLowerCase();
-  return raw === 'year' ? 'year' : 'month';
-}
-
-function getCheckoutPlanOptions() {
-  // Stripe price IDs are resolved server-side from env-configured values.
-  return {
-    month: {
-      interval: 'month',
-      label: 'Pro (Monthly)',
-      description: '$19.99/mo',
-      available: true,
-    },
-    year: {
-      interval: 'year',
-      label: 'Pro (Yearly)',
-      description: '$199/yr',
-      available: true,
-    },
-  };
-}
-
-/**
- * Start Stripe Checkout for a given billing interval.
- * @param {string|{interval?:'month'|'year',priceId?:string,price_id?:string}} input
- * @returns {Promise<{ok:boolean, error:string|null}>}
- */
-async function startCheckout(input) {
-  let interval = 'month';
-  let priceId = '';
-  let hasExplicitInterval = false;
-  if (typeof input === 'string') {
-    if (input === 'month' || input === 'year') {
-      interval = normalizeCheckoutInterval(input);
-      hasExplicitInterval = true;
-    } else {
-      priceId = String(input || '').trim();
-    }
-  } else if (input && typeof input === 'object') {
-    if (typeof input.interval !== 'undefined') {
-      interval = normalizeCheckoutInterval(input.interval);
-      hasExplicitInterval = true;
-    }
-    const rawPriceId = input.priceId || input.price_id;
-    if (rawPriceId) priceId = String(rawPriceId).trim();
-  }
-  /** @type {{interval?:'month'|'year', priceId?:string}} */
-  const checkoutPayload = {};
-  if (hasExplicitInterval) checkoutPayload.interval = /** @type {'month'|'year'} */ (interval);
-  if (priceId) checkoutPayload.priceId = priceId;
-  if (!hasExplicitInterval && !priceId) checkoutPayload.interval = /** @type {'month'|'year'} */ (interval);
-
-  billingDebugLog('checkout:start', {
-    interval,
-    hasExplicitInterval,
-    hasPriceId: Boolean(priceId),
-    activeOrgId: getActiveOrgIdForBilling() || null,
-  });
-  const result = await Promise.race([
-    createCheckoutSession(checkoutPayload),
-    new Promise(resolve => {
-      setTimeout(() => resolve({ ok: false, url: null, error: 'Checkout request timed out' }), BILLING_REQUEST_TIMEOUT_MS);
-    }),
-  ]);
-  billingDebugLog('checkout:result', { ok: Boolean(result && result.ok), error: result && result.error ? String(result.error) : null });
-  if (result.ok && result.url) {
-    window.location.href = result.url;
-    return { ok: true, error: null };
-  }
-  return { ok: false, error: result.error || 'Checkout failed' };
-}
-
-/**
- * Open Stripe Billing Portal for managing subscription.
- * @returns {Promise<{ok:boolean, error:string|null}>}
- */
-async function openPortal() {
-  billingDebugLog('portal:start', { activeOrgId: getActiveOrgIdForBilling() || null });
-  const result = await Promise.race([
-    createPortalSession(),
-    new Promise(resolve => {
-      setTimeout(() => resolve({ ok: false, url: null, error: 'Portal request timed out' }), BILLING_REQUEST_TIMEOUT_MS);
-    }),
-  ]);
-  billingDebugLog('portal:result', { ok: Boolean(result && result.ok), error: result && result.error ? String(result.error) : null });
-  if (result.ok && result.url) {
-    window.location.href = result.url;
-    return { ok: true, error: null };
-  }
-  return { ok: false, error: result.error || 'Portal session failed' };
-}
+// Billing domain (Stage 1 extraction from the former inline billing region).
+// Constructed here — before the facade and the IIFE — so the cross-tab channel and
+// storage listeners keep their module-eval timing and every injected dependency
+// (defined above) is in scope. Root/IIFE orchestration calls BillingService.* .
+const BillingService = createBillingService({
+  SupabaseClient,
+  fetchBillingStatus,
+  createCheckoutSession,
+  createPortalSession,
+  isTp3dDebugEnabled,
+  normalizeOrgIdForBilling,
+  normalizeBillingEntitlementStatus,
+  billingDebugLog,
+  ORG_UUID_RE,
+  bootStartedAtMs: _bootStartedAtMs,
+  BILLING_SHARED_FRESH_MS: _BILLING_SHARED_FRESH_MS,
+});
 
 // Expose for settings overlay and dev console
 try {
   window.__TP3D_BILLING = {
-    getBillingState,
-    subscribeBilling,
-    refreshBilling,
-    clearBillingState,
-    canUseProFeatures,
-    getProRuleSet,
-    getCheckoutPlanOptions,
-    startCheckout,
-    openPortal,
+    getBillingState: BillingService.getBillingState,
+    subscribeBilling: BillingService.subscribeBilling,
+    refreshBilling: BillingService.refreshBilling,
+    clearBillingState: BillingService.clearBillingState,
+    canUseProFeatures: BillingService.canUseProFeatures,
+    getProRuleSet: BillingService.getProRuleSet,
+    getCheckoutPlanOptions: BillingService.getCheckoutPlanOptions,
+    startCheckout: BillingService.startCheckout,
+    openPortal: BillingService.openPortal,
     selfTest: () => {
       if (!isTp3dDebugEnabled()) {
         return { ok: false, error: 'Enable tp3dDebug=1 to use billing self-test.' };
       }
-      const snapshot = getBillingState();
-      const activeOrganizationId = getActiveOrgIdForBilling() || null;
-      const proAllowed = canUseProFeatures(snapshot);
+      const snapshot = BillingService.getBillingState();
+      const activeOrganizationId = BillingService.getActiveOrgIdForBilling() || null;
+      const proAllowed = BillingService.canUseProFeatures(snapshot);
       const payload = {
         ok: true,
         activeOrganizationId,
@@ -2187,7 +552,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let PacksUI = null;
     let SceneManager = null;
     let ExportService = null;
-    let shortcuts = {};
     let bootstrapAuthGate = null;
 
     // ============================================================================
@@ -2443,8 +807,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let logoutActionPromise = null;
     let logoutInProgress = false;
     let logoutStartedAt = 0;
-    let logoutFallbackTimer = null;
-    const LOGOUT_FALLBACK_RELOAD_DELAY_MS = 2200;
+    let signedOutFinalized = false;
+    let signedOutFinalizationInFlight = false;
     let applyPostLogoutLocalStateReset = () => {
       SessionManager.clear();
       StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
@@ -2459,62 +823,47 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (logoutInProgress === active) return;
       logoutInProgress = active;
       logoutStartedAt = active ? Date.now() : 0;
-      if (!active && logoutFallbackTimer) {
-        clearTimeout(logoutFallbackTimer);
-        logoutFallbackTimer = null;
-      }
       if (isTp3dDebugEnabled()) {
         console.info('[authLogout] latch', { active, source, reason, startedAt: logoutStartedAt || null });
       }
     }
 
-    function scheduleLogoutFallbackReload(source = 'logout') {
-      if (logoutFallbackTimer) {
-        clearTimeout(logoutFallbackTimer);
-        logoutFallbackTimer = null;
+    function finalizeSignedOutLocally({
+      source = 'auth',
+      event = 'SIGNED_OUT',
+      treatAsSignedOut = true,
+      userInitiatedSignOut = false,
+      onRetry = bootstrapAuthGate,
+    } = {}) {
+      if (signedOutFinalized || signedOutFinalizationInFlight) {
+        if (signedOutFinalized && isLogoutInProgress()) {
+          setLogoutInProgress(false, { source, reason: 'signed-out-already-finalized' });
+        }
+        return false;
       }
-      logoutFallbackTimer = setTimeout(() => {
-        logoutFallbackTimer = null;
-        let hasSession = false;
-        try {
-          const authState =
-            SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
-          const session = authState && authState.session ? authState.session : null;
-          hasSession = Boolean(session && session.access_token);
-        } catch {
-          hasSession = false;
+      signedOutFinalizationInFlight = true;
+      try {
+        applyPostLogoutLocalStateReset();
+        _executeSignedOutCleanup({
+          event,
+          treatAsSignedOut,
+          userInitiatedSignOut: Boolean(userInitiatedSignOut),
+          onRetry,
+        });
+        signedOutFinalized = true;
+      } finally {
+        signedOutFinalizationInFlight = false;
+        if (isLogoutInProgress()) {
+          setLogoutInProgress(false, { source, reason: 'signed-out-finalized' });
         }
-        let signedOutUi = false;
-        try {
-          const bodySignedOut = document.body && document.body.getAttribute('data-auth') === 'signed_out';
-          const overlayOpen =
-            Boolean(AuthOverlay && typeof AuthOverlay.isOpen === 'function' && AuthOverlay.isOpen());
-          signedOutUi = Boolean(bodySignedOut && overlayOpen);
-        } catch {
-          signedOutUi = false;
-        }
-        if (isTp3dDebugEnabled()) {
-          console.info('[authLogout] fallback-check', {
-            source,
-            hasSession,
-            signedOutUi,
-            logoutInProgress,
-          });
-        }
-        if (!hasSession && !signedOutUi) {
-          if (isTp3dDebugEnabled()) console.info('[authLogout] fallback-reload', { source });
-          try { window.location.reload(); } catch (_) { /* ignore */ }
-          return;
-        }
-        if (!hasSession && signedOutUi) {
-          setLogoutInProgress(false, { source, reason: 'stable-signed-out-ui' });
-        }
-      }, LOGOUT_FALLBACK_RELOAD_DELAY_MS);
+      }
+      return true;
     }
 
     async function performUserInitiatedLogout({ source = 'logout' } = {}) {
       if (logoutActionPromise) return logoutActionPromise;
       logoutActionPromise = (async () => {
+        signedOutFinalized = false;
         setLogoutInProgress(true, { source, reason: 'start' });
         try {
           UIComponents.closeAllDropdowns();
@@ -2524,10 +873,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // ignore
         }
 
-        let usedSupabaseSignOut = false;
         try {
           if (SupabaseClient && typeof SupabaseClient.signOut === 'function') {
-            usedSupabaseSignOut = true;
             if (SupabaseClient.setAuthIntent) SupabaseClient.setAuthIntent('signOut');
             const result = await SupabaseClient.signOut({ global: true, allowOffline: true, userInitiated: true });
             if (isTp3dDebugEnabled()) {
@@ -2547,15 +894,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
         }
 
-        applyPostLogoutLocalStateReset();
-
-        if (usedSupabaseSignOut) {
-          scheduleLogoutFallbackReload(source);
-          return;
-        }
-
-        setLogoutInProgress(false, { source, reason: 'local-fallback' });
-        UIComponents.showToast('Logged out', 'info');
+        finalizeSignedOutLocally({ source, userInitiatedSignOut: true });
       })().finally(() => {
         logoutActionPromise = null;
       });
@@ -2576,20 +915,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
         });
       }
 
-      if (isLogoutInProgress()) {
-        setLogoutInProgress(false, { source: 'tp3d:auth-signed-out', reason: 'event' });
-      }
-
-      // Force signed-out UI state
-      try {
-        if (AuthOverlay && typeof AuthOverlay.show === 'function') {
-          AuthOverlay.show();
-        } else {
-          window.location.reload();
-        }
-      } catch {
-        window.location.reload();
-      }
+      const userInitiatedSignOut = isLogoutInProgress();
+      finalizeSignedOutLocally({
+        source: 'tp3d:auth-signed-out',
+        userInitiatedSignOut,
+      });
     });
 
     // Show small toasts on connectivity changes to improve UX
@@ -2722,13 +1052,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try {
         snapshot = (window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function')
           ? window.__TP3D_BILLING.getBillingState()
-          : getBillingState();
+          : BillingService.getBillingState();
       } catch {
-        snapshot = getBillingState();
+        snapshot = BillingService.getBillingState();
       }
       if (!snapshot || snapshot.ok !== true || snapshot.loading || snapshot.pending) return null;
 
-      const activeOrgId = getActiveOrgIdForBilling();
+      const activeOrgId = BillingService.getActiveOrgIdForBilling();
       const billingOrgId = snapshot.orgId ? String(snapshot.orgId) : '';
       if (activeOrgId && billingOrgId && String(activeOrgId) !== billingOrgId) return null;
 
@@ -2764,7 +1094,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           variant: 'primary',
           onClick: () => {
             if (block.portalAvailable) {
-              openPortal().then(result => {
+              BillingService.openPortal().then(result => {
                 if (!result || !result.ok) {
                   UIComponents.showToast(
                     result && result.error ? result.error : 'Portal session failed',
@@ -2871,7 +1201,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (SupabaseClient.invalidateAccountCache) SupabaseClient.invalidateAccountCache();
             await setActiveOrgId(org.id, { source: 'create-workspace' });
             await refreshOrgContext('create-workspace', { force: true, forceEmit: true });
-            await refreshBilling({ force: true, reason: 'create-workspace' });
+            await BillingService.refreshBilling({ force: true, reason: 'create-workspace' });
             syncWorkspaceUiAfterOrgRefresh(source);
             UIComponents.showToast(`Workspace "${org && org.name ? org.name : name}" created!`, 'success');
             if (modalRef && typeof modalRef.close === 'function') modalRef.close();
@@ -2958,188 +1288,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: UI WIDGET (ACCOUNT SWITCHER)
     // ============================================================================
-    AccountSwitcher = (() => {
-      let anchorKeyCounter = 0;
-      const mounts = new Map();
-
-      function getDisplay() {
-        const view = getSidebarAvatarView();
-        const isAuthed = Boolean(view && view.isAuthed);
-        const displayName = (view && view.displayName) || (isAuthed ? 'User' : 'Guest');
-        const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
-        const activeOrgs = orgContext && Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
-        const noActiveWorkspace = Boolean(isAuthed && !activeOrg && orgContextResolved && activeOrgs.length === 0);
-        // Show 'Loading…' instead of generic 'Workspace' when user is authed
-        // but org context hasn't arrived yet (cross-tab boot gap).
-        const orgHydrating = Boolean(
-          isAuthed && !activeOrg && !orgContextResolved && (orgContextInFlight || authRehydratePromise)
-        );
-        const accountName = activeOrg && activeOrg.name
-          ? activeOrg.name
-          : noActiveWorkspace
-            ? 'No workspace'
-            : (orgHydrating ? 'Loading\u2026' : 'Workspace');
-        const role =
-          (orgContext && orgContext.role ? String(orgContext.role) : null) ||
-          (activeOrg && activeOrg.role ? String(activeOrg.role) : null) ||
-          (noActiveWorkspace ? 'No active workspace' : null) ||
-          (isAuthed ? 'Owner' : 'Guest');
-
-        return {
-          accountName,
-          role,
-          userName: noActiveWorkspace ? 'Create or join' : displayName || '—',
-          orgInitials: noActiveWorkspace ? '' : getActiveWorkspaceInitials(),
-          initials: (view && view.initials) || '',
-        };
-      }
-
-      function renderButton(buttonEl) {
-        if (!buttonEl) return;
-        const display = getDisplay();
-        const avatarEl = buttonEl.querySelector('.brand-mark');
-        if (avatarEl) avatarEl.textContent = display.orgInitials || '';
-        const nameEl = buttonEl.querySelector('[data-account-name]');
-        if (nameEl) nameEl.textContent = display.userName;
-        const orgNameEl = buttonEl.querySelector('[data-org-name]');
-        if (orgNameEl) orgNameEl.textContent = display.accountName;
-        renderSidebarBrandMarks();
-      }
-
-      function _showComingSoon() {
-        UIComponents.showToast('Coming soon', 'info');
-      }
-
-      function createWorkspacePrompt() {
-        openCreateWorkspaceFlow({ source: 'account-switcher' });
-      }
-
-      function switchWorkspace(orgId, { source = 'account-switcher' } = {}) {
-        return setActiveOrgId(String(orgId), { source }).catch(err => {
-          console.error('[AccountSwitcher] Failed to switch workspace:', err);
-          UIComponents.showToast(
-            err && err.message ? String(err.message) : 'Failed to switch workspace.',
-            'error'
-          );
-        });
-      }
-
-      async function logout() {
-        await performUserInitiatedLogout({ source: 'account-switcher' });
-      }
-
-      function getAnchorKey(anchorEl) {
-        if (!anchorEl) return '';
-        if (!anchorEl.dataset.accountSwitcherKey) {
-          anchorEl.dataset.accountSwitcherKey = `account-switcher-${++anchorKeyCounter}`;
-        }
-        return anchorEl.dataset.accountSwitcherKey;
-      }
-
-      /**
-       * @param {HTMLElement} anchorEl
-       * @param {{ align?: string }} [opts]
-       */
-      function openMenu(anchorEl, { align } = {}) {
-        const display = getDisplay();
-        const anchorKey = getAnchorKey(anchorEl);
-        const existingDropdown = /** @type {HTMLElement|null} */ (
-          document.querySelector('[data-dropdown="1"][data-role="account-switcher"]')
-        );
-        if (existingDropdown && existingDropdown.dataset.anchorId === anchorKey) {
-          closeDropdowns();
-          return;
-        }
-        closeDropdowns();
-        const allOrgs = orgContext && Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
-        const activeOrgId = orgContext && orgContext.activeOrgId ? String(orgContext.activeOrgId) : '';
-        const otherOrgs = allOrgs.filter(o => o && o.id && String(o.id) !== activeOrgId);
-        const items = [
-          {
-            label: `${display.accountName} (${display.role})`,
-            icon: 'fa-regular fa-user',
-            rightIcon: 'fa-solid fa-check',
-            disabled: true,
-          },
-          ...otherOrgs.map(o => ({
-            label: o.name || 'Workspace',
-            icon: 'fa-solid fa-building',
-            onClick: () => void switchWorkspace(String(o.id), { source: 'account-switcher' }),
-          })),
-          {
-            label: 'New Workspace',
-            icon: 'fa-solid fa-plus',
-            onClick: () => createWorkspacePrompt(),
-          },
-          { type: 'divider' },
-          {
-            label: 'Account',
-            icon: 'fa-regular fa-user',
-            onClick: () => openSettingsOverlay('account'),
-          },
-          {
-            label: 'Settings',
-            icon: 'fa-solid fa-gear',
-            onClick: () => openSettingsOverlay(),
-          },
-          {
-            label: 'Log out',
-            icon: 'fa-solid fa-right-from-bracket',
-            onClick: () => void logout(),
-          },
-        ];
-
-        const rect = anchorEl.getBoundingClientRect();
-        UIComponents.openDropdown(anchorEl, items, {
-          align: align || 'left',
-          width: rect.width,
-          role: 'account-switcher',
-          anchorKey,
-        });
-      }
-
-      /**
-       * @param {HTMLElement} buttonEl
-       * @param {{ align?: string }} [opts]
-       */
-      function bind(buttonEl, { align } = {}) {
-        if (!buttonEl) return () => { };
-        if (mounts.has(buttonEl)) return mounts.get(buttonEl);
-
-        renderButton(buttonEl);
-        const onClick = ev => {
-          ev.stopPropagation();
-          openMenu(buttonEl, { align });
-        };
-        buttonEl.addEventListener('click', onClick);
-        const unsub = SessionManager.subscribe(() => renderButton(buttonEl));
-
-        const unmount = () => {
-          try {
-            unsub && unsub();
-          } catch {
-            // ignore
-          }
-          buttonEl.removeEventListener('click', onClick);
-          mounts.delete(buttonEl);
-        };
-        mounts.set(buttonEl, unmount);
-        return unmount;
-      }
-
-      function initAccountSwitcher() {
-        const sidebarBtn = document.getElementById('btn-account-switcher');
-        bind(sidebarBtn, { align: 'left' });
-      }
-
-      function refreshAll() {
-        mounts.forEach((_, buttonEl) => {
-          renderButton(buttonEl);
-        });
-      }
-
-      return { init: initAccountSwitcher, bind, refresh: refreshAll };
-    })();
+    AccountSwitcher = createAccountSwitcher({
+      documentRef: document,
+      UIComponents,
+      SessionManager,
+      getOrgContext: () => orgContext,
+      isOrgContextResolved: () => orgContextResolved,
+      isOrgContextInFlight: () => orgContextInFlight,
+      getAuthRehydratePromise: () => authRehydratePromise,
+      getSidebarAvatarView,
+      getActiveWorkspaceInitials,
+      renderSidebarBrandMarks,
+      closeDropdowns,
+      openSettingsOverlay,
+      openCreateWorkspaceFlow,
+      setActiveOrgId,
+      performUserInitiatedLogout,
+    });
 
     // CategoryService extracted to src/services/category-service.js
 
@@ -3165,248 +1330,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: GEOMETRY / DIMENSIONS
     // ============================================================================
-    const TrailerGeometry = (() => {
-      function getDims(truck) {
-        const t = truck && typeof truck === 'object' ? truck : {};
-        const length = Math.max(0, Number(t.length) || 0);
-        const width = Math.max(0, Number(t.width) || 0);
-        const height = Math.max(0, Number(t.height) || 0);
-        return { length, width, height };
-      }
-
-      function getMode(truck) {
-        const mode = truck && truck.shapeMode;
-        if (mode === 'wheelWells' || mode === 'frontBonus' || mode === 'rect') return mode;
-        return 'rect';
-      }
-
-      function getConfig(truck) {
-        const cfg = truck && truck.shapeConfig;
-        return cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
-      }
-
-      function zone(min, max) {
-        return { min: { ...min }, max: { ...max } };
-      }
-
-      function sanitizeZones(zones) {
-        const EPS = 1e-9;
-        return (zones || []).filter(z => {
-          const dx = z.max.x - z.min.x;
-          const dy = z.max.y - z.min.y;
-          const dz = z.max.z - z.min.z;
-          return dx > EPS && dy > EPS && dz > EPS;
-        });
-      }
-
-      function getTrailerUsableZones(truck) {
-        const { length: L, width: W, height: H } = getDims(truck);
-        const mode = getMode(truck);
-        const cfg = getConfig(truck);
-
-        if (!L || !W || !H) return [];
-
-        if (mode === 'frontBonus') {
-          const bonusLengthRaw = Number(cfg.bonusLength);
-          const bonusHeightRaw = Number(cfg.bonusHeight);
-
-          const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
-          const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
-
-          // Raised over-cab deck: flush with the main box's ceiling, full
-          // trailer width, starting at y = bonusHeight (the deck height /
-          // cab clearance measured from the main floor). The "cab void"
-          // below it (x > L, y < bonusHeight) is intentionally not part of
-          // any usable zone - see getFrontBonusBlockedZones().
-          const zones = [
-            zone({ x: 0, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
-            zone({ x: L, y: bonusHeight, z: -W / 2 }, { x: L + bonusLength, y: H, z: W / 2 }),
-          ];
-          return sanitizeZones(zones);
-        }
-
-        if (mode === 'wheelWells') {
-          const wellHeightRaw = Number(cfg.wellHeight);
-          const wellWidthRaw = Number(cfg.wellWidth);
-          const wellLengthRaw = Number(cfg.wellLength);
-          const wellOffsetRaw = Number(cfg.wellOffsetFromRear);
-
-          const wellHeight = Utils.clamp(Number.isFinite(wellHeightRaw) ? wellHeightRaw : 0.35 * H, 0, H);
-          const wellWidth = Utils.clamp(Number.isFinite(wellWidthRaw) ? wellWidthRaw : 0.15 * W, 0, W / 2);
-          const wellLength = Utils.clamp(Number.isFinite(wellLengthRaw) ? wellLengthRaw : 0.35 * L, 0, L);
-          const wellOffsetFromRear = Utils.clamp(Number.isFinite(wellOffsetRaw) ? wellOffsetRaw : 0.25 * L, 0, L);
-
-          const wx0 = wellOffsetFromRear;
-          const wx1 = Utils.clamp(wx0 + wellLength, wx0, L);
-          const betweenHalfW = Math.max(0, W / 2 - wellWidth);
-
-          const zones = [
-            // 1) rear full-width
-            zone({ x: 0, y: 0, z: -W / 2 }, { x: wx0, y: H, z: W / 2 }),
-
-            // 2) center corridor between wells (full height)
-            zone({ x: wx0, y: 0, z: -betweenHalfW }, { x: wx1, y: H, z: betweenHalfW }),
-
-            // 3) left above-well
-            zone({ x: wx0, y: wellHeight, z: -W / 2 }, { x: wx1, y: H, z: -betweenHalfW }),
-
-            // 4) right above-well
-            zone({ x: wx0, y: wellHeight, z: betweenHalfW }, { x: wx1, y: H, z: W / 2 }),
-
-            // 5) front full-width
-            zone({ x: wx1, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 }),
-          ];
-          return sanitizeZones(zones);
-        }
-
-        // rect (default)
-        return [zone({ x: 0, y: 0, z: -W / 2 }, { x: L, y: H, z: W / 2 })];
-      }
-
-      function getTrailerCapacityInches3(truck) {
-        const zones = getTrailerUsableZones(truck);
-        return zones.reduce((sum, z) => {
-          const dx = z.max.x - z.min.x;
-          const dy = z.max.y - z.min.y;
-          const dz = z.max.z - z.min.z;
-          return sum + Math.max(0, dx) * Math.max(0, dy) * Math.max(0, dz);
-        }, 0);
-      }
-
-      function isAabbContainedInAnyZone(aabb, zones) {
-        // Inch-space containment only; callers must pass inch-space AABBs and zones.
-        const EPS = CorePackLibrary.CONTAINMENT_EPS_INCHES;
-        for (const z of zones || []) {
-          if (
-            aabb.min.x >= z.min.x - EPS &&
-            aabb.max.x <= z.max.x + EPS &&
-            aabb.min.y >= z.min.y - EPS &&
-            aabb.max.y <= z.max.y + EPS &&
-            aabb.min.z >= z.min.z - EPS &&
-            aabb.max.z <= z.max.z + EPS
-          ) {
-            return true;
-          }
-        }
-        return false;
-      }
-
-      function zonesInchesToWorld(zonesInches) {
-        return (zonesInches || []).map(z => ({
-          min: {
-            x: SceneManager.toWorld(z.min.x),
-            y: SceneManager.toWorld(z.min.y),
-            z: SceneManager.toWorld(z.min.z),
-          },
-          max: {
-            x: SceneManager.toWorld(z.max.x),
-            y: SceneManager.toWorld(z.max.y),
-            z: SceneManager.toWorld(z.max.z),
-          },
-        }));
-      }
-
-      function zonesToSpacesInches(zonesInches) {
-        return (zonesInches || []).map(z => ({
-          x: z.min.x,
-          y: z.min.y,
-          z: z.min.z,
-          length: z.max.x - z.min.x,
-          width: z.max.z - z.min.z,
-          height: z.max.y - z.min.y,
-        }));
-      }
-
-      function getWheelWellsBlockedZones(truck) {
-        const { length: L, width: W, height: H } = getDims(truck);
-        const mode = getMode(truck);
-        const cfg = getConfig(truck);
-        if (mode !== 'wheelWells') return [];
-        if (!L || !W || !H) return [];
-
-        const wellHeightRaw = Number(cfg.wellHeight);
-        const wellWidthRaw = Number(cfg.wellWidth);
-        const wellLengthRaw = Number(cfg.wellLength);
-        const wellOffsetRaw = Number(cfg.wellOffsetFromRear);
-
-        const wellHeight = Utils.clamp(Number.isFinite(wellHeightRaw) ? wellHeightRaw : 0.35 * H, 0, H);
-        const wellWidth = Utils.clamp(Number.isFinite(wellWidthRaw) ? wellWidthRaw : 0.15 * W, 0, W / 2);
-        const wellLength = Utils.clamp(Number.isFinite(wellLengthRaw) ? wellLengthRaw : 0.35 * L, 0, L);
-        const wellOffsetFromRear = Utils.clamp(Number.isFinite(wellOffsetRaw) ? wellOffsetRaw : 0.25 * L, 0, L);
-
-        const wx0 = wellOffsetFromRear;
-        const wx1 = Utils.clamp(wx0 + wellLength, wx0, L);
-        const betweenHalfW = Math.max(0, W / 2 - wellWidth);
-
-        const zones = [
-          // Left wheel well (blocked)
-          zone({ x: wx0, y: 0, z: -W / 2 }, { x: wx1, y: wellHeight, z: -betweenHalfW }),
-
-          // Right wheel well (blocked)
-          zone({ x: wx0, y: 0, z: betweenHalfW }, { x: wx1, y: wellHeight, z: W / 2 }),
-        ];
-        return sanitizeZones(zones);
-      }
-
-      // G2.2: getFrontBonusZone() returns the raised over-cab deck zone
-      // (x: truck.length..truck.length+bonusLength, y: bonusHeight..
-      // truck.height, full trailer width), matching the
-      // getTrailerUsableZones() overhang zone. bonusHeight is the deck
-      // height / cab clearance measured from the main floor. This is a
-      // visual-only helper: it is used by scene-runtime to render the
-      // overhang as a real attached volume flush with the main box's
-      // ceiling, not a floor-level carve-out of the main box.
-      function getFrontBonusZone(truck) {
-        const { length: L, width: W, height: H } = getDims(truck);
-        const mode = getMode(truck);
-        const cfg = getConfig(truck);
-        if (mode !== 'frontBonus') return null;
-        if (!L || !W || !H) return null;
-
-        const bonusLengthRaw = Number(cfg.bonusLength);
-        const bonusHeightRaw = Number(cfg.bonusHeight);
-
-        const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
-        const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
-
-        const zones = [zone({ x: L, y: bonusHeight, z: -W / 2 }, { x: L + bonusLength, y: H, z: W / 2 })];
-        return sanitizeZones(zones)[0] || null;
-      }
-
-      // G2.2: getFrontBonusBlockedZones() returns the "cab void" beneath the
-      // raised over-cab deck (x: truck.length..truck.length+bonusLength,
-      // y: 0..bonusHeight, full trailer width). This space is structurally
-      // occupied by the cab and is never part of a usable zone - mirrors
-      // getWheelWellsBlockedZones() so visuals/tests/warning logic can treat
-      // it the same way as a blocked wheel-well volume.
-      function getFrontBonusBlockedZones(truck) {
-        const { length: L, width: W, height: H } = getDims(truck);
-        const mode = getMode(truck);
-        const cfg = getConfig(truck);
-        if (mode !== 'frontBonus') return [];
-        if (!L || !W || !H) return [];
-
-        const bonusLengthRaw = Number(cfg.bonusLength);
-        const bonusHeightRaw = Number(cfg.bonusHeight);
-
-        const bonusLength = Math.max(0, Number.isFinite(bonusLengthRaw) ? bonusLengthRaw : 0);
-        const bonusHeight = Utils.clamp(Number.isFinite(bonusHeightRaw) ? bonusHeightRaw : 0.45 * H, 0, H);
-
-        const zones = [zone({ x: L, y: 0, z: -W / 2 }, { x: L + bonusLength, y: bonusHeight, z: W / 2 })];
-        return sanitizeZones(zones);
-      }
-
-      return {
-        getTrailerUsableZones,
-        getTrailerCapacityInches3,
-        isAabbContainedInAnyZone,
-        zonesInchesToWorld,
-        zonesToSpacesInches,
-        getWheelWellsBlockedZones,
-        getFrontBonusZone,
-        getFrontBonusBlockedZones,
-      };
-    })();
+    const TrailerGeometry = createTrailerGeometry({
+      Utils,
+      CorePackLibrary,
+      getSceneManager: () => SceneManager,
+    });
 
     // ============================================================================
     // SECTION: DOMAIN DATA (PACKS)
@@ -3452,114 +1380,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: APP SHELL / NAVIGATION
     // ============================================================================
-    const AppShell = (() => {
-      const appRoot = document.getElementById('app');
-      const sidebar = document.getElementById('sidebar');
-      const btnSidebar = document.getElementById('btn-sidebar');
-      const topbarTitle = document.getElementById('topbar-title');
-      const topbarSubtitle = document.getElementById('topbar-subtitle');
-      const contentRoot = document.querySelector('.content');
-      const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
-
-      const screenTitles = {
-        packs: { title: 'Packs', subtitle: 'Project library' },
-        cases: { title: 'Cases', subtitle: 'Inventory management' },
-        editor: { title: 'Editor', subtitle: '3D workspace' },
-        updates: { title: 'Release Notes', subtitle: 'Verified product changes' },
-        roadmap: { title: 'Roadmap', subtitle: 'Published product plans' },
-        settings: { title: 'Settings', subtitle: 'Preferences' },
-      };
-
-      function toggleSidebar() {
-        const isMobile = window.matchMedia('(max-width: 899px)').matches;
-        if (isMobile) {
-          sidebar.classList.toggle('open');
-        } else {
-          appRoot.classList.toggle('sidebar-collapsed');
-        }
-      }
-
-      function initShell() {
-        btnSidebar.addEventListener('click', toggleSidebar);
-        navButtons.forEach(btn => {
-          btn.addEventListener('click', () => {
-            const target = btn.getAttribute('data-nav');
-            navigate(target);
-            if (window.matchMedia('(max-width: 899px)').matches) {
-              sidebar.classList.remove('open');
-            }
-          });
-        });
-
-        window.addEventListener('resize', () => {
-          if (!window.matchMedia('(max-width: 899px)').matches) {
-            sidebar.classList.remove('open');
-          }
-        });
-      }
-
-      function navigate(screenKey) {
-        StateStore.set({ currentScreen: screenKey }, { skipHistory: true });
-      }
-
-      function renderShell() {
-        const screen = StateStore.get('currentScreen');
-        navButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-nav') === screen));
-        document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-        const el = document.getElementById(`screen-${screen}`);
-        if (el) {
-          el.classList.add('active');
-          if (
-            screen === 'editor' &&
-            window.TruckPackerApp &&
-            window.TruckPackerApp.EditorUI &&
-            typeof window.TruckPackerApp.EditorUI.onActivated === 'function'
-          ) {
-            window.requestAnimationFrame(() => {
-              window.requestAnimationFrame(() => {
-                try {
-                  window.TruckPackerApp.EditorUI.onActivated();
-                } catch (err) {
-                  console.warn('[AppShell] Editor activation hook failed', err);
-                }
-              });
-            });
-          }
-        }
-        if (contentRoot) contentRoot.classList.toggle('editor-mode', screen === 'editor');
-
-        const isMobile = window.matchMedia('(max-width: 899px)').matches;
-
-        if (screen === 'editor') {
-          // Collapse sidebar to maximize editor viewport (desktop only)
-          if (isMobile) {
-            appRoot.classList.remove('sidebar-collapsed');
-            sidebar.classList.remove('open');
-          } else {
-            appRoot.classList.add('sidebar-collapsed');
-            sidebar.classList.remove('open');
-          }
-          // Ensure editor panels visible to avoid empty canvas gap
-          const editorLeft = document.getElementById('editor-left');
-          const editorRight = document.getElementById('editor-right');
-          editorLeft && editorLeft.classList.remove('hidden');
-          editorRight && editorRight.classList.remove('hidden');
-          const pack = PackLibrary.getById(StateStore.get('currentPackId'));
-          topbarTitle.textContent = pack ? pack.title || 'Editor' : 'Editor';
-          topbarSubtitle.textContent = pack ? `Edited ${Utils.formatRelativeTime(pack.lastEdited)}` : '3D workspace';
-          return;
-        }
-
-        // Restore sidebar when leaving editor (desktop)
-        if (!isMobile) appRoot.classList.remove('sidebar-collapsed');
-
-        const meta = screenTitles[screen] || { title: 'Truck Packer 3D', subtitle: '' };
-        topbarTitle.textContent = meta.title;
-        topbarSubtitle.textContent = meta.subtitle;
-      }
-
-      return { init: initShell, navigate, renderShell };
-    })();
+    const AppShell = createAppShell({
+      StateStore,
+      PackLibrary,
+      Utils,
+    });
 
     // ============================================================================
     // SECTION: 3D ENGINE (SCENE)
@@ -3609,9 +1434,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       CaseScene,
       OperationLifecycle,
       capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
-      getActiveOrgIdForBilling,
+      getActiveOrgIdForBilling: BillingService.getActiveOrgIdForBilling,
       getOrgRoleHydrationState: orgId => _getOrgRoleHydrationStateAccessor(orgId),
-      getProRuleSet,
+      getProRuleSet: BillingService.getProRuleSet,
       getWorkspaceSwitchState,
       maybeScheduleBillingRefresh,
       normalizeOrgIdForBilling,
@@ -3702,6 +1527,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       function clearPackPreview(packId) {
+        if (OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Finish the current operation before clearing a preview.', 'info', { title: 'Preview' });
+          return false;
+        }
         const pack = PackLibrary.getById(packId);
         if (!pack) return false;
         if (!pack.thumbnail) return false;
@@ -3740,7 +1569,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'Export' });
             return;
           }
-          const _rules = getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
+          const _rules = BillingService.getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
           if (!_rules.canUseProFeature) {
             UIComponents.showToast(_rules.uxMessage, 'info', { title: 'Export' });
             if (_rules.isOwner && (_rules.blockReason === 'trial_expired' || _rules.blockReason === 'payment_failed')) {
@@ -3911,6 +1740,62 @@ const TP3D_BUILD_STAMP = Object.freeze({
             doc.text(e.weight, x4, y);
             y += lineHeight;
           });
+
+          // Cargo Instructions manifest. Standard Case Instructions are
+          // rendered once per referenced Case; Item Notes are rendered once
+          // for their owning Pack instance. Empty values are omitted.
+          const cargoInstructions = ImportExport.buildCargoInstructionsManifest(pack);
+          if (cargoInstructions.caseEntries.length || cargoInstructions.itemEntries.length) {
+            const ensureInstructionSpace = needed => {
+              if (y + needed <= pageHeight - margin) return;
+              doc.addPage();
+              y = margin;
+            };
+            const writeInstructionField = (label, value) => {
+              ensureInstructionSpace(30);
+              doc.setFont('helvetica', 'bold');
+              doc.setFontSize(10);
+              doc.text(`${label}:`, margin, y);
+              y += 13;
+              doc.setFont('helvetica', 'normal');
+              const lines = doc.splitTextToSize(String(value || ''), pageWidth - margin * 2 - 12);
+              lines.forEach(line => {
+                ensureInstructionSpace(13);
+                doc.text(line, margin + 12, y);
+                y += 13;
+              });
+              y += 5;
+            };
+            const writeInstructionEntry = (heading, fields) => {
+              ensureInstructionSpace(48);
+              doc.setFont('helvetica', 'bold');
+              doc.setFontSize(10);
+              doc.text(heading, margin, y);
+              y += 17;
+              fields.forEach(([label, value]) => writeInstructionField(label, value));
+              y += 8;
+            };
+
+            ensureInstructionSpace(52);
+            y += y > margin ? 16 : 0;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(16);
+            doc.text('CARGO INSTRUCTIONS', margin, y);
+            y += 24;
+
+            cargoInstructions.caseEntries.forEach(entry => {
+              writeInstructionEntry('CASE INFORMATION', [
+                ['Case', entry.caseName],
+                ['Standard Case Instructions', entry.caseNotes],
+              ]);
+            });
+            cargoInstructions.itemEntries.forEach(entry => {
+              writeInstructionEntry('ITEM DETAILS', [
+                ['Instance', entry.instanceName],
+                ['Item Notes', entry.itemNotes],
+              ]);
+            });
+          }
 
           // Summary
           const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
@@ -4140,6 +2025,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UIComponents,
       ImportExport,
       PackLibrary,
+      OperationLifecycle,
       Utils,
     });
     const ImportCasesDialog = createImportCasesDialog({
@@ -4147,6 +2033,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UIComponents,
       ImportExport,
       StateStore,
+      OperationLifecycle,
       Utils,
     });
     const TruckChangeController = createTruckChangeController({
@@ -4170,6 +2057,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       ExportService,
       CardDisplayOverlay,
       TruckChangeController,
+      OperationLifecycle,
       featureFlags,
       persistNow: () => Storage.saveNow(),
       toast,
@@ -4191,6 +2079,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       ImportCasesDialog,
       createTableFooter,
       CardDisplayOverlay,
+      OperationLifecycle,
     });
 
     // ============================================================================
@@ -4220,433 +2109,45 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: SCREEN UI (UPDATES)
     // ============================================================================
-    const UpdatesUI = (() => {
-      const listEl = document.getElementById('updates-list');
-      function initUpdatesUI() { }
-      function render() {
-        listEl.innerHTML = '';
-        Data.updates.forEach(u => {
-          const card = document.createElement('div');
-          card.className = 'card';
-          const header = document.createElement('div');
-          header.className = 'row space-between';
-          header.style.alignItems = 'flex-start';
-          const left = document.createElement('div');
-          left.innerHTML = `<div style="font-weight:var(--font-semibold);font-size:var(--text-lg)">Version ${u.version}</div><div class="muted" style="font-size:var(--text-xs)">${new Date(u.date).toLocaleDateString()}</div>`;
-          header.appendChild(left);
-          card.appendChild(header);
-
-          const sections = [
-            { title: 'New Features', items: u.features || [] },
-            { title: 'Bug Fixes', items: u.bugFixes || [] },
-            { title: 'Breaking Changes', items: u.breakingChanges || [] },
-          ].filter(s => s.items.length);
-          sections.forEach(s => {
-            const t = document.createElement('div');
-            t.style.marginTop = '12px';
-            t.style.fontWeight = 'var(--font-semibold)';
-            t.textContent = s.title;
-            card.appendChild(t);
-            const ul = document.createElement('ul');
-            ul.style.margin = '8px 0 0 16px';
-            ul.style.color = 'var(--text-secondary)';
-            ul.style.fontSize = 'var(--text-sm)';
-            s.items.forEach(it => {
-              const li = document.createElement('li');
-              li.textContent = it;
-              ul.appendChild(li);
-            });
-            card.appendChild(ul);
-          });
-          listEl.appendChild(card);
-        });
-      }
-      return { init: initUpdatesUI, render };
-    })();
+    const UpdatesUI = createUpdatesScreen({
+      Data,
+    });
 
     // ============================================================================
     // SECTION: SCREEN UI (ROADMAP)
     // ============================================================================
-    const RoadmapUI = (() => {
-      const listEl = document.getElementById('roadmap-list');
-      function initRoadmapUI() { }
-      function render() {
-        listEl.innerHTML = '';
-        Data.roadmap.forEach(group => {
-          const wrap = document.createElement('div');
-          wrap.className = 'grid';
-          wrap.style.gap = '10px';
-          const h = document.createElement('div');
-          h.style.fontSize = 'var(--text-lg)';
-          h.style.fontWeight = 'var(--font-semibold)';
-          h.textContent = group.quarter;
-          wrap.appendChild(h);
-          const grid = document.createElement('div');
-          grid.className = 'pack-grid';
-          grid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
-          group.items.forEach(item => {
-            const card = document.createElement('div');
-            card.className = 'card';
-            card.style.cursor = 'pointer';
-            card.innerHTML = `
-                  <div class="row space-between" style="gap:10px">
-                    <div style="font-weight:var(--font-semibold)">${item.title}</div>
-                    <div class="badge" style="border-color:transparent;background:${item.color};color:white">${item.badge} ${item.status}</div>
-                  </div>
-                  <div class="muted" style="font-size:var(--text-sm);margin-top:8px">${item.details}</div>
-                `;
-            card.addEventListener('click', () => {
-              UIComponents.showModal({
-                title: item.title,
-                content: `<div class="muted" style="font-size:var(--text-sm)">${item.details}</div>`,
-                actions: [{ label: 'Close', variant: 'primary' }],
-              });
-            });
-            grid.appendChild(card);
-          });
-          wrap.appendChild(grid);
-          listEl.appendChild(wrap);
-        });
-      }
-      return { init: initRoadmapUI, render };
-    })();
+    const RoadmapUI = createRoadmapScreen({
+      Data,
+      UIComponents,
+    });
 
     // ============================================================================
     // SECTION: SCREEN UI (SETTINGS)
     // ============================================================================
-    const SettingsUI = (() => {
-      const elLength = /** @type {HTMLSelectElement} */ (document.getElementById('pref-length'));
-      const elWeight = /** @type {HTMLSelectElement} */ (document.getElementById('pref-weight'));
-      const elTheme = /** @type {HTMLSelectElement} */ (document.getElementById('pref-theme'));
-      const elLabel = /** @type {HTMLInputElement} */ (document.getElementById('pref-label-size'));
-      const elHidden = /** @type {HTMLInputElement} */ (document.getElementById('pref-hidden-opacity'));
-      const elHiddenValue = /** @type {HTMLElement} */ (document.getElementById('pref-hidden-opacity-value'));
-      const elSnap = /** @type {HTMLSelectElement} */ (document.getElementById('pref-snapping-enabled'));
-      const elGrid = /** @type {HTMLInputElement} */ (document.getElementById('pref-grid-size'));
-      const elShot = /** @type {HTMLSelectElement} */ (document.getElementById('pref-shot-res'));
-      const elPdfStats = /** @type {HTMLSelectElement} */ (document.getElementById('pref-pdf-stats'));
-      const btnSave = /** @type {HTMLButtonElement} */ (document.getElementById('btn-save-prefs'));
-      const btnReset = /** @type {HTMLButtonElement} */ (document.getElementById('btn-reset-demo'));
-
-      function initSettingsUI() {
-        btnSave.addEventListener('click', () => save());
-        elHidden.addEventListener('input', syncHiddenOpacityValue);
-        btnReset.addEventListener('click', async () => {
-          const ok = await UIComponents.confirm({
-            title: 'Reset demo data?',
-            message: 'This replaces your local data with the demo set.',
-            danger: true,
-            okLabel: 'Reset',
-          });
-          if (!ok) return;
-          Storage.clearAll();
-          window.location.reload();
-        });
-      }
-
-      function syncHiddenOpacityValue() {
-        if (!elHiddenValue) return;
-        elHiddenValue.textContent = Number(elHidden.value).toFixed(2);
-      }
-
-      function loadForm() {
-        const p = PreferencesManager.get();
-        elLength.value = p.units.length;
-        elWeight.value = p.units.weight;
-        elTheme.value = p.theme;
-        elLabel.value = String(p.labelFontSize);
-        elHidden.value = String(p.hiddenCaseOpacity);
-        syncHiddenOpacityValue();
-        elSnap.value = String(Boolean(p.snapping.enabled));
-        elGrid.value = String(p.snapping.gridSize);
-        elShot.value = p.export.screenshotResolution;
-        elPdfStats.value = String(Boolean(p.export.pdfIncludeStats));
-      }
-
-      function save() {
-        const prev = PreferencesManager.get();
-        const next = Utils.deepClone(prev);
-        next.units.length = elLength.value;
-        next.units.weight = elWeight.value;
-        next.theme = elTheme.value;
-        next.labelFontSize = Utils.clamp(Number(elLabel.value) || 12, 8, 24);
-        next.hiddenCaseOpacity = Utils.clamp(Number(elHidden.value) || 0.3, 0, 1);
-        next.snapping.enabled = elSnap.value === 'true';
-        next.snapping.gridSize = Math.max(0.25, Number(elGrid.value) || 1);
-        next.export.screenshotResolution = elShot.value;
-        next.export.pdfIncludeStats = elPdfStats.value === 'true';
-        PreferencesManager.set(next);
-        PreferencesManager.applyTheme(next.theme);
-        UIComponents.showToast('Preferences saved', 'success');
-      }
-
-      return { init: initSettingsUI, loadForm };
-    })();
+    const SettingsUI = createSettingsScreen({
+      Utils,
+      UIComponents,
+      PreferencesManager,
+      Storage,
+    });
 
     // ============================================================================
     // SECTION: GLOBAL INPUT (KEYBOARD)
     // ============================================================================
-    const KeyboardManager = (() => {
-      let clipboard = null;
-
-      function clearClipboard() {
-        clipboard = null;
-      }
-
-      function initKeyboardManager() {
-        document.addEventListener('keydown', handleKeyDown);
-      }
-
-      function handleKeyDown(event) {
-        if (isTypingContext(event)) return;
-        const key = buildKeyString(event);
-        const handler = shortcuts[key];
-        if (!handler) return;
-        const handled = handler(event);
-        if (handled === false) return;
-        event.preventDefault();
-      }
-
-      function isTypingContext(event) {
-        const el = event.target;
-        if (!el) return false;
-        if (el.isContentEditable) return true;
-        return el.matches && el.matches('input, textarea, select');
-      }
-
-      function buildKeyString(event) {
-        const parts = [];
-        if (event.metaKey) parts.push('meta');
-        if (event.ctrlKey && !event.metaKey) parts.push('ctrl');
-        if (event.shiftKey) parts.push('shift');
-        if (event.altKey) parts.push('alt');
-        parts.push(String(event.key || '').toLowerCase());
-        return parts.join('+');
-      }
-
-      function inEditor() {
-        return StateStore.get('currentScreen') === 'editor';
-      }
-
-      // Block pack-mutating keyboard shortcuts while a mutating editor operation
-      // (AutoPack / Unpack / Truck Change / preview capture) owns the editor. Returns
-      // true (and toasts) when blocked. Read-only shortcuts (copy, select, camera,
-      // grid/shadow toggles) are intentionally NOT gated.
-      function mutationBlockedWhileBusy() {
-        if (OperationLifecycle && OperationLifecycle.isBusy()) {
-          UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
-          return true;
-        }
-        return false;
-      }
-
-      function save() {
-        Storage.saveNow();
-        UIComponents.showToast('Saved locally', 'success', { title: 'Storage' });
-      }
-
-      function undo() {
-        if (mutationBlockedWhileBusy()) return;
-        const ok = StateStore.undo();
-        UIComponents.showToast(ok ? 'Undone' : 'Nothing to undo', ok ? 'info' : 'warning', { title: 'Edit' });
-      }
-
-      function redo() {
-        if (mutationBlockedWhileBusy()) return;
-        const ok = StateStore.redo();
-        UIComponents.showToast(ok ? 'Redone' : 'Nothing to redo', ok ? 'info' : 'warning', { title: 'Edit' });
-      }
-
-      function deselectAll() {
-        StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
-        CaseScene.setSelected([]);
-      }
-
-      function selectAll() {
-        if (!inEditor()) return;
-        InteractionManager.selectAllInPack();
-      }
-
-      function deleteSelected() {
-        if (!inEditor()) return;
-        InteractionManager.deleteSelection();
-      }
-
-      function duplicateSelected() {
-        if (!inEditor()) return;
-        if (mutationBlockedWhileBusy()) return;
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        const selected = StateStore.get('selectedInstanceIds') || [];
-        if (!pack || !selected.length) return;
-
-        const source = selected
-          .map(id => (pack.cases || []).find(inst => inst && inst.id === id))
-          .filter(Boolean);
-        const result = PackLibrary.duplicateInstancesSafely(packId, source, CaseLibrary.getCases());
-        if (!result || !result.newIds.length) {
-          UIComponents.showToast('No collision-free duplicate position found', 'warning', { title: 'Edit' });
-          return;
-        }
-        StateStore.set({ selectedInstanceIds: result.newIds }, { skipHistory: true });
-        CaseScene.setSelected(result.newIds);
-        UIComponents.showToast(
-          result.placement === 'staged'
-            ? `Duplicated ${result.newIds.length} case(s) to staging`
-            : `Duplicated ${result.newIds.length} case(s)`,
-          'success',
-          { title: 'Edit' }
-        );
-      }
-
-      function copySelected() {
-        if (!inEditor()) return;
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        const selected = StateStore.get('selectedInstanceIds') || [];
-        if (!pack || !selected.length) return;
-        clipboard = selected
-          .map(id => (pack.cases || []).find(i => i.id === id))
-          .filter(Boolean)
-          .map(i => Utils.deepClone(i));
-        UIComponents.showToast(`Copied ${clipboard.length} case(s)`, 'info', { title: 'Clipboard' });
-      }
-
-      function pasteClipboard() {
-        if (!inEditor()) return;
-        if (mutationBlockedWhileBusy()) return;
-        const packId = StateStore.get('currentPackId');
-        const pack = PackLibrary.getById(packId);
-        if (!pack || !clipboard || !clipboard.length) return;
-
-        const result = PackLibrary.duplicateInstancesSafely(packId, clipboard, CaseLibrary.getCases());
-        if (!result || !result.newIds.length) {
-          UIComponents.showToast('No collision-free paste position found', 'warning', { title: 'Clipboard' });
-          return;
-        }
-        StateStore.set({ selectedInstanceIds: result.newIds }, { skipHistory: true });
-        CaseScene.setSelected(result.newIds);
-        UIComponents.showToast(
-          result.placement === 'staged'
-            ? `Pasted ${result.newIds.length} case(s) to staging`
-            : `Pasted ${result.newIds.length} case(s)`,
-          'success',
-          { title: 'Clipboard' }
-        );
-      }
-
-      function focusSelected(event) {
-        if (!inEditor()) return;
-        const selected = StateStore.get('selectedInstanceIds') || [];
-        if (!selected.length) return;
-        const obj = CaseScene.getObject(selected[0]);
-        if (!obj) return;
-        if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-        SceneManager.focusOnWorldPoint(obj.position.clone(), { duration: 600 });
-      }
-
-      function toggleGrid() {
-        if (!inEditor()) return;
-        const visible = SceneManager.toggleGrid();
-        UIComponents.showToast(visible ? 'Grid shown' : 'Grid hidden', 'info', { title: 'View', duration: 1200 });
-      }
-
-      function toggleShadows() {
-        if (!inEditor()) return;
-        const enabled = SceneManager.toggleShadows();
-        UIComponents.showToast(enabled ? 'Shadows enabled' : 'Shadows disabled', 'info', {
-          title: 'View',
-          duration: 1200,
-        });
-      }
-
-      function openPackDialog() {
-        const packs = PackLibrary.getPacks()
-          .slice()
-          .sort((a, b) => (b.lastEdited || 0) - (a.lastEdited || 0));
-        const content = document.createElement('div');
-        content.className = 'grid';
-        content.style.gap = '10px';
-        let modal = null;
-        if (!packs.length) {
-          const empty = document.createElement('div');
-          empty.className = 'muted';
-          empty.style.fontSize = 'var(--text-sm)';
-          empty.textContent = 'No packs available.';
-          content.appendChild(empty);
-        } else {
-          packs.forEach(p => {
-            const row = document.createElement('button');
-            row.type = 'button';
-            row.className = 'btn';
-            row.style.justifyContent = 'space-between';
-            row.style.width = '100%';
-            const name = document.createElement('span');
-            name.style.fontWeight = 'var(--font-semibold)';
-            name.textContent = p.title || 'Untitled';
-            const meta = document.createElement('span');
-            meta.className = 'muted';
-            meta.style.fontSize = 'var(--text-xs)';
-            meta.textContent = `edited ${Utils.formatRelativeTime(p.lastEdited)}`;
-            row.appendChild(name);
-            row.appendChild(meta);
-            row.addEventListener('click', () => {
-              PackLibrary.open(p.id);
-              AppShell.navigate('editor');
-              if (modal) modal.close();
-            });
-            content.appendChild(row);
-          });
-        }
-
-        modal = UIComponents.showModal({
-          title: 'Open Pack',
-          content,
-          actions: [{ label: 'Close', variant: 'primary' }],
-        });
-      }
-
-      shortcuts = {
-        'meta+s': save,
-        'ctrl+s': save,
-        'meta+z': undo,
-        'ctrl+z': undo,
-        'meta+shift+z': redo,
-        'ctrl+shift+z': redo,
-        'meta+a': selectAll,
-        'ctrl+a': selectAll,
-        'meta+shift+a': deselectAll,
-        'ctrl+shift+a': deselectAll,
-        escape: deselectAll,
-        delete: deleteSelected,
-        backspace: deleteSelected,
-        'meta+d': duplicateSelected,
-        'ctrl+d': duplicateSelected,
-        'meta+c': copySelected,
-        'ctrl+c': copySelected,
-        'meta+v': pasteClipboard,
-        'ctrl+v': pasteClipboard,
-        'meta+p': () => {
-          if (!inEditor()) return;
-          AutoPackEngine.pack().catch(err => console.error('[KeyboardShortcut] AutoPack error:', err));
-        },
-        'ctrl+p': () => {
-          if (!inEditor()) return;
-          AutoPackEngine.pack().catch(err => console.error('[KeyboardShortcut] AutoPack error:', err));
-        },
-        'meta+o': openPackDialog,
-        'ctrl+o': openPackDialog,
-        g: toggleGrid,
-        s: toggleShadows,
-        'shift+f': focusSelected,
-        p: () => {
-          if (!inEditor()) return;
-          SceneManager.toggleDevOverlay();
-        },
-      };
-
-      return { init: initKeyboardManager, clearClipboard };
-    })();
+    const KeyboardManager = createKeyboardManager({
+      StateStore,
+      PackLibrary,
+      CaseLibrary,
+      CaseScene,
+      SceneManager,
+      InteractionManager,
+      AutoPackEngine,
+      OperationLifecycle,
+      UIComponents,
+      AppShell,
+      Storage,
+      Utils,
+    });
 
     function openExportAppModal() {
       const content = document.createElement('div');
@@ -4797,9 +2298,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return `${userScope}|${getWorkspaceStorageScope(targetOrgId)}`;
     }
 
+    function flushPendingStorageSave() {
+      if (Storage && typeof Storage.flushPendingSave === 'function') {
+        Storage.flushPendingSave();
+      }
+    }
+
     function setWorkspaceStorageScope(targetOrgId) {
       const scope = getWorkspaceStorageScope(targetOrgId);
       if (Storage && typeof Storage.setWorkspaceScope === 'function') {
+        const currentScope = typeof Storage.getWorkspaceScope === 'function'
+          ? Storage.getWorkspaceScope()
+          : null;
+        if (currentScope !== null && currentScope !== scope) flushPendingStorageSave();
         Storage.setWorkspaceScope(scope);
       }
       return scope;
@@ -4807,9 +2318,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     function applyWorkspaceScopedLocalState(targetOrgId, { seedIfMissing = true, force = false } = {}) {
       const nextStorageKey = getWorkspaceStorageKey(targetOrgId);
-      setWorkspaceStorageScope(targetOrgId);
       const workspaceChanged = lastLoadedWorkspaceStorageKey !== nextStorageKey;
       if (!force && !workspaceChanged) return false;
+      if (force && !workspaceChanged) flushPendingStorageSave();
+      setWorkspaceStorageScope(targetOrgId);
       if (workspaceChanged) {
         try {
           if (KeyboardManager && typeof KeyboardManager.clearClipboard === 'function') {
@@ -4847,6 +2359,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       SessionManager.clear();
       // P0.9 – Don't wipe user-scoped storage (data should survive for next login).
       // Instead, pause autosave → reset in-memory state → set scope to anon.
+      flushPendingStorageSave();
       suspendAutoSave = true;
       try {
         resetAppStateToEmpty();
@@ -4920,7 +2433,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         folderLibrary: [],
         preferences: Defaults.defaultPreferences,
       };
-      StateStore.replace(emptyState, { skipHistory: true });
+      StateStore.replace(emptyState, { skipHistory: true, resetHistory: true });
     }
 
     /**
@@ -4948,7 +2461,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           packLibrary: storedPacks,
           folderLibrary: Array.isArray(stored.folderLibrary) ? stored.folderLibrary : [],
           preferences: storedPrefs,
-        }, { skipHistory: true });
+        }, { skipHistory: true, resetHistory: true });
       } else if (seedIfMissing) {
         // No saved data for this user – seed with demo data (same as initial boot).
         const fallbackPreferences = stored && stored.preferences ? stored.preferences : Defaults.defaultPreferences;
@@ -4964,7 +2477,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           packLibrary: [demoPack],
           folderLibrary: [],
           preferences: fallbackPreferences,
-        }, { skipHistory: true });
+        }, { skipHistory: true, resetHistory: true });
         Storage.saveNow();
       } else {
         StateStore.replace({
@@ -4975,7 +2488,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           packLibrary: [],
           folderLibrary: [],
           preferences: (stored && stored.preferences) || Defaults.defaultPreferences,
-        }, { skipHistory: true });
+        }, { skipHistory: true, resetHistory: true });
       }
     }
 
@@ -5046,30 +2559,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UpdatesUI.render();
       RoadmapUI.render();
       SettingsUI.loadForm();
-      syncRecoverableErrorOverlay();
+      RecoverableErrorOverlay.syncRecoverableErrorOverlay();
     }
 
     let routeNotFoundActive = false;
 
-    function hasMissingEditorPack() {
-      if (StateStore.get('currentScreen') !== 'editor') return false;
-      const packId = StateStore.get('currentPackId');
-      if (!packId) return false;
-      return !PackLibrary.getById(packId);
-    }
-
-    function syncRecoverableErrorOverlay() {
-      if (BootState.fatalOverlayShown || BootState.maintenanceMode) return;
-      if (routeNotFoundActive) {
-        ErrorOverlay.showNotFound({ kind: 'route' });
-        return;
-      }
-      if (hasMissingEditorPack()) {
-        ErrorOverlay.showNotFound({ kind: 'pack' });
-        return;
-      }
-      ErrorOverlay.hide();
-    }
+    const RecoverableErrorOverlay = createRecoverableErrorOverlay({
+      StateStore,
+      PackLibrary,
+      ErrorOverlay,
+      BootState,
+      getRouteNotFound: () => routeNotFoundActive,
+    });
 
     // ============================================================================
     // SECTION: APP INIT (ORDER CRITICAL)
@@ -5098,23 +2599,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       role: null,
       updatedAt: 0,
     };
-    const WORKSPACE_SWITCH_MAX_MS = 6000;
-    let workspaceSwitchTimer = null;
-    let workspaceSwitchState = {
-      active: false,
-      fromOrgId: null,
-      toOrgId: null,
-      source: null,
-      startedAt: 0,
-      finishedAt: 0,
-      version: 0,
-      localStateReady: false,
-      orgReady: false,
-      billingReady: false,
-      remote: false,
-    };
-    let orgContextVersion = 0;
-    let lastAppliedOrgContextVersion = 0;
     const orgContextTabId = (() => {
       try {
         const existing = window.sessionStorage.getItem('tp3d:org-context-tab-id');
@@ -5131,252 +2615,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return generated;
     })();
 
-    function getWorkspaceSwitchState() {
-      return { ...workspaceSwitchState };
-    }
-
-    function dispatchWorkspaceSwitchStateChanged(reason = 'update', { broadcast = true } = {}) {
-      const detail = {
-        ...getWorkspaceSwitchState(),
-        reason: reason || 'update',
-      };
-      try {
-        window.dispatchEvent(new CustomEvent('tp3d:workspace-switch-state', { detail }));
-      } catch {
-        // ignore
-      }
-      if (!broadcast) return;
-      try {
-        const userId = getSignedInUserIdStrict();
-        if (!userId) return;
-        const payload = {
-          ...detail,
-          userId,
-          tabId: orgContextTabId,
-          ts: Date.now(),
-        };
-        const encoded = JSON.stringify(payload);
-        window.localStorage.setItem(WORKSPACE_SWITCH_SYNC_KEY, encoded);
-        window.setTimeout(() => {
-          try {
-            const raw = window.localStorage.getItem(WORKSPACE_SWITCH_SYNC_KEY);
-            if (!raw) return;
-            const parsed = JSON.parse(raw);
-            if (
-              parsed &&
-              parsed.tabId === orgContextTabId &&
-              Number(parsed.version || 0) === Number(payload.version || 0) &&
-              String(parsed.reason || '') === String(payload.reason || '')
-            ) {
-              window.localStorage.removeItem(WORKSPACE_SWITCH_SYNC_KEY);
-            }
-          } catch {
-            // ignore
-          }
-        }, 1500);
-      } catch {
-        // ignore
-      }
-    }
-
-    function clearWorkspaceSwitchTimer() {
-      if (!workspaceSwitchTimer) return;
-      try {
-        window.clearTimeout(workspaceSwitchTimer);
-      } catch {
-        // ignore
-      }
-      workspaceSwitchTimer = null;
-    }
-
-    function scheduleWorkspaceSwitchTimeout(version) {
-      clearWorkspaceSwitchTimer();
-      try {
-        workspaceSwitchTimer = window.setTimeout(() => {
-          if (workspaceSwitchState.active && workspaceSwitchState.version === version) {
-            finishWorkspaceSwitch('timeout');
-          }
-        }, WORKSPACE_SWITCH_MAX_MS);
-      } catch {
-        workspaceSwitchTimer = null;
-      }
-    }
-
-    function beginWorkspaceSwitch(toOrgId, source = 'org-switch') {
-      const nextOrgId = normalizeOrgIdForBilling(toOrgId);
-      if (!nextOrgId) return getWorkspaceSwitchState();
-      clearBillingPendingRetry();
-      const fromOrgId = normalizeOrgIdForBilling(orgContext && orgContext.activeOrgId ? orgContext.activeOrgId : '');
-      const nextVersion = (workspaceSwitchState.version || 0) + 1;
-      workspaceSwitchState = {
-        active: true,
-        fromOrgId: fromOrgId || null,
-        toOrgId: nextOrgId,
-        source: source || 'org-switch',
-        startedAt: Date.now(),
-        finishedAt: 0,
-        version: nextVersion,
-        localStateReady: false,
-        orgReady: false,
-        billingReady: false,
-        remote: false,
-      };
-      dispatchWorkspaceSwitchStateChanged('begin');
-      scheduleWorkspaceSwitchTimeout(nextVersion);
-      return getWorkspaceSwitchState();
-    }
-
-    function finishWorkspaceSwitch(reason = 'complete', options = {}) {
-      clearBillingPendingRetry();
-      if (!workspaceSwitchState.active) {
-        clearWorkspaceSwitchTimer();
-        return getWorkspaceSwitchState();
-      }
-      clearWorkspaceSwitchTimer();
-      workspaceSwitchState = {
-        ...workspaceSwitchState,
-        active: false,
-        finishedAt: Date.now(),
-      };
-      dispatchWorkspaceSwitchStateChanged(reason || 'complete', options);
-      return getWorkspaceSwitchState();
-    }
-
-    function markWorkspaceSwitchReady(partial = {}, reason = 'ready') {
-      if (!workspaceSwitchState.active) return getWorkspaceSwitchState();
-      workspaceSwitchState = {
-        ...workspaceSwitchState,
-        localStateReady: partial.localStateReady ? true : workspaceSwitchState.localStateReady,
-        orgReady: partial.orgReady ? true : workspaceSwitchState.orgReady,
-        billingReady: partial.billingReady ? true : workspaceSwitchState.billingReady,
-      };
-      if (workspaceSwitchState.localStateReady && workspaceSwitchState.orgReady && workspaceSwitchState.billingReady) {
-        return finishWorkspaceSwitch(reason || 'ready');
-      }
-      dispatchWorkspaceSwitchStateChanged(reason || 'ready');
-      return getWorkspaceSwitchState();
-    }
-
-    function hasWorkspaceSwitchOrgContextReady(orgId) {
-      const targetOrgId = normalizeOrgIdForBilling(orgId);
-      if (!targetOrgId) return false;
-      const activeOrgId = normalizeOrgIdForBilling(orgContext && orgContext.activeOrgId ? orgContext.activeOrgId : '');
-      if (activeOrgId !== targetOrgId) return false;
-      const activeOrg = orgContext && orgContext.activeOrg ? orgContext.activeOrg : null;
-      const activeOrgMatches = normalizeOrgIdForBilling(activeOrg && activeOrg.id ? activeOrg.id : activeOrgId) === targetOrgId;
-      if (activeOrgMatches && activeOrg && String(activeOrg.name || '').trim()) return true;
-      const orgs = Array.isArray(orgContext && orgContext.orgs) ? orgContext.orgs : [];
-      return orgs.some(org => (
-        normalizeOrgIdForBilling(org && org.id ? org.id : '') === targetOrgId &&
-        String(org && org.name ? org.name : '').trim()
-      ));
-    }
-
-    function markWorkspaceSwitchOrgReadyIfResolved(reason = 'org-ready') {
-      if (!workspaceSwitchState.active) return;
-      if (hasWorkspaceSwitchOrgContextReady(workspaceSwitchState.toOrgId)) {
-        markWorkspaceSwitchReady({ orgReady: true }, reason);
-      }
-    }
-
-    function markWorkspaceSwitchBillingReadyIfSettled(snapshot, reason = 'billing-ready') {
-      if (!workspaceSwitchState.active) return;
-      const state = snapshot || getBillingState();
-      const billingOrgId = normalizeOrgIdForBilling(state && state.orgId ? state.orgId : '');
-      if (!billingOrgId || billingOrgId !== workspaceSwitchState.toOrgId) return;
-      const hasEntitlement = Boolean(normalizeBillingEntitlementStatus(state && state.entitlementStatus));
-      const hasUsableTargetSnapshot = Boolean(state.ok && state.lastFetchedAt && !state.error && hasEntitlement);
-      const settled = !state.loading && !state.pending && Boolean((state.ok && hasEntitlement) || state.error || (!state.ok && state.lastFetchedAt));
-      if (settled || hasUsableTargetSnapshot) {
-        markWorkspaceSwitchReady({ billingReady: true }, reason);
-      }
-    }
-
-    function parseWorkspaceSwitchSyncPayload(raw) {
-      if (!raw) return null;
-      try {
-        const parsed = JSON.parse(raw);
-        return parsed && typeof parsed === 'object' ? parsed : null;
-      } catch {
-        return null;
-      }
-    }
-
-    function handleIncomingWorkspaceSwitchState(payload) {
-      if (!payload || typeof payload !== 'object') return;
-      const incomingTabId = payload.tabId ? String(payload.tabId) : '';
-      if (incomingTabId && incomingTabId === orgContextTabId) return;
-
-      const payloadUserId = payload.userId ? String(payload.userId) : '';
-      const currentUserId = getSignedInUserIdStrict();
-      if (!currentUserId || !payloadUserId || payloadUserId !== currentUserId) return;
-
-      const targetOrgId = normalizeOrgIdForBilling(payload.toOrgId || '');
-      if (!targetOrgId) return;
-
-      const nextVersion = Number(payload.version || 0) || ((workspaceSwitchState.version || 0) + 1);
-      const incomingTs = Number(payload.ts || payload.startedAt || 0) || 0;
-      const incomingActive = Boolean(payload.active);
-      if (incomingActive) {
-        if (
-          !workspaceSwitchState.active &&
-          workspaceSwitchState.toOrgId === targetOrgId &&
-          workspaceSwitchState.finishedAt &&
-          incomingTs &&
-          incomingTs < workspaceSwitchState.finishedAt
-        ) {
-          return;
-        }
-        clearWorkspaceSwitchTimer();
-        workspaceSwitchState = {
-          active: true,
-          fromOrgId: normalizeOrgIdForBilling(payload.fromOrgId || '') || null,
-          toOrgId: targetOrgId,
-          source: payload.source ? String(payload.source) : 'workspace-switch-sync',
-          startedAt: Number(payload.startedAt || payload.ts || Date.now()) || Date.now(),
-          finishedAt: 0,
-          version: nextVersion,
-          localStateReady: Boolean(payload.localStateReady),
-          orgReady: Boolean(payload.orgReady),
-          billingReady: Boolean(payload.billingReady),
-          remote: true,
-        };
-        dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync', { broadcast: false });
-        try {
-          workspaceSwitchTimer = window.setTimeout(() => {
-            if (workspaceSwitchState.active && workspaceSwitchState.version === nextVersion) {
-              finishWorkspaceSwitch('sync-timeout', { broadcast: false });
-            }
-          }, WORKSPACE_SWITCH_MAX_MS);
-        } catch {
-          workspaceSwitchTimer = null;
-        }
-        return;
-      }
-
-      if (workspaceSwitchState.active && workspaceSwitchState.toOrgId && workspaceSwitchState.toOrgId !== targetOrgId) {
-        return;
-      }
-      if (workspaceSwitchState.active && workspaceSwitchState.remote !== true) {
-        return;
-      }
-      clearWorkspaceSwitchTimer();
-      workspaceSwitchState = {
-        ...workspaceSwitchState,
-        active: false,
-        fromOrgId: normalizeOrgIdForBilling(payload.fromOrgId || '') || workspaceSwitchState.fromOrgId || null,
-        toOrgId: targetOrgId,
-        source: payload.source ? String(payload.source) : workspaceSwitchState.source,
-        finishedAt: Number(payload.finishedAt || payload.ts || Date.now()) || Date.now(),
-        version: Math.max(Number(workspaceSwitchState.version || 0) || 0, nextVersion),
-        localStateReady: Boolean(payload.localStateReady),
-        orgReady: Boolean(payload.orgReady),
-        billingReady: Boolean(payload.billingReady),
-        remote: true,
-      };
-      dispatchWorkspaceSwitchStateChanged(payload.reason || 'sync-complete', { broadcast: false });
-    }
-
     let lastOrgPersistAt = 0;
     let orgContextInFlight = null;
     let orgContextResolved = false;
@@ -5385,19 +2623,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
     /** @type {Map<string, number>} orgId -> grace-until timestamp */
     const _orgRoleHydrationGraceUntilByOrg = new Map();
     const _ORG_ROLE_GRACE_MS = 1500;
-    let lastAuthRehydrateAt = 0;
-    const AUTH_REHYDRATE_COOLDOWN_MS = 750;
     const AUTH_REFRESH_DEBOUNCE_MS = 350;
-    const AUTH_REFRESH_MAX_ATTEMPTS = 3;
-    const AUTH_REFRESH_WINDOW_MS = 10000;
     const AUTH_REFRESH_AUTO_REASONS = new Set(['tab-visible', 'storage', 'org-changed']);
     const toastDeduper = new Map();
     let authRehydratePromise = null;
     let authRefreshTimer = null;
     let authRefreshInFlight = null;
     let authRefreshQueued = false;
-    let authRefreshWindowStart = 0;
-    let authRefreshAttempts = 0;
     let authMissingSessionShown = false;
     const authRefreshReasons = new Set();
     let authRefreshPending = {
@@ -5409,7 +2641,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
     const authReloadKey = 'tp3d:auth-user-switch-reload';
     // Latch used to temporarily hold a forced account-disabled message so
     // normal signed-out flows don't overwrite it while we show the disabled UI.
-    let authBlockState = null;
 
     // P0.7 – Cache the last *real* auth event so we can fall back to it when
     // SupabaseClient.getAuthState() briefly returns status:'unknown' / hasToken:false
@@ -5417,177 +2648,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let lastAuthEventSnapshot = null;
     const FALLBACK_AUTH_TTL_MS = 8000;
 
+    // ── Authentication runtime (Stage 3) ──────────────────────────────────
+    // AuthService owns the auth truth-snapshot + stability gate. Constructed before
+    // OrganizationService (which needs getSignedInUserIdStrict). readLocalOrgId is
+    // wired late (after Org) to break the Auth<->Org construction cycle.
+    const AuthService = createAuthService({
+      SupabaseClient,
+      isTp3dDebugEnabled,
+      isLogoutInProgress,
+      getLastAuthEventSnapshot: () => lastAuthEventSnapshot,
+    });
+
     // ── Auth Stability Gate ──────────────────────────────────────────────
     // Prevents transient INITIAL_SESSION(null) → SIGNED_OUT → SIGNED_IN boot
     // sequences from triggering org-clearing and "no-org" banner flashes.
-    const AUTH_SIGNED_OUT_STABLE_MS = 2000;
     const NO_ORG_BANNER_SIGNED_IN_GRACE_MS = 2500;
-    const _authGate = {
-      lastSignedInAt: 0,
-      signedOutCandidateAt: 0,
-      signedOutTimer: /** @type {ReturnType<typeof setTimeout>|null} */ (null),
-      settled: false,
-    };
-    // Settled dedupe: avoid repeated settled:set for the same status+user
-    let _settledStatus = /** @type {string|null} */ (null);
-    let _settledUserId = /** @type {string|null} */ (null);
 
-    function authGateIsSettled() {
-      return _authGate.settled;
-    }
-
-    /** Mark auth as settled + signed-in. Cancels any pending signed-out candidate. */
-    function authGateSignedIn() {
-      _authGate.lastSignedInAt = Date.now();
-      if (_authGate.signedOutTimer) {
-        clearTimeout(_authGate.signedOutTimer);
-        _authGate.signedOutTimer = null;
-        if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCancelledBySignedIn');
-      }
-      if (_authGate.signedOutCandidateAt) {
-        _authGate.signedOutCandidateAt = 0;
-      }
-      // Dedupe: skip if already settled with same status + user
-      const nextUserId = getSignedInUserIdStrict();
-      if (_authGate.settled && _settledStatus === 'signed_in' && _settledUserId === nextUserId) {
-        if (isTp3dDebugEnabled()) console.info('[authGate] settled:dedupe', { source: 'signedIn', status: 'signed_in', userIdTail: nextUserId ? nextUserId.slice(-6) : null });
-        return;
-      }
-      _authGate.settled = true;
-      _settledStatus = 'signed_in';
-      _settledUserId = nextUserId;
-      if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'signedIn', status: 'signed_in', userIdTail: nextUserId ? nextUserId.slice(-6) : null });
-    }
-
-    /**
-     * Start signed-out candidate timer. Only confirms signed-out after
-     * AUTH_SIGNED_OUT_STABLE_MS with no intervening SIGNED_IN.
-     * @param {() => void} onConfirmed — called when signed-out is stable
-     */
-    function authGateSignedOutCandidate(onConfirmed) {
-      _authGate.signedOutCandidateAt = Date.now();
-      if (_authGate.signedOutTimer) clearTimeout(_authGate.signedOutTimer);
-
-      // During boot phase (never seen SIGNED_IN yet), ALWAYS wait the full FALLBACK_AUTH_TTL_MS.
-      // Reason: when Supabase fires SIGNED_OUT it has already cleared its own localStorage tokens,
-      // so checking for sb-*-auth-token or a cached org ID is unreliable — both can be absent even
-      // when a valid SIGNED_IN is imminent via cross-tab broadcast (which can take 2–5 s on slow
-      // connections). Using the short 2-second window during boot causes premature org-clearing and
-      // the "Create or join a workspace" banner flash on the secondary tab.
-      const isBootPhase = _authGate.lastSignedInAt === 0;
-      // Keep hasSessionIndicators for logging / future use, but do not use it to shorten the timeout.
-      let hasSessionIndicators = false;
-      if (isBootPhase) {
-        try {
-          hasSessionIndicators = Boolean(readLocalOrgId());
-          if (!hasSessionIndicators) {
-            for (let i = 0; i < localStorage.length; i++) {
-              const k = localStorage.key(i);
-              if (k && k.startsWith('sb-') && k.endsWith('-auth-token')) {
-                hasSessionIndicators = true;
-                break;
-              }
-            }
-          }
-        } catch { /* ignore */ }
-      }
-      // Boot phase: always 8s so cross-tab SIGNED_IN has time to arrive regardless of cache state.
-      // Post-boot: 2s is enough — a real sign-out from a live session should be stable quickly.
-      const timeoutMs = isBootPhase
-        ? FALLBACK_AUTH_TTL_MS   // 8s during any boot phase (SIGNED_IN may come from cross-tab)
-        : AUTH_SIGNED_OUT_STABLE_MS; // 2s for stable post-boot sign-out
-
-      if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCandidate', { isBootPhase, hasSessionIndicators, timeoutMs });
-      _authGate.signedOutTimer = setTimeout(() => {
-        _authGate.signedOutTimer = null;
-        // Only confirm if no SIGNED_IN arrived in the interim
-        if (_authGate.signedOutCandidateAt && !_authGate.lastSignedInAt) {
-          if (_authGate.settled && _settledStatus === 'signed_out' && _settledUserId === null) {
-            if (isTp3dDebugEnabled()) console.info('[authGate] settled:dedupe', { source: 'signedOutConfirmed', status: 'signed_out' });
-            return;
-          }
-          _authGate.settled = true;
-          _settledStatus = 'signed_out';
-          _settledUserId = null;
-          if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'signedOutConfirmed', status: 'signed_out', timeoutMs });
-          onConfirmed();
-        } else if (_authGate.lastSignedInAt > _authGate.signedOutCandidateAt) {
-          if (isTp3dDebugEnabled()) console.info('[authGate] signedOutCancelledBySignedIn (timer)');
-        } else {
-          // Fallback: lastSignedInAt exists but is older than signedOutCandidateAt.
-          // Guard: block if we have a recent signed-in signal (snapshot, gate, or wrapper).
-          const _snapshotAgeMs = lastAuthEventSnapshot ? Date.now() - (lastAuthEventSnapshot.ts || 0) : Infinity;
-          const _hasRecentSignedInSnapshot = Boolean(
-            lastAuthEventSnapshot && lastAuthEventSnapshot.status === 'signed_in' && _snapshotAgeMs < FALLBACK_AUTH_TTL_MS
-          );
-          const _gateSignedInAgeMs = _authGate.lastSignedInAt ? Date.now() - _authGate.lastSignedInAt : Infinity;
-          const _hasRecentGateSignedIn = _gateSignedInAgeMs < FALLBACK_AUTH_TTL_MS;
-          const _logoutLatchActive = isLogoutInProgress();
-          const _authTruth = (() => { try { return getAuthTruthSnapshot(); } catch { return null; } })();
-          const _authWrapperStatus = _authTruth ? _authTruth.status : null;
-          const _wrapperSignedIn = Boolean(_authTruth && _authTruth.isSignedIn);
-          const _hasRecentSignedIn = _hasRecentSignedInSnapshot || _hasRecentGateSignedIn || _wrapperSignedIn;
-          // Only block cleanup when the wrapper still shows signed-in.
-          // If the wrapper already reports signed-out the session is gone; allow cleanup
-          // even if a recent SIGNED_IN is on record (covers cross-tab sign-out case).
-          if (_hasRecentSignedIn && !_logoutLatchActive && _wrapperSignedIn) {
-            if (isTp3dDebugEnabled()) {
-              console.info('[authGate] signedOutFallback:block', {
-                hasRecentSignedInSnapshot: _hasRecentSignedInSnapshot,
-                snapshotAgeMs: _snapshotAgeMs,
-                gateSignedInAgeMs: _gateSignedInAgeMs,
-                wrapperSignedIn: _wrapperSignedIn,
-                hasSessionIndicators,
-                authWrapperStatus: _authWrapperStatus,
-                logoutLatchActive: _logoutLatchActive,
-              });
-            }
-            return;
-          }
-          if (_authGate.settled && _settledStatus === 'signed_out' && _settledUserId === null) {
-            if (isTp3dDebugEnabled()) console.info('[authGate] settled:dedupe', { source: 'signedOutConfirmedFallback', status: 'signed_out' });
-            return;
-          }
-          _authGate.settled = true;
-          _settledStatus = 'signed_out';
-          _settledUserId = null;
-          if (isTp3dDebugEnabled()) {
-            console.info('[authGate] signedOutFallback:confirm', {
-              hasRecentSignedInSnapshot: _hasRecentSignedInSnapshot,
-              snapshotAgeMs: _snapshotAgeMs,
-              gateSignedInAgeMs: _gateSignedInAgeMs,
-              wrapperSignedIn: _wrapperSignedIn,
-              hasSessionIndicators,
-              authWrapperStatus: _authWrapperStatus,
-              logoutLatchActive: _logoutLatchActive,
-            });
-            console.info('[authGate] settled:set', { source: 'signedOutConfirmedFallback', status: 'signed_out', timeoutMs });
-          }
-          onConfirmed();
-        }
-      }, timeoutMs);
-    }
-
-    /** INITIAL_SESSION with user===null: auth not settled yet. */
-    function authGateInitialSession() {
-      if (isTp3dDebugEnabled()) console.info('[authGate] initial-session');
-      // Do NOT set settled — wait for SIGNED_IN or stable SIGNED_OUT.
-    }
     // ── end Auth Stability Gate ──────────────────────────────────────────
     // Expose to module-level ensureWorkspaceReadyForUI
-    _authGateIsSettledAccessor = authGateIsSettled;
+    _authGateIsSettledAccessor = AuthService.authGateIsSettled;
 
-    function setAuthBlocked(message) {
-      try {
-        authBlockState = { message: message || 'Your account has been disabled.', ts: Date.now() };
-      } catch {
-        authBlockState = { message: 'Your account has been disabled.', ts: Date.now() };
-      }
-    }
-
-    function clearAuthBlocked() {
-      authBlockState = null;
-    }
     let readyToastShown = false;
 
     try {
@@ -5607,17 +2687,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const last = toastDeduper.get(key) || 0;
       if (now - last < 2500) return false;
       toastDeduper.set(key, now);
-      return true;
-    }
-
-    function canStartAuthRehydrate({ force = false } = {}) {
-      if (force) {
-        lastAuthRehydrateAt = Date.now();
-        return true;
-      }
-      const now = Date.now();
-      if (now - lastAuthRehydrateAt < AUTH_REHYDRATE_COOLDOWN_MS) return false;
-      lastAuthRehydrateAt = now;
       return true;
     }
 
@@ -5663,44 +2732,38 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
     }
 
-    function getAuthTruthSnapshot() {
-      const authState =
-        SupabaseClient && typeof SupabaseClient.getAuthState === 'function' ? SupabaseClient.getAuthState() : null;
-      const status = authState && authState.status ? authState.status : 'unknown';
-      const session = authState && authState.session ? authState.session : null;
-      const user = authState && authState.user ? authState.user : session && session.user ? session.user : null;
-      const userId = user && user.id ? String(user.id) : null;
-      const hasToken = Boolean(session && session.access_token);
-      const isSignedIn = Boolean(status === 'signed_in' && hasToken && userId);
-      return { status, userId, hasToken, session, user, isSignedIn };
-    }
+    _authTruthSnapshotAccessor = AuthService.authTruthAccessor;
+    // Stage 1: mirror the same auth-truth accessor into Billing at its existing wiring
+    // point. Root retains _authTruthSnapshotAccessor (ensureWorkspaceReadyForUI reads it);
+    // Billing's getCurrentBillingAuthUserId reads its private copy set here.
+    BillingService.setAuthTruthSnapshotAccessor(_authTruthSnapshotAccessor);
 
-    function shouldUseSignedInHint() {
-      if (isLogoutInProgress()) return false;
-      if (!lastAuthEventSnapshot) return false;
-      if (lastAuthEventSnapshot.status !== 'signed_in') return false;
-      if (!lastAuthEventSnapshot.hasToken || !lastAuthEventSnapshot.session) return false;
-      const age = Date.now() - (lastAuthEventSnapshot.ts || 0);
-      return age < FALLBACK_AUTH_TTL_MS;
+    // ── Organization / Workspace domain (Stage 2) ──────────────────────────
+    // CP1: authoritative workspace-switch state machine lives in OrganizationService.
+    // app.js remains authoritative for orgContext during CP1; reads bridge through
+    // getOrgContextSnapshot. Auth stays in app.js (getSignedInUserIdStrict injected);
+    // Billing (Stage 1) is frozen and only reached via injected BillingService.
+    const OrganizationService = createOrganizationService({
+      normalizeOrgIdForBilling,
+      normalizeBillingEntitlementStatus,
+      getSignedInUserIdStrict: AuthService.getSignedInUserIdStrict,
+      BillingService,
+      getOrgContextSnapshot: () => orgContext,
+      getOrgContextTabId: () => orgContextTabId,
+      ORG_UUID_RE,
+    });
+    // Break the Auth<->Org cycle: the gate reads local org id at runtime.
+    AuthService.setReadLocalOrgIdAccessor(OrganizationService.readLocalOrgId);
+    // Thin delegator (no state) retained so the early AutoPackEngine injection
+    // (constructed before OrganizationService) and the TruckPackerApp facade keep a
+    // stable getWorkspaceSwitchState reference. The single switch-state machine is
+    // in OrganizationService.
+    function getWorkspaceSwitchState() {
+      return OrganizationService.getWorkspaceSwitchState();
     }
-
-    function getSignedInUserIdStrict() {
-      const truth = getAuthTruthSnapshot();
-      return truth && truth.isSignedIn && truth.userId ? String(truth.userId) : null;
-    }
-
-    _authTruthSnapshotAccessor = () => {
-      const truth = getAuthTruthSnapshot();
-      return {
-        status: truth.status,
-        userId: truth.userId,
-        hasToken: truth.hasToken,
-        isSignedIn: truth.isSignedIn,
-      };
-    };
 
     function getCurrentAuthSnapshot() {
-      const truth = getAuthTruthSnapshot();
+      const truth = AuthService.getAuthTruthSnapshot();
       let status = truth.status;
       let session = truth.session;
       let user = truth.user;
@@ -5710,7 +2773,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       // P0.7 – If the wrapper reports unknown/no-token but we have a recent real
       // auth event, trust the event snapshot instead (transient race window).
-      if ((status !== 'signed_in' || !hasToken) && shouldUseSignedInHint()) {
+      if ((status !== 'signed_in' || !hasToken) && AuthService.shouldUseSignedInHint()) {
         if (lastAuthEventSnapshot && lastAuthEventSnapshot.session) {
           status = lastAuthEventSnapshot.status;
           session = lastAuthEventSnapshot.session;
@@ -5732,10 +2795,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
         activeOrg: orgContext.activeOrg,
         role: orgContext.role,
       };
-    }
-
-    function getActiveOrgId() {
-      return orgContext.activeOrgId;
     }
 
     async function hydrateActiveOrgId() {
@@ -5767,7 +2826,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const nextId = nextOrgId ? String(nextOrgId).trim() : '';
       if (!nextId) return null;
 
-      const truth = getAuthTruthSnapshot();
+      const truth = AuthService.getAuthTruthSnapshot();
       if (!truth.isSignedIn) return null;
 
       const prevId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
@@ -5777,13 +2836,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
         ...orgContext,
         orgs: Array.isArray(orgContext.orgs) ? [...orgContext.orgs] : [],
       };
-      const previousLocalOrgId = readLocalOrgId();
+      const previousLocalOrgId = OrganizationService.readLocalOrgId();
       const previousWorkspaceOrgId = prevId || previousLocalOrgId || null;
       const previousWorkspaceUiResetKey = lastWorkspaceUiResetKey;
 
       const orgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
       const activeOrg = orgs.find(o => o && String(o.id) === nextId) || null;
-      beginWorkspaceSwitch(nextId, source);
+      OrganizationService.beginWorkspaceSwitch(nextId, source);
 
       const applyLocalWorkspaceSelection = nextActiveOrg => {
         orgContext = {
@@ -5795,26 +2854,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
         };
         applyWorkspaceScopedLocalState(nextId, { seedIfMissing: false });
         resetWorkspaceScopedUiState(nextId);
-        writeLocalOrgId(nextId);
-        reconcileBillingStateForActiveOrg('org-set');
+        OrganizationService.writeLocalOrgId(nextId);
+        BillingService.reconcileBillingStateForActiveOrg('org-set');
         syncWorkspaceUiAfterOrgRefresh(source);
         maybeScheduleBillingRefresh('org-changed');
         queueOrgScopedRender('org-set');
-        markWorkspaceSwitchReady({ localStateReady: true }, 'local-state-ready');
-        markWorkspaceSwitchOrgReadyIfResolved('org-ready');
-        markWorkspaceSwitchBillingReadyIfSettled(getBillingState(), 'billing-current');
+        OrganizationService.markWorkspaceSwitchReady({ localStateReady: true }, 'local-state-ready');
+        OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-ready');
+        OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'billing-current');
       };
 
       const rollbackLocalWorkspaceSelection = () => {
         orgContext = previousOrgContext;
         lastWorkspaceUiResetKey = previousWorkspaceUiResetKey;
-        writeLocalOrgId(previousLocalOrgId);
+        OrganizationService.writeLocalOrgId(previousLocalOrgId);
         applyWorkspaceScopedLocalState(previousWorkspaceOrgId, {
           seedIfMissing: false,
           force: true,
         });
         syncWorkspaceUiAfterOrgRefresh(`${source}:rollback`);
-        finishWorkspaceSwitch('rollback');
+        OrganizationService.finishWorkspaceSwitch('rollback');
       };
 
       if (!activeOrg) {
@@ -5825,7 +2884,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           rollbackLocalWorkspaceSelection();
           throw err;
         }
-        dispatchOrgContextChanged({
+        OrganizationService.dispatchOrgContextChanged({
           orgId: nextId,
           reason: source,
           broadcast: true,
@@ -5833,8 +2892,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           userId: truth.userId,
         });
         await refreshOrgContext(source, { force: true, forceEmit: true });
-        markWorkspaceSwitchOrgReadyIfResolved('org-context-refreshed');
-        markWorkspaceSwitchBillingReadyIfSettled(getBillingState(), 'billing-after-org-refresh');
+        OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-context-refreshed');
+        OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'billing-after-org-refresh');
         return nextId;
       }
 
@@ -5847,7 +2906,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       try {
-        dispatchOrgContextChanged({
+        OrganizationService.dispatchOrgContextChanged({
           orgId: nextId,
           reason: source,
           broadcast: true,
@@ -5862,10 +2921,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     const OrgContext = {
-      getActiveOrgId,
+      getActiveOrgId: OrganizationService.getActiveOrgId,
       setActiveOrgId,
       hydrateActiveOrgId,
-      getActiveRole: () => (orgContext && typeof orgContext.role === 'string' ? orgContext.role : ''),
+      getActiveRole: OrganizationService.getActiveRole,
     };
 
     try {
@@ -5874,178 +2933,50 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // ignore
     }
 
-    function readLocalOrgId() {
-      try {
-        const raw = window.localStorage.getItem(ORG_CONTEXT_LS_KEY);
-        return raw ? String(raw) : null;
-      } catch {
-        return null;
-      }
-    }
-
-    function writeLocalOrgId(orgId) {
-      try {
-        if (!orgId) {
-          window.localStorage.removeItem(ORG_CONTEXT_LS_KEY);
-          return;
-        }
-        window.localStorage.setItem(ORG_CONTEXT_LS_KEY, String(orgId));
-      } catch {
-        // ignore
-      }
-    }
-
-    function parseOrgContextVersion(value) {
-      const n = Number(value);
-      if (!Number.isFinite(n) || n <= 0) return 0;
-      return Math.floor(n);
-    }
-
-    function nextOrgContextVersion() {
-      orgContextVersion = parseOrgContextVersion(orgContextVersion) + 1;
-      return orgContextVersion;
-    }
-
-    function markOrgContextVersion(version) {
-      const parsed = parseOrgContextVersion(version);
-      if (!parsed) return 0;
-      orgContextVersion = Math.max(orgContextVersion, parsed);
-      lastAppliedOrgContextVersion = Math.max(lastAppliedOrgContextVersion, parsed);
-      return parsed;
-    }
-
-    /**
-     * @param {{
-     *   orgId?: string|null,
-     *   reason?: string|null,
-     *   version?: number,
-     *   broadcast?: boolean,
-     *   source?: string|null,
-     *   ts?: number,
-     *   userId?: string|null,
-     *   allowEmpty?: boolean,
-     *   confirmedNoOrg?: boolean,
-     * }} [options]
-     * @returns {number}
-     */
-    function dispatchOrgContextChanged(options = {}) {
-      const {
-        orgId,
-        reason = 'org-context',
-        version = 0,
-        broadcast = false,
-        source = 'local',
-        ts = Date.now(),
-        userId = null,
-        allowEmpty = false,
-        confirmedNoOrg: dispatchConfirmedNoOrg = false,
-      } = options || {};
-      const nextOrgId = orgId ? String(orgId).trim() : '';
-      if (!nextOrgId && !(allowEmpty && dispatchConfirmedNoOrg)) return 0;
-      const signedInUserId = userId || getSignedInUserIdStrict();
-      if (!signedInUserId) return 0;
-      const nextVersion = markOrgContextVersion(version || nextOrgContextVersion());
-      const detail = {
-        orgId: nextOrgId,
-        reason: reason || null,
-        userId: signedInUserId,
-        confirmedNoOrg: dispatchConfirmedNoOrg || undefined,
-        ts: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
-        timestamp: Number.isFinite(Number(ts)) ? Number(ts) : Date.now(),
-        epoch: nextVersion,
-        tabId: orgContextTabId,
-        source,
-      };
-
-      try {
-        window.dispatchEvent(new CustomEvent('tp3d:org-changed', { detail }));
-      } catch {
-        // ignore
-      }
-
-      if (broadcast) {
-        try {
-          window.localStorage.setItem(ORG_CONTEXT_SYNC_KEY, JSON.stringify(detail));
-          // Keep the key ephemeral so stale payloads are less likely to be replayed.
-          window.setTimeout(() => {
-            try {
-              const raw = window.localStorage.getItem(ORG_CONTEXT_SYNC_KEY);
-              if (!raw) return;
-              const parsed = JSON.parse(raw);
-              if (
-                parsed &&
-                parsed.tabId === orgContextTabId &&
-                parseOrgContextVersion(parsed.epoch) === nextVersion
-              ) {
-                window.localStorage.removeItem(ORG_CONTEXT_SYNC_KEY);
-              }
-            } catch {
-              // ignore
-            }
-          }, 1500);
-        } catch {
-          // ignore
-        }
-      }
-
-      return nextVersion;
-    }
-
-    function parseOrgContextSyncPayload(raw) {
-      if (!raw) return null;
-      try {
-        const parsed = JSON.parse(raw);
-        if (!parsed || typeof parsed !== 'object') return null;
-        return parsed;
-      } catch {
-        return null;
-      }
-    }
-
     function handleIncomingOrgContextSync(payload, { source = 'org-sync-storage' } = {}) {
-      if (!payload || typeof payload !== 'object') return;
+      if (!payload || typeof payload !== 'object') return false;
       const incomingOrgId = payload.orgId ? String(payload.orgId).trim() : '';
-      if (!incomingOrgId || !ORG_UUID_RE.test(incomingOrgId)) return;
+      if (!incomingOrgId || !ORG_UUID_RE.test(incomingOrgId)) return false;
 
       const payloadUserId = payload.userId ? String(payload.userId) : '';
-      const currentUserId = getSignedInUserIdStrict();
-      if (!currentUserId || !payloadUserId || payloadUserId !== currentUserId) return;
+      const currentUserId = AuthService.getSignedInUserIdStrict();
+      if (!currentUserId || !payloadUserId || payloadUserId !== currentUserId) return false;
 
       const incomingTabId = payload.tabId ? String(payload.tabId) : '';
-      if (incomingTabId && incomingTabId === orgContextTabId) return;
+      if (incomingTabId && incomingTabId === orgContextTabId) return false;
 
-      const incomingVersion = parseOrgContextVersion(payload.epoch || payload.version);
-      if (!incomingVersion) return;
-      if (incomingVersion <= lastAppliedOrgContextVersion) {
+      const incomingVersion = OrganizationService.getOrgContextEffectiveVersion(payload);
+      if (!incomingVersion) return false;
+      if (OrganizationService.compareOrgContextOrder(incomingVersion, incomingTabId) <= 0) {
         if (isTp3dDebugEnabled()) {
           console.info('[orgContext] ignore-stale-sync', {
             source,
             incomingVersion,
-            lastAppliedOrgContextVersion,
+            lastAppliedOrgContextVersion: OrganizationService.getOrgContextVersionState().lastAppliedOrgContextVersion,
           });
         }
-        return;
+        return false;
       }
 
       if (isTp3dDebugEnabled()) {
         console.info('[orgContext] sync-version', {
           source,
           incomingVersion,
-          lastAppliedVersion: lastAppliedOrgContextVersion,
+          lastAppliedVersion: OrganizationService.getOrgContextVersionState().lastAppliedOrgContextVersion,
           applied: true,
           incomingOrgId,
           incomingUserId: payloadUserId,
         });
       }
 
-      markOrgContextVersion(incomingVersion);
+      OrganizationService.markOrgContextVersion(incomingVersion, incomingTabId);
 
       const currentOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const isSwitchingOrg = !currentOrgId || currentOrgId !== incomingOrgId;
       if (isSwitchingOrg) {
-        beginWorkspaceSwitch(incomingOrgId, source);
+        OrganizationService.beginWorkspaceSwitch(incomingOrgId, source);
       }
-      writeLocalOrgId(incomingOrgId);
+      OrganizationService.writeLocalOrgId(incomingOrgId);
       if (!currentOrgId || currentOrgId !== incomingOrgId) {
         const knownOrgs = Array.isArray(orgContext.orgs) ? orgContext.orgs : [];
         const incomingOrg = knownOrgs.find(o => o && String(o.id) === incomingOrgId) || null;
@@ -6059,20 +2990,21 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       applyWorkspaceScopedLocalState(incomingOrgId, { seedIfMissing: false });
       resetWorkspaceScopedUiState(incomingOrgId);
-      reconcileBillingStateForActiveOrg('org-sync');
+      BillingService.reconcileBillingStateForActiveOrg('org-sync');
       if (isSwitchingOrg) {
-        markWorkspaceSwitchReady({ localStateReady: true }, 'org-sync:local-state-ready');
-        markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-ready');
-        markWorkspaceSwitchBillingReadyIfSettled(getBillingState(), 'org-sync:billing-current');
+        OrganizationService.markWorkspaceSwitchReady({ localStateReady: true }, 'org-sync:local-state-ready');
+        OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-ready');
+        OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(BillingService.getBillingState(), 'org-sync:billing-current');
       }
 
-      dispatchOrgContextChanged({
+      OrganizationService.dispatchOrgContextChanged({
         orgId: incomingOrgId,
         reason: payload.reason || source,
         version: incomingVersion,
         broadcast: false,
         source,
         ts: payload.ts || payload.timestamp,
+        tabId: incomingTabId,
         userId: currentUserId,
       });
 
@@ -6083,33 +3015,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
       _orgBundleFetchInflightForOrg = incomingOrgId;
       maybeScheduleBillingRefresh('org-changed');
 
-      if (isLogoutInProgress() || !authGateIsSettled()) {
+      if (isLogoutInProgress() || !AuthService.authGateIsSettled()) {
         orgContextQueued = true;
-        return;
+        return true;
       }
       void refreshOrgContext(source, { force: true, forceEmit: false })
-        .then(() => markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-context-refreshed'))
+        .then(() => OrganizationService.markWorkspaceSwitchOrgReadyIfResolved('org-sync:org-context-refreshed'))
         .catch(() => { });
-    }
-
-    // ── getActiveOrgIdNow: best-effort sync orgId with fallbacks ──
-    function getActiveOrgIdNow() {
-      // 1) window.OrgContext (canonical)
-      try {
-        const wcId = getActiveOrgIdForBilling();
-        if (wcId) return wcId;
-      } catch { /* ignore */ }
-      // 2) IIFE-scoped orgContext (available before window.OrgContext)
-      try {
-        const id = normalizeOrgIdForBilling(orgContext && orgContext.activeOrgId);
-        if (id) return id;
-      } catch { /* ignore */ }
-      // 3) localStorage hint (UUID-validated)
-      try {
-        const lsId = readLocalOrgId();
-        if (lsId && ORG_UUID_RE.test(lsId)) return lsId;
-      } catch { /* ignore */ }
-      return '';
+      return true;
     }
 
     // ── Billing org-ready pump: retries refreshBilling until orgId resolves ──
@@ -6133,19 +3046,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
       _billingPumpEverRan = false;
       _billingPumpLastByReason.clear();
       _billingPumpLastRunAtMs = 0;
-      _lastBillingKey = '';
-      _lastBillingKeyAt = 0;
+      BillingService.resetRefreshDedupForUserSwitch();
     }
 
     function maybeScheduleBillingRefresh(reason) {
-      billingAuthLifecycleDebugLog('billing-pump-enter', {
+      BillingService.billingAuthLifecycleDebugLog('billing-pump-enter', {
         reason,
-        authUserIdTail: abbreviateBillingLifecycleId(getCurrentBillingAuthUserId()),
+        authUserIdTail: BillingService.abbreviateBillingLifecycleId(BillingService.getCurrentBillingAuthUserId()),
       });
       // ── Auth gate: never pump billing without a proven or usable session ──
       const _proven = typeof SupabaseClient.isAuthProven === 'function' && SupabaseClient.isAuthProven();
       if (!_proven) {
-        const _truth = getAuthTruthSnapshot();
+        const _truth = AuthService.getAuthTruthSnapshot();
         const _sessionUsable = Boolean(
           _truth && _truth.session && _truth.session.access_token &&
           _truth.session.expires_at && (_truth.session.expires_at * 1000) > Date.now()
@@ -6153,14 +3065,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!_sessionUsable) {
           billingDebugLog('[BillingPump] skip:auth-not-proven', {
             reason,
-            orgId: getActiveOrgIdNow() || null,
+            orgId: OrganizationService.getActiveOrgIdNow() || null,
             status: _truth ? _truth.status : null,
           });
           return;
         }
       }
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       const now = Date.now();
 
       if (!activeOrgId) {
@@ -6187,9 +3099,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         && typeof window.__TP3D_BILLING.getBillingState === 'function')
         ? window.__TP3D_BILLING.getBillingState() : null;
       const snapOrgId = normalizeOrgIdForBilling(snap && snap.orgId ? snap.orgId : '');
-      const authoritativeRefresh = getBillingAuthoritativeRefreshToken(activeOrgId);
+      const authoritativeRefresh = BillingService.getBillingAuthoritativeRefreshToken(activeOrgId);
       const authoritativeRefreshRequired = Boolean(authoritativeRefresh);
-      if (authoritativeRefreshRequired && isBillingAuthoritativeRefreshInFlight(authoritativeRefresh)) {
+      if (authoritativeRefreshRequired && BillingService.isBillingAuthoritativeRefreshInFlight(authoritativeRefresh)) {
         billingDebugLog('[BillingPump] skip:authoritative-inflight', {
           reason,
           orgId: activeOrgId,
@@ -6203,10 +3115,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       let billingOrgMismatch = Boolean(snapOrgId && snapOrgId !== activeOrgId);
       const billingOrgMismatchAtStart = billingOrgMismatch;
       if (billingOrgMismatch) {
-        const shared = _readShareableBillingResult(activeOrgId, 'pump-mismatch:' + reason);
+        const shared = BillingService._readShareableBillingResult(activeOrgId, 'pump-mismatch:' + reason);
         if (shared) {
-          _applySharedBillingSnapshot(activeOrgId, shared, 'pump-mismatch-shared:' + reason);
-          const nextSnapOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+          BillingService._applySharedBillingSnapshot(activeOrgId, shared, 'pump-mismatch-shared:' + reason);
+          const nextSnapOrgId = normalizeOrgIdForBilling(BillingService.getBillingState().orgId || '');
           billingOrgMismatch = Boolean(nextSnapOrgId && nextSnapOrgId !== activeOrgId);
         }
       }
@@ -6245,9 +3157,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       // ── Cross-tab shared freshness: skip if another tab recently fetched ──
       if (!reasonIsForce && !authoritativeRefreshRequired && activeOrgId) {
-        const sharedFreshAt = _getSharedBillingFreshness(activeOrgId);
+        const sharedFreshAt = BillingService._getSharedBillingFreshness(activeOrgId);
         if (sharedFreshAt && (now - sharedFreshAt) < _BILLING_SHARED_FRESH_MS) {
-          const shared = _readShareableBillingResult(activeOrgId, 'pump:' + reason);
+          const shared = BillingService._readShareableBillingResult(activeOrgId, 'pump:' + reason);
           if (shared) {
             billingDebugLog('billing:cross-tab-lock:skip-fresh', {
               reason: 'pump:' + reason,
@@ -6255,12 +3167,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
               sharedAgeMs: now - sharedFreshAt,
             });
             // Reuse shared result if our local state is older.
-            if (_shouldApplySharedBillingSnapshotForOrg(activeOrgId, sharedFreshAt)) {
-              _applySharedBillingSnapshot(activeOrgId, shared, 'shared-fresh-pump:' + reason);
+            if (BillingService._shouldApplySharedBillingSnapshotForOrg(activeOrgId, sharedFreshAt)) {
+              BillingService._applySharedBillingSnapshot(activeOrgId, shared, 'shared-fresh-pump:' + reason);
             }
             return;
           }
-          const unshareableShared = _readSharedBillingResult(activeOrgId);
+          const unshareableShared = BillingService._readSharedBillingResult(activeOrgId);
           if (unshareableShared) {
             billingDebugLog('billing:cross-tab-lock:ignore-fresh-org-mismatch', {
               reason: 'pump:' + reason,
@@ -6301,7 +3213,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       _billingPumpLastRunAtMs = now;
       billingDebugLog('[BillingPump] run', { reason, orgId: activeOrgId, force: shouldForce });
-      refreshBilling({
+      BillingService.refreshBilling({
         force: shouldForce,
         reason: 'pump:' + reason,
         ...(authoritativeRefresh ? { authoritativeRefresh } : {}),
@@ -6312,10 +3224,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const lostOrgId = normalizeOrgIdForBilling(orgId || '');
       if (!lostOrgId) return false;
 
-      const truth = getAuthTruthSnapshot();
+      const truth = AuthService.getAuthTruthSnapshot();
       if (!truth || !truth.isSignedIn || !truth.userId) return false;
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       if (!activeOrgId || activeOrgId !== lostOrgId) return false;
 
       const now = Date.now();
@@ -6323,12 +3235,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if ((now - lastAt) < ORG_ACCESS_LOSS_COOLDOWN_MS) return true;
       _orgAccessLossLastAt.set(lostOrgId, now);
 
-      clearBillingPendingRetry(lostOrgId);
-      const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+      BillingService.clearBillingPendingRetry(lostOrgId);
+      const billingOrgId = normalizeOrgIdForBilling(BillingService.getBillingState().orgId || '');
       if (billingOrgId === lostOrgId) {
         // _clearBillingSnapshotForOrgTransition() is for switching to a different org.
         // Here the stale billing snapshot is the lost org itself, so use the existing full billing cleanup.
-        clearBillingState();
+        BillingService.clearBillingState();
       }
 
       try {
@@ -6365,7 +3277,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       window.setTimeout(() => {
-        const currentActiveOrgId = getActiveOrgIdNow();
+        const currentActiveOrgId = OrganizationService.getActiveOrgIdNow();
         if (!currentActiveOrgId || currentActiveOrgId !== lostOrgId) return;
         refreshOrgContext('access-loss-detected', { force: true, forceEmit: true }).catch(() => { });
       }, 0);
@@ -6377,14 +3289,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const normalizedLeftOrgId = normalizeOrgIdForBilling(leftOrgId || '');
       if (!normalizedLeftOrgId) return false;
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       const wasActiveOrg = activeOrgId === normalizedLeftOrgId;
 
-      clearBillingPendingRetry(normalizedLeftOrgId);
+      BillingService.clearBillingPendingRetry(normalizedLeftOrgId);
       if (wasActiveOrg) {
-        const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+        const billingOrgId = normalizeOrgIdForBilling(BillingService.getBillingState().orgId || '');
         if (billingOrgId === normalizedLeftOrgId) {
-          clearBillingState();
+          BillingService.clearBillingState();
         }
       }
 
@@ -6413,14 +3325,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const normalizedArchivedOrgId = normalizeOrgIdForBilling(archivedOrgId || '');
       if (!normalizedArchivedOrgId) return false;
 
-      const activeOrgId = getActiveOrgIdNow();
+      const activeOrgId = OrganizationService.getActiveOrgIdNow();
       const wasActiveOrg = activeOrgId === normalizedArchivedOrgId;
 
-      clearBillingPendingRetry(normalizedArchivedOrgId);
+      BillingService.clearBillingPendingRetry(normalizedArchivedOrgId);
       if (wasActiveOrg) {
-        const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+        const billingOrgId = normalizeOrgIdForBilling(BillingService.getBillingState().orgId || '');
         if (billingOrgId === normalizedArchivedOrgId) {
-          clearBillingState();
+          BillingService.clearBillingState();
         }
       }
 
@@ -6449,13 +3361,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const normalizedRestoredOrgId = normalizeOrgIdForBilling(restoredOrgId || '');
       if (!normalizedRestoredOrgId) return false;
 
-      const activeOrgIdBefore = getActiveOrgIdNow();
+      const activeOrgIdBefore = OrganizationService.getActiveOrgIdNow();
       const hadActiveOrgBefore = Boolean(activeOrgIdBefore);
 
-      clearBillingPendingRetry(normalizedRestoredOrgId);
-      const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+      BillingService.clearBillingPendingRetry(normalizedRestoredOrgId);
+      const billingOrgId = normalizeOrgIdForBilling(BillingService.getBillingState().orgId || '');
       if (billingOrgId === normalizedRestoredOrgId) {
-        clearBillingState();
+        BillingService.clearBillingState();
       }
 
       const source = options && options.source ? String(options.source) : 'workspace-restored';
@@ -6495,10 +3407,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const normalizedOrgId = normalizeOrgIdForBilling(orgId || '');
       if (!normalizedOrgId) return false;
 
-      clearBillingPendingRetry(normalizedOrgId);
-      const billingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+      BillingService.clearBillingPendingRetry(normalizedOrgId);
+      const billingOrgId = normalizeOrgIdForBilling(BillingService.getBillingState().orgId || '');
       if (billingOrgId === normalizedOrgId) {
-        clearBillingState();
+        BillingService.clearBillingState();
       }
 
       const source = options && options.source ? String(options.source) : 'ownership-transferred';
@@ -6563,7 +3475,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       if (isActiveOrg) {
-        dispatchOrgContextChanged({
+        OrganizationService.dispatchOrgContextChanged({
           orgId: normalizedOrgId,
           reason: source,
           broadcast: true,
@@ -6585,7 +3497,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       window.TruckPackerApp.handleWorkspaceRestored = handleWorkspaceRestored;
       window.TruckPackerApp.handleOwnershipTransferred = handleOwnershipTransferred;
       window.TruckPackerApp.handleWorkspaceUpdated = handleWorkspaceUpdated;
-      _orgAccessLossHandler = handleOrgAccessLoss;
+      BillingService.setOrgAccessLossHandler(handleOrgAccessLoss);
     } catch { /* ignore */ }
 
     function resolveOrgContextFromBundle(bundle) {
@@ -6605,7 +3517,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           profile.currentOrgId ||
           profile.currentOrgID)
       );
-      const localOrgId = normalizeOrgId(readLocalOrgId());
+      const localOrgId = normalizeOrgId(OrganizationService.readLocalOrgId());
       const membershipOrgId = normalizeOrgId(
         membership && membership.organization_id ? membership.organization_id : null
       );
@@ -6664,7 +3576,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function clearOrgContext({ clearLocalOrgHint = false, confirmedNoOrg = false, reason = '' } = {}) {
-      finishWorkspaceSwitch('org-cleared');
+      OrganizationService.finishWorkspaceSwitch('org-cleared');
       orgContext = {
         activeOrgId: null,
         activeOrg: null,
@@ -6672,8 +3584,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         role: null,
         updatedAt: Date.now(),
       };
-      orgContextVersion = 0;
-      lastAppliedOrgContextVersion = 0;
+      OrganizationService.resetOrgContextVersion();
       _orgBundleFetchInflightForOrg = null;
       _orgRoleHydrationGraceUntilByOrg.clear();
       lastOrgIdNotified = null;
@@ -6681,10 +3592,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       lastWorkspaceUiResetKey = '';
       setWorkspaceStorageScope(null);
       lastLoadedWorkspaceStorageKey = '';
-      if (clearLocalOrgHint || confirmedNoOrg) writeLocalOrgId(null);
+      if (clearLocalOrgHint || confirmedNoOrg) OrganizationService.writeLocalOrgId(null);
       if (confirmedNoOrg) {
         orgRequiredStateReason = String(reason || '');
-        clearBillingAuthoritativeRefreshRequirement(null, 'confirmed-no-workspace');
+        BillingService.clearBillingAuthoritativeRefreshRequirement(null, 'confirmed-no-workspace');
         // BUG-01: confirmed no-workspace is a terminal state for the current
         // identity — release the user-switch promotion guard so it cannot stay
         // latched true for a user with zero active workspaces.
@@ -6701,9 +3612,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       applyOrgRequiredUi(false, { confirmedNoOrg });
       queueOrgScopedRender('org-cleared');
       if (confirmedNoOrg) {
-        const clearedUserId = getSignedInUserIdStrict();
+        const clearedUserId = AuthService.getSignedInUserIdStrict();
         if (clearedUserId) {
-          dispatchOrgContextChanged({
+          OrganizationService.dispatchOrgContextChanged({
             orgId: '',
             allowEmpty: true,
             confirmedNoOrg: true,
@@ -6737,7 +3648,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // ignore
         }
         try {
-          syncRecoverableErrorOverlay();
+          RecoverableErrorOverlay.syncRecoverableErrorOverlay();
         } catch {
           // ignore
         }
@@ -6846,10 +3757,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const suppressRecentSignedInNoOrg = signedInSnapshotAgeMs < NO_ORG_BANNER_SIGNED_IN_GRACE_MS;
       // A stored org hint means the user has (or recently had) an org — keep banner hidden
       // while auth/bundle is still resolving (prevents flash for returning users).
-      const hasLocalOrgHint = Boolean(readLocalOrgId());
+      const hasLocalOrgHint = Boolean(OrganizationService.readLocalOrgId());
       const suppressUncertain = !isDefinitelySignedOut && !confirmedNoOrg && hasLocalOrgHint;
       // Auth Stability Gate: never show banner while auth is still settling
-      const authNotSettled = !authGateIsSettled();
+      const authNotSettled = !AuthService.authGateIsSettled();
       const orgContextBusy = Boolean(orgContextInFlight || authRehydratePromise);
       const hasResolvedNoActiveOrg = Boolean(
         confirmedNoOrg &&
@@ -6900,12 +3811,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // ── Async workspace-ready recovery ──
       // If we just set buttons to disabled (no org) but it's NOT confirmed, launch
       // a background poll to check if a workspace becomes ready and re-apply.
-      const authTruthForPoll = getAuthTruthSnapshot();
+      const authTruthForPoll = AuthService.getAuthTruthSnapshot();
       const canPollWorkspaceReady = Boolean(
         !hasOrg &&
         !confirmedNoOrg &&
         !_workspaceReadyInflight &&
-        authGateIsSettled() &&
+        AuthService.authGateIsSettled() &&
         authTruthForPoll &&
         authTruthForPoll.isSignedIn
       );
@@ -6988,8 +3899,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (!bundle || !bundle.session || !bundle.user) {
         // Do NOT wipe org state when bundle is unavailable — it may just be loading or a transient
         // network error. Only clear if auth is definitively signed_out.
-        const _truth = getAuthTruthSnapshot();
-        if (_truth && _truth.status === 'signed_out' && authGateIsSettled()) {
+        const _truth = AuthService.getAuthTruthSnapshot();
+        if (_truth && _truth.status === 'signed_out' && AuthService.authGateIsSettled()) {
           try { window.__TP3D_LAST_ACCOUNT_BUNDLE = null; } catch (_) { /* ignore */ }
           clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
         }
@@ -7018,7 +3929,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       if (!nextOrgId) {
-        if (bundle && bundle.partial && readLocalOrgId()) {
+        if (bundle && bundle.partial && OrganizationService.readLocalOrgId()) {
           maybeScheduleBillingRefresh('org-context:partial');
           return null;
         }
@@ -7057,10 +3968,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
       orgContextResolved = true;
       // Expose last bundle for sync role resolution (resolveCanManageBillingForOrg).
       try { window.__TP3D_LAST_ACCOUNT_BUNDLE = bundle; } catch (_) { /* ignore */ }
-      writeLocalOrgId(nextOrgIdStr);
+      OrganizationService.writeLocalOrgId(nextOrgIdStr);
       if (changed) {
         applyWorkspaceScopedLocalState(nextOrgIdStr, { seedIfMissing: false });
         resetWorkspaceScopedUiState(nextOrgIdStr);
+      }
+      if (
+        bundle.partial !== true &&
+        nextOrgInActiveList &&
+        Storage &&
+        typeof Storage.finalizeLegacyMigration === 'function'
+      ) {
+        Storage.finalizeLegacyMigration();
       }
 
       // Best-effort: persist current org to profile when we have a real profile row.
@@ -7107,7 +4026,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             reason !== 'org-sync-storage' &&
             reason !== 'org-sync-legacy' &&
             reason !== 'org-sync-event';
-          dispatchOrgContextChanged({
+          OrganizationService.dispatchOrgContextChanged({
             orgId: nextOrgIdStr,
             reason: reason || null,
             broadcast: shouldBroadcast,
@@ -7141,7 +4060,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       maybeScheduleBillingRefresh('org-context');
       // Re-apply access gate with current billing snapshot + fresh role.
       // Handles: role resolved after billing already cached → modal upgrades in-place.
-      applyAccessGateFromBilling(getBillingState(), { reason: 'bundle-role-resolved' });
+      BillingService.applyAccessGateFromBilling(BillingService.getBillingState(), { reason: 'bundle-role-resolved' });
       return nextOrgIdStr;
     }
 
@@ -7157,9 +4076,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return null;
       }
 
-      const truth = getAuthTruthSnapshot();
+      const truth = AuthService.getAuthTruthSnapshot();
       if (!truth.isSignedIn) {
-        if (truth.status === 'signed_out' && authGateIsSettled()) {
+        if (truth.status === 'signed_out' && AuthService.authGateIsSettled()) {
           clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: true });
         }
         return null;
@@ -7197,7 +4116,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         authRefreshPending.sessionHint = opts.sessionHint;
       }
       const autoReason = AUTH_REFRESH_AUTO_REASONS.has(normalizedReason);
-      const truth = getAuthTruthSnapshot();
+      const truth = AuthService.getAuthTruthSnapshot();
       if (isLogoutInProgress()) {
         if (isTp3dDebugEnabled()) {
           console.info('[authRefresh] skip-logout-in-progress', { reason: normalizedReason || null });
@@ -7206,12 +4125,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       if (
         autoReason &&
-        (!authGateIsSettled() || authRehydratePromise || authRefreshInFlight || orgContextInFlight)
+        (!AuthService.authGateIsSettled() || authRehydratePromise || authRefreshInFlight || orgContextInFlight)
       ) {
         if (isTp3dDebugEnabled()) {
           console.info('[authRefresh] skip-auto-race', {
             reason: normalizedReason || null,
-            settled: authGateIsSettled(),
+            settled: AuthService.authGateIsSettled(),
             authRehydrateInFlight: Boolean(authRehydratePromise),
             authRefreshInFlight: Boolean(authRefreshInFlight),
             orgContextInFlight: Boolean(orgContextInFlight),
@@ -7293,8 +4212,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         authRefreshQueued = true;
         return null;
       }
-      const truthBeforeRefresh = getAuthTruthSnapshot();
-      if (truthBeforeRefresh.status === 'signed_out' && authGateIsSettled()) {
+      const truthBeforeRefresh = AuthService.getAuthTruthSnapshot();
+      if (truthBeforeRefresh.status === 'signed_out' && AuthService.authGateIsSettled()) {
         return null;
       }
 
@@ -7308,15 +4227,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         sessionHint: null,
       };
 
-      const now = Date.now();
-      if (!authRefreshWindowStart || now - authRefreshWindowStart > AUTH_REFRESH_WINDOW_MS) {
-        authRefreshWindowStart = now;
-        authRefreshAttempts = 0;
-      }
-      authRefreshAttempts += 1;
+      const attemptsExceeded = AuthService.registerAuthRefreshAttempt();
       const autoOnly =
         reasons.length > 0 && reasons.every(r => AUTH_REFRESH_AUTO_REASONS.has(String(r || '').trim()));
-      if (authRefreshAttempts > AUTH_REFRESH_MAX_ATTEMPTS && autoOnly && !pending.force) {
+      if (attemptsExceeded && autoOnly && !pending.force) {
         return null;
       }
 
@@ -7327,7 +4241,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         const hasTokens = Boolean(sessionHint && sessionHint.access_token && sessionHint.refresh_token);
         if (!hasTokens) {
-          if (shouldUseSignedInHint() && !pending.force) {
+          if (AuthService.shouldUseSignedInHint() && !pending.force) {
             if (isTp3dDebugEnabled()) {
               console.info('[authRefresh] signed-in-hint-retry', { reasons });
             }
@@ -7394,9 +4308,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       sessionHint = null,
       skipCooldown = false,
     } = {}) {
-      billingAuthLifecycleDebugLog('rehydrate-enter', {
+      BillingService.billingAuthLifecycleDebugLog('rehydrate-enter', {
         reason,
-        sessionUserIdTail: abbreviateBillingLifecycleId(
+        sessionUserIdTail: BillingService.abbreviateBillingLifecycleId(
           sessionHint && sessionHint.user ? sessionHint.user.id : null,
         ),
       });
@@ -7407,7 +4321,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       } catch {
         // ignore
       }
-      if (!skipCooldown && !canStartAuthRehydrate({ force })) return null;
+      if (!skipCooldown && !AuthService.canStartAuthRehydrate({ force })) return null;
 
       authRehydratePromise = (async () => {
         const epochAtStart = SupabaseClient.getAuthEpoch ? SupabaseClient.getAuthEpoch() : null;
@@ -7435,12 +4349,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         // Clear stale auth-block state when a valid user resolves.
         if (user && user.id) {
-          billingAuthLifecycleDebugLog('rehydrate-authenticated-user', {
+          BillingService.billingAuthLifecycleDebugLog('rehydrate-authenticated-user', {
             reason,
-            userIdTail: abbreviateBillingLifecycleId(user.id),
+            userIdTail: BillingService.abbreviateBillingLifecycleId(user.id),
           });
           try {
-            clearAuthBlocked();
+            AuthService.clearAuthBlocked();
           } catch {
             // ignore
           }
@@ -7452,7 +4366,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             // renderAuthState guard, leaving User A org/billing state live.
             applyUserSwitchIsolation('rehydrate-user-switch');
           }
-          transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+          BillingService.transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
             userId: user.id,
             source: 'rehydrate-auth-state',
             authEvent: reason || null,
@@ -7554,10 +4468,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // synchronously by billing/org notifications can promote the stale
       // localStorage org hint (read by resolveActiveOrganizationId in the
       // billing service).
+      flushPendingStorageSave();
       try { window.__TP3D_USER_SWITCH_PENDING = true; } catch (_) { /* ignore */ }
       try { resetBillingPumpForUserSwitch(); } catch (_) { /* ignore */ }
-      try { clearBillingState(); } catch (_) { /* ignore */ }
-      try { requireBillingAuthoritativeRefreshForUserSwitch(getSignedInUserIdStrict()); } catch (_) { /* ignore */ }
+      try { BillingService.clearBillingState(); } catch (_) { /* ignore */ }
+      try { BillingService.requireBillingAuthoritativeRefreshForUserSwitch(AuthService.getSignedInUserIdStrict()); } catch (_) { /* ignore */ }
       clearOrgContext({ clearLocalOrgHint: true, confirmedNoOrg: false });
       suspendAutoSave = true;
       try {
@@ -7599,12 +4514,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const isSignedOutEvent = event === 'SIGNED_OUT';
       const isInitialSessionEvent = event === 'INITIAL_SESSION';
       const treatAsSignedOut = isSignedOutEvent || (isInitialSessionEvent && !user);
-      const authTruth = getAuthTruthSnapshot();
-      billingAuthLifecycleDebugLog('render-enter', {
+      const authTruth = AuthService.getAuthTruthSnapshot();
+      BillingService.billingAuthLifecycleDebugLog('render-enter', {
         event: event || null,
         authStatus: authTruth && authTruth.status ? authTruth.status : null,
-        incomingUserIdTail: abbreviateBillingLifecycleId(user && user.id),
-        authUserIdTail: abbreviateBillingLifecycleId(authTruth && authTruth.userId),
+        incomingUserIdTail: BillingService.abbreviateBillingLifecycleId(user && user.id),
+        authUserIdTail: BillingService.abbreviateBillingLifecycleId(authTruth && authTruth.userId),
         previousUserPresent: Boolean(lastAuthUserId),
       });
 
@@ -7646,7 +4561,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (_isConfirmedUserSwitch) {
           applyUserSwitchIsolation(isUserSwitch ? 'SIGNED_IN_USER_SWITCH' : 'render-auth-state-user-switch');
         }
-        transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+        BillingService.transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
           userId: user.id,
           source: 'render-auth-state',
           authEvent: event || null,
@@ -7660,9 +4575,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         // ── P0.9: Scope storage to this user and reload state ──────────
         const uid = user && user.id ? String(user.id) : 'anon';
+        if (
+          typeof Storage.getStorageScope === 'function' &&
+          Storage.getStorageScope() !== uid
+        ) {
+          flushPendingStorageSave();
+        }
         Storage.setStorageScope(uid);
 
-        const hintedOrgId = readLocalOrgId();
+        const hintedOrgId = OrganizationService.readLocalOrgId();
         setWorkspaceStorageScope(hintedOrgId);
 
         if (_isConfirmedUserSwitch || !hasLoadedScopedState) {
@@ -7709,11 +4630,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // scheduling a pump that will immediately be blocked as skip-fresh
           let _pumpFreshCrossTab = false;
           if (!_pumpFresh) {
-            const _pumpOrgId = getActiveOrgIdForBilling();
+            const _pumpOrgId = BillingService.getActiveOrgIdForBilling();
             if (_pumpOrgId) {
-              const _sharedAt = _getSharedBillingFreshness(_pumpOrgId);
+              const _sharedAt = BillingService._getSharedBillingFreshness(_pumpOrgId);
               const _shared = _sharedAt && (Date.now() - _sharedAt) < _BILLING_SHARED_FRESH_MS
-                ? _readShareableBillingResult(_pumpOrgId, 'render-auth-state') : null;
+                ? BillingService._readShareableBillingResult(_pumpOrgId, 'render-auth-state') : null;
               _pumpFreshCrossTab = Boolean(_shared);
             }
           }
@@ -7732,8 +4653,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       //    The follow-up SIGNED_IN / TOKEN_REFRESHED will rehydrate normally. ──
       const _isTransientSignedOut = !userInitiatedSignOut
         && !isLogoutInProgress()
-        && !authGateIsSettled()
-        && shouldUseSignedInHint();
+        && !AuthService.authGateIsSettled()
+        && AuthService.shouldUseSignedInHint();
 
       if (_isTransientSignedOut) {
         // Do NOT wipe state/storage/org — just request a forced refresh so the
@@ -7746,18 +4667,30 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // ── Auth Stability Gate: defer destructive actions for non-user-initiated sign-outs ──
       // If the user didn't explicitly sign out, treat this SIGNED_OUT as a *candidate*
       // and defer org-clearing / UI wipe until it's confirmed stable.
-      if (!userInitiatedSignOut && !authBlockState) {
-        authGateSignedOutCandidate(() => {
+      if (!userInitiatedSignOut && !AuthService.getAuthBlockState()) {
+        AuthService.authGateSignedOutCandidate(() => {
           // This fires after AUTH_SIGNED_OUT_STABLE_MS with no intervening SIGNED_IN.
           try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
-          _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut: false, onRetry });
+          finalizeSignedOutLocally({
+            source: 'auth-gate-signed-out',
+            event,
+            treatAsSignedOut,
+            userInitiatedSignOut: false,
+            onRetry,
+          });
         });
         // Don't set data-auth yet — keep signed_in appearance while gate is pending
         return;
       }
       // ── end Auth Stability Gate ────────────────────────────────────────────────────
 
-      _executeSignedOutCleanup({ event, treatAsSignedOut, userInitiatedSignOut, onRetry });
+      finalizeSignedOutLocally({
+        source: 'render-auth-state',
+        event,
+        treatAsSignedOut,
+        userInitiatedSignOut,
+        onRetry,
+      });
     }
 
     /** Extracted destructive signed-out actions so the auth gate timer can call them. */
@@ -7767,17 +4700,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
         lastAuthUserId ||
         (lastAuthEventSnapshot && lastAuthEventSnapshot.status === 'signed_in' && lastAuthEventSnapshot.userId)
       );
-      billingAuthLifecycleDebugLog('signed-out-cleanup-enter', {
+      BillingService.billingAuthLifecycleDebugLog('signed-out-cleanup-enter', {
         event: event || null,
         userInitiatedSignOut: Boolean(userInitiatedSignOut),
         hadAuthenticatedSession,
-        previousUserIdTail: abbreviateBillingLifecycleId(lastAuthUserId),
+        previousUserIdTail: BillingService.abbreviateBillingLifecycleId(lastAuthUserId),
       });
       try { document.body.setAttribute('data-auth', 'signed_out'); } catch { /* ignore */ }
       stopVisibleAuthRevocationCheck();
       lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
 
       // ── P0.9: Reset scope to anon so autosave can't write to the old user's key ──
+      flushPendingStorageSave();
       suspendAutoSave = true;
       try {
         resetAppStateToEmpty();
@@ -7790,8 +4724,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       // ── end P0.9 ─────────────────────────────────────────────────────────────────
 
-      if (authBlockState) {
-        AuthOverlay.showAccountDisabled(authBlockState.message);
+      if (AuthService.getAuthBlockState()) {
+        AuthOverlay.showAccountDisabled(AuthService.getAuthBlockState().message);
       } else if (treatAsSignedOut || userInitiatedSignOut) {
         AuthOverlay.setPhase('form', { onRetry: onRetry || bootstrapAuthGate });
         AuthOverlay.show();
@@ -7807,7 +4741,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       try { window.__TP3D_LAST_ACCOUNT_BUNDLE = null; } catch (_) { /* ignore */ }
       try {
-        const shouldClearSignedOutOrgHint = Boolean(userInitiatedSignOut || treatAsSignedOut || authBlockState);
+        const shouldClearSignedOutOrgHint = Boolean(userInitiatedSignOut || treatAsSignedOut || AuthService.getAuthBlockState());
         clearOrgContext({
           clearLocalOrgHint: shouldClearSignedOutOrgHint,
           confirmedNoOrg: shouldClearSignedOutOrgHint,
@@ -7815,13 +4749,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       } catch {
         // ignore
       }
-      try { clearBillingState(); } catch (_) { /* ignore */ }
-      clearBillingAuthoritativeRefreshRequirement(null, 'signed-out-cleanup');
+      try { BillingService.clearBillingState(); } catch (_) { /* ignore */ }
+      BillingService.clearBillingAuthoritativeRefreshRequirement(null, 'signed-out-cleanup');
       if (userInitiatedSignOut && hadAuthenticatedSession) {
-        markBillingAuthoritativeRefreshForNextSignIn();
+        BillingService.markBillingAuthoritativeRefreshForNextSignIn();
       }
-      billingAuthLifecycleDebugLog('signed-out-cleanup-authority-cleared', {
-        markerSet: _billingRequireAuthoritativeOnNextSignIn,
+      BillingService.billingAuthLifecycleDebugLog('signed-out-cleanup-authority-cleared', {
+        markerSet: BillingService.isAuthoritativeRefreshMarkerSet(),
       });
       // BUG-01: sign-out is a terminal identity state — release the user-switch
       // promotion guard so it cannot stay latched across the next sign-in.
@@ -7914,7 +4848,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
             const blockedMsg =
               userError && userError.message ? String(userError.message) : 'Your account has been disabled.';
-            setAuthBlocked(blockedMsg);
+            AuthService.setAuthBlocked(blockedMsg);
             AuthOverlay.showAccountDisabled(blockedMsg);
             return false;
           }
@@ -7936,7 +4870,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const bannedMsg = bannedUntil
               ? `Your account has been disabled until ${bannedUntil.toLocaleString()}.`
               : 'Your account has been disabled.';
-            setAuthBlocked(bannedMsg);
+            AuthService.setAuthBlocked(bannedMsg);
             AuthOverlay.showAccountDisabled(bannedMsg);
             return false;
           }
@@ -7951,14 +4885,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
             // ignore
           }
           const delMsg = 'Your account is scheduled for deletion. Contact support to cancel this request.';
-          setAuthBlocked(delMsg);
+          AuthService.setAuthBlocked(delMsg);
           AuthOverlay.showAccountDisabled(delMsg);
           return false;
         }
 
         // Clear any previously set forced-disabled latch when user is allowed
         try {
-          clearAuthBlocked();
+          AuthService.clearAuthBlocked();
         } catch {
           // ignore
         }
@@ -8138,22 +5072,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
           AuthOverlay.setPhase('form', { onRetry: bootstrapAuthGate });
           AuthOverlay.show();
           // Ensure settled is true so auto-race guard doesn't block refreshes forever
-          if (!_authGate.settled && !_authGate.signedOutTimer) {
-            _authGate.settled = true;
-            _settledStatus = 'signed_out';
-            _settledUserId = null;
-            if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'bootstrap-no-session', status: 'signed_out' });
-          }
+          AuthService.markSignedOutSettledIfIdle('bootstrap-no-session');
           return false;
         } catch (err) {
           AuthOverlay.setPhase('cantconnect', { error: err, onRetry: bootstrapAuthGate });
           AuthOverlay.show();
-          if (!_authGate.settled && !_authGate.signedOutTimer) {
-            _authGate.settled = true;
-            _settledStatus = 'signed_out';
-            _settledUserId = null;
-            if (isTp3dDebugEnabled()) console.info('[authGate] settled:set', { source: 'bootstrap-cantconnect', status: 'signed_out' });
-          }
+          AuthService.markSignedOutSettledIfIdle('bootstrap-cantconnect');
           return false;
         }
       };
@@ -8168,6 +5092,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const inviteRevokedMessage = 'This invite link is no longer valid. Please ask the workspace owner to send a new invite.';
       const inviteWrongEmailMessage = 'Invite email does not match the signed-in account.';
       const inviteGenericFailureMessage = 'This invite link could not be accepted. Please ask the workspace owner to send a new invite.';
+      const inviteRetryableFailureMessage = 'This invite could not be accepted right now. Please try again.';
       let inviteHandoffNotice = null;
 
       function sanitizeInviteHandoffMessage(message) {
@@ -8183,10 +5108,44 @@ const TP3D_BUILD_STAMP = Object.freeze({
       function mapInviteAcceptFailureMessage(error) {
         const raw = String(error || '').trim();
         const lower = raw.toLowerCase();
-        if (lower.includes('expired')) return inviteExpiredMessage;
-        if (lower.includes('email does not match')) return inviteWrongEmailMessage;
-        if (lower.includes('no longer valid') || lower.includes('revoked')) return inviteRevokedMessage;
+        if (lower.includes('invite') && lower.includes('expired')) return inviteExpiredMessage;
+        if (lower.includes('invite email does not match')) return inviteWrongEmailMessage;
+        if (
+          lower.includes('invite') &&
+          (lower.includes('no longer valid') || lower.includes('revoked') || lower.includes('not found'))
+        ) {
+          return inviteRevokedMessage;
+        }
         return inviteGenericFailureMessage;
+      }
+
+      function isTerminalInviteAcceptFailure(error) {
+        const lower = String(error || '').trim().toLowerCase();
+        return Boolean(
+          lower === 'missing invite token' ||
+          lower === 'invite token is required' ||
+          lower.includes('invite not found') ||
+          lower.includes('invite link has expired') ||
+          lower.includes('invite has expired') ||
+          lower.startsWith('invite expired') ||
+          lower.includes('invite is no longer valid') ||
+          lower.includes('invite role is no longer valid') ||
+          lower.includes('invite email does not match') ||
+          lower.includes('invite was revoked') ||
+          lower.includes('invite has been revoked') ||
+          lower.startsWith('invite revoked') ||
+          lower.includes('invalid invite role') ||
+          lower.includes('invite has an invalid role')
+        );
+      }
+
+      function clearPendingInviteToken() {
+        pendingInviteToken = null;
+        try {
+          window.sessionStorage.removeItem(inviteTokenStorageKey);
+        } catch (_) {
+          // ignore
+        }
       }
 
       function clearInviteHandoffNotice() {
@@ -8329,14 +5288,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         try {
           UIComponents.showToast('Accepting invite…', 'info', { title: 'Workspace', duration: 6000 });
           const result = await acceptOrgInvite(token);
-          pendingInviteToken = null;
-          try {
-            window.sessionStorage.removeItem(inviteTokenStorageKey);
-          } catch (_) {
-            // ignore
-          }
 
           if (result && result.ok) {
+            clearPendingInviteToken();
             clearInviteHandoffNotice();
             const acceptedOrgId = String(
               (result && result.organization_id) ||
@@ -8356,7 +5310,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
             requestAuthRefresh('invite-accepted', { force: true, forceBundle: true, sessionHint: session });
             try { SettingsOverlay.open('org-members'); } catch (_) { /* ignore */ }
           } else {
-            const inviteMessage = mapInviteAcceptFailureMessage(result && result.error ? result.error : '');
+            const inviteError = result && result.error ? result.error : '';
+            const isTerminalFailure = isTerminalInviteAcceptFailure(inviteError);
+            if (isTerminalFailure) clearPendingInviteToken();
+            const inviteMessage = isTerminalFailure
+              ? mapInviteAcceptFailureMessage(inviteError)
+              : inviteRetryableFailureMessage;
             // Rejection branches are only reachable when a valid session exists (signed-in user).
             // The no-session path returns early above and uses setInviteHandoffNotice for the
             // signed-out case. Here, clear any stale notice state and rely on the toast only.
@@ -8367,13 +5326,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
             });
           }
         } catch (err) {
-          pendingInviteToken = null;
-          try {
-            window.sessionStorage.removeItem(inviteTokenStorageKey);
-          } catch (_) {
-            // ignore
-          }
-          const inviteMessage = mapInviteAcceptFailureMessage(err && err.message ? err.message : '');
+          const inviteError = err && err.message ? err.message : '';
+          const isTerminalFailure = isTerminalInviteAcceptFailure(inviteError);
+          if (isTerminalFailure) clearPendingInviteToken();
+          const inviteMessage = isTerminalFailure
+            ? mapInviteAcceptFailureMessage(inviteError)
+            : inviteRetryableFailureMessage;
           clearInviteHandoffNotice();
           UIComponents.showToast(inviteMessage, 'error', { title: 'Workspace', duration: 12000 });
         } finally {
@@ -8401,11 +5359,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const userFromSession = session && session.user ? session.user : null;
           const newUserId = userFromSession && userFromSession.id ? String(userFromSession.id) : null;
           const previousUserId = lastAuthUserId ? String(lastAuthUserId) : null;
-          billingAuthLifecycleDebugLog('auth-callback-enter', {
+          BillingService.billingAuthLifecycleDebugLog('auth-callback-enter', {
             event: event || null,
             authStatus: session && session.access_token ? 'signed_in' : 'signed_out',
-            userIdTail: abbreviateBillingLifecycleId(newUserId),
-            previousUserIdTail: abbreviateBillingLifecycleId(previousUserId),
+            userIdTail: BillingService.abbreviateBillingLifecycleId(newUserId),
+            previousUserIdTail: BillingService.abbreviateBillingLifecycleId(previousUserId),
             previousUserPresent: Boolean(previousUserId),
           });
 
@@ -8413,6 +5371,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // fall back to it during the brief window where getAuthState() returns
           // status:'unknown' / hasToken:false right after a valid event.
           if (session && session.access_token) {
+            if (!isLogoutInProgress() && !logoutActionPromise) signedOutFinalized = false;
             lastAuthEventSnapshot = { status: 'signed_in', userId: newUserId, hasToken: true, session, ts: Date.now() };
           } else if (isSignedOutEvent) {
             lastAuthEventSnapshot = { status: 'signed_out', userId: null, hasToken: false, session: null, ts: Date.now() };
@@ -8420,9 +5379,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           // ── Auth Stability Gate transitions ──
           if (isSignedInEvent || (isTokenRefreshEvent && session && session.access_token)) {
-            authGateSignedIn();
+            AuthService.authGateSignedIn();
           } else if (isInitialSessionEvent && !userFromSession) {
-            authGateInitialSession();
+            AuthService.authGateInitialSession();
           }
           // SIGNED_OUT is handled below after the transient-signed-out check in renderAuthState.
           // We do NOT call authGateSignedOutCandidate here — it is called from renderAuthState
@@ -8446,15 +5405,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
             applyUserSwitchIsolation('SIGNED_IN_USER_SWITCH');
           }
           if (newUserId && session && session.access_token) {
-            transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
+            BillingService.transferPendingPostSignoutBillingRequirementForAuthenticatedUser({
               userId: newUserId,
               source: 'auth-listener',
               authEvent: event || null,
             });
           }
-          billingAuthLifecycleDebugLog('auth-callback-after-transfer', {
+          BillingService.billingAuthLifecycleDebugLog('auth-callback-after-transfer', {
             event: event || null,
-            userIdTail: abbreviateBillingLifecycleId(newUserId),
+            userIdTail: BillingService.abbreviateBillingLifecycleId(newUserId),
           });
 
           // Rehydrate auth state for sign-in/session refresh events.
@@ -8470,7 +5429,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Sync billing state on auth changes
           // NOTE: refreshBilling is NOT called here — renderAuthState (below) is the single billing trigger
           if (isSignedOutEvent) {
-            clearBillingState();
+            BillingService.clearBillingState();
             clearInviteHandoffNotice();
           } else if (isSignedInEvent || isTokenRefreshEvent || isInitialSessionEvent || isUserUpdatedEvent) {
             if (userFromSession && userFromSession.id) {
@@ -8478,7 +5437,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
           }
 
-          const authTruthForEvent = getAuthTruthSnapshot();
+          const authTruthForEvent = AuthService.getAuthTruthSnapshot();
           // Never treat stale wrapper user as signed-in unless auth truth has a usable session.
           const user = userFromSession || (authTruthForEvent.isSignedIn ? authTruthForEvent.user : null);
 
@@ -8544,24 +5503,23 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const key = ev && ev.key ? String(ev.key) : '';
             if (!key) return;
             if (key === ORG_CONTEXT_SYNC_KEY && ev.newValue) {
-              // Canonical sync arrived — cancel any pending legacy hint
-              if (_legacyOrgSyncTimer) {
+              const payload = OrganizationService.parseOrgContextSyncPayload(ev.newValue);
+              const accepted = payload
+                ? handleIncomingOrgContextSync(payload, { source: 'org-sync-storage' })
+                : false;
+              if (accepted && _legacyOrgSyncTimer) {
                 clearTimeout(_legacyOrgSyncTimer);
                 _legacyOrgSyncTimer = null;
                 if (isTp3dDebugEnabled()) {
-                  console.info('[orgSync] legacy-hint:cancelled', { reason: 'canonical-arrived' });
+                  console.info('[orgSync] legacy-hint:cancelled', { reason: 'canonical-accepted' });
                 }
-              }
-              const payload = parseOrgContextSyncPayload(ev.newValue);
-              if (payload) {
-                handleIncomingOrgContextSync(payload, { source: 'org-sync-storage' });
               }
               return;
             }
             if (key === WORKSPACE_SWITCH_SYNC_KEY && ev.newValue) {
-              const payload = parseWorkspaceSwitchSyncPayload(ev.newValue);
+              const payload = OrganizationService.parseWorkspaceSwitchSyncPayload(ev.newValue);
               if (payload) {
-                handleIncomingWorkspaceSwitchState(payload);
+                OrganizationService.handleIncomingWorkspaceSwitchState(payload);
               }
               return;
             }
@@ -8577,7 +5535,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 _legacyOrgSyncTimer = null;
                 // Canonical did not arrive within window — refresh org context as fallback
                 if (isLogoutInProgress()) return;
-                const uid = getSignedInUserIdStrict();
+                const uid = AuthService.getSignedInUserIdStrict();
                 if (!uid) return;
                 if (isTp3dDebugEnabled()) {
                   console.info('[orgSync] legacy-hint:fired', { orgId: nextOrgId });
@@ -8609,7 +5567,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
           }
           window.addEventListener('tp3d:org-changed', ev => {
-            const truth = getAuthTruthSnapshot();
+            const truth = AuthService.getAuthTruthSnapshot();
             if (!truth.isSignedIn) {
               orgContextMetrics.orgChangedIgnoredSignedOut += 1;
               return;
@@ -8626,18 +5584,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
               }
               return;
             }
-            const detailEpoch = parseOrgContextVersion(detail && detail.epoch ? detail.epoch : 0);
-            if (detailEpoch && detailEpoch < lastAppliedOrgContextVersion) {
+            const detailEpoch = OrganizationService.getOrgContextEffectiveVersion(detail);
+            const detailTabId = detail && detail.tabId ? String(detail.tabId) : '';
+            if (detailEpoch && OrganizationService.compareOrgContextOrder(detailEpoch, detailTabId) < 0) {
               if (isTp3dDebugEnabled()) {
                 console.info('[orgContext] ignore-older-epoch', {
                   detailEpoch,
-                  lastAppliedOrgContextVersion,
+                  lastAppliedOrgContextVersion: OrganizationService.getOrgContextVersionState().lastAppliedOrgContextVersion,
                 });
               }
               return;
             }
             if (detailEpoch) {
-              markOrgContextVersion(detailEpoch);
+              OrganizationService.markOrgContextVersion(detailEpoch, detailTabId);
             }
 
             const detailOrgId = detail && detail.orgId ? String(detail.orgId) : null;
@@ -8651,7 +5610,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               } catch {
                 // ignore
               }
-              applyAccessGateFromBilling(getBillingState(), {
+              BillingService.applyAccessGateFromBilling(BillingService.getBillingState(), {
                 reason: 'org-cleared',
                 activeOrgId: null,
               });
@@ -8695,7 +5654,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             }
             // Re-apply gating immediately for role/org context changes, then pump billing.
             const nextOrgId = detailOrgId || snapshotOrgId || null;
-            applyAccessGateFromBilling(getBillingState(), {
+            BillingService.applyAccessGateFromBilling(BillingService.getBillingState(), {
               reason: 'org-changed',
               activeOrgId: nextOrgId,
             });
@@ -8727,7 +5686,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!replaced || StateStore.get('currentScreen') !== 'packs') {
           AppShell.navigate('packs');
         }
-        syncRecoverableErrorOverlay();
+        RecoverableErrorOverlay.syncRecoverableErrorOverlay();
       });
 
       // Sidebar upgrade notice subscriber
@@ -8753,7 +5712,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
          */
         function resolveCanManageBillingForOrg(orgId) {
           const normalizedOrgId = orgId ? String(orgId).trim() : '';
-          const userId = getSignedInUserIdStrict();
+          const userId = AuthService.getSignedInUserIdStrict();
 
           // Early-out: cannot resolve role without both orgId and userId
           if (!normalizedOrgId || !userId) {
@@ -8885,7 +5844,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         const pickCheckoutInterval = ({ initialInterval = 'month', _title = 'Choose Plan', _continueLabel = 'Continue' } = {}) =>
           new Promise(resolve => {
-            const plans = getCheckoutPlanOptions();
+            const plans = BillingService.getCheckoutPlanOptions();
             const fallbackInterval = plans.month.available ? 'month' : (plans.year.available ? 'year' : 'month');
             let selectedInterval = plans[initialInterval] && plans[initialInterval].available
               ? initialInterval
@@ -9119,7 +6078,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 pickCheckoutInterval({ _title: 'Choose Plan', _continueLabel: 'Continue' })
                   .then(selection => {
                     if (!selection || !selection.interval) return Promise.resolve();
-                    return startCheckout({ interval: selection.interval }).then((result) => {
+                    return BillingService.startCheckout({ interval: selection.interval }).then((result) => {
                       if (!result.ok) {
                         UIComponents.showToast(result.error || 'Checkout failed', 'error', { title: 'Billing' });
                       }
@@ -9201,7 +6160,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                     pickCheckoutInterval({ _title: 'Choose Plan', _continueLabel: 'Continue' })
                       .then(selection => {
                         if (!selection || !selection.interval) return Promise.resolve();
-                        return startCheckout({ interval: selection.interval }).then((result) => {
+                        return BillingService.startCheckout({ interval: selection.interval }).then((result) => {
                           if (!result.ok) {
                             UIComponents.showToast(result.error || 'Checkout failed', 'error', { title: 'Billing' });
                           }
@@ -9437,7 +6396,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             const _signedIn = _authSnap.status === 'signed_in';
             const _activeOid = String(_authSnap.activeOrgId || '').trim();
             const _lockedForOrg = trialExpiredLockedOrgId && _signedIn && _activeOid === trialExpiredLockedOrgId;
-            const _defActive = s && s.ok && (entitlementStatus ? isEntitlementAllowed(entitlementStatus) : s.isActive);
+            const _defActive = s && s.ok && (entitlementStatus ? BillingService.isEntitlementAllowed(entitlementStatus) : s.isActive);
             if (_lockedForOrg && !_defActive) {
               if (!trialExpiredModalRef) { try { showTrialExpiredModal(s, canManageBilling); } catch (_) { /* ignore */ } }
             } else {
@@ -9477,7 +6436,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 fixBtn = document.createElement('button');
                 fixBtn.className = 'tp3d-payment-banner-btn';
                 fixBtn.textContent = 'Fix payment';
-                fixBtn.addEventListener('click', () => { openPortal(); });
+                fixBtn.addEventListener('click', () => { BillingService.openPortal(); });
                 payBanner.appendChild(fixBtn);
               }
             } else {
@@ -9525,7 +6484,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const isOwnerSubscriptionRequired = entitlementStatus === 'owner_subscription_required';
           const isBillingUnavailable = entitlementStatus === 'billing_unavailable';
           const isEntitled = entitlementStatus
-            ? isEntitlementAllowed(entitlementStatus)
+            ? BillingService.isEntitlementAllowed(entitlementStatus)
             : Boolean(s.isActive && s.isPro);
           const showInfoOnlyCard = Boolean(
             isWorkspaceLimitReached ||
@@ -9617,7 +6576,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                   return;
                 }
                 btn.textContent = 'Redirecting\u2026';
-                startCheckout({ interval: selection.interval }).then((r) => {
+                BillingService.startCheckout({ interval: selection.interval }).then((r) => {
                   if (!r.ok) {
                     UIComponents.showToast(r.error || 'Checkout failed', 'error', { title: 'Billing' });
                     btn.disabled = false;
@@ -9634,10 +6593,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
             upgradeEl.appendChild(btn);
           }
         };
-        _billingGateApplier = updateSidebarNotice;
-        subscribeBilling(snapshot => applyAccessGateFromBilling(snapshot, { reason: 'billing-subscriber' }));
-        subscribeBilling(snapshot => markWorkspaceSwitchBillingReadyIfSettled(snapshot, 'billing-subscriber'));
-        applyAccessGateFromBilling(getBillingState(), { reason: 'gate-init' });
+        BillingService.setBillingGateApplier(updateSidebarNotice);
+        BillingService.subscribeBilling(snapshot => BillingService.applyAccessGateFromBilling(snapshot, { reason: 'billing-subscriber' }));
+        BillingService.subscribeBilling(snapshot => OrganizationService.markWorkspaceSwitchBillingReadyIfSettled(snapshot, 'billing-subscriber'));
+        BillingService.applyAccessGateFromBilling(BillingService.getBillingState(), { reason: 'gate-init' });
       } catch (_) { /* ignore */ }
 
       try {
@@ -9652,24 +6611,24 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const s = SupabaseClient.getSession && SupabaseClient.getSession();
           if (!s || !s.access_token) return;
           const now = Date.now();
-          const focusOrgId = getActiveOrgIdForBilling();
-          const focusBillingOrgId = normalizeOrgIdForBilling(_billingState.orgId || '');
+          const focusOrgId = BillingService.getActiveOrgIdForBilling();
+          const focusBillingOrgId = normalizeOrgIdForBilling(BillingService.getBillingState().orgId || '');
           const hasFocusOrgMismatch = Boolean(focusOrgId && focusBillingOrgId && focusBillingOrgId !== focusOrgId);
-          if (hasFocusOrgMismatch) reconcileBillingStateForActiveOrg('focus-mismatch:' + reason);
-          const needsRecovery = Boolean(_billingState.loading || _billingState.pending || !_billingState.ok || _billingState.error);
-          if (!hasFocusOrgMismatch && !needsRecovery && _billingLastFocusRefreshAt && (now - _billingLastFocusRefreshAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS) return;
+          if (hasFocusOrgMismatch) BillingService.reconcileBillingStateForActiveOrg('focus-mismatch:' + reason);
+          const needsRecovery = Boolean(BillingService.getBillingState().loading || BillingService.getBillingState().pending || !BillingService.getBillingState().ok || BillingService.getBillingState().error);
+          if (!hasFocusOrgMismatch && !needsRecovery && BillingService.getLastFocusRefreshAt() && (now - BillingService.getLastFocusRefreshAt()) < BILLING_FOCUS_REFRESH_COOLDOWN_MS) return;
           if (
             !hasFocusOrgMismatch &&
             !needsRecovery &&
-            _billingState.ok &&
-            _billingState.lastFetchedAt &&
-            (now - _billingState.lastFetchedAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS
+            BillingService.getBillingState().ok &&
+            BillingService.getBillingState().lastFetchedAt &&
+            (now - BillingService.getBillingState().lastFetchedAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS
           ) return;
           // ── Cross-tab shared freshness: skip focus refresh if another tab fetched recently ──
           if (focusOrgId) {
-            const sharedFreshAt = _getSharedBillingFreshness(focusOrgId);
+            const sharedFreshAt = BillingService._getSharedBillingFreshness(focusOrgId);
             if (sharedFreshAt && (now - sharedFreshAt) < BILLING_FOCUS_REFRESH_COOLDOWN_MS) {
-              const shared = _readShareableBillingResult(focusOrgId, 'focus:' + reason);
+              const shared = BillingService._readShareableBillingResult(focusOrgId, 'focus:' + reason);
               if (shared) {
                 billingDebugLog('billing:cross-tab-lock:skip-fresh', {
                   reason,
@@ -9677,12 +6636,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
                   sharedAgeMs: now - sharedFreshAt,
                 });
                 // Reuse shared result if our local state is older
-                if (_shouldApplySharedBillingSnapshotForOrg(focusOrgId, sharedFreshAt)) {
-                  _applySharedBillingSnapshot(focusOrgId, shared, 'shared-fresh:' + reason);
+                if (BillingService._shouldApplySharedBillingSnapshotForOrg(focusOrgId, sharedFreshAt)) {
+                  BillingService._applySharedBillingSnapshot(focusOrgId, shared, 'shared-fresh:' + reason);
                 }
                 return;
               }
-              const unshareableShared = _readSharedBillingResult(focusOrgId);
+              const unshareableShared = BillingService._readSharedBillingResult(focusOrgId);
               billingDebugLog(unshareableShared ? 'billing:cross-tab-lock:ignore-fresh-org-mismatch' : 'billing:cross-tab-lock:ignore-fresh-missing-result', {
                 reason,
                 orgId: focusOrgId,
@@ -9691,8 +6650,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
               });
             }
           }
-          _billingLastFocusRefreshAt = now;
-          refreshBilling({ force: false, reason }).catch(() => { });
+          BillingService.markFocusRefreshAt(now);
+          BillingService.refreshBilling({ force: false, reason }).catch(() => { });
         };
         window.addEventListener('focus', () => {
           requestBillingResumeRefresh('window-focus');
@@ -9715,17 +6674,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           if (billingParam === 'success') {
             UIComponents.showToast('Payment successful! Your plan is being activated.', 'success', { title: 'Billing', duration: 8000 });
-            refreshBilling({ force: true, reason: 'stripe-return-success-now' }).catch(() => { });
+            BillingService.refreshBilling({ force: true, reason: 'stripe-return-success-now' }).catch(() => { });
             // Force refresh billing after a short delay (webhook may take a moment)
-            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-2s' }).catch(() => { }); }, 2000);
-            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-success-6s' }).catch(() => { }); }, 6000);
+            setTimeout(() => { BillingService.refreshBilling({ force: true, reason: 'stripe-return-success-2s' }).catch(() => { }); }, 2000);
+            setTimeout(() => { BillingService.refreshBilling({ force: true, reason: 'stripe-return-success-6s' }).catch(() => { }); }, 6000);
           } else if (billingParam === 'cancel') {
             UIComponents.showToast('Checkout was cancelled.', 'info', { title: 'Billing' });
-            refreshBilling({ force: true, reason: 'stripe-return-cancel' }).catch(() => { });
+            BillingService.refreshBilling({ force: true, reason: 'stripe-return-cancel' }).catch(() => { });
           } else if (billingParam === 'portal_return') {
             UIComponents.showToast('Billing updated. Syncing status\u2026', 'info', { title: 'Billing', duration: 6000 });
-            refreshBilling({ force: true, reason: 'stripe-return-portal' }).catch(() => { });
-            setTimeout(() => { refreshBilling({ force: true, reason: 'stripe-return-portal-4s' }).catch(() => { }); }, 4000);
+            BillingService.refreshBilling({ force: true, reason: 'stripe-return-portal' }).catch(() => { });
+            setTimeout(() => { BillingService.refreshBilling({ force: true, reason: 'stripe-return-portal-4s' }).catch(() => { }); }, 4000);
           }
         }
       } catch (_) { /* ignore */ }
@@ -9808,7 +6767,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           changes._redo ||
           changes._replace
         ) {
-          syncRecoverableErrorOverlay();
+          RecoverableErrorOverlay.syncRecoverableErrorOverlay();
         }
       });
 
@@ -9818,15 +6777,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
             routeNotFoundActive = false;
             ErrorOverlay.hide();
             AppShell.navigate(screen);
-            syncRecoverableErrorOverlay();
+            RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
           onNotFound: () => {
             routeNotFoundActive = true;
-            syncRecoverableErrorOverlay();
+            RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
           onNeutral: () => {
             routeNotFoundActive = false;
-            syncRecoverableErrorOverlay();
+            RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
         });
       } catch (err) {

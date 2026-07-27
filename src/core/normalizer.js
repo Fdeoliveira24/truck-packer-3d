@@ -24,6 +24,7 @@ import {
   CANONICAL_CASE_KEYS,
   DIMENSION_MAX_INCHES,
   WEIGHT_MAX_LBS,
+  parseCargoNotes,
 } from './cargo-canonical.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
@@ -186,7 +187,7 @@ export function normalizeCase(c, now) {
     stopGroup: safeString(c && c.stopGroup, ''),
     keepTogetherGroup: safeString(c && c.keepTogetherGroup, ''),
     canFlip: cargo.canFlip,
-    notes: safeString(c && c.notes, ''),
+    notes: cargo.notes,
     color,
     createdAt,
     updatedAt,
@@ -286,6 +287,7 @@ export function normalizeInstance(inst, caseMap) {
     orientedDims,
     deliverySequence,
     placement,
+    instanceNotes: parseCargoNotes(inst && inst.instanceNotes),
     ...(packedProfile ? { packedProfile } : {}),
   };
 }

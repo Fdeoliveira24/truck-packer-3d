@@ -24206,7 +24206,7 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
 
   const category = src.slice(
     src.indexOf('function openSetCategoryModal('),
-    src.indexOf('// Single Notes modal', src.indexOf('function openSetCategoryModal(')),
+    src.indexOf('// Pack Notes modal', src.indexOf('function openSetCategoryModal(')),
   );
   assert.match(category, /function openSetCategoryModal[\s\S]*editorMutationBlocked\(\)/,
     'Set Category entry is guarded');
@@ -24219,6 +24219,13 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
   );
   assert.ok(notesSave.indexOf('editorMutationBlocked()') < notesSave.indexOf('PackLibrary.updateInstance'),
     'Item Notes Save re-checks before the instance write');
+
+  const packNotesSave = src.slice(
+    src.indexOf("label: 'Save'", src.indexOf('function openPackNotesModal(')),
+    src.indexOf('// Single Notes modal', src.indexOf('function openPackNotesModal(')),
+  );
+  assert.ok(packNotesSave.indexOf('editorMutationBlocked()') < packNotesSave.indexOf('PackLibrary.update('),
+    'Pack Notes Save re-checks editorMutationBlocked before the pack write (Cargo Instructions Phase 3)');
 
   const applyPosition = src.slice(
     src.indexOf("savePos.addEventListener('click'"),

@@ -608,6 +608,179 @@ test('instanceNotes survives Pack, app, and workspace JSON export/import round t
 });
 
 // ---------------------------------------------------------------------------
+// Cargo Instructions Phase 3 — Pack Notes (Pack-owned, pack.notes).
+//
+// Phase 3 adds a dedicated Editor toolbar entry point that edits the third,
+// Pack-owned notes tier (pack.notes) through the existing PackLibrary.update
+// path. It introduces no data-layer field — pack.notes already exists — so the
+// data-layer tests below characterize the existing behavior the new UI relies
+// on (save, clear, ownership isolation, undo/redo, duplication, export/import,
+// reload), and the source-contract tests pin openPackNotesModal to pack.notes
+// only, never case.notes (Standard Instructions) or instanceNotes (Item Notes).
+// editor-screen.js has no jsdom harness here, so the UI wiring is verified with
+// source-contract assertions, matching the openNotesModal convention above.
+// ---------------------------------------------------------------------------
+
+test('PackLibrary.update(packId, { notes }) saves Pack Notes and leaves Case Standard Instructions and instance Item Notes untouched', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const CaseLibrary = await import(caseLibraryUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({ notes: 'Case Standard Instructions' });
+  const inst = baseInstance(c.id, { instanceNotes: 'Item note stays put' });
+  const pack = {
+    id: 'pack-notes-p3',
+    title: 'Pack Notes P3',
+    notes: '',
+    truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' },
+    cases: [inst],
+  };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  PackLibrary.update(pack.id, { notes: 'Deliver to dock 4 by 8am' });
+  const afterSave = PackLibrary.getById(pack.id);
+  assert.equal(afterSave.notes, 'Deliver to dock 4 by 8am', 'Pack Notes must persist on pack.notes');
+  assert.equal(CaseLibrary.getById(c.id).notes, 'Case Standard Instructions',
+    'a Pack Notes save must never touch case.notes (Standard Instructions)');
+  assert.equal(afterSave.cases[0].instanceNotes, 'Item note stays put',
+    'a Pack Notes save must never touch instanceNotes (Item Notes)');
+});
+
+test('Pack Notes clear saves as an empty string (matching existing pack.notes behavior), touching nothing else', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const CaseLibrary = await import(caseLibraryUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({ notes: 'Case note' });
+  const inst = baseInstance(c.id, { instanceNotes: 'Item note' });
+  const pack = { id: 'pack-notes-clear', title: 'Clear', notes: 'Existing pack note', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  PackLibrary.update(pack.id, { notes: '' });
+  const afterClear = PackLibrary.getById(pack.id);
+  assert.equal(afterClear.notes, '', 'cleared Pack Notes must save as an empty string, consistent with the existing pack.notes field');
+  assert.equal(CaseLibrary.getById(c.id).notes, 'Case note', 'clearing Pack Notes must not touch Standard Instructions');
+  assert.equal(afterClear.cases[0].instanceNotes, 'Item note', 'clearing Pack Notes must not touch Item Notes');
+});
+
+test('Pack Notes are Pack-owned: they live on pack.notes, and no instance carries a derived copy (so the value is identical regardless of which instance is selected)', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({ notes: 'Case note' });
+  const instA = baseInstance(c.id, { id: 'inst-a' });
+  const instB = baseInstance(c.id, { id: 'inst-b', transform: { position: { x: 40, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } });
+  const pack = { id: 'pack-notes-owned', title: 'Owned', notes: 'Whole-load note', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [instA, instB] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  const saved = PackLibrary.getById(pack.id);
+  assert.equal(saved.notes, 'Whole-load note', 'Pack Notes live on pack.notes');
+  assert.equal(saved.cases.find(i => i.id === 'inst-a').notes, undefined, 'an instance must not carry a copy of pack.notes');
+  assert.equal(saved.cases.find(i => i.id === 'inst-b').notes, undefined, 'an instance must not carry a copy of pack.notes');
+});
+
+test('Pack Notes changes participate in StateStore undo/redo as a single history step', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({});
+  const inst = baseInstance(c.id, {});
+  const pack = { id: 'pack-notes-undo', title: 'Undo Pack Notes', notes: 'Original pack note', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  PackLibrary.update(pack.id, { notes: 'Updated pack note' });
+  assert.equal(PackLibrary.getById(pack.id).notes, 'Updated pack note');
+  StateStore.undo();
+  assert.equal(PackLibrary.getById(pack.id).notes, 'Original pack note', 'packLibrary is already a significant/undoable state key');
+  StateStore.redo();
+  assert.equal(PackLibrary.getById(pack.id).notes, 'Updated pack note');
+});
+
+test('Existing Pack behavior is unchanged by Phase 3: whole-Pack duplication and JSON export/import preserve pack.notes (characterization)', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const ImportExport = await import(importExportUrl.href);
+  const c = baseCase({});
+  const inst = baseInstance(c.id, {});
+  const pack = { id: 'pack-notes-rt', title: 'Pack Notes RT', notes: 'Preserve this whole-load note', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  const copy = PackLibrary.duplicate(pack.id);
+  assert.ok(copy && copy.id !== pack.id);
+  assert.equal(copy.notes, 'Preserve this whole-load note', 'whole-Pack duplication must preserve pack.notes');
+
+  const packPayload = ImportExport.parsePackImportJSON(ImportExport.buildPackExportJSON(pack));
+  assert.equal(packPayload.pack.notes, 'Preserve this whole-load note', 'Pack JSON export/import must preserve pack.notes');
+
+  const restoredApp = ImportExport.parseAppImportJSON(ImportExport.buildAppExportJSON());
+  assert.equal(restoredApp.packLibrary.find(p => p.id === pack.id).notes, 'Preserve this whole-load note', 'app JSON export/import must preserve pack.notes');
+});
+
+test('Pack Notes persist across a reload: a stored pack.notes loads back intact via the StateStore.init load path', async () => {
+  const StateStore = await import(stateStoreUrl.href);
+  const PackLibrary = await import(packLibraryUrl.href);
+  const c = baseCase({});
+  const inst = baseInstance(c.id, {});
+  const stored = { id: 'pack-notes-reload', title: 'Reload', notes: 'Notes that must survive reload', truck: { length: 300, width: 96, height: 110, shapeMode: 'rect' }, cases: [inst] };
+  StateStore.init({ caseLibrary: [c], packLibrary: [stored], folderLibrary: [], preferences: {} });
+  assert.equal(PackLibrary.getById('pack-notes-reload').notes, 'Notes that must survive reload',
+    'a persisted pack.notes must load back intact (reload path)');
+});
+
+// --- editor-screen.js source-contract checks for openPackNotesModal ---
+
+test('editor-screen defines openPackNotesModal(pack), captures packId up front, and writes ONLY pack.notes via PackLibrary.update — never case.notes or instanceNotes', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openPackNotesModal(pack)');
+  assert.ok(block.length > 0, 'editor-screen must define openPackNotesModal(pack)');
+
+  const packIdCaptureIdx = block.indexOf('const packId = pack.id;');
+  const firstModalCallIdx = block.indexOf('UIComponents.showModal');
+  assert.ok(packIdCaptureIdx >= 0 && packIdCaptureIdx < firstModalCallIdx,
+    'packId must be captured from the passed-in pack before any modal opens');
+
+  assert.match(block, /PackLibrary\.update\(packId, \{ notes: trimmed \}\)/,
+    'Save must write pack.notes through PackLibrary.update with the captured packId and a trimmed value');
+  assert.doesNotMatch(block, /CaseLibrary/, 'Pack Notes must never write Standard Instructions (case.notes)');
+  assert.doesNotMatch(block, /instanceNotes/, 'Pack Notes must never write Item Notes (instanceNotes)');
+  assert.doesNotMatch(block, /updateInstance/, 'Pack Notes must never touch the per-instance update path');
+  assert.doesNotMatch(block, /TruckChangeController/, 'a plain Pack text field must not go through the Truck Change controller');
+  assert.doesNotMatch(block, /updateCasesWithManualRevalidation/, 'a plain text field must not trigger geometry/placement revalidation');
+});
+
+test('openPackNotesModal has empty/read/edit states, trims input, and fails safely (re-resolves the Pack and respects the operation lock)', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function openPackNotesModal(pack)');
+
+  const showModalCalls = (block.match(/UIComponents\.showModal\(/g) || []).length;
+  assert.equal(showModalCalls, 1, 'only the local showNotesModal wrapper may call UIComponents.showModal directly');
+  const stateModalCalls = (block.match(/(?<!function )showNotesModal\(\{/g) || []).length;
+  assert.equal(stateModalCalls, 3, 'Empty, Read, and Edit states must each render through the local wrapper');
+
+  assert.match(block, /No notes for this pack yet\./, 'the empty state must show the pack-level empty message');
+  assert.match(block, /textarea\.value\.trim\(\)/, 'saved input must be trimmed, consistent with existing pack.notes behavior');
+  assert.match(block, /editorMutationBlocked\(\)/, 'Save must respect the editor operation lock');
+  assert.match(block, /This pack no longer exists\./, 'a missing Pack must surface a clear error instead of writing to the wrong pack');
+
+  const resolveCount = (block.match(/resolvePack\(\)/g) || []).length;
+  assert.ok(resolveCount >= 2, 'both the render path and the Save handler must re-resolve the Pack before acting');
+
+  const saveStart = block.indexOf("label: 'Save'");
+  const saveBlock = block.slice(saveStart, block.indexOf('},', saveStart));
+  assert.match(saveBlock, /if \(!resolvePack\(\)\) \{[\s\S]*?return false;/,
+    'Save failure (missing Pack) must return false so the modal stays open and the draft is preserved');
+});
+
+test('the Editor toolbar exposes a Pack Notes action wired to openPackNotesModal, available whenever a Pack is loaded and never gated on instance selection', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  const html = await fs.readFile(new URL('../../index.html', import.meta.url), 'utf8');
+
+  assert.match(html, /id="btn-pack-notes"/, 'the Editor viewport toolbar must expose a Pack Notes button');
+  assert.match(editorSrc, /btnPackNotes\.addEventListener\('click',[\s\S]*?openPackNotesModal\(pack\)/,
+    'the Pack Notes button must open openPackNotesModal for the current Pack');
+  assert.match(editorSrc, /const pack = PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)/,
+    'the handler must resolve the active Pack, independent of any instance selection');
+  assert.match(editorSrc, /btnPackNotes\.disabled = !pack \|\| busy/,
+    'Pack Notes must be available whenever a Pack is loaded (gated only on Pack presence and the operation lock), never on instance selection');
+});
+
+// ---------------------------------------------------------------------------
 // editor-screen.js source-contract checks for openNotesModal — the single,
 // merged Notes modal. It presents Standard Case Instructions (Case-owned,
 // read-only) and Item Notes (Pack-instance-owned, editable) together for

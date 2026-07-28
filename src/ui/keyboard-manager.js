@@ -212,7 +212,7 @@ export function createKeyboardManager({
         const empty = document.createElement('div');
         empty.className = 'muted';
         empty.style.fontSize = 'var(--text-sm)';
-        empty.textContent = 'No packs available.';
+        empty.textContent = 'No load plans available.';
         content.appendChild(empty);
       } else {
         packs.forEach(p => {
@@ -240,7 +240,7 @@ export function createKeyboardManager({
       }
 
       modal = UIComponents.showModal({
-        title: 'Open Pack',
+        title: 'Open Load Plan',
         content,
         actions: [{ label: 'Close', variant: 'primary' }],
       });

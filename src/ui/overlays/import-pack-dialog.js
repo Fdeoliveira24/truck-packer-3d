@@ -68,7 +68,7 @@ export function createImportPackDialog({
     const subtitleEl = doc.createElement('p');
     subtitleEl.className = 'tp3d-ic-subtitle muted';
     subtitleEl.textContent =
-      'Recreate a saved pack from a .json export — validated before anything is created';
+      'Recreate a saved load plan from a .json export — validated before anything is created';
     content.appendChild(subtitleEl);
 
     // ── DROPZONE AREA ───────────────────────────────────────────────────────
@@ -84,11 +84,11 @@ export function createImportPackDialog({
 
     const dropTitle = doc.createElement('div');
     dropTitle.className = 'tp3d-import-drop-title';
-    dropTitle.textContent = 'Drag & drop your pack file';
+    dropTitle.textContent = 'Drag & drop your load plan file';
 
     const dropSub = doc.createElement('div');
     dropSub.className = 'tp3d-import-drop-sub';
-    dropSub.innerHTML = 'A single <strong>.json</strong> pack export — validated before anything is created';
+    dropSub.innerHTML = 'A single <strong>.json</strong> load plan export — validated before anything is created';
 
     const browseBtn = doc.createElement('button');
     browseBtn.className = 'btn';
@@ -326,13 +326,13 @@ export function createImportPackDialog({
 
     // ── Modal ────────────────────────────────────────────────────────────────
     const modalObj = UIComponents.showModal({
-      title: 'Import Pack JSON',
+      title: 'Import Load Plan JSON',
       content,
       dismissible: false,
       actions: [
         { label: 'Cancel' },
         {
-          label: 'Import pack',
+          label: 'Import load plan',
           variant: 'primary',
           onClick: () => {
             if (!parsedPayload) return false;
@@ -377,12 +377,12 @@ export function createImportPackDialog({
     });
     drop.addEventListener('dragleave', () => {
       drop.classList.remove('is-dragover');
-      dropTitle.textContent = 'Drag & drop your pack file';
+      dropTitle.textContent = 'Drag & drop your load plan file';
     });
     drop.addEventListener('drop', ev => {
       ev.preventDefault();
       drop.classList.remove('is-dragover');
-      dropTitle.textContent = 'Drag & drop your pack file';
+      dropTitle.textContent = 'Drag & drop your load plan file';
       const file = ev.dataTransfer && ev.dataTransfer.files && ev.dataTransfer.files[0];
       if (file) handleFile(file);
     });
@@ -404,7 +404,7 @@ export function createImportPackDialog({
     function updateFooter() {
       if (!parsedPayload) {
         importBtn.disabled = true;
-        importBtn.textContent = 'Import pack';
+        importBtn.textContent = 'Import load plan';
         footerNote.textContent = 'Nothing created until you confirm.';
         return;
       }
@@ -414,7 +414,7 @@ export function createImportPackDialog({
           ? parsedPayload.payload.pack.cases.length
           : 0;
         importBtn.innerHTML = '';
-        importBtn.appendChild(doc.createTextNode('Import pack'));
+        importBtn.appendChild(doc.createTextNode('Import load plan'));
         if (n > 0) {
           const badge = doc.createElement('span');
           badge.className = 'tp3d-ip-btn-badge';
@@ -429,17 +429,17 @@ export function createImportPackDialog({
           : null;
         if (existing) {
           footerNote.textContent =
-            'A pack named “' + (Utils && Utils.escapeHtml ? title : title) +
+            'A load plan named “' + (Utils && Utils.escapeHtml ? title : title) +
             '” already exists — importing will create a copy.';
         } else {
-          footerNote.textContent = 'Pack looks good.';
+          footerNote.textContent = 'Load plan looks good.';
         }
       } else {
         // batch
         const validCount = parsedPayload.valid;
         importBtn.disabled = validCount === 0;
         importBtn.innerHTML = '';
-        importBtn.appendChild(doc.createTextNode('Import ' + validCount + ' pack' + (validCount !== 1 ? 's' : '')));
+        importBtn.appendChild(doc.createTextNode('Import ' + validCount + ' load plan' + (validCount !== 1 ? 's' : '')));
         footerNote.textContent = 'Nothing created until you confirm.';
       }
     }
@@ -493,7 +493,7 @@ export function createImportPackDialog({
 
       const packTitle = doc.createElement('div');
       packTitle.className = 'tp3d-ip-summary-title';
-      packTitle.textContent = pack.title || 'Untitled Pack';
+      packTitle.textContent = pack.title || 'Untitled Load Plan';
       headerRow.appendChild(packTitle);
 
       const fitBadge = doc.createElement('span');
@@ -632,7 +632,7 @@ export function createImportPackDialog({
         const td = doc.createElement('td');
         td.colSpan = 5;
         td.className = 'tp3d-ic-empty-row';
-        td.textContent = 'No cases in this pack';
+        td.textContent = 'No cases in this load plan';
         tr.appendChild(td);
         tbody.appendChild(tr);
         return;
@@ -769,9 +769,9 @@ export function createImportPackDialog({
           noteTd.colSpan = 5;
           noteTd.className = 'tp3d-ic-empty-row';
           noteTd.textContent = unresolvedCount === instances.length
-            ? 'Case definitions not bundled — this pack will use matching local cases if available'
+            ? 'Case definitions not bundled — this load plan will use matching local cases if available'
             : unresolvedCount + ' case' + (unresolvedCount !== 1 ? 's' : '') +
-              ' not bundled — this pack will use matching local cases if available';
+              ' not bundled — this load plan will use matching local cases if available';
           noteRow.appendChild(noteTd);
           tbody.appendChild(noteRow);
         }
@@ -866,7 +866,7 @@ export function createImportPackDialog({
         batchStats.appendChild(card);
       });
 
-      batchListCount.textContent = rows.length + ' pack' + (rows.length !== 1 ? 's' : '');
+      batchListCount.textContent = rows.length + ' load plan' + (rows.length !== 1 ? 's' : '');
 
       rows.forEach(({ valid, payload: p, reason }) => {
         const pack = (p && p.pack) || {};
@@ -1015,7 +1015,7 @@ export function createImportPackDialog({
           }
           const { validCount, skippedCount } = renderBatchList(payloads);
           fileChipMeta.textContent =
-            payloads.length + ' pack' + (payloads.length !== 1 ? 's' : '') +
+            payloads.length + ' load plan' + (payloads.length !== 1 ? 's' : '') +
             ' · ' + kb + ' KB · parsed just now';
           parsedPayload = { type: 'batch', payloads, valid: validCount, skipped: skippedCount, file };
           showState('batch');
@@ -1033,7 +1033,7 @@ export function createImportPackDialog({
         const bundledCases = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
 
         if (!pack || !pack.truck || !Array.isArray(pack.cases)) {
-          throw new Error('Invalid pack format — missing truck or cases list.');
+          throw new Error('Invalid load plan format — missing truck or cases list.');
         }
         const truckL = Number(pack.truck.length);
         const truckW = Number(pack.truck.width);
@@ -1041,7 +1041,7 @@ export function createImportPackDialog({
         if (!Number.isFinite(truckL) || truckL <= 0 ||
             !Number.isFinite(truckW) || truckW <= 0 ||
             !Number.isFinite(truckH) || truckH <= 0) {
-          throw new Error('Invalid pack — truck dimensions must be positive numbers.');
+          throw new Error('Invalid load plan — truck dimensions must be positive numbers.');
         }
 
         const caseCount = pack.cases.length;
@@ -1057,7 +1057,7 @@ export function createImportPackDialog({
         updateFooter();
       } catch (err) {
         fileChipMeta.textContent = kb + ' KB · parsed just now';
-        const normalized = normalizeImportError(err, 'Could not parse this pack file.');
+        const normalized = normalizeImportError(err, 'Could not parse this load plan file.');
         renderError(normalized.message, normalized.heading);
         parsedPayload = null;
         showState('error');
@@ -1076,8 +1076,8 @@ export function createImportPackDialog({
           const renamed = result && Array.isArray(result.caseConflicts) ? result.caseConflicts.length : 0;
           UIComponents.showToast(
             renamed > 0
-              ? `Pack imported · ${renamed} case${renamed !== 1 ? 's' : ''} renamed to keep different local cargo`
-              : 'Pack imported successfully',
+              ? `Load plan imported · ${renamed} case${renamed !== 1 ? 's' : ''} renamed to keep different local cargo`
+              : 'Load plan imported successfully',
             'success'
           );
           modalObj.close();
@@ -1108,7 +1108,7 @@ export function createImportPackDialog({
       if (blocked) {
         if (imported > 0) {
           UIComponents.showToast(
-            'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '') + ' before the operation started',
+            'Imported ' + imported + ' load plan' + (imported !== 1 ? 's' : '') + ' before the operation started',
             'warning'
           );
           modalObj.close();
@@ -1116,8 +1116,8 @@ export function createImportPackDialog({
         return;
       }
       let msg = skipped > 0
-        ? 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '') + ' · ' + skipped + ' skipped'
-        : 'Imported ' + imported + ' pack' + (imported !== 1 ? 's' : '');
+        ? 'Imported ' + imported + ' load plan' + (imported !== 1 ? 's' : '') + ' · ' + skipped + ' skipped'
+        : 'Imported ' + imported + ' load plan' + (imported !== 1 ? 's' : '');
       if (renamedTotal > 0) {
         msg += ' · ' + renamedTotal + ' case' + (renamedTotal !== 1 ? 's' : '') + ' renamed';
       }
@@ -1154,7 +1154,7 @@ export function createImportPackDialog({
     if (/unexpected token|json|position\s+\d+/i.test(rawMessage)) {
       return {
         heading: 'Invalid JSON file',
-        message: 'This file could not be parsed as valid JSON. Export the pack again and retry.',
+        message: 'This file could not be parsed as valid JSON. Export the load plan again and retry.',
       };
     }
 

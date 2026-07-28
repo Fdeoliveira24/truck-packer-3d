@@ -330,7 +330,7 @@ export function normalizePack(p, caseMap, now) {
   const stats = p && p.stats && typeof p.stats === 'object' ? { ...baseStats, ...p.stats } : baseStats;
   return {
     id: safeId(p && p.id),
-    title: safeString(p && p.title, 'Untitled Pack'),
+    title: safeString(p && p.title, 'Untitled Load Plan'),
     client: safeString(p && p.client, ''),
     projectName: safeString(p && p.projectName, ''),
     drawnBy: safeString(p && p.drawnBy, ''),

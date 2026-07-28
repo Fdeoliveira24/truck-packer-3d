@@ -491,13 +491,13 @@ export function parsePackBatchImportJSON(jsonText) {
   // Guard: reject Workspace JSON. Workspace import is not available yet — only
   // workspace export exists today, so do not point users at a missing action.
   if (parsed.exportType === 'workspace') {
-    throw new Error('This is a Workspace export. Workspace import is not available yet — use a Pack or App Backup file.');
+    throw new Error('This is a Workspace export. Workspace import is not available yet — use a Load Plan or App Backup file.');
   }
   if (parsed.exportType !== 'pack-batch') {
-    throw new Error('Not a pack batch export. Expected exportType "pack-batch".');
+    throw new Error('Not a load plan batch export. Expected exportType "pack-batch".');
   }
   if (!Array.isArray(parsed.packs) || parsed.packs.length === 0) {
-    throw new Error('Pack batch file must contain a non-empty packs array.');
+    throw new Error('Load plan batch file must contain a non-empty packs array.');
   }
   // Normalize each entry to { pack, bundledCases } — same shape importPackPayload expects.
   return parsed.packs.map(entry => {

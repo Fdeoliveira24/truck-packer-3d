@@ -4579,7 +4579,7 @@ export function createEditorScreen({
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
       if (!pack) {
-        UIComponents.showToast('Create or open a pack first', 'warning');
+        UIComponents.showToast('Create or open a load plan first', 'warning');
         AppShell.navigate('packs');
         return;
       }
@@ -4591,7 +4591,7 @@ export function createEditorScreen({
         : PackLibrary.addInstance(packId, caseId);
       if (inst) {
         StateStore.set({ selectedInstanceIds: [inst.id] }, { skipHistory: true });
-        UIComponents.showToast('Case added to pack', 'success');
+        UIComponents.showToast('Case added to load plan', 'success');
       }
     }
 
@@ -4647,12 +4647,12 @@ export function createEditorScreen({
       card.className = 'card';
       card.innerHTML = `
               <div class="tp3d-editor-fw-semibold tp3d-editor-mb-6">No pack open</div>
-              <div class="muted tp3d-editor-fs-sm tp3d-editor-mb-12">Open a pack from the Packs screen to use the 3D editor.</div>
+              <div class="muted tp3d-editor-fs-sm tp3d-editor-mb-12">Open a load plan from the Load Plans screen to use the 3D editor.</div>
             `;
       const btn = document.createElement('button');
       btn.className = 'btn btn-primary';
       btn.type = 'button';
-      btn.innerHTML = '<i class="fa-solid fa-layer-group"></i> Go to Packs';
+      btn.innerHTML = '<i class="fa-solid fa-layer-group"></i> Go to Load Plans';
       btn.addEventListener('click', () => AppShell.navigate('packs'));
       card.appendChild(btn);
       inspectorEl.appendChild(card);
@@ -5130,7 +5130,7 @@ export function createEditorScreen({
           headingTitle.textContent = config.title || 'Notes';
           const headingSubtitle = document.createElement('span');
           headingSubtitle.className = 'tp3d-notes-modal-heading-subtitle';
-          headingSubtitle.textContent = config.subtitle || 'Pack';
+          headingSubtitle.textContent = config.subtitle || 'Load Plan';
           headingCopy.appendChild(headingTitle);
           headingCopy.appendChild(headingSubtitle);
 
@@ -5148,12 +5148,12 @@ export function createEditorScreen({
       function open(state) {
         const current = resolvePack();
         if (!current) {
-          UIComponents.showToast('This pack no longer exists.', 'error', { title: 'Pack Notes' });
+          UIComponents.showToast('This load plan no longer exists.', 'error', { title: 'Load Plan Notes' });
           return;
         }
         const note = String(current.notes || '').trim();
         const resolvedState = state === 'auto' ? (note ? 'read' : 'empty') : state;
-        const packTitle = current.title || 'Pack';
+        const packTitle = current.title || 'Load Plan';
 
         const wrap = document.createElement('div');
         wrap.className = 'tp3d-notes-modal-content';
@@ -5169,12 +5169,12 @@ export function createEditorScreen({
           emptyIcon.appendChild(emptyIconGlyph);
           const emptyMessage = document.createElement('div');
           emptyMessage.className = 'muted';
-          emptyMessage.textContent = 'No notes for this pack yet.';
+          emptyMessage.textContent = 'No notes for this load plan yet.';
           emptyState.appendChild(emptyIcon);
           emptyState.appendChild(emptyMessage);
           wrap.appendChild(emptyState);
           showNotesModal({
-            title: 'Pack Notes',
+            title: 'Load Plan Notes',
             subtitle: packTitle,
             content: wrap,
             actions: [
@@ -5197,7 +5197,7 @@ export function createEditorScreen({
             wrap.appendChild(lastEdited);
           }
           showNotesModal({
-            title: 'Pack Notes',
+            title: 'Load Plan Notes',
             subtitle: packTitle,
             content: wrap,
             actions: [
@@ -5221,7 +5221,7 @@ export function createEditorScreen({
         fieldWrap.appendChild(textarea);
         wrap.appendChild(fieldWrap);
         showNotesModal({
-          title: 'Pack Notes',
+          title: 'Load Plan Notes',
           subtitle: packTitle,
           content: wrap,
           actions: [
@@ -5234,7 +5234,7 @@ export function createEditorScreen({
                 if (!resolvePack()) {
                   // Save failure: keep the draft and stay in edit state (returning false
                   // leaves this modal open with the typed text intact).
-                  UIComponents.showToast('This pack no longer exists.', 'error', { title: 'Pack Notes' });
+                  UIComponents.showToast('This load plan no longer exists.', 'error', { title: 'Load Plan Notes' });
                   return false;
                 }
                 const trimmed = textarea.value.trim();

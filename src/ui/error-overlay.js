@@ -43,11 +43,11 @@ export function createErrorOverlay() {
   function showNotFound({ kind = 'route' } = {}) {
     const isPack = kind === 'pack';
     _render(
-      isPack ? 'Pack not found' : 'Page not found',
+      isPack ? 'Load plan not found' : 'Page not found',
       isPack
-        ? 'This pack is missing, deleted, or no longer available.'
+        ? 'This load plan is missing, deleted, or no longer available.'
         : 'The page you tried to open does not exist.',
-      [_btn('Back to Packs', () => {
+      [_btn('Back to Load Plans', () => {
         hide();
         if (_onBackToPacks) _onBackToPacks();
       })],
@@ -86,7 +86,7 @@ export function createErrorOverlay() {
   }
 
   /**
-   * Set the callback invoked when the user clicks "Back to Packs" on a 404 overlay.
+   * Set the callback invoked when the user clicks "Back to Load Plans" on a 404 overlay.
    * Called by app.js after navigation is wired.
    * @param {() => void} fn
    */

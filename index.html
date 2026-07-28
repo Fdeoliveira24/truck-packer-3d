@@ -277,7 +277,7 @@
         <nav class="nav" aria-label="Primary">
           <button class="nav-btn" type="button" data-nav="packs">
             <i class="fa-solid fa-layer-group"></i>
-            Packs
+            Load Plans
           </button>
           <button class="nav-btn" type="button" data-nav="cases">
             <i class="fa-solid fa-box"></i>
@@ -319,7 +319,7 @@
               <i class="fa-solid fa-bars"></i>
             </button>
             <div class="topbar-title">
-              <h1 id="topbar-title">Packs</h1>
+              <h1 id="topbar-title">Load Plans</h1>
               <div class="topbar-subtitle" id="topbar-subtitle">Project library</div>
             </div>
           </div>
@@ -332,19 +332,19 @@
           <section class="screen" id="screen-packs">
             <div class="row space-between">
               <div class="grid" style="gap: 6px">
-                <div style="font-size: var(--text-2xl); font-weight: var(--font-semibold)">Packs</div>
+                <div style="font-size: var(--text-2xl); font-weight: var(--font-semibold)">Load Plans</div>
                 <div class="muted" style="font-size: var(--text-sm)">
-                  Create projects, duplicate, export, and open in the editor.
+                  Create load plans, duplicate, export, and open in the editor.
                 </div>
               </div>
               <div class="row" id="packs-actions-default">
                 <button class="btn" id="btn-import-pack" type="button">
                   <i class="fa-solid fa-file-import"></i>
-                  Import Pack(s)
+                  Import Load Plan(s)
                 </button>
                 <button class="btn btn-primary" id="btn-new-pack" type="button">
                   <i class="fa-solid fa-plus"></i>
-                  New Pack
+                  New Load Plan
                 </button>
               </div>
               <div class="row" id="packs-actions-bulk" style="display: none; gap: 8px; align-items: center">
@@ -373,9 +373,9 @@
                     class="input"
                     id="packs-search"
                     type="text"
-                    placeholder="Search packs..."
+                    placeholder="Search load plans..."
                     style="padding-left: 30px"
-                    aria-label="Search packs"
+                    aria-label="Search load plans"
                   />
                 </div>
                 <div class="row" style="gap: 4px">
@@ -412,7 +412,7 @@
                   <div class="search-input"></div>
                   <div class="search-empty" id="packs-filter-empty">
                     <div id="packs-filter-empty-msg" style="font-weight: var(--font-semibold); margin-bottom: 4px">
-                      No matching packs
+                      No matching load plans
                     </div>
                     <div class="muted" style="font-size: var(--text-sm)">
                       Try a different keyword or press Esc to reset search.
@@ -447,7 +447,7 @@
                 <thead>
                   <tr>
                     <th scope="col" style="width: 36px; text-align: center">
-                      <input id="packs-select-all" type="checkbox" aria-label="Select all visible packs" />
+                      <input id="packs-select-all" type="checkbox" aria-label="Select all visible load plans" />
                     </th>
                     <th scope="col" data-sort="title">
                       <span class="th-sort" role="button" tabindex="0">
@@ -546,8 +546,8 @@
               </table>
             </div>
             <div class="card" id="packs-empty" style="display: none; margin-top: 16px">
-              <div style="font-weight: var(--font-semibold); margin-bottom: 6px">No packs yet</div>
-              <div class="muted" style="font-size: var(--text-sm)">Create your first pack to start planning.</div>
+              <div style="font-weight: var(--font-semibold); margin-bottom: 6px">No load plans yet</div>
+              <div class="muted" style="font-size: var(--text-sm)">Create your first load plan to start planning.</div>
             </div>
           </section>
 
@@ -805,9 +805,9 @@
                     <i class="fa-solid fa-sliders"></i>
                     Inspector
                   </button>
-                  <button class="toolbar-btn" id="btn-pack-notes" type="button" data-tooltip="Pack notes (applies to the whole load plan)">
+                  <button class="toolbar-btn" id="btn-pack-notes" type="button" data-tooltip="Notes for the whole load plan">
                     <i class="fa-regular fa-file-lines"></i>
-                    Pack Notes
+                    Load Plan Notes
                   </button>
                   <button class="toolbar-btn tp3d-toolbar-hidden-action" id="btn-screenshot" type="button" aria-hidden="true" tabindex="-1">
                     <i class="fa-solid fa-camera"></i>

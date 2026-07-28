@@ -936,9 +936,9 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
 
   assert.match(settings, /Release Notes[\s\S]*Verified product changes will appear here/,
     'Settings Resources must label Updates as Release Notes with neutral copy');
-  assert.match(settings, /Export App Backup[\s\S]*Download local packs, cases, folders, and preferences as a JSON backup/,
+  assert.match(settings, /Export App Backup[\s\S]*Download local load plans, cases, folders, and preferences as a JSON backup/,
     'Settings Resources must scope App Backup export copy');
-  assert.match(settings, /Import App Backup[\s\S]*Replace local packs, cases, folders, and preferences from a backup JSON/,
+  assert.match(settings, /Import App Backup[\s\S]*Replace local load plans, cases, folders, and preferences from a backup JSON/,
     'Settings Resources must scope App Backup import copy');
   assert.match(settings, /Workspace Backup[\s\S]*Export Workspace Backup/,
     'Workspace General must use Workspace Backup wording');
@@ -946,21 +946,21 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
     'App export modal must use backup title and CTA');
   assert.match(app, /title:\s*['"]Export Workspace Backup['"][\s\S]*label:\s*['"]Export Workspace Backup['"]/,
     'Workspace export modal must use backup title and CTA');
-  assert.match(index, /Import Pack\(s\)/,
-    'Packs screen header button must use Import Pack(s)');
-  assert.doesNotMatch(index, />\s*Import Pack JSON\s*</,
-    'Packs screen toolbar button must not say Import Pack JSON');
+  assert.match(index, /Import Load Plan\(s\)/,
+    'Load Plans screen header button must use Import Load Plan(s)');
+  assert.doesNotMatch(index, />\s*Import Load Plan JSON\s*</,
+    'Load Plans screen toolbar button must not say Import Load Plan JSON');
   assert.match(index, /Download Cases Template[\s\S]*Import Cases/,
     'Cases buttons must use explicit template and import labels');
   assert.match(importApp, /title:\s*['"]Import App Backup['"]/,
     'Import App dialog must use Import App Backup title');
   assert.match(importApp, /Replace Local App Data/,
     'Import App dialog must use scoped replacement CTA');
-  assert.match(importPack, /title:\s*['"]Import Pack JSON['"]/,
-    'Import Pack dialog must use Import Pack JSON title');
-  assert.equal((packs.match(/label:\s*['"]Export Pack JSON['"]/g) || []).length, 2,
-    'Both pack context menus must use Export Pack JSON');
-  assert.match(help, /Import \/ Export Help[\s\S]*Workspace Backup[\s\S]*Pack JSON[\s\S]*Cases CSV\/XLSX/,
+  assert.match(importPack, /title:\s*['"]Import Load Plan JSON['"]/,
+    'Import Load Plan dialog must use Import Load Plan JSON title');
+  assert.equal((packs.match(/label:\s*['"]Export Load Plan JSON['"]/g) || []).length, 2,
+    'Both load plan context menus must use Export Load Plan JSON');
+  assert.match(help, /Import \/ Export Help[\s\S]*Workspace Backup[\s\S]*Load Plan JSON[\s\S]*Cases CSV\/XLSX/,
     'Top-bar Help modal must match the import/export help scope');
 });
 
@@ -1055,7 +1055,7 @@ test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON rejects wrong exportType', as
   const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
   assert.throws(
     () => ImportExport.parsePackBatchImportJSON(JSON.stringify({ packs: [{ pack: { truck: {}, cases: [] } }] })),
-    /pack batch/i,
+    /load plan batch/i,
     'must throw on missing or wrong exportType',
   );
 });
@@ -5213,7 +5213,7 @@ test('CARGO-RULE-V1 export/download action chains reach the right builder and sa
   assert.match(casesSrc, /ImportExport\.downloadCasesTemplate\(\)/, 'cases template button calls downloadCasesTemplate');
   // Pack export -> builder -> downloadText with sanitized filename
   assert.match(packsSrc, /ImportExport\.buildPackExportJSON\(pack\)/, 'pack export uses buildPackExportJSON');
-  assert.match(packsSrc, /Utils\.downloadText\(`\$\{\(pack\.title \|\| 'pack'\)\.replace\(\/\[\^a-z0-9\]\+\/gi, '-'\)\}\.json`/, 'pack export filename is sanitized');
+  assert.match(packsSrc, /Utils\.downloadText\(`\$\{\(pack\.title \|\| 'load-plan'\)\.replace\(\/\[\^a-z0-9\]\+\/gi, '-'\)\}\.json`/, 'pack export filename is sanitized');
 });
 
 test('CARGO-RULE-V1 workspace import is not exposed; pack-batch guard wording is truthful', async () => {
@@ -17817,8 +17817,8 @@ test('phase 0.7C-1A folder dropdown is filter only and avoids CRUD move UI', asy
 
   assert.match(src, /defaultActionsEl\.insertBefore\(foldersButtonEl, btnImport\)/,
     'Folders button must be mounted before Import Pack in the top action area');
-  assert.match(dropdownBlock, /label: `All Packs \(\$\{model\.totalCount\}\)`/,
-    'Folders dropdown must include All Packs with count');
+  assert.match(dropdownBlock, /label: `All Load Plans \(\$\{model\.totalCount\}\)`/,
+    'Folders dropdown must include All Load Plans with count');
   assert.match(dropdownBlock, /label: `Unfiled \(\$\{model\.unfiledCount\}\)`/,
     'Folders dropdown must include Unfiled with count');
   assert.match(dropdownBlock, /label: ['"]No folders yet['"][\s\S]{0,100}disabled: true/,
@@ -18169,7 +18169,7 @@ test('phase 0.7C-3 move helper handles success and failed moves safely', async (
   const end = src.indexOf('\n    function openMoveToFolderModal(pack)', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
 
-  assert.match(block, /if \(!moved\)[\s\S]{0,120}UIComponents\.showToast\(['"]Could not move pack to folder['"], ['"]warning['"]\)/,
+  assert.match(block, /if \(!moved\)[\s\S]{0,120}UIComponents\.showToast\(['"]Could not move load plan to folder['"], ['"]warning['"]\)/,
     'failed move must show a warning toast and not throw');
   assert.match(block, /packsListState\.pageIndex = 0/,
     'successful move must reset pack pagination');
@@ -18190,10 +18190,10 @@ test('phase 0.7C-3 list and grid pack menus include compact move action between 
   const gridEnd = src.indexOf('\n    function buildPreview(', gridStart + 1);
   const gridBlock = gridStart >= 0 && gridEnd > gridStart ? src.slice(gridStart, gridEnd) : '';
 
-  assert.match(listBlock, /label:\s*['"]Export Pack JSON['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
-    'list view pack menu must insert one Move to Folder action after Export Pack JSON and before Delete');
-  assert.match(gridBlock, /label:\s*['"]Export Pack JSON['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
-    'grid view pack menu must insert one Move to Folder action after Export Pack JSON and before Delete');
+  assert.match(listBlock, /label:\s*['"]Export Load Plan JSON['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'list view load plan menu must insert one Move to Folder action after Export Load Plan JSON and before Delete');
+  assert.match(gridBlock, /label:\s*['"]Export Load Plan JSON['"][\s\S]{0,220}label:\s*['"]Move to Folder['"][\s\S]{0,220}openMoveToFolderModal\(pack\)[\s\S]{0,220}label:\s*['"]Delete['"]/,
+    'grid view load plan menu must insert one Move to Folder action after Export Load Plan JSON and before Delete');
   assert.doesNotMatch(listBlock, /\.\.\.buildMoveFolderItems\(pack\)|type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,
     'list view pack menu must not inline every folder choice');
   assert.doesNotMatch(gridBlock, /\.\.\.buildMoveFolderItems\(pack\)|type:\s*['"]header['"], label:\s*['"]Move to folder['"]/,
@@ -18270,7 +18270,7 @@ test('phase 0.7C-4 delete folder uses confirm and preserves packs', async () => 
     'Delete Folder confirm title must be explicit');
   assert.match(block, /will move to Unfiled/,
     'Delete Folder confirm must state assigned packs move to Unfiled');
-  assert.match(block, /Packs will not be deleted/,
+  assert.match(block, /Load plans will not be deleted/,
     'Delete Folder confirm must state packs are not deleted');
   assert.match(block, /PackLibrary\.getPacks\(\)\.filter/,
     'Delete Folder must count affected packs without deleting them');
@@ -18301,7 +18301,7 @@ test('phase 0.7C-4 Folders dropdown exposes rename delete only for active real f
   const start = src.indexOf('function openFoldersDropdown()');
   const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
   const block = start >= 0 && end > start ? src.slice(start, end) : '';
-  const allStart = block.indexOf('label: `All Packs');
+  const allStart = block.indexOf('label: `All Load Plans');
   const allEnd = block.indexOf('label: `Unfiled', allStart + 1);
   const allBlock = allStart >= 0 && allEnd > allStart ? block.slice(allStart, allEnd) : '';
   const unfiledStart = block.indexOf('label: `Unfiled');

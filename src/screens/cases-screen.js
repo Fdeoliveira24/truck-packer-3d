@@ -1214,7 +1214,7 @@ export function createCasesScreen({
       if (mutationBlockedWhileBusy()) return;
       const packsUsing = PackLibrary.getPacks().filter(p => (p.cases || []).some(i => i.caseId === caseId));
       const msg = packsUsing.length
-        ? `This case is used in ${packsUsing.length} pack(s). Deleting it will remove it from those packs.`
+        ? `This case is used in ${packsUsing.length} load plan(s). Deleting it will remove it from those load plans.`
         : 'This cannot be undone.';
       const ok = await UIComponents.confirm({
         title: `Delete "${caseData.name}"?`,

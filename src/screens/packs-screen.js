@@ -81,7 +81,7 @@ export function createPacksScreen({
     let foldersButtonLabelEl = null;
     let filtersOutsideClickHandler = null;
 
-    function mutationBlockedWhileBusy(title = 'Packs') {
+    function mutationBlockedWhileBusy(title = 'Load Plans') {
       if (!OperationLifecycle || !OperationLifecycle.isBusy()) return false;
       UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title });
       return true;
@@ -231,16 +231,16 @@ export function createPacksScreen({
         if (filteredPacks && filteredPacks.length === 1) {
           packId = filteredPacks[0].id;
         } else {
-          UIComponents.showToast('Select a pack first', 'warning');
+          UIComponents.showToast('Select a load plan first', 'warning');
           return;
         }
       } else {
-        UIComponents.showToast('Select a single pack first', 'warning');
+        UIComponents.showToast('Select a single load plan first', 'warning');
         return;
       }
       const pack = PackLibrary.getById(packId);
       if (!pack) {
-        UIComponents.showToast('Pack not found', 'error');
+        UIComponents.showToast('Load plan not found', 'error');
         return;
       }
 
@@ -368,7 +368,7 @@ export function createPacksScreen({
       foldersButtonEl = document.createElement('button');
       foldersButtonEl.type = 'button';
       foldersButtonEl.className = 'btn tp3d-packs-folder-btn';
-      foldersButtonEl.setAttribute('aria-label', 'Filter packs by folder');
+      foldersButtonEl.setAttribute('aria-label', 'Filter load plans by folder');
       foldersButtonEl.setAttribute('aria-haspopup', 'menu');
       foldersButtonEl.setAttribute('aria-expanded', 'false');
 
@@ -535,7 +535,7 @@ export function createPacksScreen({
       const affectedCount = PackLibrary.getPacks().filter(pack => pack && String(pack.folderId || '') === folderId).length;
       const ok = await UIComponents.confirm({
         title: 'Delete folder?',
-        message: `Delete "${folderName}"? ${affectedCount} pack(s) in this folder will move to Unfiled. Packs will not be deleted.`,
+        message: `Delete "${folderName}"? ${affectedCount} load plan(s) in this folder will move to Unfiled. Load plans will not be deleted.`,
         danger: true,
         okLabel: 'Delete',
       });
@@ -561,13 +561,13 @@ export function createPacksScreen({
       if (mutationBlockedWhileBusy()) return false;
       const moved = FolderLibrary.movePackToFolder(pack.id, folderIdOrNull);
       if (!moved) {
-        UIComponents.showToast('Could not move pack to folder', 'warning');
+        UIComponents.showToast('Could not move load plan to folder', 'warning');
         return false;
       }
       persistFolderStateNow();
       packsListState.pageIndex = 0;
       render();
-      UIComponents.showToast(folderIdOrNull ? 'Pack moved to folder' : 'Pack moved to Unfiled', 'success');
+      UIComponents.showToast(folderIdOrNull ? 'Load plan moved to folder' : 'Load plan moved to Unfiled', 'success');
       return true;
     }
 
@@ -643,7 +643,7 @@ export function createPacksScreen({
       const items = /** @type {any[]} */ ([
         { type: 'header', label: 'Folders' },
         {
-          label: `All Packs (${model.totalCount})`,
+          label: `All Load Plans (${model.totalCount})`,
           icon: 'fa-solid fa-layer-group',
           active: activeFolderId === null,
           rightIcon: activeFolderId === null ? 'fa-solid fa-check' : '',
@@ -931,7 +931,7 @@ export function createPacksScreen({
       if (count > 0) {
         defaultActionsEl.style.display = 'none';
         bulkActionsEl.style.display = 'flex';
-        bulkCountEl.textContent = `${count} pack${count === 1 ? '' : 's'} selected`;
+        bulkCountEl.textContent = `${count} load plan${count === 1 ? '' : 's'} selected`;
         btnBulkDelete.innerHTML = `<i class="fa-solid fa-trash"></i> Delete (${count})`;
         const visiblePacks = Array.isArray(filteredPacks) ? filteredPacks : [];
         const allSelected = visiblePacks.length > 0 && visiblePacks.every(p => selectedIds.has(p.id));
@@ -952,8 +952,8 @@ export function createPacksScreen({
       if (mutationBlockedWhileBusy()) return;
       const idsToDelete = Array.from(selectedIds);
       const ok = await UIComponents.confirm({
-        title: 'Delete packs?',
-        message: `This will permanently delete ${count} pack(s). This cannot be undone.`,
+        title: 'Delete load plans?',
+        message: `This will permanently delete ${count} load plan(s). This cannot be undone.`,
         danger: true,
         okLabel: 'Delete',
       });
@@ -965,7 +965,7 @@ export function createPacksScreen({
       idsToDelete.forEach(id => PackLibrary.remove(id));
       if (isCurrentDeleted) AppShell.navigate('packs');
       selectedIds.clear();
-      UIComponents.showToast(`${count} pack(s) deleted`, 'success');
+      UIComponents.showToast(`${count} load plan(s) deleted`, 'success');
       render();
     }
 
@@ -1070,7 +1070,7 @@ export function createPacksScreen({
 
       if (!packs.length) {
         emptyEl.style.display = 'none';
-        filterEmptyMsg.textContent = q ? `No matching packs for "${q}"` : 'No matching packs';
+        filterEmptyMsg.textContent = q ? `No matching load plans for "${q}"` : 'No matching load plans';
         filterEmptyEl.style.display = 'block';
         gridEl.style.display = 'none';
         listEl.style.display = 'none';
@@ -1122,7 +1122,7 @@ export function createPacksScreen({
         const checkbox = document.createElement('input');
         checkbox.type = 'checkbox';
         checkbox.checked = isSelected;
-        checkbox.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+        checkbox.setAttribute('aria-label', `Select ${pack.title || 'Untitled Load Plan'}`);
         checkbox.addEventListener('click', ev => ev.stopPropagation());
         checkbox.addEventListener('change', () => {
           if (checkbox.checked) {
@@ -1141,7 +1141,7 @@ export function createPacksScreen({
         titleWrap.classList.add('tp3d-packs-titlewrap');
 
         const title = document.createElement('div');
-        title.textContent = pack.title || 'Untitled Pack';
+        title.textContent = pack.title || 'Untitled Load Plan';
         titleWrap.appendChild(title);
 
         const stats = PackLibrary.computeStats(pack);
@@ -1209,7 +1209,7 @@ export function createPacksScreen({
               onClick: () => {
                 if (mutationBlockedWhileBusy()) return;
                 PackLibrary.duplicate(pack.id);
-                UIComponents.showToast('Pack duplicated', 'success');
+                UIComponents.showToast('Load plan duplicated', 'success');
               },
             },
             {
@@ -1223,7 +1223,7 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Pack JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Load Plan JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
             {
               label: 'Move to Folder',
               icon: 'fa-solid fa-folder-open',
@@ -1302,8 +1302,8 @@ export function createPacksScreen({
         const preview = buildPreview(pack);
 
         const title = document.createElement('h3');
-        title.textContent = pack.title || 'Untitled Pack';
-        title.setAttribute('data-tooltip', pack.title || 'Untitled Pack');
+        title.textContent = pack.title || 'Untitled Load Plan';
+        title.setAttribute('data-tooltip', pack.title || 'Untitled Load Plan');
         title.classList.add('tp3d-packs-card-title-truncate');
 
         const head = document.createElement('div');
@@ -1371,7 +1371,7 @@ export function createPacksScreen({
         selectCb.type = 'checkbox';
         selectCb.checked = selectedIds.has(pack.id);
         selectCb.setAttribute('data-pack-select', '1');
-        selectCb.setAttribute('aria-label', `Select ${pack.title || 'Untitled Pack'}`);
+        selectCb.setAttribute('aria-label', `Select ${pack.title || 'Untitled Load Plan'}`);
         selectCb.addEventListener('click', ev => ev.stopPropagation());
         selectCb.addEventListener('change', () => {
           if (selectCb.checked) selectedIds.add(pack.id);
@@ -1397,7 +1397,7 @@ export function createPacksScreen({
               onClick: () => {
                 if (mutationBlockedWhileBusy()) return;
                 PackLibrary.duplicate(pack.id);
-                UIComponents.showToast('Pack duplicated', 'success');
+                UIComponents.showToast('Load plan duplicated', 'success');
               },
             },
             {
@@ -1411,7 +1411,7 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Pack JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Load Plan JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
             {
               label: 'Move to Folder',
               icon: 'fa-solid fa-folder-open',
@@ -1457,7 +1457,7 @@ export function createPacksScreen({
         preview.className = 'pack-preview has-thumb';
         const img = document.createElement('img');
         img.loading = 'lazy';
-        img.alt = `${pack.title || 'Pack'} preview`;
+        img.alt = `${pack.title || 'Load Plan'} preview`;
         img.src = pack.thumbnail;
         preview.appendChild(img);
         return preview;
@@ -1485,7 +1485,7 @@ export function createPacksScreen({
       if (mutationBlockedWhileBusy()) return;
       const pack = PackLibrary.open(packId);
       if (!pack) {
-        UIComponents.showToast('Pack not found', 'error');
+        UIComponents.showToast('Load plan not found', 'error');
         return;
       }
       AppShell.navigate('editor');
@@ -1500,7 +1500,7 @@ export function createPacksScreen({
       const client = field('Client (optional)', 'text', 'Live Nation', false);
       const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
       const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
-      const notes = textareaField('Notes (optional)', 'Add notes for this pack...');
+      const notes = textareaField('Notes (optional)', 'Add notes for this load plan...');
       title.wrap.classList.add('tp3d-grid-span-full');
 
       const presets = TrailerPresets.getAll();
@@ -1586,7 +1586,7 @@ export function createPacksScreen({
       content.appendChild(notes.wrap);
 
       UIComponents.showModal({
-        title: 'New Pack',
+        title: 'New Load Plan',
         content,
         actions: [
           { label: 'Cancel' },
@@ -1620,7 +1620,7 @@ export function createPacksScreen({
                 notes: String(notes.textarea.value || '').trim(),
                 truck: newTruck,
               });
-              UIComponents.showToast('Pack created', 'success');
+              UIComponents.showToast('Load plan created', 'success');
               PackLibrary.open(pack.id);
               AppShell.navigate('editor');
               return true;
@@ -1650,7 +1650,7 @@ export function createPacksScreen({
       const drawnBy = field('Drawn by (optional)', 'text', '', false);
       drawnBy.input.value = pack.drawnBy || '';
 
-      const notes = textareaField('Notes (optional)', 'Add notes for this pack...');
+      const notes = textareaField('Notes (optional)', 'Add notes for this load plan...');
       notes.textarea.value = pack.notes || '';
 
       const presets = TrailerPresets.getAll();
@@ -1786,7 +1786,7 @@ export function createPacksScreen({
 
       let editModalRef = null;
       editModalRef = UIComponents.showModal({
-        title: 'Edit Pack',
+        title: 'Edit Load Plan',
         content,
         actions: [
           { label: 'Cancel' },
@@ -1831,7 +1831,7 @@ export function createPacksScreen({
                 pack,
                 nextTruck,
                 commitWhenUnchanged: true,
-                successMessage: 'Pack updated',
+                successMessage: 'Load plan updated',
                 restoreControls: restoreEditControls,
                 commit: finalPack => PackLibrary.update(packId, {
                   ...metadata,
@@ -1851,11 +1851,11 @@ export function createPacksScreen({
       const pack = PackLibrary.getById(packId);
       if (!pack) return;
       const content = document.createElement('div');
-      const f = field('Pack title', 'text', pack.title || '', true);
+      const f = field('Load plan title', 'text', pack.title || '', true);
       f.input.value = pack.title || '';
       content.appendChild(f.wrap);
       UIComponents.showModal({
-        title: 'Rename Pack',
+        title: 'Rename Load Plan',
         content,
         actions: [
           { label: 'Cancel' },
@@ -1879,22 +1879,22 @@ export function createPacksScreen({
       const pack = PackLibrary.getById(packId);
       if (!pack) return;
       const json = ImportExport.buildPackExportJSON(pack);
-      Utils.downloadText(`${(pack.title || 'pack').replace(/[^a-z0-9]+/gi, '-')}.json`, json);
-      toast('Pack JSON exported', 'success');
+      Utils.downloadText(`${(pack.title || 'load-plan').replace(/[^a-z0-9]+/gi, '-')}.json`, json);
+      toast('Load plan JSON exported', 'success');
     }
 
     async function deletePack(packId) {
       if (mutationBlockedWhileBusy()) return;
       const ok = await UIComponents.confirm({
-        title: 'Delete pack?',
-        message: 'This will permanently delete 1 pack(s). This cannot be undone.',
+        title: 'Delete load plan?',
+        message: 'This will permanently delete 1 load plan. This cannot be undone.',
         danger: true,
         okLabel: 'Delete',
       });
       if (!ok) return;
       if (mutationBlockedWhileBusy()) return;
       PackLibrary.remove(packId);
-      UIComponents.showToast('Pack deleted', 'info');
+      UIComponents.showToast('Load plan deleted', 'info');
     }
 
     function openImportPackDialog() {

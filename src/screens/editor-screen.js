@@ -3464,6 +3464,7 @@ export function createEditorScreen({
     const btnShare = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-share'));
     const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
+    const btnPackNotes = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pack-notes'));
     const viewportHintBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('viewport-hint-icon'));
 
     // Swap a button into a visible "working" state (spinner + label) and back. The
@@ -3500,6 +3501,10 @@ export function createEditorScreen({
       if (btnShare) btnShare.disabled = !pack || busy;
       if (btnPng) btnPng.disabled = !pack || busy;
       if (btnPdf) btnPdf.disabled = !pack || busy;
+      // Pack Notes edits pack.notes, so it is a mutating control: available whenever a
+      // pack is loaded (never gated on instance selection) but blocked while any editor
+      // operation is in flight, per the same rule as the other mutating controls above.
+      if (btnPackNotes) btnPackNotes.disabled = !pack || busy;
     }
 
     let initialized = false;
@@ -4089,6 +4094,13 @@ export function createEditorScreen({
             ],
             { width: 200, align: 'left', role: 'editor-share' }
           );
+        });
+      }
+      if (btnPackNotes) {
+        btnPackNotes.addEventListener('click', () => {
+          const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+          if (!pack) return;
+          openPackNotesModal(pack);
         });
       }
       if (viewportHintBtn) {
@@ -5067,6 +5079,180 @@ export function createEditorScreen({
           },
         ],
       });
+    }
+
+    // Pack Notes modal (Cargo Instructions Phase 3) — the Pack-owned notes tier,
+    // pack.notes, opened from a dedicated Editor toolbar action and available for the
+    // active Pack regardless of which instance (if any) is selected. It owns nothing
+    // else: it never reads or writes case.notes (Standard Instructions) or
+    // instance.instanceNotes (Item Notes), and saves exclusively through
+    // PackLibrary.update(packId, { notes }). packId is captured up front so a pack
+    // switch while the modal is open can never migrate the draft, and a Save after the
+    // pack is gone fails safely instead of writing anywhere.
+    function openPackNotesModal(pack) {
+      const packId = pack.id;
+
+      // The same Escape-scoped, notes-styled modal wrapper the Item Notes modal uses
+      // (openNotesModal). Kept local so this action stays self-contained and the Item
+      // Notes path is left byte-for-byte unchanged.
+      function showNotesModal(config) {
+        let modalRef = null;
+        function handleEscape(ev) {
+          if (ev.key === 'Escape' && config.dismissible !== false && modalRef) {
+            ev.preventDefault();
+            modalRef.close();
+          }
+        }
+        modalRef = UIComponents.showModal({
+          ...config,
+          onClose: () => {
+            document.removeEventListener('keydown', handleEscape);
+            if (typeof config.onClose === 'function') config.onClose();
+          },
+        });
+        modalRef.modal.classList.add('tp3d-notes-modal');
+        const heading = modalRef.modal.querySelector('.modal-title');
+        if (heading) {
+          heading.textContent = '';
+          heading.classList.add('tp3d-notes-modal-heading');
+
+          const headingIcon = document.createElement('span');
+          headingIcon.className = 'tp3d-notes-modal-heading-icon';
+          headingIcon.setAttribute('aria-hidden', 'true');
+          const headingIconGlyph = document.createElement('i');
+          headingIconGlyph.className = 'fa-regular fa-file-lines';
+          headingIcon.appendChild(headingIconGlyph);
+
+          const headingCopy = document.createElement('span');
+          headingCopy.className = 'tp3d-notes-modal-heading-copy';
+          const headingTitle = document.createElement('span');
+          headingTitle.className = 'tp3d-notes-modal-heading-title';
+          headingTitle.textContent = config.title || 'Notes';
+          const headingSubtitle = document.createElement('span');
+          headingSubtitle.className = 'tp3d-notes-modal-heading-subtitle';
+          headingSubtitle.textContent = config.subtitle || 'Pack';
+          headingCopy.appendChild(headingTitle);
+          headingCopy.appendChild(headingSubtitle);
+
+          heading.appendChild(headingIcon);
+          heading.appendChild(headingCopy);
+        }
+        document.addEventListener('keydown', handleEscape);
+        return modalRef;
+      }
+
+      function resolvePack() {
+        return PackLibrary.getById(packId) || null;
+      }
+
+      function open(state) {
+        const current = resolvePack();
+        if (!current) {
+          UIComponents.showToast('This pack no longer exists.', 'error', { title: 'Pack Notes' });
+          return;
+        }
+        const note = String(current.notes || '').trim();
+        const resolvedState = state === 'auto' ? (note ? 'read' : 'empty') : state;
+        const packTitle = current.title || 'Pack';
+
+        const wrap = document.createElement('div');
+        wrap.className = 'tp3d-notes-modal-content';
+
+        if (resolvedState === 'empty') {
+          const emptyState = document.createElement('div');
+          emptyState.className = 'tp3d-notes-empty-state';
+          const emptyIcon = document.createElement('span');
+          emptyIcon.className = 'tp3d-notes-empty-state-icon';
+          emptyIcon.setAttribute('aria-hidden', 'true');
+          const emptyIconGlyph = document.createElement('i');
+          emptyIconGlyph.className = 'fa-regular fa-file-lines';
+          emptyIcon.appendChild(emptyIconGlyph);
+          const emptyMessage = document.createElement('div');
+          emptyMessage.className = 'muted';
+          emptyMessage.textContent = 'No notes for this pack yet.';
+          emptyState.appendChild(emptyIcon);
+          emptyState.appendChild(emptyMessage);
+          wrap.appendChild(emptyState);
+          showNotesModal({
+            title: 'Pack Notes',
+            subtitle: packTitle,
+            content: wrap,
+            actions: [
+              { label: 'Add Note', variant: 'primary', onClick: () => { open('edit'); return true; } },
+            ],
+          });
+          return;
+        }
+
+        if (resolvedState === 'read') {
+          const content = document.createElement('div');
+          content.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read', 'tp3d-notes-item-read');
+          content.textContent = note;
+          wrap.appendChild(content);
+          const currentPackForEdited = resolvePack();
+          if (currentPackForEdited && currentPackForEdited.lastEdited) {
+            const lastEdited = document.createElement('div');
+            lastEdited.className = 'muted tp3d-notes-last-edited';
+            lastEdited.textContent = `Last edited ${Utils.formatRelativeTime(currentPackForEdited.lastEdited)}`;
+            wrap.appendChild(lastEdited);
+          }
+          showNotesModal({
+            title: 'Pack Notes',
+            subtitle: packTitle,
+            content: wrap,
+            actions: [
+              { label: 'Close', variant: 'ghost' },
+              { label: 'Edit', variant: 'primary', onClick: () => { open('edit'); return true; } },
+            ],
+          });
+          return;
+        }
+
+        // Edit state: a fresh textarea seeded from the current saved note. Cancel,
+        // Escape, and backdrop click all discard this draft without touching storage —
+        // only Save writes through PackLibrary.update, and closing the dialog any other
+        // way never clears a previously saved note.
+        const fieldWrap = document.createElement('div');
+        fieldWrap.className = 'field';
+        const textarea = document.createElement('textarea');
+        textarea.className = 'input tp3d-textarea-minh-60';
+        textarea.placeholder = 'Add notes for this load plan (handling, delivery, site contact, etc.)...';
+        textarea.value = note;
+        fieldWrap.appendChild(textarea);
+        wrap.appendChild(fieldWrap);
+        showNotesModal({
+          title: 'Pack Notes',
+          subtitle: packTitle,
+          content: wrap,
+          actions: [
+            { label: 'Cancel', variant: 'ghost', onClick: () => { open('auto'); return true; } },
+            {
+              label: 'Save',
+              variant: 'primary',
+              onClick: () => {
+                if (editorMutationBlocked()) return false;
+                if (!resolvePack()) {
+                  // Save failure: keep the draft and stay in edit state (returning false
+                  // leaves this modal open with the typed text intact).
+                  UIComponents.showToast('This pack no longer exists.', 'error', { title: 'Pack Notes' });
+                  return false;
+                }
+                const trimmed = textarea.value.trim();
+                // One PackLibrary.update = one Pack update and one Undo/Redo history
+                // entry (packLibrary is in StateStore's significant-state list). Writes
+                // only the Pack-owned notes field; it never touches the Case or the
+                // per-instance notes tiers. Trimmed to match the existing Packs-screen
+                // Edit-Pack notes behavior (cleared -> "").
+                PackLibrary.update(packId, { notes: trimmed });
+                open('auto');
+                return true;
+              },
+            },
+          ],
+        });
+      }
+
+      open('auto');
     }
 
     // Single Notes modal for the Inspector's single selected Pack instance,

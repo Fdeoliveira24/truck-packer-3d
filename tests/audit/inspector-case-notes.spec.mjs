@@ -753,10 +753,10 @@ test('openPackNotesModal has empty/read/edit states, trims input, and fails safe
   const stateModalCalls = (block.match(/(?<!function )showNotesModal\(\{/g) || []).length;
   assert.equal(stateModalCalls, 3, 'Empty, Read, and Edit states must each render through the local wrapper');
 
-  assert.match(block, /No notes for this pack yet\./, 'the empty state must show the pack-level empty message');
+  assert.match(block, /No notes for this load plan yet\./, 'the empty state must show the load-plan-level empty message');
   assert.match(block, /textarea\.value\.trim\(\)/, 'saved input must be trimmed, consistent with existing pack.notes behavior');
   assert.match(block, /editorMutationBlocked\(\)/, 'Save must respect the editor operation lock');
-  assert.match(block, /This pack no longer exists\./, 'a missing Pack must surface a clear error instead of writing to the wrong pack');
+  assert.match(block, /This load plan no longer exists\./, 'a missing Pack must surface a clear error instead of writing to the wrong load plan');
 
   const resolveCount = (block.match(/resolvePack\(\)/g) || []).length;
   assert.ok(resolveCount >= 2, 'both the render path and the Save handler must re-resolve the Pack before acting');

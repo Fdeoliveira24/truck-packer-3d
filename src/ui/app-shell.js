@@ -25,7 +25,7 @@ export function createAppShell({
     const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
 
     const screenTitles = {
-      packs: { title: 'Packs', subtitle: 'Project library' },
+      packs: { title: 'Load Plans', subtitle: 'Load plan library' },
       cases: { title: 'Cases', subtitle: 'Inventory management' },
       editor: { title: 'Editor', subtitle: '3D workspace' },
       updates: { title: 'Release Notes', subtitle: 'Verified product changes' },

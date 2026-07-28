@@ -126,7 +126,7 @@ export function createCardDisplayOverlay({
         )
       );
     } else {
-      items.push({ type: 'header', label: 'Card Display - Packs' });
+      items.push({ type: 'header', label: 'Card Display - Load Plans' });
       items.push(
         item('Show Thumbnail', packs.showThumbnail !== false, () =>
           setFlag('packs.showThumbnail', packs.showThumbnail === false)

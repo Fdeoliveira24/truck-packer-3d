@@ -3089,7 +3089,7 @@ export function createSettingsOverlay({
     const blurb = doc.createElement('div');
     blurb.className = 'muted tp3d-resources-text';
     blurb.textContent =
-      'Download local packs, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.';
+      'Download local load plans, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.';
 
     const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
     const meta = doc.createElement('div');
@@ -3190,7 +3190,7 @@ export function createSettingsOverlay({
     const ok = await UIComponents.confirm({
       title: 'Import App Backup?',
       message:
-        'This replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
+        'This replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
       danger: true,
       okLabel: 'Replace Local App Data',
     });
@@ -3325,14 +3325,14 @@ export function createSettingsOverlay({
     const helpItems = [
       {
         heading: 'App Backup',
-        body: 'Exporting app backup downloads a JSON file with all packs, cases, folders, and preferences. Importing an app backup replaces all local app data. Export an app backup before importing.',
+        body: 'Exporting app backup downloads a JSON file with all load plans, cases, folders, and preferences. Importing an app backup replaces all local app data. Export an app backup before importing.',
       },
       {
         heading: 'Workspace Backup',
         body: 'Exporting workspace backup downloads packs, cases, and folders for this workspace only. Workspace backup does not support import at this time.',
       },
       {
-        heading: 'Pack JSON',
+        heading: 'Load Plan JSON',
         body: 'Export Pack JSON (from the pack menu) downloads a single pack and its cases. Import Pack JSON adds that pack to your library without replacing other packs.',
       },
       {
@@ -4585,14 +4585,14 @@ export function createSettingsOverlay({
           if (resourcesSubView === 'export') {
             return {
               title: 'Export App Backup',
-              helper: 'Download local packs, cases, folders, and preferences as a JSON backup.',
+              helper: 'Download local load plans, cases, folders, and preferences as a JSON backup.',
               showBack: true,
             };
           }
           if (resourcesSubView === 'import') {
             return {
               title: 'Import App Backup',
-              helper: 'Replace local packs, cases, folders, and preferences from a backup JSON.',
+              helper: 'Replace local load plans, cases, folders, and preferences from a backup JSON.',
               showBack: true,
             };
           }
@@ -4898,12 +4898,12 @@ export function createSettingsOverlay({
         ));
         container.appendChild(makeResourceCard(
           'fa-solid fa-file-export', 'Export App Backup',
-          'Download local packs, cases, folders, and preferences as a JSON backup.',
+          'Download local load plans, cases, folders, and preferences as a JSON backup.',
           () => setResourcesSubView('export')
         ));
         container.appendChild(makeResourceCard(
           'fa-solid fa-file-import', 'Import App Backup',
-          'Replace local packs, cases, folders, and preferences from a backup JSON.',
+          'Replace local load plans, cases, folders, and preferences from a backup JSON.',
           () => setResourcesSubView('import')
         ));
         container.appendChild(makeResourceCard(
@@ -5979,7 +5979,7 @@ export function createSettingsOverlay({
 
               const exportWsIntro = doc.createElement('div');
               exportWsIntro.className = 'tp3d-workspace-action-text';
-              exportWsIntro.textContent = 'Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.';
+              exportWsIntro.textContent = 'Download this workspace\'s load plans, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.';
               exportCopy.appendChild(exportWsIntro);
 
               const exportWsBtn = doc.createElement('button');

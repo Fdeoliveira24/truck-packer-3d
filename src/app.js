@@ -1134,7 +1134,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       const intro = document.createElement('div');
       intro.className = 'muted';
-      intro.textContent = 'Create a workspace to organize packs, cases, and billing for that workspace.';
+      intro.textContent = 'Create a workspace to organize load plans, cases, and billing for that workspace.';
 
       const nameLabel = document.createElement('label');
       nameLabel.className = 'muted';
@@ -1482,7 +1482,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           );
           const captureWorkspaceKey = getActiveWorkspaceKey();
           const pack = PackLibrary.getById(packId);
-          if (!pack) throw new Error('Pack not found');
+          if (!pack) throw new Error('Load plan not found');
 
           // Ensure the latest transforms are rendered before capture.
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -1543,7 +1543,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         try {
           const pack = getCurrentPack();
           if (!pack) {
-            UIComponents.showToast('Open a pack first', 'warning', { title: 'Export' });
+            UIComponents.showToast('Open a load plan first', 'warning', { title: 'Export' });
             return;
           }
           const prefs = PreferencesManager.get();
@@ -1552,7 +1552,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             mimeType: 'image/png',
             hideGrid: true,
           });
-          downloadDataUrl(dataUrl, `truck-pack-${safeName(pack.title)}-${Date.now()}.png`);
+          downloadDataUrl(dataUrl, `load-plan-${safeName(pack.title)}-${Date.now()}.png`);
           UIComponents.showToast('Screenshot saved', 'success', { title: 'Export' });
         } catch (err) {
           console.error(err);
@@ -1586,7 +1586,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not available');
           const pack = getCurrentPack();
           if (!pack) {
-            UIComponents.showToast('Open a pack first', 'warning', { title: 'Export' });
+            UIComponents.showToast('Open a load plan first', 'warning', { title: 'Export' });
             return;
           }
 
@@ -1602,7 +1602,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Header
           doc.setFontSize(22);
           doc.setFont('helvetica', 'bold');
-          doc.text(pack.title || 'Pack', margin, y);
+          doc.text(pack.title || 'Load Plan', margin, y);
           y += 22;
 
           doc.setFontSize(10);
@@ -1861,11 +1861,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       function safeName(name) {
         return (
-          String(name || 'pack')
+          String(name || 'load-plan')
             .trim()
             .toLowerCase()
             .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'pack'
+            .replace(/^-+|-+$/g, '') || 'load-plan'
         );
       }
 
@@ -2158,7 +2158,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       blurb.className = 'muted';
       blurb.style.fontSize = 'var(--text-sm)';
       blurb.innerHTML =
-        '<div>Download local packs, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.</div>';
+        '<div>Download local load plans, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.</div>';
 
       const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
       const meta = document.createElement('div');
@@ -2208,7 +2208,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       blurb.className = 'muted';
       blurb.style.fontSize = 'var(--text-sm)';
       blurb.innerHTML =
-        '<div>Download this workspace\'s packs, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.</div>';
+        '<div>Download this workspace\'s load plans, cases, and folder structure. App preferences, members, billing, payment data, and thumbnails are not included.</div>';
 
       const meta = document.createElement('div');
       meta.className = 'card';
@@ -3733,7 +3733,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           subEl.textContent = 'You do not have any active workspaces right now. Create a new workspace or restore an archived workspace when restore is available.';
         } else {
           titleEl.textContent = 'Create or join a workspace';
-          subEl.textContent = 'You need a workspace to manage packs, cases, and editor data. Open Settings to create one or join with an invite link.';
+          subEl.textContent = 'You need a workspace to manage load plans, cases, and editor data. Open Settings to create one or join with an invite link.';
         }
       }
 
@@ -5868,7 +5868,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
             // Feature list
             const featureItems = [
-              'Unlimited packs & cases',
+              'Unlimited load plans & cases',
               'Advanced 3D editor',
               'PDF & Excel export',
               'Team collaboration',
@@ -6268,7 +6268,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const featuresList = document.createElement('ul');
           featuresList.className = 'tp3d-trial-welcome__features';
           const featureItems = [
-            'Unlimited packs',
+            'Unlimited load plans',
             'Unlimited case presets',
             'AutoPack',
             'Export to PDF',

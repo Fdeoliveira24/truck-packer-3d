@@ -356,11 +356,11 @@ export function createTruckChangeController({
               UIComponents.showToast(options.successMessage, 'success', { title: 'Truck' });
             }
           } else {
-            UIComponents.showToast('Pack update could not be saved.', 'error', { title: 'Truck change' });
+            UIComponents.showToast('Load plan update could not be saved.', 'error', { title: 'Truck change' });
           }
           return { status: committed ? 'committed' : 'failed' };
         } catch (error) {
-          UIComponents.showToast(error && error.message ? error.message : 'Pack update could not be saved.', 'error', { title: 'Truck change' });
+          UIComponents.showToast(error && error.message ? error.message : 'Load plan update could not be saved.', 'error', { title: 'Truck change' });
           return { status: 'failed' };
         }
       }

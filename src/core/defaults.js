@@ -192,7 +192,7 @@ export function seedPack(caseLibrary) {
 
   return {
     id: packId,
-    title: 'Demo Pack',
+    title: 'Demo Load Plan',
     client: 'Example Client',
     projectName: 'Envato Preview',
     drawnBy: 'Truck Packer 3D',

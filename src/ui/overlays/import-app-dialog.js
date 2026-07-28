@@ -67,7 +67,7 @@ export function createImportAppDialog({
       imported = ImportExport.parseAppImportJSON(text);
     } catch (err) {
       UIComponents.showToast('Invalid App JSON: ' + (err && err.message), 'error');
-      UIComponents.showToast('If you are importing only packs, use Import Pack.', 'info');
+      UIComponents.showToast('If you are importing only load plans, use Import Load Plan.', 'info');
       return;
     }
 
@@ -84,7 +84,7 @@ export function createImportAppDialog({
     const ok = await UIComponents.confirm({
       title: 'Import App Backup?',
       message:
-        'This replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
+        'This replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
       danger: true,
       okLabel: 'Replace Local App Data',
     });
@@ -117,7 +117,7 @@ export function createImportAppDialog({
         }</div>
         <div class="tp3d-import-summary-spacer"></div>
         <div class="tp3d-import-badges">
-          <div class="badge tp3d-import-badge-success">Packs: ${(imported.packLibrary || []).length}</div>
+          <div class="badge tp3d-import-badge-success">Load Plans: ${(imported.packLibrary || []).length}</div>
           <div class="badge tp3d-import-badge-info">Cases: ${(imported.caseLibrary || []).length}</div>
         </div>
       `;
@@ -156,7 +156,7 @@ export function createImportAppDialog({
         <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
         <div>
           <span class="tp3d-import-warning-label">Warning:</span>
-          <span class="tp3d-import-warning-text"> Importing an app backup replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. Export an app backup first.</span>
+          <span class="tp3d-import-warning-text"> Importing an app backup replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. Export an app backup first.</span>
         </div>
       </div>
     `;

@@ -128,8 +128,12 @@ test('LOAD-PLAN-TERM-4 the Editor Pack Notes surface is presented as Load Plan N
     fs.readFile(editorScreenPath, 'utf8'),
   ]);
 
-  assert.match(html, /id="btn-pack-notes"[\s\S]{0,240}Load Plan Notes/,
-    'the toolbar button must be labelled Load Plan Notes while keeping its btn-pack-notes id');
+  assert.doesNotMatch(html, /id="btn-pack-notes"/,
+    'Load Plan Notes must not remain in the viewport toolbar');
+  assert.match(editor, /setAttribute\('aria-label', 'Open Load Plan Notes'\)/,
+    'the Inspector action must identify itself as Open Load Plan Notes');
+  assert.match(editor, /setAttribute\('data-tooltip', 'Load Plan Notes'\)/,
+    'the Inspector action tooltip must say Load Plan Notes');
   assert.match(editor, /title:\s*'Load Plan Notes',/, 'the notes modal must be titled Load Plan Notes');
   assert.match(editor, /No notes for this load plan yet\./, 'the empty notes state must say load plan');
   assert.match(editor, /This load plan no longer exists\./, 'the missing-record error must say load plan');

@@ -489,13 +489,15 @@ export function createCasesScreen({
           badgesWrap.appendChild(edited);
         }
 
-        // Active non-default AutoPack handling rules (shared single source).
-        getCaseHandlingSummary(c).forEach(label => {
-          const ruleChip = document.createElement('div');
-          ruleChip.className = 'badge tp3d-handling-chip';
-          ruleChip.textContent = label;
-          badgesWrap.appendChild(ruleChip);
-        });
+        if (badgePrefs.showHandling !== false) {
+          // Active non-default AutoPack handling rules (shared single source).
+          getCaseHandlingSummary(c).forEach(label => {
+            const ruleChip = document.createElement('div');
+            ruleChip.className = 'badge tp3d-handling-chip';
+            ruleChip.textContent = label;
+            badgesWrap.appendChild(ruleChip);
+          });
+        }
 
         const selectCb = document.createElement('input');
         selectCb.type = 'checkbox';
@@ -611,6 +613,7 @@ export function createCasesScreen({
 
     function renderTable() {
       const prefs = PreferencesManager.get();
+      const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
       applyListColumnVisibility(prefs);
       const q = String(searchEl.value || '').trim();
       const cats = Array.from(activeCategories).sort();
@@ -734,7 +737,7 @@ export function createCasesScreen({
         const name = document.createElement('div');
         name.textContent = c.name || '—';
         nameWrap.appendChild(name);
-        if (c.itemCode) {
+        if (c.itemCode && badgePrefs.showItemCode !== false) {
           const itemCode = document.createElement('div');
           itemCode.className = 'muted tp3d-cases-muted-sm';
           itemCode.textContent = `Item Code: ${c.itemCode}`;
@@ -804,7 +807,7 @@ export function createCasesScreen({
             tdFlip.appendChild(ruleChip);
           });
         }
-        if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showFlip === false) {
+        if (badgePrefs.showHandling === false) {
           tdFlip.style.display = 'none';
         }
         tr.appendChild(tdFlip);
@@ -863,9 +866,9 @@ export function createCasesScreen({
       const catTh = /** @type {HTMLElement|null} */ (
         document.querySelector('#screen-cases table thead th[data-sort="category"]')
       );
-      const flipTh = catTh ? catTh.nextElementSibling : null;
-      if (flipTh && flipTh instanceof HTMLElement) {
-        flipTh.style.display = badgePrefs.showFlip !== false ? '' : 'none';
+      const handlingTh = catTh ? catTh.nextElementSibling : null;
+      if (handlingTh && handlingTh instanceof HTMLElement) {
+        handlingTh.style.display = badgePrefs.showHandling !== false ? '' : 'none';
       }
     }
 

@@ -117,6 +117,7 @@ export function normalizePreferences(prefs) {
   next.gridCardBadges.cases.showVolume = next.gridCardBadges.cases.showVolume !== false;
   next.gridCardBadges.cases.showWeight = next.gridCardBadges.cases.showWeight !== false;
   next.gridCardBadges.cases.showFlip = next.gridCardBadges.cases.showFlip !== false;
+  next.gridCardBadges.cases.showHandling = next.gridCardBadges.cases.showHandling !== false;
   next.gridCardBadges.cases.showEditedTime = next.gridCardBadges.cases.showEditedTime !== false;
   next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
   next.units.length = CoreUtils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;

@@ -39,6 +39,7 @@ export const defaultPreferences = {
       showVolume: true,
       showWeight: true,
       showFlip: true,
+      showHandling: true,
       showEditedTime: true,
     },
   },

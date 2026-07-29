@@ -478,22 +478,19 @@ test('BUSINESS-IDENTITY-UI management views keep names primary and identifiers c
   assert.match(caseGridIdentity, /Item Code: \$\{c\.itemCode\}/);
   assert.doesNotMatch(caseGridIdentity, /\bc\.id\b/);
   assert.match(caseListIdentity, /name\.textContent = c\.name/);
-  assert.match(caseListIdentity, /if \(c\.itemCode\)/);
-  assert.doesNotMatch(caseListIdentity, /showItemCode/,
-    'the Case card preference does not change list/table metadata');
+  assert.match(caseListIdentity, /if \(c\.itemCode && badgePrefs\.showItemCode !== false\)/,
+    'the Case identity preference applies to list metadata too');
   assert.doesNotMatch(caseListIdentity, /\bc\.id\b/);
 
   assert.match(packIdentity, /if \(showLoadPlanNumber\)/);
   assert.match(packIdentity, /Load Plan Number: \$\{pack\.loadPlanNumber \|\| '—'\}/);
   assert.match(packIdentity, /if \(showCustomerReference && pack\.customerReference\)/);
   assert.doesNotMatch(packIdentity, /\bpack\.id\b/);
-  assert.match(packsSource, /appendPackIdentityMetadata\(titleWrap, pack\);/,
-    'the Load Plan list/table always renders its existing identity metadata');
-  assert.match(
-    packsSource,
-    /appendPackIdentityMetadata\(titleWrap, pack, \{\s*showLoadPlanNumber: badgePrefs\.showLoadPlanNumber !== false,\s*showCustomerReference: badgePrefs\.showCustomerReference !== false,/,
-    'only Load Plan grid cards apply the Card Display identity preferences'
-  );
+  const identityPreferenceCalls = packsSource.match(
+    /appendPackIdentityMetadata\(titleWrap, pack, \{\s*showLoadPlanNumber: badgePrefs\.showLoadPlanNumber !== false,\s*showCustomerReference: badgePrefs\.showCustomerReference !== false,\s*\}\);/g
+  ) || [];
+  assert.equal(identityPreferenceCalls.length, 2,
+    'Load Plan grid and list views both apply the identity Card Display preferences');
   assert.doesNotMatch(
     `${casesSource}\n${packsSource}`,
     /\b(?:inst|instance)\.(?:itemCode|loadPlanNumber|customerReference)\b/,
@@ -504,6 +501,7 @@ test('BUSINESS-IDENTITY-UI management views keep names primary and identifiers c
 test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persistence, and render refresh', () => {
   const defaults = Normalizer.normalizePreferences({});
   assert.equal(defaults.gridCardBadges.cases.showItemCode, true);
+  assert.equal(defaults.gridCardBadges.cases.showHandling, true);
   assert.equal(defaults.gridCardBadges.packs.showLoadPlanNumber, true);
   assert.equal(defaults.gridCardBadges.packs.showCustomerReference, true);
 
@@ -556,6 +554,7 @@ test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persisten
   assert.equal(findItem('Show Item Code').checked, true);
   assert.equal(findItem('Show Category').checked, true,
     'existing Case Card Display controls remain present');
+  assert.equal(findItem('Show Handling').checked, true);
   findItem('Show Item Code').onCheckboxChange();
   assert.equal(preferences.gridCardBadges.cases.showItemCode, false);
   assert.equal(casesRenderCount, 1);
@@ -565,6 +564,12 @@ test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persisten
   findItem('Show Category').onCheckboxChange();
   assert.equal(preferences.gridCardBadges.cases.showCategory, false,
     'an existing Case control still persists through the same path');
+  findItem('Show Handling').onCheckboxChange();
+  assert.equal(preferences.gridCardBadges.cases.showHandling, false);
+  assert.equal(preferences.gridCardBadges.cases.showFlip, true,
+    'Handling toggles independently from the existing Flip badge');
+  assert.equal(findItem('Show Handling').checked, false,
+    'the reopened menu reads the persisted Handling preference');
 
   overlay.open({ screen: 'packs' });
   assert.equal(findItem('Show Load Plan Number').checked, true);
@@ -580,15 +585,58 @@ test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persisten
   assert.equal(preferences.gridCardBadges.packs.showLoadPlanNumber, false,
     'Customer Reference toggles independently');
   assert.equal(packsRenderCount, 2);
-  assert.equal(casesRenderCount, 2);
-  assert.equal(setCount, 4);
+  assert.equal(casesRenderCount, 3);
+  assert.equal(setCount, 5);
 
   const persisted = Normalizer.normalizePreferences(preferences);
   assert.equal(persisted.gridCardBadges.cases.showItemCode, false);
+  assert.equal(persisted.gridCardBadges.cases.showHandling, false);
   assert.equal(persisted.gridCardBadges.packs.showLoadPlanNumber, false);
   assert.equal(persisted.gridCardBadges.packs.showCustomerReference, false);
   assert.equal(persisted.gridCardBadges.packs.showThumbnail, true,
     'unrelated saved controls are preserved');
+});
+
+test('BUSINESS-IDENTITY-UI Card Display fields have grid/list parity without cross-field coupling', async () => {
+  const [casesSource, packsSource] = await Promise.all([
+    fs.readFile(CASES_SCREEN_PATH, 'utf8'),
+    fs.readFile(PACKS_SCREEN_PATH, 'utf8'),
+  ]);
+  const caseGridHandling = casesSource.slice(
+    casesSource.indexOf('if (badgePrefs.showHandling !== false)'),
+    casesSource.indexOf("const selectCb = document.createElement('input')")
+  );
+  const caseListHandling = casesSource.slice(
+    casesSource.indexOf("const tdFlip = document.createElement('td')"),
+    casesSource.indexOf("const tdActions = document.createElement('td')")
+  );
+  const caseColumnVisibility = casesSource.slice(
+    casesSource.indexOf('function applyListColumnVisibility(prefs)'),
+    casesSource.indexOf('function chip(')
+  );
+  const packListStart = packsSource.indexOf('function renderListView(packs)');
+  const packListIdentity = packsSource.slice(
+    packListStart,
+    packsSource.indexOf('const stats = PackLibrary.computeStats(pack)', packListStart)
+  );
+
+  assert.match(caseGridHandling, /if \(badgePrefs\.showHandling !== false\)/,
+    'Handling controls Case grid handling chips');
+  assert.match(caseListHandling, /if \(badgePrefs\.showHandling === false\)/,
+    'Handling controls the Case list cell');
+  assert.doesNotMatch(caseListHandling, /showFlip/,
+    'the Flip badge preference no longer controls the whole Handling column');
+  assert.match(caseColumnVisibility, /handlingTh\.style\.display = badgePrefs\.showHandling !== false/,
+    'Handling controls the matching Case list header');
+  assert.doesNotMatch(caseColumnVisibility, /showFlip/,
+    'the Case list header is independent from the grid-only Flip badge');
+
+  assert.match(packListIdentity, /showLoadPlanNumber: badgePrefs\.showLoadPlanNumber !== false/);
+  assert.match(packListIdentity, /showCustomerReference: badgePrefs\.showCustomerReference !== false/);
+  assert.match(packListIdentity, /title\.textContent = pack\.title \|\| 'Untitled Load Plan'/,
+    'the Load Plan title remains primary and is never hidden');
+  assert.match(packsSource, /if \(showCustomerReference && pack\.customerReference\)/,
+    'empty Customer Reference values remain omitted even when enabled');
 });
 
 test('BUSINESS-IDENTITY-UI identifiers do not change search/sort and Cases distinguish empty library from no matches', async () => {

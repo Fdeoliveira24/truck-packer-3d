@@ -14,6 +14,10 @@
 import { getSession } from '../../auth/session.js';
 import { LocalRepository } from '../repositories/local.repository.js';
 import { normalizeCase } from '../models/case.model.js';
+import {
+  assertBusinessIdentityValue,
+  assertItemCodeAvailable,
+} from '../../core/business-identity.js';
 
 const repo = new LocalRepository('cases');
 
@@ -30,11 +34,24 @@ export const CasesService = {
     return repo.find(id, { orgId: orgId() });
   },
   async createCase(data) {
+    const scope = { orgId: orgId() };
+    const existingCases = await repo.findAll(scope);
     const c = normalizeCase(data);
-    return repo.create(c, { orgId: orgId() });
+    c.itemCode = assertItemCodeAvailable(c.itemCode, existingCases);
+    return repo.create(c, scope);
   },
   async updateCase(id, patch) {
-    return repo.update(id, patch, { orgId: orgId() });
+    const scope = { orgId: orgId() };
+    const nextPatch = { ...(patch && typeof patch === 'object' ? patch : {}) };
+    if (Object.prototype.hasOwnProperty.call(nextPatch, 'itemCode')) {
+      const existingCases = await repo.findAll(scope);
+      const itemCode = assertBusinessIdentityValue(nextPatch.itemCode, {
+        field: 'itemCode',
+        required: false,
+      });
+      nextPatch.itemCode = assertItemCodeAvailable(itemCode, existingCases, { excludeId: id });
+    }
+    return repo.update(id, nextPatch, scope);
   },
   async deleteCase(id) {
     return repo.delete(id, { orgId: orgId() });

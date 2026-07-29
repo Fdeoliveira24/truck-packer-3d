@@ -14,6 +14,10 @@
 import { getSession } from '../../auth/session.js';
 import { LocalRepository } from '../repositories/local.repository.js';
 import { normalizePack } from '../models/pack.model.js';
+import {
+  assertBusinessIdentityValue,
+  assertLoadPlanNumberAvailable,
+} from '../../core/business-identity.js';
 
 const repo = new LocalRepository('packs');
 
@@ -30,11 +34,27 @@ export const PacksService = {
     return repo.find(id, { orgId: orgId() });
   },
   async createPack(data) {
-    const p = normalizePack(data);
-    return repo.create(p, { orgId: orgId() });
+    const scope = { orgId: orgId() };
+    const existingPacks = await repo.findAll(scope);
+    const p = normalizePack(data, existingPacks);
+    return repo.create(p, scope);
   },
   async updatePack(id, patch) {
-    return repo.update(id, patch, { orgId: orgId() });
+    const scope = { orgId: orgId() };
+    const nextPatch = { ...(patch && typeof patch === 'object' ? patch : {}) };
+    if (Object.prototype.hasOwnProperty.call(nextPatch, 'loadPlanNumber')) {
+      const existingPacks = await repo.findAll(scope);
+      nextPatch.loadPlanNumber = assertLoadPlanNumberAvailable(nextPatch.loadPlanNumber, existingPacks, {
+        excludeId: id,
+      });
+    }
+    if (Object.prototype.hasOwnProperty.call(nextPatch, 'customerReference')) {
+      nextPatch.customerReference = assertBusinessIdentityValue(nextPatch.customerReference, {
+        field: 'customerReference',
+        required: false,
+      });
+    }
+    return repo.update(id, nextPatch, scope);
   },
   async deletePack(id) {
     return repo.delete(id, { orgId: orgId() });

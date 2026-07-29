@@ -16,6 +16,10 @@ import * as Utils from './utils/index.js';
 import { debounce } from './browser.js';
 import * as StateStore from './state-store.js';
 import { normalizeAppData } from './normalizer.js';
+import {
+  migrateLoadPlanNumbers,
+  normalizeBusinessIdentityLibraries,
+} from './business-identity.js';
 import { emit } from './events.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
@@ -173,6 +177,37 @@ export function load() {
     }
     const effectiveWorkspacePayload = workspaceDataAvailable ? workspacePayload : legacyWorkspacePayload;
     const hasEffectiveWorkspaceData = hasWorkspaceData(effectiveWorkspacePayload);
+    const identityMigration = hasEffectiveWorkspaceData
+      ? migrateLoadPlanNumbers(effectiveWorkspacePayload.packLibrary)
+      : { packLibrary: [], changed: false };
+    const identityLibraries = hasEffectiveWorkspaceData
+      ? normalizeBusinessIdentityLibraries(
+          effectiveWorkspacePayload.caseLibrary,
+          identityMigration.packLibrary
+        )
+      : { caseLibrary: null, packLibrary: null };
+
+    // Persist only the additive Load Plan Number migration at the workspace
+    // storage boundary. Keep version/savedAt and every other field byte-for-byte
+    // equivalent after JSON serialization. Legacy combined data remains under
+    // its existing guarded finalization flow below.
+    if (workspaceDataAvailable && identityMigration.changed) {
+      try {
+        window.localStorage.setItem(
+          workspaceKey,
+          JSON.stringify({
+            ...workspacePayload,
+            packLibrary: identityMigration.packLibrary,
+          })
+        );
+      } catch (migrationErr) {
+        emit('storage:write_error', {
+          key: workspaceKey,
+          message: migrationErr && migrationErr.message ? migrationErr.message : 'Identity migration write failed',
+          error: migrationErr,
+        });
+      }
+    }
 
     pendingLegacyMigration = legacyWorkspacePayload
       ? {
@@ -204,8 +239,8 @@ export function load() {
         (userPayload && userPayload.savedAt) ||
         0,
       preferences,
-      caseLibrary: hasEffectiveWorkspaceData ? effectiveWorkspacePayload.caseLibrary : null,
-      packLibrary: hasEffectiveWorkspaceData ? effectiveWorkspacePayload.packLibrary : null,
+      caseLibrary: identityLibraries.caseLibrary,
+      packLibrary: identityLibraries.packLibrary,
       folderLibrary:
         hasEffectiveWorkspaceData && Array.isArray(effectiveWorkspacePayload.folderLibrary)
           ? effectiveWorkspacePayload.folderLibrary

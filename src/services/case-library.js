@@ -15,6 +15,10 @@ import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreDefaults from '../core/defaults.js';
 import { applyCanonicalCargoFields, pickSafeExtensions, CANONICAL_CASE_KEYS } from '../core/cargo-canonical.js';
+import {
+  assertBusinessIdentityValue,
+  assertItemCodeAvailable,
+} from '../core/business-identity.js';
 
 // Canonicalize the known cargo-rule fields in place before storage, leaving any
 // other (including unknown extension) fields untouched. Routes through the single
@@ -61,6 +65,10 @@ export function getById(caseId) {
 export function buildStorableCase(caseData) {
   const now = Date.now();
   const next = canonicalizeCaseCargoFields(applyCaseDefaultColor({ ...caseData }));
+  next.itemCode = assertBusinessIdentityValue(next.itemCode, {
+    field: 'itemCode',
+    required: false,
+  });
   next.updatedAt = now;
   if (!next.createdAt) next.createdAt = now;
   const dims = next.dimensions && typeof next.dimensions === 'object' ? next.dimensions : {};
@@ -88,6 +96,7 @@ export function upsert(caseData) {
   const cases = getCases();
   const idx = cases.findIndex(c => c.id === caseData.id);
   const next = buildStorableCase(caseData);
+  next.itemCode = assertItemCodeAvailable(next.itemCode, cases, { excludeId: next.id });
   const nextCases = idx > -1 ? cases.map((c, i) => (i === idx ? next : c)) : [...cases, next];
 
   StateStore.set({ caseLibrary: nextCases });
@@ -114,6 +123,7 @@ export function duplicate(caseId) {
     ...Utils.deepClone(original),
     id: Utils.uuid(),
     name: original.name + ' (Copy)',
+    itemCode: null,
     createdAt: now,
     updatedAt: now,
   };

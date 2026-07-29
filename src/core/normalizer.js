@@ -26,6 +26,11 @@ import {
   WEIGHT_MAX_LBS,
   parseCargoNotes,
 } from './cargo-canonical.js';
+import {
+  assertBusinessIdentityValue,
+  assertItemCodeAvailable,
+  migrateLoadPlanNumbers,
+} from './business-identity.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
 
@@ -149,7 +154,7 @@ export function normalizePreferences(prefs) {
   return next;
 }
 
-export function normalizeCase(c, now) {
+export function normalizeCase(c, now = Date.now()) {
   const createdAt = finiteNumber(c && c.createdAt, now);
   const updatedAt = finiteNumber(c && c.updatedAt, now);
   const dims = c && c.dimensions && typeof c.dimensions === 'object' ? c.dimensions : {};
@@ -167,6 +172,10 @@ export function normalizeCase(c, now) {
   const normalizedCase = {
     id: safeId(c && c.id),
     name: safeString(c && c.name, 'Unnamed Case'),
+    itemCode: assertBusinessIdentityValue(c && c.itemCode, {
+      field: 'itemCode',
+      required: false,
+    }),
     manufacturer: safeString(c && c.manufacturer, ''),
     category,
     dimensions: { length, width, height },
@@ -307,7 +316,7 @@ export function normalizeFolder(folder, now) {
   };
 }
 
-export function normalizePack(p, caseMap, now) {
+export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
   const truck = normalizeTruck(p && p.truck);
   const rawCases = Array.isArray(p && p.cases) ? p.cases : [];
   const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
@@ -328,9 +337,18 @@ export function normalizePack(p, caseMap, now) {
     palletWarnings: [],
   };
   const stats = p && p.stats && typeof p.stats === 'object' ? { ...baseStats, ...p.stats } : baseStats;
+  const migrated = migrateLoadPlanNumbers([p]).packLibrary[0];
   return {
     id: safeId(p && p.id),
     title: safeString(p && p.title, 'Untitled Load Plan'),
+    loadPlanNumber: assertBusinessIdentityValue(migrated.loadPlanNumber, {
+      field: 'loadPlanNumber',
+      required: true,
+    }),
+    customerReference: assertBusinessIdentityValue(p && p.customerReference, {
+      field: 'customerReference',
+      required: false,
+    }),
     client: safeString(p && p.client, ''),
     projectName: safeString(p && p.projectName, ''),
     drawnBy: safeString(p && p.drawnBy, ''),
@@ -364,7 +382,12 @@ export function normalizeAppData(data) {
   const folderIds = new Set(folders.map(folder => folder.id));
 
   const rawCases = Array.isArray(data && data.caseLibrary) ? data.caseLibrary : [];
-  const cases = rawCases.map(c => normalizeCase(c, now));
+  const cases = [];
+  rawCases.forEach(rawCase => {
+    const normalizedCase = normalizeCase(rawCase, now);
+    normalizedCase.itemCode = assertItemCodeAvailable(normalizedCase.itemCode, cases);
+    cases.push(normalizedCase);
+  });
 
   const seenCaseIds = new Set();
   cases.forEach(c => {
@@ -377,7 +400,8 @@ export function normalizeAppData(data) {
   const caseMap = new Map(cases.map(c => [c.id, c]));
 
   const rawPacks = Array.isArray(data && data.packLibrary) ? data.packLibrary : [];
-  const packs = rawPacks.map(p => {
+  const migratedPacks = migrateLoadPlanNumbers(rawPacks).packLibrary;
+  const packs = migratedPacks.map(p => {
     const pack = normalizePack(p, caseMap, now);
     if (pack.folderId && !folderIds.has(pack.folderId)) pack.folderId = null;
     return pack;

@@ -12,6 +12,7 @@
 // ============================================================================
 
 import { uuid } from './browser.js';
+import { generateLoadPlanNumber } from './business-identity.js';
 
 export const defaultPreferences = {
   packsViewMode: 'grid',
@@ -169,7 +170,7 @@ export function seedCases() {
       createdAt: now,
       updatedAt: now,
     },
-  ];
+  ].map(caseData => ({ ...caseData, itemCode: null }));
 }
 
 export function seedPack(caseLibrary) {
@@ -193,6 +194,8 @@ export function seedPack(caseLibrary) {
   return {
     id: packId,
     title: 'Demo Load Plan',
+    loadPlanNumber: generateLoadPlanNumber([]),
+    customerReference: null,
     client: 'Example Client',
     projectName: 'Envato Preview',
     drawnBy: 'Truck Packer 3D',

@@ -12,7 +12,8 @@ import fs from 'node:fs/promises';
 // This suite therefore asserts two things that must stay true together:
 //   1. customer-visible strings say "Load Plan";
 //   2. the internal Pack architecture and the persisted JSON schema are
-//      unchanged, and no parallel loadPlan* field was introduced.
+//      unchanged except for the separately approved loadPlanNumber business
+//      identifier, with no parallel LoadPlan architecture introduced.
 //
 // The screens render through Three.js/DOM with no jsdom harness in this
 // suite, so — matching the existing convention in
@@ -260,7 +261,7 @@ test('LOAD-PLAN-TERM-8 persisted and exchanged schema keys are unchanged', async
   assert.match(ieSrc, /Missing packLibrary in workspace export/, 'the packLibrary key must be unchanged');
 });
 
-test('LOAD-PLAN-TERM-9 no parallel loadPlan* field, key or compatibility wrapper was introduced', async () => {
+test('LOAD-PLAN-TERM-9 only the approved loadPlanNumber field exists; no parallel LoadPlan architecture was introduced', async () => {
   const files = await readAllSrcFiles();
 
   const offenders = [];
@@ -268,10 +269,11 @@ test('LOAD-PLAN-TERM-9 no parallel loadPlan* field, key or compatibility wrapper
     // Identifier-shaped loadPlan usages only. Display copy such as
     // "load plan" / "Load Plan" is expected and must not be flagged.
     const matches = text.match(/\bloadPlan[A-Za-z0-9_]*\b|\bLoadPlan[A-Za-z0-9_]*\b|['"]load-plan-[a-z]+['"]/g);
-    if (matches) offenders.push(`${path}: ${[...new Set(matches)].join(', ')}`);
+    const forbidden = (matches || []).filter(match => match !== 'loadPlanNumber');
+    if (forbidden.length) offenders.push(`${path}: ${[...new Set(forbidden)].join(', ')}`);
   }
   assert.deepEqual(offenders, [],
-    'no loadPlanId / loadPlanNotes / LoadPlanLibrary style identifier may be introduced — Pack stays the internal term');
+    'only loadPlanNumber is approved; loadPlanId / loadPlanNotes / LoadPlanLibrary remain forbidden');
 
   // Belt and braces on the two explicitly forbidden duplicate fields.
   const all = files.map(f => f.text).join('\n');

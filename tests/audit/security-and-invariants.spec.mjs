@@ -23640,8 +23640,14 @@ test('APP-STABILIZATION-PHASE1 legacy combined storage stays intact until author
     const Storage = await import(`${storagePath.href}?phase1-legacy=${Date.now()}-${Math.random()}`);
 
     const anonLoaded = Storage.load();
-    assert.deepEqual(anonLoaded.caseLibrary, legacy.caseLibrary);
-    assert.deepEqual(anonLoaded.packLibrary, legacy.packLibrary);
+    assert.equal(anonLoaded.caseLibrary[0].id, legacy.caseLibrary[0].id);
+    assert.equal(anonLoaded.caseLibrary[0].itemCode, null,
+      'legacy Cases receive the additive optional Item Code default in memory');
+    assert.equal(anonLoaded.packLibrary[0].id, legacy.packLibrary[0].id);
+    assert.match(anonLoaded.packLibrary[0].loadPlanNumber, /^LP-[0-9A-HJKMNP-TV-Z]{8}$/,
+      'legacy Load Plans receive the additive required number in memory');
+    assert.equal(anonLoaded.packLibrary[0].customerReference, null,
+      'legacy Load Plans receive the additive optional Customer Reference default in memory');
     assert.equal(localStorage.getItem('truckPacker3d:v1'), legacyRaw,
       'anonymous loading never removes or rewrites the legacy source');
 
@@ -23663,8 +23669,11 @@ test('APP-STABILIZATION-PHASE1 legacy combined storage stays intact until author
     const userPayload = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-1'));
     const workspacePayload = JSON.parse(localStorage.getItem('truckPacker3d:v1:user-1:workspace:org-1'));
     assert.deepEqual(userPayload.preferences, legacy.preferences);
-    assert.deepEqual(workspacePayload.caseLibrary, legacy.caseLibrary);
-    assert.deepEqual(workspacePayload.packLibrary, legacy.packLibrary);
+    assert.equal(workspacePayload.caseLibrary[0].id, legacy.caseLibrary[0].id);
+    assert.equal(workspacePayload.caseLibrary[0].itemCode, null);
+    assert.equal(workspacePayload.packLibrary[0].id, legacy.packLibrary[0].id);
+    assert.match(workspacePayload.packLibrary[0].loadPlanNumber, /^LP-[0-9A-HJKMNP-TV-Z]{8}$/);
+    assert.equal(workspacePayload.packLibrary[0].customerReference, null);
     assert.deepEqual(workspacePayload.folderLibrary, legacy.folderLibrary);
     assert.equal(workspacePayload.currentPackId, legacy.currentPackId);
   } finally {

@@ -146,21 +146,27 @@ test('BUSINESS-IDENTITY-PHASE1 pure migration is additive, idempotent, stable, a
     basePack({
       id: 'pack-b',
       title: 'B',
-      loadPlanNumber: 'LP-EXISTING',
+      loadPlanNumber: 'LP-00000000',
       customerReference: ' CUSTOMER-2 ',
       createdAt: 301,
       lastEdited: 401,
     }),
   ];
   const sourceBytes = JSON.stringify(source);
+  const attempts = [];
   const migrated = Identity.migrateLoadPlanNumbers(source, {
-    randomValues: length => new Uint8Array(length).fill(2),
+    randomValues(length, attempt) {
+      attempts.push(attempt);
+      return new Uint8Array(length).fill(attempt);
+    },
   });
 
   assert.equal(migrated.changed, true);
+  assert.deepEqual(attempts, [0, 1],
+    'a missing Pack retries a candidate reserved by a later existing Pack');
   assert.deepEqual(source.map(pack => pack.id), ['pack-a', 'pack-b']);
   assert.equal(JSON.stringify(source), sourceBytes, 'the source collection is not mutated');
-  assert.equal(migrated.packLibrary[0].loadPlanNumber, 'LP-22222222');
+  assert.equal(migrated.packLibrary[0].loadPlanNumber, 'LP-11111111');
   const { loadPlanNumber: _number, ...migratedFirstWithoutNumber } = migrated.packLibrary[0];
   assert.deepEqual(migratedFirstWithoutNumber, source[0],
     'migration adds only the missing Load Plan Number');
@@ -176,6 +182,64 @@ test('BUSINESS-IDENTITY-PHASE1 pure migration is additive, idempotent, stable, a
   assert.equal(repeated.changed, false);
   assert.strictEqual(repeated.packLibrary, migrated.packLibrary);
   assert.equal(JSON.stringify(repeated.packLibrary), onceBytes);
+});
+
+test('BUSINESS-IDENTITY-PHASE1 migration reserves an existing number before a later missing Pack', () => {
+  const source = [
+    basePack({ id: 'pack-a', loadPlanNumber: 'LP-00000000' }),
+    basePack({ id: 'pack-b', createdAt: 301, lastEdited: 401 }),
+  ];
+  const attempts = [];
+  const migrated = Identity.migrateLoadPlanNumbers(source, {
+    randomValues(length, attempt) {
+      attempts.push(attempt);
+      return new Uint8Array(length).fill(attempt);
+    },
+  });
+
+  assert.deepEqual(attempts, [0, 1]);
+  assert.strictEqual(migrated.packLibrary[0], source[0]);
+  assert.equal(migrated.packLibrary[1].loadPlanNumber, 'LP-11111111');
+  assert.equal(migrated.packLibrary[1].createdAt, 301);
+  assert.equal(migrated.packLibrary[1].lastEdited, 401);
+  assert.deepEqual(migrated.packLibrary.map(pack => pack.id), ['pack-a', 'pack-b']);
+});
+
+test('BUSINESS-IDENTITY-PHASE1 migration reserves each generated number for later missing Packs', () => {
+  const attempts = [];
+  const migrated = Identity.migrateLoadPlanNumbers([
+    basePack({ id: 'pack-a' }),
+    basePack({ id: 'pack-b', createdAt: 301, lastEdited: 401 }),
+  ], {
+    randomValues(length, attempt) {
+      attempts.push(attempt);
+      return new Uint8Array(length).fill(attempt);
+    },
+  });
+
+  assert.deepEqual(
+    migrated.packLibrary.map(pack => pack.loadPlanNumber),
+    ['LP-00000000', 'LP-11111111']
+  );
+  assert.deepEqual(attempts, [0, 0, 1]);
+});
+
+test('BUSINESS-IDENTITY-PHASE1 migration rejects duplicate pre-existing numbers during pre-scan', () => {
+  assert.throws(
+    () => Identity.migrateLoadPlanNumbers([
+      basePack({ id: 'pack-a', loadPlanNumber: 'LP-DUPLICATE' }),
+      basePack({ id: 'pack-b', loadPlanNumber: ' lp-duplicate ' }),
+      basePack({ id: 'pack-c' }),
+    ], {
+      randomValues() {
+        throw new Error('generation must not run before existing numbers are validated');
+      },
+    }),
+    error =>
+      error instanceof Identity.BusinessIdentityError &&
+      error.code === 'not_unique' &&
+      error.conflictId === 'pack-a'
+  );
 });
 
 test('BUSINESS-IDENTITY-PHASE1 canonical normalization accepts legacy JSON and remains stable on repeat', () => {

@@ -610,7 +610,7 @@ test('instanceNotes survives Pack, app, and workspace JSON export/import round t
 // ---------------------------------------------------------------------------
 // Cargo Instructions Phase 3 — Pack Notes (Pack-owned, pack.notes).
 //
-// Phase 3 adds a dedicated Editor toolbar entry point that edits the third,
+// Phase 3 adds a dedicated Inspector entry point that edits the third,
 // Pack-owned notes tier (pack.notes) through the existing PackLibrary.update
 // path. It introduces no data-layer field — pack.notes already exists — so the
 // data-layer tests below characterize the existing behavior the new UI relies
@@ -767,17 +767,65 @@ test('openPackNotesModal has empty/read/edit states, trims input, and fails safe
     'Save failure (missing Pack) must return false so the modal stays open and the draft is preserved');
 });
 
-test('the Editor toolbar exposes a Pack Notes action wired to openPackNotesModal, available whenever a Pack is loaded and never gated on instance selection', async () => {
+test('Load Plan Notes is absent from the viewport toolbar, whose five visible actions remain unchanged', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   const html = await fs.readFile(new URL('../../index.html', import.meta.url), 'utf8');
+  const toolbarStart = html.indexOf('<div class="viewport-toolbar"');
+  const toolbarEnd = html.indexOf('</div>', toolbarStart);
+  const toolbarBlock = toolbarEnd > toolbarStart ? html.slice(toolbarStart, toolbarEnd) : '';
 
-  assert.match(html, /id="btn-pack-notes"/, 'the Editor viewport toolbar must expose a Pack Notes button');
-  assert.match(editorSrc, /btnPackNotes\.addEventListener\('click',[\s\S]*?openPackNotesModal\(pack\)/,
-    'the Pack Notes button must open openPackNotesModal for the current Pack');
-  assert.match(editorSrc, /const pack = PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)/,
-    'the handler must resolve the active Pack, independent of any instance selection');
-  assert.match(editorSrc, /btnPackNotes\.disabled = !pack \|\| busy/,
-    'Pack Notes must be available whenever a Pack is loaded (gated only on Pack presence and the operation lock), never on instance selection');
+  assert.ok(toolbarBlock.length > 0, 'the Editor viewport toolbar must remain present');
+  [
+    ['btn-editor-left', 'Cases'],
+    ['btn-autopack', 'AutoPack'],
+    ['btn-unpack', 'Unpack'],
+    ['btn-share', 'Share'],
+    ['btn-editor-right', 'Inspector'],
+  ].forEach(([id, label]) => {
+    assert.match(toolbarBlock, new RegExp(`id="${id}"[\\s\\S]{0,180}${label}`),
+      `the viewport toolbar must retain ${label}`);
+  });
+  assert.doesNotMatch(toolbarBlock, /btn-pack-notes|Load Plan Notes/,
+    'Load Plan Notes must consume no viewport-toolbar space');
+  assert.doesNotMatch(editorSrc, /btnPackNotes|btn-pack-notes/,
+    'toolbar-specific Pack Notes DOM wiring and refresh handling must be removed');
+});
+
+test('the Truck Inspector header owns one compact Load Plan Notes action wired to the active Pack', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  const truckBlock = extractFunctionBlock(editorSrc, 'function renderTruckInspector(pack, prefs)');
+
+  assert.ok(truckBlock.length > 0, 'editor-screen must define renderTruckInspector(pack, prefs)');
+  assert.match(truckBlock, /setAttribute\('aria-label', 'Open Load Plan Notes'\)/,
+    'the compact action must have an explicit accessible name');
+  assert.match(truckBlock, /setAttribute\('data-tooltip', 'Load Plan Notes'\)/,
+    'the compact action must expose the Load Plan Notes tooltip');
+  assert.match(truckBlock, /setAttribute\('title', 'Load Plan Notes'\)/,
+    'the compact action must retain a native tooltip fallback');
+  assert.match(truckBlock, /innerHTML = '<i class="fa-regular fa-file-lines"><\/i>'/,
+    'the compact action must reuse the established Notes document icon');
+  assert.match(truckBlock, /insertBefore\(packNotesButton, truckTitle\)/,
+    'the compact action must appear immediately before the visible Truck title');
+  assert.match(truckBlock, /packNotesButton\.addEventListener\('click',[\s\S]*?const activePack = PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)[\s\S]*?openPackNotesModal\(activePack\)/,
+    'one click listener must re-resolve and open notes for the currently active Pack');
+  assert.equal((truckBlock.match(/packNotesButton\.addEventListener\('click'/g) || []).length, 1,
+    'the rendered control must receive exactly one click listener');
+  assert.equal((editorSrc.match(/openPackNotesModal\(/g) || []).length, 2,
+    'editor-screen must contain one modal definition and exactly one UI call path');
+  assert.match(editorSrc, /if \(packNotesButton\) packNotesButton\.disabled = !pack \|\| busy/,
+    'the Inspector action must remain blocked without a Pack or during an editor operation');
+});
+
+test('Load Plan Notes remains in the existing Truck context only; selection-specific Inspectors do not invent duplicate placements', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+  [
+    'function renderSingleInspector(pack, inst, caseData, prefs)',
+    'function renderMultiInspector(pack, selected)',
+    'function renderUnresolvedCaseInspector(pack, inst)',
+  ].forEach(signature => {
+    assert.doesNotMatch(extractFunctionBlock(editorSrc, signature), /openPackNotesModal|packNotesButton/,
+      `${signature} must not duplicate the Load Plan Notes entry point`);
+  });
 });
 
 // ---------------------------------------------------------------------------

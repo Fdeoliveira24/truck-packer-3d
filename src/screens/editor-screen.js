@@ -3464,8 +3464,8 @@ export function createEditorScreen({
     const btnShare = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-share'));
     const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
-    const btnPackNotes = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pack-notes'));
     const viewportHintBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('viewport-hint-icon'));
+    let packNotesButton = null;
 
     // Swap a button into a visible "working" state (spinner + label) and back. The
     // idle markup is captured once so it can be restored exactly. Pairs with the
@@ -3501,10 +3501,7 @@ export function createEditorScreen({
       if (btnShare) btnShare.disabled = !pack || busy;
       if (btnPng) btnPng.disabled = !pack || busy;
       if (btnPdf) btnPdf.disabled = !pack || busy;
-      // Pack Notes edits pack.notes, so it is a mutating control: available whenever a
-      // pack is loaded (never gated on instance selection) but blocked while any editor
-      // operation is in flight, per the same rule as the other mutating controls above.
-      if (btnPackNotes) btnPackNotes.disabled = !pack || busy;
+      if (packNotesButton) packNotesButton.disabled = !pack || busy;
     }
 
     let initialized = false;
@@ -4096,13 +4093,6 @@ export function createEditorScreen({
           );
         });
       }
-      if (btnPackNotes) {
-        btnPackNotes.addEventListener('click', () => {
-          const pack = PackLibrary.getById(StateStore.get('currentPackId'));
-          if (!pack) return;
-          openPackNotesModal(pack);
-        });
-      }
       if (viewportHintBtn) {
         viewportHintBtn.addEventListener('click', ev => {
           ev.stopPropagation();
@@ -4642,6 +4632,7 @@ export function createEditorScreen({
     }
 
     function renderInspectorNoPack() {
+      packNotesButton = null;
       inspectorEl.innerHTML = '';
       const card = document.createElement('div');
       card.className = 'card';
@@ -4661,6 +4652,7 @@ export function createEditorScreen({
     function renderInspector(pack) {
       const prefs = PreferencesManager.get();
       const sel = StateStore.get('selectedInstanceIds') || [];
+      packNotesButton = null;
       inspectorEl.innerHTML = '';
 
       if (!sel.length) {
@@ -5082,9 +5074,8 @@ export function createEditorScreen({
     }
 
     // Pack Notes modal (Cargo Instructions Phase 3) — the Pack-owned notes tier,
-    // pack.notes, opened from a dedicated Editor toolbar action and available for the
-    // active Pack regardless of which instance (if any) is selected. It owns nothing
-    // else: it never reads or writes case.notes (Standard Instructions) or
+    // pack.notes, opened from the Inspector's Truck context. It owns nothing else: it
+    // never reads or writes case.notes (Standard Instructions) or
     // instance.instanceNotes (Item Notes), and saves exclusively through
     // PackLibrary.update(packId, { notes }). packId is captured up front so a pack
     // switch while the modal is open can never migrate the draft, and a Save after the
@@ -5555,7 +5546,24 @@ export function createEditorScreen({
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
       const stats = PackLibrary.computeStats(pack);
-      card.appendChild(cardHeaderWithInfo('Truck', 'Display units follow Settings. Dimensions are stored internally in inches.'));
+      const truckHeader = cardHeaderWithInfo('Truck', 'Display units follow Settings. Dimensions are stored internally in inches.');
+      const truckTitle = truckHeader.querySelector('.tp3d-editor-fw-semibold');
+      packNotesButton = document.createElement('button');
+      packNotesButton.type = 'button';
+      packNotesButton.className = 'muted tp3d-editor-info-icon';
+      packNotesButton.setAttribute('aria-label', 'Open Load Plan Notes');
+      packNotesButton.setAttribute('data-tooltip', 'Load Plan Notes');
+      packNotesButton.setAttribute('title', 'Load Plan Notes');
+      packNotesButton.innerHTML = '<i class="fa-regular fa-file-lines"></i>';
+      packNotesButton.disabled = Boolean(OperationLifecycle && OperationLifecycle.isBusy());
+      packNotesButton.addEventListener('click', () => {
+        if (editorMutationBlocked()) return;
+        const activePack = PackLibrary.getById(StateStore.get('currentPackId'));
+        if (!activePack) return;
+        openPackNotesModal(activePack);
+      });
+      if (truckTitle) truckHeader.insertBefore(packNotesButton, truckTitle);
+      card.appendChild(truckHeader);
 
       const presetRow = document.createElement('div');
       presetRow.className = 'row';

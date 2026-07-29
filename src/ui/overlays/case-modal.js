@@ -3,6 +3,7 @@
  */
 
 import { canonicalOrientationLock } from '../../core/orientation.js';
+import { checkItemCodeAvailability } from '../../core/business-identity.js';
 
 export { canonicalOrientationLock };
 
@@ -22,6 +23,36 @@ function createField(doc, label, type = 'text', placeholder = '', required = fal
   wrap.appendChild(l);
   wrap.appendChild(input);
   return { wrap, input };
+}
+
+function createIdentityField(doc, label, placeholder = '') {
+  const field = createField(doc, label, 'text', placeholder, false);
+  const error = doc.createElement('div');
+  error.className = 'tp3d-field-error';
+  error.setAttribute('role', 'alert');
+  error.hidden = true;
+  field.wrap.appendChild(error);
+  field.input.addEventListener('input', () => {
+    error.textContent = '';
+    error.hidden = true;
+    field.input.removeAttribute('aria-invalid');
+  });
+  return { ...field, error };
+}
+
+function setIdentityFieldError(field, message) {
+  field.error.textContent = message || '';
+  field.error.hidden = !message;
+  if (message) field.input.setAttribute('aria-invalid', 'true');
+  else field.input.removeAttribute('aria-invalid');
+}
+
+function itemCodeErrorMessage(result) {
+  const code = result && result.error && result.error.code;
+  if (code === 'not_unique') return 'Item Code already in use.';
+  if (code === 'too_long') return 'Item Code is too long.';
+  if (code === 'control_character') return 'Item Code cannot contain line breaks or control characters.';
+  return 'Item Code is invalid.';
 }
 
 function createSelectField(doc, label, options, value, help = '') {
@@ -128,6 +159,7 @@ export function openCaseModal({
     : {
         id: Utils.uuid(),
         name: '',
+        itemCode: null,
         manufacturer: '',
         category: 'default',
         dimensions: { length: 48, width: 24, height: 24 },
@@ -144,6 +176,9 @@ export function openCaseModal({
 
   const fName = createField(doc, 'Name', 'text', 'Line Array Case', true);
   fName.input.value = initial.name || '';
+
+  const fItemCode = createIdentityField(doc, 'Item Code', 'Optional operational reference');
+  fItemCode.input.value = initial.itemCode || '';
 
   const fMfg = createField(doc, 'Manufacturer', 'text', 'L-Acoustics', false);
   fMfg.input.value = initial.manufacturer || '';
@@ -397,6 +432,7 @@ export function openCaseModal({
   notesWrap.appendChild(notes);
 
   content.appendChild(fName.wrap);
+  content.appendChild(fItemCode.wrap);
   content.appendChild(fMfg.wrap);
   content.appendChild(catWrap);
   content.appendChild(fL.wrap);
@@ -421,6 +457,16 @@ export function openCaseModal({
             fName.input.focus();
             return false;
           }
+          const itemCodeResult = checkItemCodeAvailability(
+            fItemCode.input.value,
+            CaseLibrary.getCases(),
+            { excludeId: initial.id }
+          );
+          if (!itemCodeResult.ok) {
+            setIdentityFieldError(fItemCode, itemCodeErrorMessage(itemCodeResult));
+            fItemCode.input.focus();
+            return false;
+          }
           const length = Utils.unitToInches(Number(fL.input.value) || 0, lengthUnit);
           const width = Utils.unitToInches(Number(fW.input.value) || 0, lengthUnit);
           const height = Utils.unitToInches(Number(fH.input.value) || 0, lengthUnit);
@@ -439,6 +485,7 @@ export function openCaseModal({
           const caseData = {
             ...initial,
             name,
+            itemCode: itemCodeResult.value,
             manufacturer: String(fMfg.input.value || '').trim(),
             category: categoryKey,
             dimensions: { length, width, height },

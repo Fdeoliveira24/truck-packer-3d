@@ -14,6 +14,10 @@
 // Packs screen (extracted from src/app.js; behavior preserved)
 
 import * as FolderLibrary from '../services/folder-library.js';
+import {
+  checkLoadPlanNumberAvailability,
+  validateBusinessIdentityValue,
+} from '../core/business-identity.js';
 
 export function createPacksScreen({
   Utils,
@@ -172,6 +176,94 @@ export function createPacksScreen({
       const base = `Packed: ${packed}/${loaded} • Volume: ${pct.toFixed(1)}% • Weight: ${weight}`;
       // Surface incompleteness in the grid/list so totals are never read as complete.
       return unresolved > 0 ? `${base} • ${unresolved} unresolved` : base;
+    }
+
+    function setIdentityFieldError(fieldControl, message) {
+      fieldControl.error.textContent = message || '';
+      fieldControl.error.hidden = !message;
+      if (message) fieldControl.input.setAttribute('aria-invalid', 'true');
+      else fieldControl.input.removeAttribute('aria-invalid');
+    }
+
+    function identityErrorMessage(result, label) {
+      const code = result && result.error && result.error.code;
+      if (code === 'required') return `${label} is required.`;
+      if (code === 'not_unique') return `${label} already in use.`;
+      if (code === 'too_long') return `${label} is too long.`;
+      if (code === 'control_character') {
+        return `${label} cannot contain line breaks or control characters.`;
+      }
+      return `${label} is invalid.`;
+    }
+
+    function validateLoadPlanIdentityFields(loadPlanNumber, customerReference, {
+      numberRequired,
+      excludeId = null,
+    }) {
+      setIdentityFieldError(loadPlanNumber, '');
+      setIdentityFieldError(customerReference, '');
+
+      let numberResult = validateBusinessIdentityValue(loadPlanNumber.input.value, {
+        field: 'loadPlanNumber',
+        required: numberRequired,
+      });
+      if (numberResult.ok && numberResult.value != null) {
+        numberResult = checkLoadPlanNumberAvailability(
+          numberResult.value,
+          PackLibrary.getPacks(),
+          { excludeId }
+        );
+      }
+
+      const customerResult = validateBusinessIdentityValue(customerReference.input.value, {
+        field: 'customerReference',
+        required: false,
+      });
+
+      if (!numberResult.ok) {
+        setIdentityFieldError(
+          loadPlanNumber,
+          identityErrorMessage(numberResult, 'Load Plan Number')
+        );
+      }
+      if (!customerResult.ok) {
+        setIdentityFieldError(
+          customerReference,
+          identityErrorMessage(customerResult, 'Customer Reference')
+        );
+      }
+      if (!numberResult.ok) {
+        loadPlanNumber.input.focus();
+        return null;
+      }
+      if (!customerResult.ok) {
+        customerReference.input.focus();
+        return null;
+      }
+
+      return {
+        loadPlanNumber: numberResult.value,
+        customerReference: customerResult.value,
+      };
+    }
+
+    function appendPackIdentityMetadata(container, pack, {
+      showLoadPlanNumber = true,
+      showCustomerReference = true,
+    } = {}) {
+      if (showLoadPlanNumber) {
+        const number = document.createElement('div');
+        number.className = 'muted tp3d-cases-muted-sm';
+        number.textContent = `Load Plan Number: ${pack.loadPlanNumber || '—'}`;
+        container.appendChild(number);
+      }
+
+      if (showCustomerReference && pack.customerReference) {
+        const customerReference = document.createElement('div');
+        customerReference.className = 'muted tp3d-cases-muted-sm';
+        customerReference.textContent = `Customer Reference: ${pack.customerReference}`;
+        container.appendChild(customerReference);
+      }
     }
 
     function initPacksUI() {
@@ -1143,6 +1235,7 @@ export function createPacksScreen({
         const title = document.createElement('div');
         title.textContent = pack.title || 'Untitled Load Plan';
         titleWrap.appendChild(title);
+        appendPackIdentityMetadata(titleWrap, pack);
 
         const stats = PackLibrary.computeStats(pack);
         const truckLabel = formatTruckDims(pack.truck || {}, prefs.units.length);
@@ -1310,6 +1403,14 @@ export function createPacksScreen({
         head.className = 'card-head';
         head.classList.add('tp3d-packs-card-head');
 
+        const titleWrap = document.createElement('div');
+        titleWrap.className = 'tp3d-packs-titlewrap tp3d-flex-1';
+        titleWrap.appendChild(title);
+        appendPackIdentityMetadata(titleWrap, pack, {
+          showLoadPlanNumber: badgePrefs.showLoadPlanNumber !== false,
+          showCustomerReference: badgePrefs.showCustomerReference !== false,
+        });
+
         const meta = document.createElement('div');
         meta.className = 'pack-meta';
 
@@ -1433,7 +1534,7 @@ export function createPacksScreen({
         actions.appendChild(selectCb);
         actions.appendChild(kebabBtn);
 
-        head.appendChild(title);
+        head.appendChild(titleWrap);
         head.appendChild(actions);
 
         if (badgesWrap.children.length) meta.appendChild(badgesWrap);
@@ -1497,6 +1598,12 @@ export function createPacksScreen({
       content.classList.add('tp3d-packs-modal-grid');
 
       const title = field('Title (required)', 'text', 'Summer Festival Tour', true);
+      const loadPlanNumber = identityField(
+        'Load Plan Number',
+        'Optional custom number',
+        'Leave blank to generate automatically.'
+      );
+      const customerReference = identityField('Customer Reference', 'Optional customer reference');
       const client = field('Client (optional)', 'text', 'Live Nation', false);
       const projectName = field('Project name (optional)', 'text', 'Coachella 2024', false);
       const drawnBy = field('Drawn by (optional)', 'text', 'John Smith', false);
@@ -1577,6 +1684,8 @@ export function createPacksScreen({
       });
 
       content.appendChild(title.wrap);
+      content.appendChild(loadPlanNumber.wrap);
+      content.appendChild(customerReference.wrap);
       content.appendChild(client.wrap);
       content.appendChild(projectName.wrap);
       content.appendChild(drawnBy.wrap);
@@ -1601,6 +1710,10 @@ export function createPacksScreen({
                 title.input.focus();
                 return true;
               }
+              const identity = validateLoadPlanIdentityFields(loadPlanNumber, customerReference, {
+                numberRequired: false,
+              });
+              if (!identity) return false;
               const newTruck = {
                 length: Number(tL.input.value) || 636,
                 width: Number(tW.input.value) || 102,
@@ -1614,13 +1727,15 @@ export function createPacksScreen({
               }
               const pack = PackLibrary.create({
                 title: t,
+                loadPlanNumber: identity.loadPlanNumber,
+                customerReference: identity.customerReference,
                 client: String(client.input.value || '').trim(),
                 projectName: String(projectName.input.value || '').trim(),
                 drawnBy: String(drawnBy.input.value || '').trim(),
                 notes: String(notes.textarea.value || '').trim(),
                 truck: newTruck,
               });
-              UIComponents.showToast('Load plan created', 'success');
+              UIComponents.showToast('Load plan created', 'success', { title: pack.loadPlanNumber });
               PackLibrary.open(pack.id);
               AppShell.navigate('editor');
               return true;
@@ -1640,6 +1755,12 @@ export function createPacksScreen({
       const title = field('Title (required)', 'text', '', true);
       title.input.value = pack.title || '';
       title.wrap.classList.add('tp3d-grid-span-full');
+
+      const loadPlanNumber = identityField('Load Plan Number (required)', '');
+      loadPlanNumber.input.value = pack.loadPlanNumber || '';
+
+      const customerReference = identityField('Customer Reference', '');
+      customerReference.input.value = pack.customerReference || '';
 
       const client = field('Client (optional)', 'text', '', false);
       client.input.value = pack.client || '';
@@ -1761,6 +1882,8 @@ export function createPacksScreen({
 
       function restoreEditControls() {
         title.input.value = pack.title || '';
+        loadPlanNumber.input.value = pack.loadPlanNumber || '';
+        customerReference.input.value = pack.customerReference || '';
         client.input.value = pack.client || '';
         projectName.input.value = pack.projectName || '';
         drawnBy.input.value = pack.drawnBy || '';
@@ -1776,6 +1899,8 @@ export function createPacksScreen({
       }
 
       content.appendChild(title.wrap);
+      content.appendChild(loadPlanNumber.wrap);
+      content.appendChild(customerReference.wrap);
       content.appendChild(client.wrap);
       content.appendChild(projectName.wrap);
       content.appendChild(drawnBy.wrap);
@@ -1800,6 +1925,11 @@ export function createPacksScreen({
                 title.input.focus();
                 return false;
               }
+              const identity = validateLoadPlanIdentityFields(loadPlanNumber, customerReference, {
+                numberRequired: true,
+                excludeId: packId,
+              });
+              if (!identity) return false;
               const shapeMode =
                 modeSelect.value === 'wheelWells' || modeSelect.value === 'frontBonus' ? modeSelect.value : 'rect';
               const prevTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
@@ -1822,6 +1952,8 @@ export function createPacksScreen({
               }
               const metadata = {
                 title: t,
+                loadPlanNumber: identity.loadPlanNumber,
+                customerReference: identity.customerReference,
                 client: String(client.input.value || '').trim(),
                 projectName: String(projectName.input.value || '').trim(),
                 drawnBy: String(drawnBy.input.value || '').trim(),
@@ -1917,6 +2049,27 @@ export function createPacksScreen({
       wrap.appendChild(l);
       wrap.appendChild(input);
       return { wrap, input };
+    }
+
+    function identityField(label, placeholder, helperText = '') {
+      const fieldControl = field(label, 'text', placeholder, false);
+      if (helperText) {
+        const helper = document.createElement('div');
+        helper.className = 'tp3d-cases-handling-help';
+        helper.textContent = helperText;
+        fieldControl.wrap.appendChild(helper);
+      }
+      const error = document.createElement('div');
+      error.className = 'tp3d-field-error';
+      error.setAttribute('role', 'alert');
+      error.hidden = true;
+      fieldControl.wrap.appendChild(error);
+      fieldControl.input.addEventListener('input', () => {
+        error.textContent = '';
+        error.hidden = true;
+        fieldControl.input.removeAttribute('aria-invalid');
+      });
+      return { ...fieldControl, error };
     }
 
     function textareaField(label, placeholder) {

@@ -589,6 +589,12 @@ textarea:focus {
   font-weight: var(--font-medium);
 }
 
+.tp3d-field-error {
+  color: var(--error, #ef4444);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
 /* ================================
   Cards, Chips & Badges
 ================================== */

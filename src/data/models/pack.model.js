@@ -14,8 +14,13 @@
 import { uuid } from '../../utils/uuid.js';
 import { DEFAULT_TRUCK } from '../../core/constants.js';
 import { deepClone } from '../../core/utils/index.js';
+import {
+  assertBusinessIdentityValue,
+  assertLoadPlanNumberAvailable,
+  generateLoadPlanNumber,
+} from '../../core/business-identity.js';
 
-export function normalizePack(data) {
+export function normalizePack(data, existingPacks = []) {
   const now = Date.now();
   const p = data && typeof data === 'object' ? data : {};
   const truck = p.truck && typeof p.truck === 'object' ? p.truck : DEFAULT_TRUCK;
@@ -40,9 +45,21 @@ export function normalizePack(data) {
     palletWarnings: [],
   };
   const stats = p.stats && typeof p.stats === 'object' ? { ...baseStats, ...p.stats } : baseStats;
+  const requestedLoadPlanNumber = assertBusinessIdentityValue(p.loadPlanNumber, {
+    field: 'loadPlanNumber',
+    required: false,
+  });
+  const loadPlanNumber = requestedLoadPlanNumber == null
+    ? generateLoadPlanNumber(existingPacks)
+    : assertLoadPlanNumberAvailable(requestedLoadPlanNumber, existingPacks);
   return {
     id: String(p.id || '').trim() || uuid(),
     title: String(p.title || '').trim() || 'Untitled Pack',
+    loadPlanNumber,
+    customerReference: assertBusinessIdentityValue(p.customerReference, {
+      field: 'customerReference',
+      required: false,
+    }),
     client: String(p.client || '').trim(),
     projectName: String(p.projectName || '').trim(),
     drawnBy: String(p.drawnBy || '').trim(),

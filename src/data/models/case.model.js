@@ -20,6 +20,7 @@ import {
   DIMENSION_MAX_INCHES,
   WEIGHT_MAX_LBS,
 } from '../../core/cargo-canonical.js';
+import { assertBusinessIdentityValue } from '../../core/business-identity.js';
 
 export function normalizeCase(data) {
   const now = Date.now();
@@ -41,6 +42,10 @@ export function normalizeCase(data) {
   const normalized = {
     id: String(d.id || '').trim() || uuid(),
     name: String(d.name || '').trim() || 'New Case',
+    itemCode: assertBusinessIdentityValue(d.itemCode, {
+      field: 'itemCode',
+      required: false,
+    }),
     manufacturer: String(d.manufacturer || '').trim(),
     category: String(d.category || 'default')
       .trim()

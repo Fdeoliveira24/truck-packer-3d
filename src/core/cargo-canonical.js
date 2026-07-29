@@ -250,7 +250,7 @@ export function pickSafeExtensions(raw, knownKeys) {
 // Canonical set of fields the case normalizers emit. Anything outside this set is
 // treated as a (safe) extension field by pickSafeExtensions.
 export const CANONICAL_CASE_KEYS = new Set([
-  'id', 'name', 'manufacturer', 'category', 'dimensions', 'weight', 'volume',
+  'id', 'name', 'itemCode', 'manufacturer', 'category', 'dimensions', 'weight', 'volume',
   'shape', 'stackable', 'maxStackCount', 'orientationLock', 'noStackOnTop',
   'isPallet', 'maxPalletWeight', 'hazmatClass', 'laneItem', 'loadPriority',
   'mustLoadLast', 'mustUnloadFirst', 'stopGroup', 'keepTogetherGroup', 'canFlip',

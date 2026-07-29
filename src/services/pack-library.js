@@ -39,6 +39,12 @@ import {
   rulesMaxStackCount,
   weightAllowsSupport,
 } from '../packing-core/validation.js';
+import {
+  assertBusinessIdentityValue,
+  assertItemCodeAvailable,
+  assertLoadPlanNumberAvailable,
+  generateLoadPlanNumber,
+} from '../core/business-identity.js';
 // The wheel-well physical model shared with the solver: manual revalidation
 // must accept the same legal on-well/bridge poses AutoPack produces, or any
 // manual edit near the wells ejects solver-legal cargo to staging.
@@ -2078,8 +2084,21 @@ export function getById(packId) {
 }
 
 export function create(packData) {
+  const source = packData && typeof packData === 'object' ? packData : {};
   const now = Date.now();
-  const rawTruck = packData.truck || { length: 636, width: 102, height: 98 };
+  const packs = getPacks();
+  const requestedLoadPlanNumber = assertBusinessIdentityValue(source.loadPlanNumber, {
+    field: 'loadPlanNumber',
+    required: false,
+  });
+  const loadPlanNumber = requestedLoadPlanNumber == null
+    ? generateLoadPlanNumber(packs)
+    : assertLoadPlanNumberAvailable(requestedLoadPlanNumber, packs);
+  const customerReference = assertBusinessIdentityValue(source.customerReference, {
+    field: 'customerReference',
+    required: false,
+  });
+  const rawTruck = source.truck || { length: 636, width: 102, height: 98 };
   const shapeMode =
     rawTruck &&
       (rawTruck.shapeMode === 'wheelWells' || rawTruck.shapeMode === 'frontBonus' || rawTruck.shapeMode === 'rect')
@@ -2098,11 +2117,13 @@ export function create(packData) {
   };
   const pack = {
     id: Utils.uuid(),
-    title: packData.title || 'Untitled Pack',
-    client: packData.client || '',
-    projectName: packData.projectName || '',
-    drawnBy: packData.drawnBy || '',
-    notes: packData.notes || '',
+    title: source.title || 'Untitled Pack',
+    loadPlanNumber,
+    customerReference,
+    client: source.client || '',
+    projectName: source.projectName || '',
+    drawnBy: source.drawnBy || '',
+    notes: source.notes || '',
     folderId: null,
     truck,
     cases: [],
@@ -2135,6 +2156,17 @@ export function update(packId, patch) {
   const now = Date.now();
   const cloned = Utils.deepClone(patch);
   const prev = packs[idx];
+  if (Object.prototype.hasOwnProperty.call(cloned || {}, 'loadPlanNumber')) {
+    cloned.loadPlanNumber = assertLoadPlanNumberAvailable(cloned.loadPlanNumber, packs, {
+      excludeId: packId,
+    });
+  }
+  if (Object.prototype.hasOwnProperty.call(cloned || {}, 'customerReference')) {
+    cloned.customerReference = assertBusinessIdentityValue(cloned.customerReference, {
+      field: 'customerReference',
+      required: false,
+    });
+  }
   const next = { ...prev, ...cloned };
 
   const lastEditedKeys = ['title', 'client', 'projectName', 'drawnBy', 'notes', 'truck', 'cases', 'groups'];
@@ -2162,6 +2194,8 @@ export function duplicate(packId) {
   const copy = Utils.deepClone(pack);
   copy.id = Utils.uuid();
   copy.title = pack.title + ' (Copy)';
+  copy.loadPlanNumber = generateLoadPlanNumber(getPacks());
+  copy.customerReference = null;
   copy.createdAt = now;
   copy.lastEdited = now;
   copy.thumbnail = null;
@@ -2527,6 +2561,10 @@ export function planPackImport(payload) {
     // Stamp the source fingerprint so a future identical import reuses this copy.
     copy.importSourceKey = fingerprint;
     const storable = CaseLibrary.buildStorableCase(copy);
+    storable.itemCode = assertItemCodeAvailable(
+      storable.itemCode,
+      [...currentCases, ...newCases]
+    );
     newCases.push(storable);
     caseIdMap.set(c.id, storable.id);
     caseById.set(storable.id, storable);
@@ -2579,6 +2617,17 @@ export function planPackImport(payload) {
   const pack = Utils.deepClone(incomingPack);
   pack.id = currentPacks.some(p => p.id === pack.id) ? Utils.uuid() : pack.id || Utils.uuid();
   pack.title = pack.title ? `${pack.title} (Imported)` : 'Imported Pack';
+  const requestedLoadPlanNumber = assertBusinessIdentityValue(pack.loadPlanNumber, {
+    field: 'loadPlanNumber',
+    required: false,
+  });
+  pack.loadPlanNumber = requestedLoadPlanNumber == null
+    ? generateLoadPlanNumber(currentPacks)
+    : assertLoadPlanNumberAvailable(requestedLoadPlanNumber, currentPacks);
+  pack.customerReference = assertBusinessIdentityValue(pack.customerReference, {
+    field: 'customerReference',
+    required: false,
+  });
   pack.folderId = null;
   pack.createdAt = pack.createdAt || now;
   pack.lastEdited = now;

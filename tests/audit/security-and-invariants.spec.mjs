@@ -19551,11 +19551,10 @@ test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltip placement has no JavaSc
     'cardHeaderWithInfo must not introduce inline layout/positioning styles for the tooltip');
 });
 
-test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltip copy is concise and Reset buttons have no tooltip', async () => {
+test('G1.2C-INSPECTOR-CARD-POLISH remaining Inspector help copy is concise and Reset buttons have no tooltip', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
 
   [
-    'Display units follow Settings. Dimensions are stored internally in inches.',
     'Adds a raised deck above the cab. Length controls how far it extends. Deck Height controls cab clearance; the space below is blocked.',
     'Defines matching blocked zones on both sides of the truck. Offset is measured from the rear/loading door.',
     'Position uses the selected display units. Changes are checked against collisions and usable truck zones.',
@@ -19565,6 +19564,8 @@ test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltip copy is concise and Res
     assert.match(src, new RegExp(escapedCopy), `Inspector help tooltip copy must include: ${copy}`);
   });
 
+  assert.doesNotMatch(src, /Display units follow Settings\. Dimensions are stored internally in inches\./,
+    'the removed Truck-header question-mark must not leave its tooltip copy behind');
   assert.doesNotMatch(src, /Reset to defaults for this truck size/,
     'Reset buttons must not keep the rejected tooltip copy');
   assert.doesNotMatch(src, /cfgReset\.setAttribute\('data-tooltip'/,
@@ -19578,8 +19579,8 @@ test('G1.2C-INSPECTOR-CARD-POLISH Inspector help tooltips keep keyboard accessib
   ]);
 
   const cardHeaderCalls = src.match(/cardHeaderWithInfo\(/g) || [];
-  assert.ok(cardHeaderCalls.length >= 6,
-    'Truck, Front Overhang, Wheel Wells, Rotate All, Transform, and Rotate / Flip must all keep using the shared cardHeaderWithInfo helper');
+  assert.equal(cardHeaderCalls.length, 7,
+    'the helper definition plus Category Selection, Front Overhang, Wheel Wells, Rotate All, Transform, and Rotate / Flip must remain');
 
   assert.match(css, /\.tp3d-editor-info-icon\[data-tooltip\]:focus::before,/,
     'keyboard :focus tooltip visibility must be preserved');

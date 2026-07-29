@@ -193,10 +193,8 @@ export function generateLoadPlanNumber(packs, {
  */
 export function migrateLoadPlanNumbers(packLibrary, options = {}) {
   const source = Array.isArray(packLibrary) ? packLibrary : [];
-  const accepted = [];
-  let changed = false;
-
-  const packs = source.map(rawPack => {
+  const reserved = [];
+  const validated = source.map(rawPack => {
     const pack = rawPack && typeof rawPack === 'object' ? rawPack : {};
     const validation = validateBusinessIdentityValue(pack.loadPlanNumber, {
       field: 'loadPlanNumber',
@@ -204,18 +202,22 @@ export function migrateLoadPlanNumbers(packLibrary, options = {}) {
     });
     if (!validation.ok) throw new BusinessIdentityError(validation.error);
 
-    let loadPlanNumber = validation.value;
-    let migratedPack = pack;
-    if (loadPlanNumber == null) {
-      loadPlanNumber = generateLoadPlanNumber(accepted, options);
-      migratedPack = { ...pack, loadPlanNumber };
-      changed = true;
-    } else {
-      assertLoadPlanNumberAvailable(loadPlanNumber, accepted);
+    if (validation.value != null) {
+      assertLoadPlanNumberAvailable(validation.value, reserved);
+      reserved.push({ id: pack.id, loadPlanNumber: validation.value });
     }
 
-    accepted.push({ id: pack.id, loadPlanNumber });
-    return migratedPack;
+    return { pack, loadPlanNumber: validation.value };
+  });
+
+  let changed = false;
+  const packs = validated.map(({ pack, loadPlanNumber: existingNumber }) => {
+    if (existingNumber != null) return pack;
+
+    const loadPlanNumber = generateLoadPlanNumber(reserved, options);
+    reserved.push({ id: pack.id, loadPlanNumber });
+    changed = true;
+    return { ...pack, loadPlanNumber };
   });
 
   return { packLibrary: changed ? packs : source, changed };

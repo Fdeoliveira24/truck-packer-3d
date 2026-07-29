@@ -101,6 +101,8 @@ export function normalizePreferences(prefs) {
   if (hasLegacyTrailerMode && !hasShapeMode) {
     next.gridCardBadges.packs.showShapeMode = inPacks.showTrailerMode !== false;
   }
+  next.gridCardBadges.packs.showLoadPlanNumber = next.gridCardBadges.packs.showLoadPlanNumber !== false;
+  next.gridCardBadges.packs.showCustomerReference = next.gridCardBadges.packs.showCustomerReference !== false;
   next.gridCardBadges.packs.showCasesCount = next.gridCardBadges.packs.showCasesCount !== false;
   next.gridCardBadges.packs.showTruckDims = next.gridCardBadges.packs.showTruckDims !== false;
   next.gridCardBadges.packs.showThumbnail = next.gridCardBadges.packs.showThumbnail !== false;
@@ -109,6 +111,7 @@ export function normalizePreferences(prefs) {
   next.gridCardBadges.packs.showVolume = next.gridCardBadges.packs.showVolume !== false;
   next.gridCardBadges.packs.showWeight = next.gridCardBadges.packs.showWeight !== false;
   next.gridCardBadges.packs.showEditedTime = next.gridCardBadges.packs.showEditedTime !== false;
+  next.gridCardBadges.cases.showItemCode = next.gridCardBadges.cases.showItemCode !== false;
   next.gridCardBadges.cases.showCategory = next.gridCardBadges.cases.showCategory !== false;
   next.gridCardBadges.cases.showDims = next.gridCardBadges.cases.showDims !== false;
   next.gridCardBadges.cases.showVolume = next.gridCardBadges.cases.showVolume !== false;

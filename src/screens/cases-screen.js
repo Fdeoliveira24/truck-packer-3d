@@ -425,7 +425,16 @@ export function createCasesScreen({
         const sub = document.createElement('div');
         sub.className = 'muted';
         sub.classList.add('tp3d-cases-muted-sm');
-        if (c.manufacturer) sub.textContent = c.manufacturer;
+        if (c.itemCode && badgePrefs.showItemCode !== false) {
+          const itemCode = document.createElement('div');
+          itemCode.textContent = `Item Code: ${c.itemCode}`;
+          sub.appendChild(itemCode);
+        }
+        if (c.manufacturer) {
+          const manufacturer = document.createElement('div');
+          manufacturer.textContent = c.manufacturer;
+          sub.appendChild(manufacturer);
+        }
 
         const meta = document.createElement('div');
         meta.className = 'pack-meta';
@@ -543,7 +552,7 @@ export function createCasesScreen({
         if (badgesWrap.children.length) meta.appendChild(badgesWrap);
 
         card.appendChild(head);
-        if (c.manufacturer) card.appendChild(sub);
+        if (sub.children.length) card.appendChild(sub);
         card.appendChild(meta);
         gridEl.appendChild(card);
       });
@@ -681,6 +690,20 @@ export function createCasesScreen({
       updateSelectionUI(visibleIds);
 
       if (!cases.length) {
+        const allCases = CaseLibrary.getCases();
+        const heading = emptyEl.firstElementChild;
+        const detail = emptyEl.lastElementChild;
+        const hasLibraryCases = allCases.length > 0;
+        if (heading) {
+          heading.textContent = hasLibraryCases
+            ? (q ? `No matching cases for "${q}"` : 'No matching cases')
+            : 'No cases yet';
+        }
+        if (detail) {
+          detail.textContent = hasLibraryCases
+            ? 'Try a different keyword or clear the active filters.'
+            : 'Add cases or import a CSV/XLSX template.';
+        }
         emptyEl.style.display = 'block';
         syncCasesFooter(casePageMeta);
         return;
@@ -706,7 +729,18 @@ export function createCasesScreen({
         tr.appendChild(tdSelect);
 
         const tdName = document.createElement('td');
-        tdName.textContent = c.name || '—';
+        const nameWrap = document.createElement('div');
+        nameWrap.classList.add('tp3d-packs-titlewrap');
+        const name = document.createElement('div');
+        name.textContent = c.name || '—';
+        nameWrap.appendChild(name);
+        if (c.itemCode) {
+          const itemCode = document.createElement('div');
+          itemCode.className = 'muted tp3d-cases-muted-sm';
+          itemCode.textContent = `Item Code: ${c.itemCode}`;
+          nameWrap.appendChild(itemCode);
+        }
+        tdName.appendChild(nameWrap);
         tr.appendChild(tdName);
 
         const tdMfg = document.createElement('td');

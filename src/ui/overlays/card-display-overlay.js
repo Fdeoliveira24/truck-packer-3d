@@ -104,6 +104,11 @@ export function createCardDisplayOverlay({
     if (screen === 'cases') {
       items.push({ type: 'header', label: 'Card Display - Cases' });
       items.push(
+        item('Show Item Code', cases.showItemCode !== false, () =>
+          setFlag('cases.showItemCode', cases.showItemCode === false)
+        )
+      );
+      items.push(
         item('Show Category', cases.showCategory !== false, () =>
           setFlag('cases.showCategory', cases.showCategory === false)
         )
@@ -127,6 +132,16 @@ export function createCardDisplayOverlay({
       );
     } else {
       items.push({ type: 'header', label: 'Card Display - Load Plans' });
+      items.push(
+        item('Show Load Plan Number', packs.showLoadPlanNumber !== false, () =>
+          setFlag('packs.showLoadPlanNumber', packs.showLoadPlanNumber === false)
+        )
+      );
+      items.push(
+        item('Show Customer Reference', packs.showCustomerReference !== false, () =>
+          setFlag('packs.showCustomerReference', packs.showCustomerReference === false)
+        )
+      );
       items.push(
         item('Show Thumbnail', packs.showThumbnail !== false, () =>
           setFlag('packs.showThumbnail', packs.showThumbnail === false)

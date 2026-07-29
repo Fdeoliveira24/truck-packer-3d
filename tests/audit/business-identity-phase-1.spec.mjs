@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 
 import * as Identity from '../../src/core/business-identity.js';
 import * as Normalizer from '../../src/core/normalizer.js';
@@ -7,8 +8,13 @@ import * as StateStore from '../../src/core/state-store.js';
 import * as Storage from '../../src/core/storage.js';
 import * as CaseLibrary from '../../src/services/case-library.js';
 import * as PackLibrary from '../../src/services/pack-library.js';
+import { createCardDisplayOverlay } from '../../src/ui/overlays/card-display-overlay.js';
 
 const LOAD_PLAN_NUMBER_PATTERN = /^LP-[0-9A-HJKMNP-TV-Z]{8}$/;
+const CASE_MODAL_PATH = new URL('../../src/ui/overlays/case-modal.js', import.meta.url);
+const CASES_SCREEN_PATH = new URL('../../src/screens/cases-screen.js', import.meta.url);
+const CASE_LIBRARY_PATH = new URL('../../src/services/case-library.js', import.meta.url);
+const PACKS_SCREEN_PATH = new URL('../../src/screens/packs-screen.js', import.meta.url);
 
 function baseCase(overrides = {}) {
   return {
@@ -319,6 +325,12 @@ test('BUSINESS-IDENTITY-PHASE1 Case and Load Plan core APIs normalize, enforce u
     itemCode: '  ＩＴＥＭ-０２  ',
   }));
   assert.equal(CaseLibrary.getById('case-2').itemCode, 'ITEM-02');
+  CaseLibrary.upsert(baseCase({
+    id: 'case-blank',
+    name: 'Case Blank',
+    itemCode: '   ',
+  }));
+  assert.equal(CaseLibrary.getById('case-blank').itemCode, null);
   assert.throws(
     () => CaseLibrary.upsert(baseCase({ id: 'case-3', itemCode: 'item-02' })),
     error => error instanceof Identity.BusinessIdentityError && error.code === 'not_unique'
@@ -335,12 +347,19 @@ test('BUSINESS-IDENTITY-PHASE1 Case and Load Plan core APIs normalize, enforce u
   });
   const secondPack = PackLibrary.create({
     title: 'Second',
+    customerReference: '   ',
+  });
+  const thirdPack = PackLibrary.create({
+    title: 'Third',
     customerReference: 'CUSTOMER-REF',
   });
   assert.equal(firstPack.loadPlanNumber, 'lp-manual',
     'display casing is preserved after trimming');
   assert.equal(firstPack.customerReference, 'CUSTOMER-REF');
-  assert.equal(secondPack.customerReference, 'CUSTOMER-REF',
+  assert.match(secondPack.loadPlanNumber, LOAD_PLAN_NUMBER_PATTERN,
+    'a blank number is generated at creation');
+  assert.equal(secondPack.customerReference, null);
+  assert.equal(thirdPack.customerReference, 'CUSTOMER-REF',
     'Customer Reference remains non-unique');
   assert.throws(
     () => PackLibrary.update(secondPack.id, { loadPlanNumber: 'LP-MANUAL' }),
@@ -370,6 +389,239 @@ test('BUSINESS-IDENTITY-PHASE1 Case and Load Plan core APIs normalize, enforce u
   assert.equal(packCopy.cases[0].caseId, sourceInstance.caseId);
   assert.equal(CaseLibrary.getById('case-1').itemCode, 'ITEM-01',
     'whole-Load-Plan duplication retains referenced Case Item Codes');
+});
+
+test('BUSINESS-IDENTITY-UI Case create/edit uses Phase 1 validation and persists normalized Item Codes', async () => {
+  const source = await fs.readFile(CASE_MODAL_PATH, 'utf8');
+  const itemFieldIndex = source.indexOf("const fItemCode = createIdentityField(doc, 'Item Code'");
+  const manufacturerFieldIndex = source.indexOf("const fMfg = createField(doc, 'Manufacturer'");
+  const nameAppendIndex = source.indexOf('content.appendChild(fName.wrap)');
+  const itemAppendIndex = source.indexOf('content.appendChild(fItemCode.wrap)');
+  const manufacturerAppendIndex = source.indexOf('content.appendChild(fMfg.wrap)');
+
+  assert.ok(itemFieldIndex > 0 && itemFieldIndex < manufacturerFieldIndex,
+    'Item Code is declared immediately after the primary Case Name');
+  assert.ok(nameAppendIndex < itemAppendIndex && itemAppendIndex < manufacturerAppendIndex,
+    'Item Code is rendered between Case Name and the remaining fields');
+  assert.match(source, /fItemCode\.input\.value = initial\.itemCode \|\| '';/,
+    'editing reads the existing Item Code');
+  assert.match(source, /checkItemCodeAvailability\(\s*fItemCode\.input\.value,\s*CaseLibrary\.getCases\(\),\s*\{ excludeId: initial\.id \}/,
+    'saving delegates optional normalization and workspace uniqueness to Phase 1');
+  assert.match(source, /itemCode: itemCodeResult\.value,/,
+    'saving passes the normalized nullable value to CaseLibrary');
+  assert.match(source, /Item Code already in use\./);
+  assert.match(source, /Item Code is too long\./);
+  assert.match(source, /Item Code cannot contain line breaks or control characters\./);
+});
+
+test('BUSINESS-IDENTITY-UI Load Plan create/edit validates and saves Number and Customer Reference', async () => {
+  const source = await fs.readFile(PACKS_SCREEN_PATH, 'utf8');
+  const createStart = source.indexOf('function openNewPackModal()');
+  const editStart = source.indexOf('function openEditPackModal(packId)');
+  const renameStart = source.indexOf('function openRename', editStart);
+  const createBlock = source.slice(createStart, editStart);
+  const editBlock = source.slice(editStart, renameStart);
+
+  assert.match(createBlock, /Leave blank to generate automatically\./,
+    'new Load Plans explain automatic generation');
+  assert.ok(
+    createBlock.indexOf('content.appendChild(title.wrap)') <
+      createBlock.indexOf('content.appendChild(loadPlanNumber.wrap)') &&
+      createBlock.indexOf('content.appendChild(loadPlanNumber.wrap)') <
+      createBlock.indexOf('content.appendChild(customerReference.wrap)') &&
+      createBlock.indexOf('content.appendChild(customerReference.wrap)') <
+      createBlock.indexOf('content.appendChild(client.wrap)'),
+    'new fields follow Title in the approved order'
+  );
+  assert.match(createBlock, /numberRequired: false/,
+    'a new Load Plan may leave its number blank for generation');
+  assert.match(createBlock, /loadPlanNumber: identity\.loadPlanNumber,\s*customerReference: identity\.customerReference,/,
+    'create passes normalized identity values to PackLibrary');
+  assert.match(createBlock, /showToast\('Load plan created', 'success', \{ title: pack\.loadPlanNumber \}\)/,
+    'the generated number is visible after creation');
+
+  assert.match(editBlock, /loadPlanNumber\.input\.value = pack\.loadPlanNumber \|\| '';/,
+    'editing reads the existing Load Plan Number');
+  assert.match(editBlock, /customerReference\.input\.value = pack\.customerReference \|\| '';/,
+    'editing reads the existing Customer Reference');
+  assert.match(editBlock, /numberRequired: true,\s*excludeId: packId,/,
+    'existing Load Plans require a unique number while excluding themselves');
+  assert.match(editBlock, /loadPlanNumber: identity\.loadPlanNumber,\s*customerReference: identity\.customerReference,/,
+    'edit persists both normalized identity values');
+  assert.match(source, /if \(code === 'required'\) return `\$\{label\} is required\.`;/);
+  assert.match(source, /if \(code === 'not_unique'\) return `\$\{label\} already in use\.`;/);
+  assert.match(source, /return `\$\{label\} cannot contain line breaks or control characters\.`;/);
+  assert.match(source, /identityErrorMessage\(numberResult, 'Load Plan Number'\)/);
+  assert.match(source, /identityErrorMessage\(customerResult, 'Customer Reference'\)/);
+});
+
+test('BUSINESS-IDENTITY-UI management views keep names primary and identifiers conditional without UUID exposure', async () => {
+  const [casesSource, packsSource] = await Promise.all([
+    fs.readFile(CASES_SCREEN_PATH, 'utf8'),
+    fs.readFile(PACKS_SCREEN_PATH, 'utf8'),
+  ]);
+  const caseGridIdentity = casesSource.slice(
+    casesSource.indexOf("const title = document.createElement('h3')"),
+    casesSource.indexOf("const meta = document.createElement('div')", casesSource.indexOf("const title = document.createElement('h3')"))
+  );
+  const caseListIdentity = casesSource.slice(
+    casesSource.indexOf("const tdName = document.createElement('td')"),
+    casesSource.indexOf("const tdMfg = document.createElement('td')")
+  );
+  const packIdentity = packsSource.slice(
+    packsSource.indexOf('function appendPackIdentityMetadata'),
+    packsSource.indexOf('function initPacksUI')
+  );
+
+  assert.match(caseGridIdentity, /title\.textContent = c\.name/);
+  assert.match(caseGridIdentity, /if \(c\.itemCode && badgePrefs\.showItemCode !== false\)/);
+  assert.match(caseGridIdentity, /Item Code: \$\{c\.itemCode\}/);
+  assert.doesNotMatch(caseGridIdentity, /\bc\.id\b/);
+  assert.match(caseListIdentity, /name\.textContent = c\.name/);
+  assert.match(caseListIdentity, /if \(c\.itemCode\)/);
+  assert.doesNotMatch(caseListIdentity, /showItemCode/,
+    'the Case card preference does not change list/table metadata');
+  assert.doesNotMatch(caseListIdentity, /\bc\.id\b/);
+
+  assert.match(packIdentity, /if \(showLoadPlanNumber\)/);
+  assert.match(packIdentity, /Load Plan Number: \$\{pack\.loadPlanNumber \|\| '—'\}/);
+  assert.match(packIdentity, /if \(showCustomerReference && pack\.customerReference\)/);
+  assert.doesNotMatch(packIdentity, /\bpack\.id\b/);
+  assert.match(packsSource, /appendPackIdentityMetadata\(titleWrap, pack\);/,
+    'the Load Plan list/table always renders its existing identity metadata');
+  assert.match(
+    packsSource,
+    /appendPackIdentityMetadata\(titleWrap, pack, \{\s*showLoadPlanNumber: badgePrefs\.showLoadPlanNumber !== false,\s*showCustomerReference: badgePrefs\.showCustomerReference !== false,/,
+    'only Load Plan grid cards apply the Card Display identity preferences'
+  );
+  assert.doesNotMatch(
+    `${casesSource}\n${packsSource}`,
+    /\b(?:inst|instance)\.(?:itemCode|loadPlanNumber|customerReference)\b/,
+    'no packed-instance identifier field is introduced'
+  );
+});
+
+test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persistence, and render refresh', () => {
+  const defaults = Normalizer.normalizePreferences({});
+  assert.equal(defaults.gridCardBadges.cases.showItemCode, true);
+  assert.equal(defaults.gridCardBadges.packs.showLoadPlanNumber, true);
+  assert.equal(defaults.gridCardBadges.packs.showCustomerReference, true);
+
+  let preferences = defaults;
+  let menuItems = [];
+  let setCount = 0;
+  let casesRenderCount = 0;
+  let packsRenderCount = 0;
+  const anchors = {
+    'cases-card-display': { id: '' },
+    'packs-card-display': { id: '' },
+  };
+  const overlay = createCardDisplayOverlay({
+    documentRef: {
+      getElementById(id) {
+        return anchors[id] || null;
+      },
+      querySelector() {
+        return null;
+      },
+    },
+    UIComponents: {
+      closeAllDropdowns() {},
+      openDropdown(_anchor, items) {
+        menuItems = items;
+      },
+    },
+    PreferencesManager: {
+      get() {
+        return preferences;
+      },
+      set(next) {
+        preferences = next;
+        setCount += 1;
+      },
+    },
+    Defaults: { defaultPreferences: defaults },
+    Utils: {
+      deepClone(value) {
+        return structuredClone(value);
+      },
+    },
+    getCasesUI: () => ({ render: () => { casesRenderCount += 1; } }),
+    getPacksUI: () => ({ render: () => { packsRenderCount += 1; } }),
+  });
+
+  const findItem = label => menuItems.find(entry => entry.label === label);
+
+  overlay.open({ screen: 'cases' });
+  assert.equal(findItem('Show Item Code').checked, true);
+  assert.equal(findItem('Show Category').checked, true,
+    'existing Case Card Display controls remain present');
+  findItem('Show Item Code').onCheckboxChange();
+  assert.equal(preferences.gridCardBadges.cases.showItemCode, false);
+  assert.equal(casesRenderCount, 1);
+  assert.equal(packsRenderCount, 0);
+  assert.equal(findItem('Show Item Code').checked, false,
+    'the reopened menu reads the persisted preference');
+  findItem('Show Category').onCheckboxChange();
+  assert.equal(preferences.gridCardBadges.cases.showCategory, false,
+    'an existing Case control still persists through the same path');
+
+  overlay.open({ screen: 'packs' });
+  assert.equal(findItem('Show Load Plan Number').checked, true);
+  assert.equal(findItem('Show Customer Reference').checked, true);
+  assert.equal(findItem('Show Thumbnail').checked, true,
+    'existing Load Plan Card Display controls remain present');
+  findItem('Show Load Plan Number').onCheckboxChange();
+  assert.equal(preferences.gridCardBadges.packs.showLoadPlanNumber, false);
+  assert.equal(preferences.gridCardBadges.packs.showCustomerReference, true,
+    'Load Plan Number toggles independently');
+  findItem('Show Customer Reference').onCheckboxChange();
+  assert.equal(preferences.gridCardBadges.packs.showCustomerReference, false);
+  assert.equal(preferences.gridCardBadges.packs.showLoadPlanNumber, false,
+    'Customer Reference toggles independently');
+  assert.equal(packsRenderCount, 2);
+  assert.equal(casesRenderCount, 2);
+  assert.equal(setCount, 4);
+
+  const persisted = Normalizer.normalizePreferences(preferences);
+  assert.equal(persisted.gridCardBadges.cases.showItemCode, false);
+  assert.equal(persisted.gridCardBadges.packs.showLoadPlanNumber, false);
+  assert.equal(persisted.gridCardBadges.packs.showCustomerReference, false);
+  assert.equal(persisted.gridCardBadges.packs.showThumbnail, true,
+    'unrelated saved controls are preserved');
+});
+
+test('BUSINESS-IDENTITY-UI identifiers do not change search/sort and Cases distinguish empty library from no matches', async () => {
+  const [caseLibrarySource, casesSource, packsSource] = await Promise.all([
+    fs.readFile(CASE_LIBRARY_PATH, 'utf8'),
+    fs.readFile(CASES_SCREEN_PATH, 'utf8'),
+    fs.readFile(PACKS_SCREEN_PATH, 'utf8'),
+  ]);
+  const caseSearch = caseLibrarySource.slice(
+    caseLibrarySource.indexOf('export function search(query, categoryKeys)'),
+    caseLibrarySource.indexOf('export function countsByCategory')
+  );
+  const caseSort = casesSource.slice(
+    casesSource.indexOf('// Sort cases'),
+    casesSource.indexOf('const casePageMeta')
+  );
+  const packRender = packsSource.slice(
+    packsSource.indexOf('function render()'),
+    packsSource.indexOf('function resetWorkspaceState')
+  );
+
+  assert.doesNotMatch(caseSearch, /itemCode|loadPlanNumber|customerReference/);
+  assert.doesNotMatch(caseSort, /itemCode|loadPlanNumber|customerReference/);
+  assert.doesNotMatch(packRender, /itemCode|loadPlanNumber|customerReference/);
+  assert.match(packRender, /\(p\.title \|\| ''\).*includes\(q\).*p\.client/s,
+    'Load Plan search remains Title/Client only');
+
+  assert.match(casesSource, /const allCases = CaseLibrary\.getCases\(\);/);
+  assert.match(casesSource, /const hasLibraryCases = allCases\.length > 0;/);
+  assert.match(casesSource, /'No cases yet'/);
+  assert.match(casesSource, /'No matching cases'/);
+  assert.match(packRender, /if \(!allPacks\.length\)/);
+  assert.match(packRender, /if \(!packs\.length\)/);
 });
 
 test('BUSINESS-IDENTITY-PHASE1 workspace load persists one stable migration outside ordinary Undo history', () => {

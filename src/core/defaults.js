@@ -21,6 +21,8 @@ export const defaultPreferences = {
   casesFiltersVisible: true,
   gridCardBadges: {
     packs: {
+      showLoadPlanNumber: true,
+      showCustomerReference: true,
       showCasesCount: true,
       showTruckDims: true,
       showThumbnail: true,
@@ -31,6 +33,7 @@ export const defaultPreferences = {
       showEditedTime: true,
     },
     cases: {
+      showItemCode: true,
       showCategory: true,
       showDims: true,
       showVolume: true,

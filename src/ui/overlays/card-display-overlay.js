@@ -126,6 +126,11 @@ export function createCardDisplayOverlay({
         item('Show Flip', cases.showFlip !== false, () => setFlag('cases.showFlip', cases.showFlip === false))
       );
       items.push(
+        item('Show Handling', cases.showHandling !== false, () =>
+          setFlag('cases.showHandling', cases.showHandling === false)
+        )
+      );
+      items.push(
         item('Show Edited Time', cases.showEditedTime !== false, () =>
           setFlag('cases.showEditedTime', cases.showEditedTime === false)
         )

@@ -1235,7 +1235,10 @@ export function createPacksScreen({
         const title = document.createElement('div');
         title.textContent = pack.title || 'Untitled Load Plan';
         titleWrap.appendChild(title);
-        appendPackIdentityMetadata(titleWrap, pack);
+        appendPackIdentityMetadata(titleWrap, pack, {
+          showLoadPlanNumber: badgePrefs.showLoadPlanNumber !== false,
+          showCustomerReference: badgePrefs.showCustomerReference !== false,
+        });
 
         const stats = PackLibrary.computeStats(pack);
         const truckLabel = formatTruckDims(pack.truck || {}, prefs.units.length);

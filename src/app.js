@@ -1626,7 +1626,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // Notes
           if (pack.notes) {
             doc.setFont('helvetica', 'bold');
-            doc.text('NOTES', margin, y);
+            doc.text('Load Plan Notes', margin, y);
             y += 14;
             doc.setFont('helvetica', 'normal');
             const lines = doc.splitTextToSize(pack.notes, pageWidth - margin * 2);

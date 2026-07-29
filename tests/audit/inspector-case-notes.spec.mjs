@@ -791,29 +791,72 @@ test('Load Plan Notes is absent from the viewport toolbar, whose five visible ac
     'toolbar-specific Pack Notes DOM wiring and refresh handling must be removed');
 });
 
-test('the Truck Inspector header owns one compact Load Plan Notes action wired to the active Pack', async () => {
+test('the Truck Inspector header left-aligns Truck and reuses the selected-item Notes button pattern on the right', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   const truckBlock = extractFunctionBlock(editorSrc, 'function renderTruckInspector(pack, prefs)');
+  const singleBlock = extractFunctionBlock(editorSrc, 'function renderSingleInspector(pack, inst, caseData, prefs)');
+  const truckHeaderEnd = truckBlock.indexOf("const presetRow = document.createElement('div');");
+  const truckHeaderBlock = truckHeaderEnd > 0 ? truckBlock.slice(0, truckHeaderEnd) : '';
 
   assert.ok(truckBlock.length > 0, 'editor-screen must define renderTruckInspector(pack, prefs)');
-  assert.match(truckBlock, /setAttribute\('aria-label', 'Open Load Plan Notes'\)/,
-    'the compact action must have an explicit accessible name');
-  assert.match(truckBlock, /setAttribute\('data-tooltip', 'Load Plan Notes'\)/,
-    'the compact action must expose the Load Plan Notes tooltip');
-  assert.match(truckBlock, /setAttribute\('title', 'Load Plan Notes'\)/,
-    'the compact action must retain a native tooltip fallback');
-  assert.match(truckBlock, /innerHTML = '<i class="fa-regular fa-file-lines"><\/i>'/,
-    'the compact action must reuse the established Notes document icon');
-  assert.match(truckBlock, /insertBefore\(packNotesButton, truckTitle\)/,
-    'the compact action must appear immediately before the visible Truck title');
-  assert.match(truckBlock, /packNotesButton\.addEventListener\('click',[\s\S]*?const activePack = PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)[\s\S]*?openPackNotesModal\(activePack\)/,
-    'one click listener must re-resolve and open notes for the currently active Pack');
-  assert.equal((truckBlock.match(/packNotesButton\.addEventListener\('click'/g) || []).length, 1,
-    'the rendered control must receive exactly one click listener');
+  assert.match(truckHeaderBlock, /truckHeader\.className = 'row space-between tp3d-editor-inspector-title-row'/,
+    'the Truck header must reuse the existing single-selection anti-wrap title row');
+  assert.match(truckHeaderBlock, /truckTitle\.classList\.add\('tp3d-editor-fw-semibold'\)[\s\S]*?truckTitle\.textContent = 'Truck'/,
+    'Truck must remain the visible left-side heading');
+  assert.match(truckHeaderBlock, /packNotesButton = makeActionButton\(\{\s*label: 'Load Plan Notes',\s*iconClass: 'fa-regular fa-file-lines'/,
+    'Load Plan Notes must reuse makeActionButton with the established document icon and visible text');
+  assert.match(singleBlock, /const notesButton = makeActionButton\(\{\s*label: 'Notes',\s*iconClass: 'fa-regular fa-file-lines'/,
+    'the selected-item Notes control must retain the same makeActionButton and document-icon pattern');
+  assert.doesNotMatch(truckHeaderBlock, /data-tooltip|setAttribute\('title'|tp3d-editor-info-icon/,
+    'the visible Load Plan Notes button must not retain custom, native, or icon-only tooltip treatment');
+  assert.doesNotMatch(truckHeaderBlock, /cardHeaderWithInfo|fa-circle-question/,
+    'only the Truck-header question-mark help control must be removed');
+  assert.match(editorSrc, /transformCard\.appendChild\(cardHeaderWithInfo\(/,
+    'the Transform help control must remain');
+  assert.match(editorSrc, /rotCard\.appendChild\(cardHeaderWithInfo\('Rotate \/ Flip'/,
+    'the Rotate / Flip help control must remain');
+
+  const truckTitleAppend = truckBlock.indexOf('truckHeader.appendChild(truckTitle);');
+  const notesButtonAppend = truckBlock.indexOf('truckHeader.appendChild(packNotesButton);');
+  assert.ok(truckTitleAppend >= 0 && notesButtonAppend > truckTitleAppend,
+    'Truck must be appended before the right-aligned Load Plan Notes action in DOM order');
+  assert.match(truckBlock, /onClick: \(\) => \{[\s\S]*?const activePack = PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)[\s\S]*?openPackNotesModal\(activePack\)/,
+    'the action must re-resolve and open notes for the currently active Pack');
   assert.equal((editorSrc.match(/openPackNotesModal\(/g) || []).length, 2,
     'editor-screen must contain one modal definition and exactly one UI call path');
   assert.match(editorSrc, /if \(packNotesButton\) packNotesButton\.disabled = !pack \|\| busy/,
     'the Inspector action must remain blocked without a Pack or during an editor operation');
+});
+
+test('the Load Plan Notes dot follows trimmed pack.notes and Save, Clear, or a Load Plan switch rerenders it immediately', async () => {
+  const [editorSrc, appSrc, packLibrarySrc] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+    fs.readFile(packLibraryUrl, 'utf8'),
+  ]);
+  const truckBlock = extractFunctionBlock(editorSrc, 'function renderTruckInspector(pack, prefs)');
+  const modalBlock = extractFunctionBlock(editorSrc, 'function openPackNotesModal(pack)');
+
+  assert.match(truckBlock, /const hasLoadPlanNotes = Boolean\(String\(pack\.notes \|\| ''\)\.trim\(\)\)/,
+    'the indicator source must be the active Pack note after trimming');
+  assert.match(truckBlock, /if \(hasLoadPlanNotes\) \{[\s\S]*?notesIndicator\.className = 'tp3d-notes-indicator-dot'[\s\S]*?packNotesButton\.appendChild\(notesIndicator\)/,
+    'the existing orange notes dot must be appended only for a non-empty trimmed note');
+
+  for (const emptyNote of ['', '   ', '\n\t', null, undefined]) {
+    assert.equal(Boolean(String(emptyNote || '').trim()), false,
+      'empty, whitespace-only, null, and missing notes must not qualify for the indicator');
+  }
+  assert.equal(Boolean(String('  Dock 4 at 8am  ').trim()), true,
+    'a non-empty trimmed Load Plan note must qualify for the indicator');
+
+  assert.match(modalBlock, /const trimmed = textarea\.value\.trim\(\)[\s\S]*?PackLibrary\.update\(packId, \{ notes: trimmed \}\)/,
+    'Save and Clear must keep using the existing trimmed PackLibrary.update path');
+  assert.match(packLibrarySrc, /StateStore\.set\(\{ packLibrary: nextPacks \}\)/,
+    'PackLibrary.update must continue publishing the packLibrary change');
+  assert.match(appSrc, /if \(changes\.caseLibrary \|\| changes\.packLibrary[\s\S]*?EditorUI\.render\(\);/,
+    'a Save or Clear packLibrary change must synchronously rerender the Editor');
+  assert.match(appSrc, /if \(changes\.currentPackId\) \{[\s\S]*?EditorUI\.render\(\);/,
+    'switching Load Plans must rerender the indicator from the newly active Pack');
 });
 
 test('Load Plan Notes remains in the existing Truck context only; selection-specific Inspectors do not invent duplicate placements', async () => {

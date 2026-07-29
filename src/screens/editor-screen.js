@@ -5546,23 +5546,30 @@ export function createEditorScreen({
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
       const stats = PackLibrary.computeStats(pack);
-      const truckHeader = cardHeaderWithInfo('Truck', 'Display units follow Settings. Dimensions are stored internally in inches.');
-      const truckTitle = truckHeader.querySelector('.tp3d-editor-fw-semibold');
-      packNotesButton = document.createElement('button');
-      packNotesButton.type = 'button';
-      packNotesButton.className = 'muted tp3d-editor-info-icon';
-      packNotesButton.setAttribute('aria-label', 'Open Load Plan Notes');
-      packNotesButton.setAttribute('data-tooltip', 'Load Plan Notes');
-      packNotesButton.setAttribute('title', 'Load Plan Notes');
-      packNotesButton.innerHTML = '<i class="fa-regular fa-file-lines"></i>';
-      packNotesButton.disabled = Boolean(OperationLifecycle && OperationLifecycle.isBusy());
-      packNotesButton.addEventListener('click', () => {
-        if (editorMutationBlocked()) return;
-        const activePack = PackLibrary.getById(StateStore.get('currentPackId'));
-        if (!activePack) return;
-        openPackNotesModal(activePack);
+      const truckHeader = document.createElement('div');
+      truckHeader.className = 'row space-between tp3d-editor-inspector-title-row';
+      const truckTitle = document.createElement('div');
+      truckTitle.classList.add('tp3d-editor-fw-semibold');
+      truckTitle.textContent = 'Truck';
+      const hasLoadPlanNotes = Boolean(String(pack.notes || '').trim());
+      packNotesButton = makeActionButton({
+        label: 'Load Plan Notes',
+        iconClass: 'fa-regular fa-file-lines',
+        disabled: Boolean(OperationLifecycle && OperationLifecycle.isBusy()),
+        onClick: () => {
+          if (editorMutationBlocked()) return;
+          const activePack = PackLibrary.getById(StateStore.get('currentPackId'));
+          if (!activePack) return;
+          openPackNotesModal(activePack);
+        },
       });
-      if (truckTitle) truckHeader.insertBefore(packNotesButton, truckTitle);
+      if (hasLoadPlanNotes) {
+        const notesIndicator = document.createElement('span');
+        notesIndicator.className = 'tp3d-notes-indicator-dot';
+        packNotesButton.appendChild(notesIndicator);
+      }
+      truckHeader.appendChild(truckTitle);
+      truckHeader.appendChild(packNotesButton);
       card.appendChild(truckHeader);
 
       const presetRow = document.createElement('div');

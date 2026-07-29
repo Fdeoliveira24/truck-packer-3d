@@ -127,18 +127,34 @@ test('LOAD-PLAN-TERM-4 the Editor Pack Notes surface is presented as Load Plan N
     fs.readFile(indexHtmlPath, 'utf8'),
     fs.readFile(editorScreenPath, 'utf8'),
   ]);
+  const truckStart = editor.indexOf('function renderTruckInspector(pack, prefs)');
+  const truckHeaderEnd = editor.indexOf("const presetRow = document.createElement('div');", truckStart);
+  const truckHeaderBlock = truckStart >= 0 && truckHeaderEnd > truckStart
+    ? editor.slice(truckStart, truckHeaderEnd)
+    : '';
 
   assert.doesNotMatch(html, /id="btn-pack-notes"/,
     'Load Plan Notes must not remain in the viewport toolbar');
-  assert.match(editor, /setAttribute\('aria-label', 'Open Load Plan Notes'\)/,
-    'the Inspector action must identify itself as Open Load Plan Notes');
-  assert.match(editor, /setAttribute\('data-tooltip', 'Load Plan Notes'\)/,
-    'the Inspector action tooltip must say Load Plan Notes');
+  assert.match(truckHeaderBlock, /label: 'Load Plan Notes'/,
+    'the Inspector action must expose Load Plan Notes as visible button text');
+  assert.doesNotMatch(truckHeaderBlock, /data-tooltip|setAttribute\('title'/,
+    'the visible Load Plan Notes action must not add redundant custom or native tooltips');
   assert.match(editor, /title:\s*'Load Plan Notes',/, 'the notes modal must be titled Load Plan Notes');
   assert.match(editor, /No notes for this load plan yet\./, 'the empty notes state must say load plan');
   assert.match(editor, /This load plan no longer exists\./, 'the missing-record error must say load plan');
 
   assert.doesNotMatch(editor, /title:\s*'Pack Notes',/, 'no notes modal may still be titled Pack Notes');
+});
+
+test('LOAD-PLAN-TERM-4B PDF renders saved pack.notes under the exact Load Plan Notes heading', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+
+  assert.match(app, /if \(pack\.notes\) \{[\s\S]*?doc\.text\('Load Plan Notes', margin, y\)/,
+    'saved Load Plan Notes must render under the exact customer-facing PDF heading');
+  assert.doesNotMatch(app, /doc\.text\('(?:NOTES|Pack Notes|Truck Notes|Truck Note)', margin, y\)/,
+    'the PDF must not retain generic Pack- or Truck-facing notes headings');
+  assert.match(app, /const lines = doc\.splitTextToSize\(pack\.notes, pageWidth - margin \* 2\)[\s\S]*?doc\.text\(lines, margin, y\)[\s\S]*?y \+= lines\.length \* 12 \+ 10/,
+    'multiline notes must keep using the existing width-aware wrapping and advance subsequent PDF content');
 });
 
 test('LOAD-PLAN-TERM-5 cross-screen references to the business object say load plan', async () => {

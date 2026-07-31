@@ -2,15 +2,15 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 
-// Inspector per-case Standard Instructions (Case.notes).
+// Inspector per-case Case Instructions/Notes (Case.notes).
 //
-// Standard Instructions are a Case-template field (like Category and the
+// Case Instructions/Notes are a Case-template field (like Category and the
 // other handling-rule metadata already on a Case), so the data-layer
 // coverage below exercises the single shared normalizer (cargo-canonical.js)
 // and the canonical update path (CaseLibrary.upsert) that the Cases-screen
 // Case editor (case-modal.js) uses. Per the locked Cargo Instructions
 // architecture (docs/engineering/cargo-instructions-ownership-contract.md),
-// the Inspector renders Standard Instructions as a read-only section in the
+// the Inspector renders Case Instructions/Notes as a read-only section in the
 // combined Notes modal — it is never editable from the Editor.
 //
 // editor-screen.js renders through Three.js/DOM and has no jsdom harness in
@@ -28,6 +28,7 @@ const packLibraryUrl = new URL('../../src/services/pack-library.js', import.meta
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
 const autopackEngineUrl = new URL('../../src/services/autopack-engine.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
+const notesOverlayUrl = new URL('../../src/ui/overlays/notes-overlay.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
 const stylesPath = new URL('../../styles/main.css', import.meta.url);
 
@@ -287,7 +288,7 @@ test('the PDF Cargo Instructions manifest includes case.notes once per Case and 
     caseId: notedCase.id,
     caseName: notedCase.name,
     caseNotes: 'Keep upright.\nNo top loading.',
-  }], 'Standard Case Instructions must be emitted once even when multiple instances reference the same Case');
+  }], 'Case Instructions/Notes must be emitted once even when multiple instances reference the same Case');
   assert.deepEqual(manifest.itemEntries, [{
     instanceId: 'inst-pdf-1',
     caseId: notedCase.id,
@@ -301,7 +302,7 @@ test('generatePDF renders the Cargo Instructions manifest with separate Case and
   assert.match(src, /ImportExport\.buildCargoInstructionsManifest\(pack\)/,
     'PDF export must build its note content through the export manifest helper');
   assert.match(src, /'CASE INFORMATION'/);
-  assert.match(src, /\['Standard Case Instructions', entry\.caseNotes\]/,
+  assert.match(src, /\['Case Instructions\/Notes', entry\.caseNotes\]/,
     'PDF Case information must render case.notes through the manifest value');
   assert.match(src, /'ITEM DETAILS'/);
   assert.match(src, /\['Item Notes', entry\.itemNotes\]/,
@@ -347,6 +348,329 @@ function extractFunctionBlock(src, signature) {
   const end = src.indexOf('\n    }', start);
   return end > start ? src.slice(start, end) : '';
 }
+
+class NotesTestElement {
+  constructor(tagName, documentRef) {
+    this.tagName = String(tagName || '').toUpperCase();
+    this.ownerDocument = documentRef;
+    this.children = [];
+    this.parentElement = null;
+    this.attributes = new Map();
+    this.listeners = new Map();
+    this._classNames = new Set();
+    this._textContent = '';
+    this.isConnected = true;
+    this.disabled = false;
+    this.value = '';
+    this.focusCount = 0;
+    this.classList = {
+      add: (...names) => {
+        names.filter(Boolean).forEach(name => this._classNames.add(name));
+      },
+      contains: name => this._classNames.has(name),
+    };
+  }
+
+  get className() {
+    return Array.from(this._classNames).join(' ');
+  }
+
+  set className(value) {
+    this._classNames = new Set(String(value || '').split(/\s+/).filter(Boolean));
+  }
+
+  get textContent() {
+    if (this.children.length) return this.children.map(child => child.textContent).join('');
+    return this._textContent;
+  }
+
+  set textContent(value) {
+    this.children = [];
+    this._textContent = String(value == null ? '' : value);
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    child.isConnected = this.isConnected;
+    this.children.push(child);
+    return child;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+    if (name === 'id') this.id = String(value);
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  addEventListener(type, handler) {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
+  }
+
+  click() {
+    const event = {
+      target: this,
+      currentTarget: this,
+      preventDefault() {},
+      stopPropagation() {},
+    };
+    (this.listeners.get('click') || []).forEach(handler => handler(event));
+  }
+
+  focus() {
+    this.focusCount += 1;
+    this.ownerDocument.activeElement = this;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+
+  querySelectorAll(selector) {
+    const matches = [];
+    const isMatch = element => {
+      if (selector === 'button') return element.tagName === 'BUTTON';
+      if (selector.startsWith('.')) return element.classList.contains(selector.slice(1));
+      if (selector.startsWith('#')) return element.id === selector.slice(1);
+      return element.tagName === selector.toUpperCase();
+    };
+    const visit = element => {
+      element.children.forEach(child => {
+        if (isMatch(child)) matches.push(child);
+        visit(child);
+      });
+    };
+    visit(this);
+    return matches;
+  }
+}
+
+function makeNotesOverlayHarness() {
+  const documentListeners = new Map();
+  const documentRef = {
+    activeElement: null,
+    createElement(tagName) {
+      return new NotesTestElement(tagName, documentRef);
+    },
+    addEventListener(type, handler) {
+      const handlers = documentListeners.get(type) || new Set();
+      handlers.add(handler);
+      documentListeners.set(type, handlers);
+    },
+    removeEventListener(type, handler) {
+      documentListeners.get(type)?.delete(handler);
+    },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    escape() {
+      for (const handler of documentListeners.get('keydown') || []) {
+        handler({
+          key: 'Escape',
+          preventDefault() {},
+          stopPropagation() {},
+        });
+      }
+    },
+  };
+  const modals = [];
+  const toasts = [];
+  const UIComponents = {
+    showToast(message, type, options) {
+      toasts.push({ message, type, options });
+    },
+    showModal(config) {
+      const modal = documentRef.createElement('div');
+      const title = documentRef.createElement('div');
+      title.className = 'modal-title';
+      title.textContent = config.title;
+      const footer = documentRef.createElement('div');
+      footer.className = 'modal-footer';
+      modal.appendChild(title);
+      modal.appendChild(config.content);
+      modal.appendChild(footer);
+      const overlay = documentRef.createElement('div');
+      overlay.appendChild(modal);
+      let closed = false;
+      const ref = {
+        modal,
+        overlay,
+        close() {
+          if (closed) return;
+          closed = true;
+          modal.isConnected = false;
+          overlay.isConnected = false;
+          config.onClose?.();
+        },
+      };
+      modals.push({ config, ref, modal, overlay, get closed() { return closed; } });
+      return ref;
+    },
+  };
+  const findButton = (modalRecord, label) =>
+    modalRecord.modal.querySelectorAll('button').find(button => button.textContent === label) || null;
+  return { documentRef, UIComponents, modals, toasts, findButton };
+}
+
+async function flushNotesOverlayTasks() {
+  await new Promise(resolve => setImmediate(resolve));
+}
+
+test('shared Notes overlay keeps one dialog, re-resolves before a trimmed Save, supports explicit Clear, and restores trigger focus', { concurrency: false }, async () => {
+  const originalDocument = globalThis.document;
+  const harness = makeNotesOverlayHarness();
+  globalThis.document = harness.documentRef;
+  let entity = { id: 'case-1', name: 'Case One', notes: '', updatedAt: 100 };
+  const openingEntity = entity;
+  const writes = [];
+  const trigger = harness.documentRef.createElement('button');
+  try {
+    const { openNotesOverlay } = await import(`${notesOverlayUrl.href}?behavior=${Date.now()}-${Math.random()}`);
+    const overlay = openNotesOverlay({
+      UIComponents: harness.UIComponents,
+      entityType: 'case',
+      entityId: entity.id,
+      capturedContext: 'workspace-a',
+      getCurrentContext: () => 'workspace-a',
+      resolveEntity: ({ entityId }) => entity && entity.id === entityId ? entity : null,
+      readNote: current => current.notes,
+      saveNote: ({ entity: current, value, cleared }) => {
+        writes.push({ current, value, cleared });
+        entity = { ...current, notes: value, updatedAt: current.updatedAt + 1 };
+        return entity;
+      },
+      clearValue: null,
+      title: 'Notes',
+      subtitle: current => current.name,
+      fieldLabel: 'Case Instructions/Notes',
+      emptyText: 'No case instructions/notes yet.',
+      getLastEdited: current => current.updatedAt,
+      trigger,
+    });
+    assert.ok(overlay);
+    assert.equal(harness.modals.length, 1, 'one UIComponents modal owns every state');
+    assert.equal(harness.findButton(harness.modals[0], 'Add Note')?.tagName, 'BUTTON');
+
+    harness.findButton(harness.modals[0], 'Add Note').click();
+    await flushNotesOverlayTasks();
+    const textarea = harness.modals[0].modal.querySelector('textarea');
+    assert.ok(textarea, 'Add enters the edit state in the existing dialog');
+    textarea.value = '   ';
+    harness.findButton(harness.modals[0], 'Save').click();
+    await flushNotesOverlayTasks();
+    assert.equal(writes.length, 0, 'an empty Save cannot silently act as Clear');
+    assert.equal(harness.toasts.at(-1).message, 'Enter a note before saving.');
+    assert.equal(harness.modals[0].modal.querySelector('textarea'), textarea,
+      'the empty draft remains available for correction');
+
+    textarea.value = '  Keep upright  ';
+    entity = { ...entity, name: 'Fresh Case Name' };
+    harness.findButton(harness.modals[0], 'Save').click();
+    await flushNotesOverlayTasks();
+
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0].value, 'Keep upright', 'Save trims the draft');
+    assert.equal(writes[0].cleared, false);
+    assert.notEqual(writes[0].current, openingEntity, 'Save receives the freshly re-resolved entity');
+    assert.equal(writes[0].current.name, 'Fresh Case Name');
+    assert.equal(harness.modals.length, 1, 'Save updates the original overlay instead of stacking dialogs');
+
+    harness.findButton(harness.modals[0], 'Clear').click();
+    await flushNotesOverlayTasks();
+    assert.equal(writes.length, 2);
+    assert.equal(writes[1].value, null, 'Case Clear uses the caller-owned null representation');
+    assert.equal(writes[1].cleared, true, 'Clear is an explicit action');
+    assert.ok(harness.findButton(harness.modals[0], 'Add Note'), 'Clear returns to the empty state');
+
+    overlay.close();
+    await flushNotesOverlayTasks();
+    assert.equal(trigger.focusCount, 1, 'closing restores focus to the opening control');
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+});
+
+test('shared Notes overlay blocks stale context/deleted saves, preserves the draft, and closes the previous overlay before opening another', { concurrency: false }, async () => {
+  const originalDocument = globalThis.document;
+  const harness = makeNotesOverlayHarness();
+  globalThis.document = harness.documentRef;
+  let context = 'workspace-a';
+  let entity = { id: 'pack-1', title: 'Plan One', notes: 'Original' };
+  let saveCount = 0;
+  let mutationAllowed = true;
+  const config = {
+    UIComponents: harness.UIComponents,
+    entityType: 'load-plan',
+    entityId: 'pack-1',
+    capturedContext: 'workspace-a',
+    getCurrentContext: () => context,
+    resolveEntity: ({ entityId }) => entity && entity.id === entityId ? entity : null,
+    readNote: current => current.notes,
+    saveNote: ({ value }) => {
+      saveCount += 1;
+      entity = { ...entity, notes: value };
+      return entity;
+    },
+    clearValue: '',
+    title: 'Load Plan Notes',
+    subtitle: current => current.title,
+    fieldLabel: 'Load Plan Notes',
+    mutationGuard: () => mutationAllowed,
+    contextMessage: 'Workspace changed.',
+    missingMessage: 'Load plan deleted.',
+  };
+  try {
+    const { openNotesOverlay } = await import(`${notesOverlayUrl.href}?safety=${Date.now()}-${Math.random()}`);
+    const first = openNotesOverlay(config);
+    harness.findButton(harness.modals[0], 'Edit').click();
+    await flushNotesOverlayTasks();
+    const firstDraft = harness.modals[0].modal.querySelector('textarea');
+    firstDraft.value = 'Do not lose this draft';
+    mutationAllowed = false;
+    harness.findButton(harness.modals[0], 'Save').click();
+    await flushNotesOverlayTasks();
+    assert.equal(saveCount, 0, 'the owner mutation guard runs before Save');
+    assert.equal(firstDraft.value, 'Do not lose this draft');
+
+    mutationAllowed = true;
+    context = 'workspace-b';
+    harness.findButton(harness.modals[0], 'Save').click();
+    await flushNotesOverlayTasks();
+    assert.equal(saveCount, 0, 'a context change blocks the write');
+    assert.equal(firstDraft.value, 'Do not lose this draft', 'the blocked draft stays in place');
+    assert.equal(harness.toasts.at(-1).message, 'Workspace changed.');
+
+    context = 'workspace-a';
+    entity = null;
+    harness.findButton(harness.modals[0], 'Save').click();
+    await flushNotesOverlayTasks();
+    assert.equal(saveCount, 0, 'a deleted entity cannot be written');
+    assert.equal(firstDraft.value, 'Do not lose this draft');
+    assert.equal(harness.toasts.at(-1).message, 'Load plan deleted.');
+
+    entity = { id: 'pack-1', title: 'Plan One', notes: '' };
+    const second = openNotesOverlay(config);
+    assert.equal(harness.modals.length, 2);
+    assert.equal(harness.modals[0].closed, true, 'opening another Notes surface closes the previous overlay');
+    assert.equal(harness.modals[1].closed, false);
+    harness.documentRef.escape();
+    await flushNotesOverlayTasks();
+    assert.equal(harness.modals[1].closed, true, 'Escape closes the one active Notes overlay');
+    first?.close();
+    second?.close();
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+});
 
 test('editor-screen no longer defines the removed prototype Notes-editing modal (openCaseNotesModal)', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
@@ -723,48 +1047,54 @@ test('Pack Notes persist across a reload: a stored pack.notes loads back intact 
     'a persisted pack.notes must load back intact (reload path)');
 });
 
-// --- editor-screen.js source-contract checks for openPackNotesModal ---
+// --- editor-screen.js source-contract checks for the shared Load Plan Notes adapter ---
 
-test('editor-screen defines openPackNotesModal(pack), captures packId up front, and writes ONLY pack.notes via PackLibrary.update — never case.notes or instanceNotes', async () => {
+test('editor-screen delegates openPackNotesModal to the shared overlay and writes ONLY pack.notes via PackLibrary.update', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openPackNotesModal(pack)');
-  assert.ok(block.length > 0, 'editor-screen must define openPackNotesModal(pack)');
+  const block = extractFunctionBlock(src, 'function openPackNotesModal(pack, trigger = null)');
+  assert.ok(block.length > 0, 'editor-screen must define the Load Plan Notes adapter');
 
   const packIdCaptureIdx = block.indexOf('const packId = pack.id;');
-  const firstModalCallIdx = block.indexOf('UIComponents.showModal');
-  assert.ok(packIdCaptureIdx >= 0 && packIdCaptureIdx < firstModalCallIdx,
-    'packId must be captured from the passed-in pack before any modal opens');
+  const overlayCallIdx = block.indexOf('openNotesOverlay({');
+  assert.ok(packIdCaptureIdx >= 0 && packIdCaptureIdx < overlayCallIdx,
+    'packId must be captured before the shared overlay opens');
 
-  assert.match(block, /PackLibrary\.update\(packId, \{ notes: trimmed \}\)/,
-    'Save must write pack.notes through PackLibrary.update with the captured packId and a trimmed value');
-  assert.doesNotMatch(block, /CaseLibrary/, 'Pack Notes must never write Standard Instructions (case.notes)');
+  assert.match(block, /resolveEntity: \(\{ entityId \}\) => PackLibrary\.getById\(entityId\)/,
+    'the shared overlay re-resolves the current Load Plan by ID');
+  assert.match(block, /saveNote: \(\{ entityId, value \}\) => \{[\s\S]*?PackLibrary\.update\(entityId, \{ notes: value \}\)/,
+    'Save writes only pack.notes through PackLibrary.update');
+  assert.match(block, /clearValue: ''/, 'Load Plan Clear retains the existing empty-string representation');
+  assert.doesNotMatch(block, /CaseLibrary/, 'Load Plan Notes must never write Case Instructions/Notes (case.notes)');
   assert.doesNotMatch(block, /instanceNotes/, 'Pack Notes must never write Item Notes (instanceNotes)');
   assert.doesNotMatch(block, /updateInstance/, 'Pack Notes must never touch the per-instance update path');
   assert.doesNotMatch(block, /TruckChangeController/, 'a plain Pack text field must not go through the Truck Change controller');
   assert.doesNotMatch(block, /updateCasesWithManualRevalidation/, 'a plain text field must not trigger geometry/placement revalidation');
 });
 
-test('openPackNotesModal has empty/read/edit states, trims input, and fails safely (re-resolves the Pack and respects the operation lock)', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const block = extractFunctionBlock(src, 'function openPackNotesModal(pack)');
+test('openPackNotesModal configures shared empty/read/edit safety, context, mutation, and focus behavior', async () => {
+  const [src, overlaySource] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(notesOverlayUrl, 'utf8'),
+  ]);
+  const block = extractFunctionBlock(src, 'function openPackNotesModal(pack, trigger = null)');
 
-  const showModalCalls = (block.match(/UIComponents\.showModal\(/g) || []).length;
-  assert.equal(showModalCalls, 1, 'only the local showNotesModal wrapper may call UIComponents.showModal directly');
-  const stateModalCalls = (block.match(/(?<!function )showNotesModal\(\{/g) || []).length;
-  assert.equal(stateModalCalls, 3, 'Empty, Read, and Edit states must each render through the local wrapper');
-
+  assert.equal((block.match(/openNotesOverlay\(/g) || []).length, 1,
+    'the Editor has one shared Load Plan Notes overlay call');
   assert.match(block, /No notes for this load plan yet\./, 'the empty state must show the load-plan-level empty message');
-  assert.match(block, /textarea\.value\.trim\(\)/, 'saved input must be trimmed, consistent with existing pack.notes behavior');
-  assert.match(block, /editorMutationBlocked\(\)/, 'Save must respect the editor operation lock');
+  assert.match(block, /mutationGuard: \(\) => !editorMutationBlocked\(\)/,
+    'Save and Clear must respect the editor operation lock');
   assert.match(block, /This load plan no longer exists\./, 'a missing Pack must surface a clear error instead of writing to the wrong load plan');
-
-  const resolveCount = (block.match(/resolvePack\(\)/g) || []).length;
-  assert.ok(resolveCount >= 2, 'both the render path and the Save handler must re-resolve the Pack before acting');
-
-  const saveStart = block.indexOf("label: 'Save'");
-  const saveBlock = block.slice(saveStart, block.indexOf('},', saveStart));
-  assert.match(saveBlock, /if \(!resolvePack\(\)\) \{[\s\S]*?return false;/,
-    'Save failure (missing Pack) must return false so the modal stays open and the draft is preserved');
+  assert.match(block, /userScope: CoreStorage\.getStorageScope\(\)/);
+  assert.match(block, /workspaceScope: CoreStorage\.getWorkspaceScope\(\)/);
+  assert.match(block, /packId: StateStore\.get\('currentPackId'\)/);
+  assert.match(block, /\btrigger,\s*missingMessage:/,
+    'the Inspector trigger is passed through for focus restoration');
+  assert.match(overlaySource, /textarea\.value\.trim\(\)/,
+    'the shared Save path trims drafts consistently');
+  assert.match(overlaySource, /contextIsCurrent\(currentContext\)/);
+  assert.match(overlaySource, /const entity = resolveCurrentEntity\(currentContext\)/);
+  assert.match(overlaySource, /if \(draftTarget\) focusSoon\(draftTarget\)/,
+    'blocked writes preserve and refocus the draft');
 });
 
 test('Load Plan Notes is absent from the viewport toolbar, whose five visible actions remain unchanged', async () => {
@@ -820,7 +1150,7 @@ test('the Truck Inspector header left-aligns Truck and reuses the selected-item 
   const notesButtonAppend = truckBlock.indexOf('truckHeader.appendChild(packNotesButton);');
   assert.ok(truckTitleAppend >= 0 && notesButtonAppend > truckTitleAppend,
     'Truck must be appended before the right-aligned Load Plan Notes action in DOM order');
-  assert.match(truckBlock, /onClick: \(\) => \{[\s\S]*?const activePack = PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)[\s\S]*?openPackNotesModal\(activePack\)/,
+  assert.match(truckBlock, /onClick: event => \{[\s\S]*?const activePack = PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)[\s\S]*?openPackNotesModal\(activePack, event\.currentTarget\)/,
     'the action must re-resolve and open notes for the currently active Pack');
   assert.equal((editorSrc.match(/openPackNotesModal\(/g) || []).length, 2,
     'editor-screen must contain one modal definition and exactly one UI call path');
@@ -828,14 +1158,15 @@ test('the Truck Inspector header left-aligns Truck and reuses the selected-item 
     'the Inspector action must remain blocked without a Pack or during an editor operation');
 });
 
-test('the Load Plan Notes dot follows trimmed pack.notes and Save, Clear, or a Load Plan switch rerenders it immediately', async () => {
-  const [editorSrc, appSrc, packLibrarySrc] = await Promise.all([
+test('the Load Plan Notes dot follows trimmed pack.notes and shared Save/Clear updates rerender it immediately', async () => {
+  const [editorSrc, appSrc, packLibrarySrc, overlaySrc] = await Promise.all([
     fs.readFile(editorScreenPath, 'utf8'),
     fs.readFile(appPath, 'utf8'),
     fs.readFile(packLibraryUrl, 'utf8'),
+    fs.readFile(notesOverlayUrl, 'utf8'),
   ]);
   const truckBlock = extractFunctionBlock(editorSrc, 'function renderTruckInspector(pack, prefs)');
-  const modalBlock = extractFunctionBlock(editorSrc, 'function openPackNotesModal(pack)');
+  const modalBlock = extractFunctionBlock(editorSrc, 'function openPackNotesModal(pack, trigger = null)');
 
   assert.match(truckBlock, /const hasLoadPlanNotes = Boolean\(String\(pack\.notes \|\| ''\)\.trim\(\)\)/,
     'the indicator source must be the active Pack note after trimming');
@@ -849,8 +1180,13 @@ test('the Load Plan Notes dot follows trimmed pack.notes and Save, Clear, or a L
   assert.equal(Boolean(String('  Dock 4 at 8am  ').trim()), true,
     'a non-empty trimmed Load Plan note must qualify for the indicator');
 
-  assert.match(modalBlock, /const trimmed = textarea\.value\.trim\(\)[\s\S]*?PackLibrary\.update\(packId, \{ notes: trimmed \}\)/,
-    'Save and Clear must keep using the existing trimmed PackLibrary.update path');
+  assert.match(modalBlock, /PackLibrary\.update\(entityId, \{ notes: value \}\)/,
+    'the Editor adapter keeps using the existing PackLibrary.update path');
+  assert.match(modalBlock, /clearValue: ''/, 'Clear keeps the Load Plan empty-string representation');
+  assert.match(overlaySrc, /const trimmed = textarea\.value\.trim\(\)[\s\S]*?return writeValue\(trimmed, false, textarea\)/,
+    'Save trims through the shared overlay');
+  assert.match(overlaySrc, /writeValue\(clearValue, true/,
+    'Clear is a distinct shared-overlay action');
   assert.match(packLibrarySrc, /StateStore\.set\(\{ packLibrary: nextPacks \}\)/,
     'PackLibrary.update must continue publishing the packLibrary change');
   assert.match(appSrc, /if \(changes\.caseLibrary \|\| changes\.packLibrary[\s\S]*?EditorUI\.render\(\);/,
@@ -873,7 +1209,7 @@ test('Load Plan Notes remains in the existing Truck context only; selection-spec
 
 // ---------------------------------------------------------------------------
 // editor-screen.js source-contract checks for openNotesModal — the single,
-// merged Notes modal. It presents Standard Case Instructions (Case-owned,
+// merged Notes modal. It presents Case Instructions/Notes (Case-owned,
 // read-only) and Item Notes (Pack-instance-owned, editable) together for
 // progressive disclosure, but the two fields are never merged: only Item
 // Notes has a Save action, and only PackLibrary.updateInstance is ever
@@ -893,10 +1229,13 @@ test('editor-screen defines openNotesModal(pack, inst) and captures packId + ins
     'packId and instanceId must be captured before any modal is opened');
 });
 
-test('openNotesModal renders both Standard Case Instructions (read-only) and Item Notes (editable) as clearly separated sections, with no ownership/copy badges', async () => {
+test('openNotesModal renders both Case Instructions/Notes (read-only) and Item Notes (editable) as clearly separated sections', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
-  assert.match(block, /'Standard Case Instructions'/, 'the Case-owned section must be labeled Standard Case Instructions');
+  assert.match(block, /label\.textContent = 'Case Instructions\/Notes'/,
+    'the Case-owned section uses the approved customer terminology');
+  assert.match(block, /value\.textContent = 'No case instructions\/notes yet\.'/);
+  assert.doesNotMatch(block, /Standard Case Instructions|No standard instructions\./);
   assert.match(block, /label\.textContent = 'Item Notes'/, 'the instance-owned section must be labeled Item Notes');
   assert.doesNotMatch(block, /Case-wide/, 'the Case-wide ownership badge must be removed — section titles alone carry ownership now');
   assert.doesNotMatch(block, /This item only/, 'the This item only ownership badge must be removed — section titles alone carry ownership now');
@@ -920,7 +1259,7 @@ test('openNotesModal Save writes through PackLibrary.updateInstance (the canonic
   const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
   assert.match(block, /PackLibrary\.updateInstance\(packId, instanceId, \{ instanceNotes: trimmed \|\| null \}\)/,
     'Save must call PackLibrary.updateInstance with the captured packId/instanceId and a trimmed, null-on-empty value');
-  assert.doesNotMatch(block, /CaseLibrary\.upsert/, 'Standard Case Instructions is read-only here — nothing in this modal may write through CaseLibrary');
+  assert.doesNotMatch(block, /CaseLibrary\.upsert/, 'Case Instructions/Notes is read-only here — nothing in this modal may write through CaseLibrary');
   assert.doesNotMatch(block, /TruckChangeController/, 'Item Notes must not go through the Truck Change controller');
   assert.doesNotMatch(block, /updateCasesWithManualRevalidation/, 'a plain text field must not trigger geometry/placement revalidation');
 });
@@ -950,7 +1289,7 @@ test('openNotesModal reuses UIComponents.showModal for all three Item Notes stat
 
   assert.match(block, /No notes for this case yet\./, 'the fully empty state must show the approved case-level empty message');
   assert.match(block, /No notes for this item yet\./,
-    'an empty Item Notes section must remain clear when Standard Case Instructions exist');
+    'an empty Item Notes section must remain clear when Case Instructions/Notes exist');
   assert.match(block, /tp3d-notes-empty-state-icon/, 'the fully empty state must include the document icon');
   assert.match(block, /label: 'Add Note'/, 'Empty state must offer Add Note');
   assert.match(block, /label: 'Edit'/, 'Read state must offer Edit');
@@ -996,18 +1335,18 @@ test('the Notes button title row never wraps the button below the case name, reg
     'the title row must use the anti-wrap layout class so a long case name cannot push the Notes button to a new line');
 });
 
-test('the Notes button shows a subtle indicator dot only when Standard Case Instructions or Item Notes exist', async () => {
+test('the Notes button shows a subtle indicator dot only when Case Instructions/Notes or Item Notes exist', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const singleBlock = extractFunctionBlock(src, 'function renderSingleInspector(pack, inst, caseData, prefs)');
   assert.match(singleBlock, /const hasAnyNotes = Boolean\(String\(caseData\.notes \|\| ''\)\.trim\(\)\) \|\| Boolean\(String\(inst\.instanceNotes \|\| ''\)\.trim\(\)\)/,
-    'the indicator must reflect either Standard Case Instructions or Item Notes having content');
+    'the indicator must reflect either Case Instructions/Notes or Item Notes having content');
   assert.match(singleBlock, /if \(hasAnyNotes\) \{[\s\S]*?tp3d-notes-indicator-dot/, 'the dot must only be appended when hasAnyNotes is true');
 });
 
-test('the populated Standard Case Instructions and Item Notes values are rendered with safe plain-text assignment, never innerHTML', async () => {
+test('the populated Case Instructions/Notes and Item Notes values are rendered with safe plain-text assignment, never innerHTML', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
-  assert.match(block, /value\.textContent = note;/, 'the populated Standard Case Instructions value must be assigned via textContent, not innerHTML');
+  assert.match(block, /value\.textContent = note;/, 'the populated Case Instructions/Notes value must be assigned via textContent, not innerHTML');
   assert.match(block, /content\.textContent = note;/, 'the populated Item Notes Read-state value must be assigned via textContent, not innerHTML');
   assert.doesNotMatch(block, /\.innerHTML\s*=/, 'no note value may ever be assigned via innerHTML');
   assert.match(block, /tp3d-case-notes-read/, 'the populated values must reuse the existing line-break-preserving read-only class');

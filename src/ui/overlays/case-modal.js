@@ -423,7 +423,7 @@ export function openCaseModal({
   notesWrap.classList.add('tp3d-grid-span-full');
   const notesLabel = doc.createElement('div');
   notesLabel.className = 'label';
-  notesLabel.textContent = 'Standard Case Instructions';
+  notesLabel.textContent = 'Case Instructions/Notes';
   const notes = doc.createElement('textarea');
   notes.className = 'input';
   notes.classList.add('tp3d-textarea-minh-60');

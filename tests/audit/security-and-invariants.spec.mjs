@@ -104,6 +104,7 @@ const authOverlayPath = new URL('../../src/ui/overlays/auth-overlay.js', import.
 const settingsOverlayPath = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const caseModalPath = new URL('../../src/ui/overlays/case-modal.js', import.meta.url);
 const cardDisplayOverlayPath = new URL('../../src/ui/overlays/card-display-overlay.js', import.meta.url);
+const notesOverlayPath = new URL('../../src/ui/overlays/notes-overlay.js', import.meta.url);
 const helpModalPath = new URL('../../src/ui/overlays/help-modal.js', import.meta.url);
 const importAppDialogPath = new URL('../../src/ui/overlays/import-app-dialog.js', import.meta.url);
 const importPackDialogPath = new URL('../../src/ui/overlays/import-pack-dialog.js', import.meta.url);
@@ -7827,11 +7828,12 @@ test('CASE and editor filter panels render as bounded vertical lists', async () 
     'Packs filter popup must render the shared title class');
   assert.match(casesSrc, /let filtersOutsideClickHandler = null;/,
     'Cases filter popup must track the outside-click listener like Packs');
-  assert.match(casesSrc, /prefs\.casesFiltersVisible = prefs\.casesFiltersVisible !== true;/,
-    'Cases filter popup must toggle with an explicit open state');
+  assert.match(casesSrc, /const shouldOpen = PreferencesManager\.get\(\)\.casesFiltersVisible !== true;[\s\S]*UIComponents\.closeAllDropdowns\(\);[\s\S]*setFiltersVisible\(true\);/,
+    'Cases filter popup must toggle through the shared one-open coordinator');
   assert.match(casesSrc, /document\.addEventListener\('click', filtersOutsideClickHandler\)/,
     'Cases filter popup must close from a document outside-click handler');
-  assert.match(casesSrc, /prefs\.casesFiltersVisible = false;[\s\S]*PreferencesManager\.set\(prefs\);[\s\S]*applyFiltersVisibility\(\);/,
+  assert.match(casesSrc, /function setFiltersVisible\(visible\)[\s\S]*PreferencesManager\.set\(prefs\);[\s\S]*applyFiltersVisibility\(\);/);
+  assert.match(casesSrc, /if \(!anchor \|\| !anchor\.contains[\s\S]*setFiltersVisible\(false\);/,
     'Cases filter outside click must persist the closed state');
   assert.match(src, /#cases-filters,[\s\S]*#packs-filters \{[\s\S]*flex-direction: column;/,
     'Cases and Packs filters must render as vertical lists');
@@ -17797,8 +17799,13 @@ test('phase 0.7C-1A active folder state updates dataset key button label and wor
 test('phase 0.7C-1A existing search and status filters remain present', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
 
-  assert.match(src, /\.filter\(p => !q \|\| \(p\.title \|\| ''\)\.toLowerCase\(\)\.includes\(q\) \|\| \(p\.client \|\| ''\)\.toLowerCase\(\)\.includes\(q\)\)/,
-    'existing title/client search filter must remain');
+  assert.match(src, /\.filter\(p => packMatchesSearch\(p, q\)\)/,
+    'the normalized Load Plan search filter must remain');
+  assert.match(
+    src,
+    /\[pack && pack\.title, pack && pack\.client, pack && pack\.loadPlanNumber, pack && pack\.customerReference\]/,
+    'Title and Client search remain alongside Load Plan Number and Customer Reference'
+  );
   assert.match(src, /filters\.empty[\s\S]{0,80}filters\.partial[\s\S]{0,80}filters\.full/,
     'existing Empty/Partial/Full filter state must remain');
   assert.match(src, /if \(filters\.empty && isEmpty\) return true;/,
@@ -24199,7 +24206,10 @@ test('APP-STABILIZATION-PHASE3 dialog guards sit immediately before import, cate
 });
 
 test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMutationBlocked', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const [src, notesOverlay] = await Promise.all([
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(notesOverlayPath, 'utf8'),
+  ]);
   const newCase = src.slice(
     src.indexOf('function openEditorNewCaseModal()'),
     src.indexOf('function setCaseFiltersVisible', src.indexOf('function openEditorNewCaseModal()')),
@@ -24216,7 +24226,7 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
 
   const category = src.slice(
     src.indexOf('function openSetCategoryModal('),
-    src.indexOf('// Pack Notes modal', src.indexOf('function openSetCategoryModal(')),
+    src.indexOf('// Load Plan Notes is', src.indexOf('function openSetCategoryModal(')),
   );
   assert.match(category, /function openSetCategoryModal[\s\S]*editorMutationBlocked\(\)/,
     'Set Category entry is guarded');
@@ -24230,12 +24240,14 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
   assert.ok(notesSave.indexOf('editorMutationBlocked()') < notesSave.indexOf('PackLibrary.updateInstance'),
     'Item Notes Save re-checks before the instance write');
 
-  const packNotesSave = src.slice(
-    src.indexOf("label: 'Save'", src.indexOf('function openPackNotesModal(')),
+  const packNotesAdapter = src.slice(
+    src.indexOf('function openPackNotesModal('),
     src.indexOf('// Single Notes modal', src.indexOf('function openPackNotesModal(')),
   );
-  assert.ok(packNotesSave.indexOf('editorMutationBlocked()') < packNotesSave.indexOf('PackLibrary.update('),
-    'Pack Notes Save re-checks editorMutationBlocked before the pack write (Cargo Instructions Phase 3)');
+  assert.match(packNotesAdapter, /mutationGuard: \(\) => !editorMutationBlocked\(\)/,
+    'Editor Load Plan Notes delegates its lifecycle guard to the shared overlay');
+  assert.ok(notesOverlay.indexOf('await config.mutationGuard()') < notesOverlay.indexOf('await config.saveNote({'),
+    'the shared Notes overlay evaluates the mutation guard before invoking the owner write adapter');
 
   const applyPosition = src.slice(
     src.indexOf("savePos.addEventListener('click'"),

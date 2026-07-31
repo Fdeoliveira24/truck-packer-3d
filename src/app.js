@@ -1786,7 +1786,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             cargoInstructions.caseEntries.forEach(entry => {
               writeInstructionEntry('CASE INFORMATION', [
                 ['Case', entry.caseName],
-                ['Standard Case Instructions', entry.caseNotes],
+                ['Case Instructions/Notes', entry.caseNotes],
               ]);
             });
             cargoInstructions.itemEntries.forEach(entry => {

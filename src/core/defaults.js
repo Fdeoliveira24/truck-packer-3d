@@ -23,6 +23,7 @@ export const defaultPreferences = {
     packs: {
       showLoadPlanNumber: true,
       showCustomerReference: true,
+      showNotes: true,
       showCasesCount: true,
       showTruckDims: true,
       showThumbnail: true,
@@ -34,12 +35,14 @@ export const defaultPreferences = {
     },
     cases: {
       showItemCode: true,
+      showManufacturer: true,
       showCategory: true,
       showDims: true,
       showVolume: true,
       showWeight: true,
       showFlip: true,
       showHandling: true,
+      showNotes: true,
       showEditedTime: true,
     },
   },

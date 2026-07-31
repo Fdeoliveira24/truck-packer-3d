@@ -104,90 +104,99 @@ export function createCardDisplayOverlay({
     if (screen === 'cases') {
       items.push({ type: 'header', label: 'Card Display - Cases' });
       items.push(
-        item('Show Item Code', cases.showItemCode !== false, () =>
+        item('Item Code', cases.showItemCode !== false, () =>
           setFlag('cases.showItemCode', cases.showItemCode === false)
         )
       );
       items.push(
-        item('Show Category', cases.showCategory !== false, () =>
+        item('Manufacturer', cases.showManufacturer !== false, () =>
+          setFlag('cases.showManufacturer', cases.showManufacturer === false)
+        )
+      );
+      items.push(
+        item('Notes', cases.showNotes !== false, () =>
+          setFlag('cases.showNotes', cases.showNotes === false)
+        )
+      );
+      items.push(
+        item('Dimensions', cases.showDims !== false, () => setFlag('cases.showDims', cases.showDims === false))
+      );
+      items.push(
+        item('Volume', cases.showVolume !== false, () => setFlag('cases.showVolume', cases.showVolume === false))
+      );
+      items.push(
+        item('Weight', cases.showWeight !== false, () => setFlag('cases.showWeight', cases.showWeight === false))
+      );
+      items.push(
+        item('Category', cases.showCategory !== false, () =>
           setFlag('cases.showCategory', cases.showCategory === false)
         )
       );
       items.push(
-        item('Show Dimensions', cases.showDims !== false, () => setFlag('cases.showDims', cases.showDims === false))
-      );
-      items.push(
-        item('Show Volume', cases.showVolume !== false, () => setFlag('cases.showVolume', cases.showVolume === false))
-      );
-      items.push(
-        item('Show Weight', cases.showWeight !== false, () => setFlag('cases.showWeight', cases.showWeight === false))
-      );
-      items.push(
-        item('Show Flip', cases.showFlip !== false, () => setFlag('cases.showFlip', cases.showFlip === false))
-      );
-      items.push(
-        item('Show Handling', cases.showHandling !== false, () =>
+        item('Handling', cases.showHandling !== false, () =>
           setFlag('cases.showHandling', cases.showHandling === false)
-        )
-      );
-      items.push(
-        item('Show Edited Time', cases.showEditedTime !== false, () =>
-          setFlag('cases.showEditedTime', cases.showEditedTime === false)
         )
       );
     } else {
       items.push({ type: 'header', label: 'Card Display - Load Plans' });
       items.push(
-        item('Show Load Plan Number', packs.showLoadPlanNumber !== false, () =>
+        item('Load Plan Number', packs.showLoadPlanNumber !== false, () =>
           setFlag('packs.showLoadPlanNumber', packs.showLoadPlanNumber === false)
         )
       );
       items.push(
-        item('Show Customer Reference', packs.showCustomerReference !== false, () =>
+        item('Customer Reference', packs.showCustomerReference !== false, () =>
           setFlag('packs.showCustomerReference', packs.showCustomerReference === false)
         )
       );
       items.push(
-        item('Show Thumbnail', packs.showThumbnail !== false, () =>
+        item('Notes', packs.showNotes !== false, () =>
+          setFlag('packs.showNotes', packs.showNotes === false)
+        )
+      );
+      items.push(
+        item('Thumbnail', packs.showThumbnail !== false, () =>
           setFlag('packs.showThumbnail', packs.showThumbnail === false)
         )
       );
       items.push(
-        item('Show Cases Count', packs.showCasesCount !== false, () =>
+        item('Cases Count', packs.showCasesCount !== false, () =>
           setFlag('packs.showCasesCount', packs.showCasesCount === false)
         )
       );
       items.push(
-        item('Show Dimensions', packs.showTruckDims !== false, () =>
+        item('Dimensions', packs.showTruckDims !== false, () =>
           setFlag('packs.showTruckDims', packs.showTruckDims === false)
         )
       );
       items.push(
-        item('Show Shape', packs.showShapeMode !== false, () =>
+        item('Shape', packs.showShapeMode !== false, () =>
           setFlag('packs.showShapeMode', packs.showShapeMode === false)
         )
       );
       items.push(
-        item('Show Packed', packs.showPacked !== false, () => setFlag('packs.showPacked', packs.showPacked === false))
+        item('Packed', packs.showPacked !== false, () => setFlag('packs.showPacked', packs.showPacked === false))
       );
       items.push(
-        item('Show Volume', packs.showVolume !== false, () => setFlag('packs.showVolume', packs.showVolume === false))
+        item('Volume', packs.showVolume !== false, () => setFlag('packs.showVolume', packs.showVolume === false))
       );
       items.push(
-        item('Show Weight', packs.showWeight !== false, () => setFlag('packs.showWeight', packs.showWeight === false))
+        item('Weight', packs.showWeight !== false, () => setFlag('packs.showWeight', packs.showWeight === false))
       );
       items.push(
-        item('Show Edited Time', packs.showEditedTime !== false, () =>
+        item('Edited Time', packs.showEditedTime !== false, () =>
           setFlag('packs.showEditedTime', packs.showEditedTime === false)
         )
       );
     }
 
     UIComponents.openDropdown(anchorEl, items, {
-      width: 260,
+      width: screen === 'cases' ? 200 : 216,
       align: 'left',
       role: 'card-display',
+      dropdownClass: 'tp3d-dropdown-card-display',
       activeAnchorClass: 'btn-primary',
+      manageTriggerState: true,
       closeOnCheckboxChange: false,
     });
   }

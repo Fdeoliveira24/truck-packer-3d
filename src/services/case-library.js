@@ -18,6 +18,7 @@ import { applyCanonicalCargoFields, pickSafeExtensions, CANONICAL_CASE_KEYS } fr
 import {
   assertBusinessIdentityValue,
   assertItemCodeAvailable,
+  normalizeBusinessIdentityComparison,
 } from '../core/business-identity.js';
 
 // Canonicalize the known cargo-rule fields in place before storage, leaving any
@@ -132,14 +133,16 @@ export function duplicate(caseId) {
 }
 
 export function search(query, categoryKeys) {
-  const q = String(query || '')
-    .trim()
-    .toLowerCase();
+  const q = normalizeBusinessIdentityComparison(query);
   const cats = (categoryKeys || [])
     .map(normalizeCategoryFilterKey)
     .filter(k => k && k !== 'all');
+  const matchesValue = value => {
+    const normalized = normalizeBusinessIdentityComparison(value);
+    return q != null && normalized != null && normalized.includes(q);
+  };
   return getCases().filter(c => {
-    const matchesQ = !q || (c.name || '').toLowerCase().includes(q) || (c.manufacturer || '').toLowerCase().includes(q);
+    const matchesQ = q == null || matchesValue(c.name) || matchesValue(c.manufacturer) || matchesValue(c.itemCode);
     const caseCategory = normalizeCategoryFilterKey(c.category || 'default') || 'default';
     const matchesCat = !cats.length || cats.includes(caseCategory);
     return matchesQ && matchesCat;

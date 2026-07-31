@@ -103,6 +103,7 @@ export function normalizePreferences(prefs) {
   }
   next.gridCardBadges.packs.showLoadPlanNumber = next.gridCardBadges.packs.showLoadPlanNumber !== false;
   next.gridCardBadges.packs.showCustomerReference = next.gridCardBadges.packs.showCustomerReference !== false;
+  next.gridCardBadges.packs.showNotes = next.gridCardBadges.packs.showNotes !== false;
   next.gridCardBadges.packs.showCasesCount = next.gridCardBadges.packs.showCasesCount !== false;
   next.gridCardBadges.packs.showTruckDims = next.gridCardBadges.packs.showTruckDims !== false;
   next.gridCardBadges.packs.showThumbnail = next.gridCardBadges.packs.showThumbnail !== false;
@@ -112,12 +113,14 @@ export function normalizePreferences(prefs) {
   next.gridCardBadges.packs.showWeight = next.gridCardBadges.packs.showWeight !== false;
   next.gridCardBadges.packs.showEditedTime = next.gridCardBadges.packs.showEditedTime !== false;
   next.gridCardBadges.cases.showItemCode = next.gridCardBadges.cases.showItemCode !== false;
+  next.gridCardBadges.cases.showManufacturer = next.gridCardBadges.cases.showManufacturer !== false;
   next.gridCardBadges.cases.showCategory = next.gridCardBadges.cases.showCategory !== false;
   next.gridCardBadges.cases.showDims = next.gridCardBadges.cases.showDims !== false;
   next.gridCardBadges.cases.showVolume = next.gridCardBadges.cases.showVolume !== false;
   next.gridCardBadges.cases.showWeight = next.gridCardBadges.cases.showWeight !== false;
   next.gridCardBadges.cases.showFlip = next.gridCardBadges.cases.showFlip !== false;
   next.gridCardBadges.cases.showHandling = next.gridCardBadges.cases.showHandling !== false;
+  next.gridCardBadges.cases.showNotes = next.gridCardBadges.cases.showNotes !== false;
   next.gridCardBadges.cases.showEditedTime = next.gridCardBadges.cases.showEditedTime !== false;
   next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
   next.units.length = CoreUtils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;

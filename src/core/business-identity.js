@@ -12,6 +12,10 @@ export const LOAD_PLAN_NUMBER_MAX_ATTEMPTS = 32;
 export const CROCKFORD_BASE32_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 const CONTROL_OR_LINE_BREAK = /[\p{Cc}\u2028\u2029]/u;
+const BUSINESS_IDENTITY_COLLATOR = new Intl.Collator(undefined, {
+  numeric: true,
+  sensitivity: 'accent',
+});
 
 export class BusinessIdentityError extends Error {
   constructor(error) {
@@ -34,6 +38,16 @@ export function normalizeBusinessIdentityDisplay(value) {
 export function normalizeBusinessIdentityComparison(value) {
   const display = normalizeBusinessIdentityDisplay(value);
   return display == null ? null : display.toLowerCase();
+}
+
+export function compareBusinessIdentityValues(left, right, { direction = 'asc' } = {}) {
+  const leftValue = normalizeBusinessIdentityDisplay(left);
+  const rightValue = normalizeBusinessIdentityDisplay(right);
+  if (leftValue == null && rightValue == null) return 0;
+  if (leftValue == null) return 1;
+  if (rightValue == null) return -1;
+  const comparison = BUSINESS_IDENTITY_COLLATOR.compare(leftValue, rightValue);
+  return direction === 'desc' ? -comparison : comparison;
 }
 
 export function validateBusinessIdentityValue(value, { field = 'businessIdentity', required = false } = {}) {

@@ -14,10 +14,43 @@
 // Packs screen (extracted from src/app.js; behavior preserved)
 
 import * as FolderLibrary from '../services/folder-library.js';
+import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
+import { getStorageScope, getWorkspaceScope } from '../core/storage.js';
 import {
   checkLoadPlanNumberAvailability,
+  compareBusinessIdentityValues,
+  normalizeBusinessIdentityComparison,
   validateBusinessIdentityValue,
 } from '../core/business-identity.js';
+
+export function packMatchesSearch(pack, query) {
+  const normalizedQuery = normalizeBusinessIdentityComparison(query);
+  if (normalizedQuery == null) return true;
+  return [pack && pack.title, pack && pack.client, pack && pack.loadPlanNumber, pack && pack.customerReference].some(
+    value => {
+      const normalized = normalizeBusinessIdentityComparison(value);
+      return normalized != null && normalized.includes(normalizedQuery);
+    }
+  );
+}
+
+export function findMatchingTrailerPreset(truck, presets) {
+  if (!truck || typeof truck !== 'object' || !Array.isArray(presets)) return null;
+  const shapeMode = ['rect', 'wheelWells', 'frontBonus'].includes(truck.shapeMode)
+    ? truck.shapeMode
+    : 'rect';
+  return presets.find(preset => {
+    const candidate = preset && preset.truck;
+    if (!candidate || typeof candidate !== 'object') return false;
+    const candidateShape = ['rect', 'wheelWells', 'frontBonus'].includes(candidate.shapeMode)
+      ? candidate.shapeMode
+      : 'rect';
+    return Number(candidate.length) === Number(truck.length) &&
+      Number(candidate.width) === Number(truck.width) &&
+      Number(candidate.height) === Number(truck.height) &&
+      candidateShape === shapeMode;
+  }) || null;
+}
 
 export function createPacksScreen({
   Utils,
@@ -42,6 +75,7 @@ export function createPacksScreen({
 }) {
   const PacksUI = (() => {
     const searchEl = /** @type {HTMLInputElement} */ (document.getElementById('packs-search'));
+    const searchClearEl = /** @type {HTMLButtonElement} */ (document.getElementById('packs-search-clear'));
     const gridEl = /** @type {HTMLElement} */ (document.getElementById('packs-grid'));
     const listEl = /** @type {HTMLElement} */ (document.getElementById('packs-list'));
     const tbodyEl = /** @type {HTMLElement} */ (document.getElementById('packs-tbody'));
@@ -56,6 +90,7 @@ export function createPacksScreen({
     const chipFull = document.getElementById('packs-filter-chip-full');
     const btnViewGrid = document.getElementById('packs-view-grid');
     const btnViewList = document.getElementById('packs-view-list');
+    const btnSort = document.getElementById('packs-sort');
     const btnTrailerPresets = document.getElementById('packs-trailer-presets');
     const btnFiltersToggle = document.getElementById('packs-filters-toggle');
     const btnCardDisplay = document.getElementById('packs-card-display');
@@ -70,6 +105,19 @@ export function createPacksScreen({
     const FOLDERS_DROPDOWN_ANCHOR_KEY = 'packs-folders-button';
     const filters = { empty: false, partial: false, full: false };
     const selectedIds = new Set();
+    const sortOptions = [
+      { key: 'title', label: 'Title' },
+      { key: 'loadPlanNumber', label: 'Load Plan Number' },
+      { key: 'cases', label: 'Cases' },
+      { key: 'length', label: 'Length' },
+      { key: 'width', label: 'Width' },
+      { key: 'height', label: 'Height' },
+      { key: 'mode', label: 'Shape' },
+      { key: 'packed', label: 'Packed' },
+      { key: 'volume', label: 'Volume' },
+      { key: 'weight', label: 'Weight' },
+      { key: 'edited', label: 'Edited' },
+    ];
     let activeFolderId = null;
     let datasetKey = '';
     let sortKey = 'edited-desc';
@@ -84,6 +132,7 @@ export function createPacksScreen({
     let foldersButtonEl = null;
     let foldersButtonLabelEl = null;
     let filtersOutsideClickHandler = null;
+    let toolbarDropdownCoordinatorInitialized = false;
 
     function mutationBlockedWhileBusy(title = 'Load Plans') {
       if (!OperationLifecycle || !OperationLifecycle.isBusy()) return false;
@@ -167,17 +216,6 @@ export function createPacksScreen({
       return cfg;
     }
 
-    function formatPackStats(stats, prefs) {
-      const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
-      const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
-      const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
-      const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
-      const unresolved = stats && Number.isFinite(stats.unresolvedInstances) ? stats.unresolvedInstances : 0;
-      const base = `Packed: ${packed}/${loaded} • Volume: ${pct.toFixed(1)}% • Weight: ${weight}`;
-      // Surface incompleteness in the grid/list so totals are never read as complete.
-      return unresolved > 0 ? `${base} • ${unresolved} unresolved` : base;
-    }
-
     function setIdentityFieldError(fieldControl, message) {
       fieldControl.error.textContent = message || '';
       fieldControl.error.hidden = !message;
@@ -247,41 +285,146 @@ export function createPacksScreen({
       };
     }
 
-    function appendPackIdentityMetadata(container, pack, {
+    function getManagementNotesContext() {
+      return `${getStorageScope()}|${getWorkspaceScope()}`;
+    }
+
+    function createManagementIdentityChip(text, accessibleLabel) {
+      const chip = document.createElement('div');
+      chip.className = 'badge tp3d-management-identity-chip';
+      chip.setAttribute('aria-label', accessibleLabel);
+      const chipText = document.createElement('span');
+      chipText.className = 'tp3d-management-identity-chip__text';
+      chipText.textContent = text;
+      chip.appendChild(chipText);
+      return chip;
+    }
+
+    function appendPackListIdentityMetadata(container, pack, {
       showLoadPlanNumber = true,
       showCustomerReference = true,
     } = {}) {
+      const loadPlanNumber = String(pack.loadPlanNumber || '').trim();
+      const customerReferenceValue = String(pack.customerReference || '').trim();
       if (showLoadPlanNumber) {
         const number = document.createElement('div');
-        number.className = 'muted tp3d-cases-muted-sm';
-        number.textContent = `Load Plan Number: ${pack.loadPlanNumber || '—'}`;
+        number.className = 'muted tp3d-management-secondary-text';
+        number.textContent = `Load Plan Number: ${loadPlanNumber || '—'}`;
         container.appendChild(number);
       }
 
-      if (showCustomerReference && pack.customerReference) {
+      if (showCustomerReference && customerReferenceValue) {
         const customerReference = document.createElement('div');
-        customerReference.className = 'muted tp3d-cases-muted-sm';
-        customerReference.textContent = `Customer Reference: ${pack.customerReference}`;
+        customerReference.className = 'muted tp3d-management-secondary-text';
+        customerReference.textContent = `Customer Reference: ${customerReferenceValue}`;
         container.appendChild(customerReference);
       }
+    }
+
+    function createPackIdentityChips(pack, {
+      showLoadPlanNumber = true,
+      showCustomerReference = true,
+    } = {}) {
+      const chips = document.createElement('div');
+      chips.className = 'tp3d-management-identity-chips';
+      const loadPlanNumber = String(pack.loadPlanNumber || '').trim();
+      const customerReference = String(pack.customerReference || '').trim();
+      if (showLoadPlanNumber && loadPlanNumber) {
+        chips.appendChild(
+          createManagementIdentityChip(loadPlanNumber, `Load Plan Number: ${loadPlanNumber}`)
+        );
+      }
+      if (showCustomerReference && customerReference) {
+        chips.appendChild(
+          createManagementIdentityChip(
+            `Ref: ${customerReference}`,
+            `Customer Reference: ${customerReference}`
+          )
+        );
+      }
+      return chips;
+    }
+
+    function openPackManagementNotes(pack, trigger) {
+      const capturedContext = getManagementNotesContext();
+      openNotesOverlay({
+        UIComponents,
+        entityType: 'load-plan',
+        entityId: pack.id,
+        capturedContext,
+        getCurrentContext: getManagementNotesContext,
+        resolveEntity: ({ entityId }) => PackLibrary.getById(entityId),
+        readNote: entity => entity.notes,
+        saveNote: ({ entityId, value }) => {
+          const updated = PackLibrary.update(entityId, { notes: String(value || '').trim() });
+          if (!updated) throw new Error('This load plan no longer exists.');
+          return updated;
+        },
+        clearValue: '',
+        title: 'Load Plan Notes',
+        subtitle: entity => entity.title || 'Untitled Load Plan',
+        fieldLabel: 'Load Plan Notes',
+        emptyText: 'No load plan notes yet.',
+        placeholder: 'Add load plan notes…',
+        mutationGuard: () => !mutationBlockedWhileBusy('Load Plan Notes'),
+        getLastEdited: entity => entity.lastEdited,
+        onSaved: () => render(),
+        trigger,
+        missingMessage: 'This load plan no longer exists.',
+        contextMessage: 'The active workspace changed. Reopen Load Plan Notes to continue.',
+      });
+    }
+
+    function createPackNotesButton(pack) {
+      const title = pack.title || 'Untitled Load Plan';
+      const hasNotes = Boolean(String(pack.notes || '').trim());
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-ghost tp3d-management-notes-btn';
+      btn.setAttribute('data-pack-notes', '1');
+      btn.setAttribute('data-notes-entity-type', 'load-plan');
+      btn.setAttribute('data-notes-entity-id', pack.id);
+      btn.setAttribute('data-tooltip', 'Load Plan Notes');
+      btn.setAttribute('aria-label', hasNotes
+        ? `Open load plan notes for ${title}, notes available`
+        : `Open load plan notes for ${title}`);
+      btn.innerHTML = '<i class="fa-regular fa-file-lines" aria-hidden="true"></i>';
+      if (hasNotes) {
+        const indicator = document.createElement('span');
+        indicator.className = 'tp3d-notes-indicator-dot';
+        indicator.setAttribute('aria-hidden', 'true');
+        btn.appendChild(indicator);
+      }
+      btn.addEventListener('keydown', ev => ev.stopPropagation());
+      btn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        openPackManagementNotes(pack, btn);
+      });
+      return btn;
     }
 
     function initPacksUI() {
       searchEl.addEventListener(
         'input',
-        Utils.debounce(() => {
-          packsListState.pageIndex = 0;
-          render();
-        }, 200)
+        (() => {
+          const renderSearch = Utils.debounce(() => {
+            packsListState.pageIndex = 0;
+            render();
+          }, 200);
+          return () => {
+            updateSearchClearVisibility();
+            renderSearch();
+          };
+        })()
       );
       searchEl.addEventListener('keydown', ev => {
-        if (ev.key === 'Escape') {
-          searchEl.value = '';
-          packsListState.pageIndex = 0;
-          render();
-          searchEl.blur();
-        }
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (searchEl.value) clearSearch();
       });
+      searchClearEl.addEventListener('click', clearSearch);
+      updateSearchClearVisibility();
       wireChip(chipAll, 'all');
       wireChip(chipEmpty, 'empty');
       wireChip(chipPartial, 'partial');
@@ -291,6 +434,11 @@ export function createPacksScreen({
       ensureFoldersButton();
       btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList.addEventListener('click', () => setViewMode('list'));
+      btnSort &&
+        btnSort.addEventListener('click', ev => {
+          ev.stopPropagation();
+          openSortMenu(btnSort);
+        });
       if (!featureFlags.trailerPresetsEnabled && btnTrailerPresets) btnTrailerPresets.style.display = 'none';
       if (featureFlags.trailerPresetsEnabled && btnTrailerPresets) {
         btnTrailerPresets.addEventListener('click', ev => {
@@ -306,6 +454,7 @@ export function createPacksScreen({
         });
       selectAllEl.addEventListener('change', handleSelectAll);
       btnBulkDelete.addEventListener('click', handleBulkDelete);
+      initToolbarDropdownCoordinator();
       initListHeaderSort();
       updateViewButtons();
       initFooter();
@@ -336,11 +485,28 @@ export function createPacksScreen({
         return;
       }
 
+      const presets = TrailerPresets.getAll();
+      const matchingPreset = findMatchingTrailerPreset(pack.truck, presets);
       const items = /** @type {any[]} */ ([{ type: 'header', label: 'Trailer Presets' }]);
-      TrailerPresets.getAll().forEach(p => {
+      if (!matchingPreset) {
+        items.push(
+          {
+            label: 'Custom',
+            icon: 'fa-solid fa-sliders',
+            active: true,
+            status: true,
+            rightIcon: 'fa-solid fa-check',
+          },
+          { type: 'divider' }
+        );
+      }
+      presets.forEach(p => {
+        const isActive = Boolean(matchingPreset && matchingPreset.id === p.id);
         items.push({
           label: p.label,
           icon: 'fa-solid fa-truck',
+          active: isActive,
+          rightIcon: isActive ? 'fa-solid fa-check' : '',
           onClick: () => {
             const nextTruck = TrailerPresets.applyToTruck(pack.truck, p);
             requestTruckChange({
@@ -360,14 +526,40 @@ export function createPacksScreen({
         width: Math.max(260, rect.width),
         role: 'trailer-presets',
         activeAnchorClass: 'btn-primary',
+        menuSemantics: true,
+        toggle: true,
       });
     }
 
     function toggleFiltersVisible() {
+      const shouldOpen = PreferencesManager.get().packsFiltersVisible !== true;
+      UIComponents.closeAllDropdowns();
+      if (!shouldOpen) return;
+      setFiltersVisible(true);
+    }
+
+    function setFiltersVisible(visible) {
       const prefs = PreferencesManager.get();
-      prefs.packsFiltersVisible = prefs.packsFiltersVisible !== true;
-      PreferencesManager.set(prefs);
+      if ((prefs.packsFiltersVisible === true) !== Boolean(visible)) {
+        prefs.packsFiltersVisible = Boolean(visible);
+        PreferencesManager.set(prefs);
+      }
       applyFiltersVisibility();
+    }
+
+    function initToolbarDropdownCoordinator() {
+      if (toolbarDropdownCoordinatorInitialized) return;
+      toolbarDropdownCoordinatorInitialized = true;
+      UIComponents.registerDropdownSurface({
+        isOpen: () => PreferencesManager.get().packsFiltersVisible === true,
+        close: () => setFiltersVisible(false),
+        getAnchor: () => btnFiltersToggle,
+      });
+      StateStore.subscribe(changes => {
+        if (changes && Object.prototype.hasOwnProperty.call(changes, 'currentScreen')) {
+          UIComponents.closeAllDropdowns();
+        }
+      });
     }
 
     function applyFiltersVisibility() {
@@ -376,6 +568,7 @@ export function createPacksScreen({
       filtersRowEl.classList.toggle('is-open', visible);
       filtersRowEl.style.display = '';
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
+      btnFiltersToggle && btnFiltersToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
       // Manage outside-click handler
       if (filtersOutsideClickHandler) {
         document.removeEventListener('click', filtersOutsideClickHandler);
@@ -385,10 +578,7 @@ export function createPacksScreen({
         filtersOutsideClickHandler = function(ev) {
           const anchor = filtersRowEl.closest('.tp3d-packs-filter-anchor');
           if (!anchor || !anchor.contains(/** @type {Node} */ (ev.target))) {
-            const prefs = PreferencesManager.get();
-            prefs.packsFiltersVisible = false;
-            PreferencesManager.set(prefs);
-            applyFiltersVisibility();
+            setFiltersVisible(false);
           }
         };
         setTimeout(() => {
@@ -814,6 +1004,7 @@ export function createPacksScreen({
         anchorKey: FOLDERS_DROPDOWN_ANCHOR_KEY,
         align: 'left',
         width: 260,
+        menuSemantics: true,
       });
       bindFoldersDropdownCloseSync();
     }
@@ -826,18 +1017,9 @@ export function createPacksScreen({
         const button = th.querySelector('.th-sort');
         if (!button) return;
         const toggleSort = () => {
-          const ascKey = `${sortField}-asc`;
-          const descKey = `${sortField}-desc`;
-          if (sortKey === ascKey) {
-            sortKey = descKey;
-          } else if (sortKey === descKey) {
-            sortKey = ascKey;
-          } else {
-            sortKey = ascKey;
-          }
-          packsListState.pageIndex = 0;
-          render();
-          updateListHeaderIcons();
+          const current = getSortState();
+          const direction = current.field === sortField && current.direction === 'asc' ? 'desc' : 'asc';
+          setSort(sortField, direction);
         };
         button.addEventListener('click', toggleSort);
         button.addEventListener(
@@ -853,6 +1035,61 @@ export function createPacksScreen({
       updateListHeaderIcons();
     }
 
+    function getSortState() {
+      const match = /^(.*)-(asc|desc)$/.exec(sortKey);
+      const sortFieldKey = match && sortOptions.some(option => option.key === match[1]) ? match[1] : 'edited';
+      const direction = match && match[2] === 'asc' ? 'asc' : 'desc';
+      return { field: sortFieldKey, direction };
+    }
+
+    function setSort(sortField, direction, { resetDirection = false } = {}) {
+      const sortFieldKey = sortOptions.some(option => option.key === sortField) ? sortField : 'edited';
+      const nextDirection = resetDirection ? 'asc' : direction === 'desc' ? 'desc' : 'asc';
+      sortKey = `${sortFieldKey}-${nextDirection}`;
+      packsListState.pageIndex = 0;
+      render();
+      updateListHeaderIcons();
+    }
+
+    function openSortMenu(anchorEl) {
+      if (!anchorEl) return;
+      const current = getSortState();
+      const items = [
+        { type: 'header', label: 'Sort Load Plans' },
+        ...sortOptions.map(option => ({
+          label: option.label,
+          active: option.key === current.field,
+          rightIcon: option.key === current.field ? 'fa-solid fa-check' : '',
+          onClick: () =>
+            setSort(option.key, current.direction, { resetDirection: option.key !== current.field }),
+        })),
+        { type: 'divider' },
+        {
+          label: 'Ascending',
+          icon: 'fa-solid fa-arrow-up-a-z',
+          active: current.direction === 'asc',
+          rightIcon: current.direction === 'asc' ? 'fa-solid fa-check' : '',
+          onClick: () => setSort(current.field, 'asc'),
+        },
+        {
+          label: 'Descending',
+          icon: 'fa-solid fa-arrow-down-z-a',
+          active: current.direction === 'desc',
+          rightIcon: current.direction === 'desc' ? 'fa-solid fa-check' : '',
+          onClick: () => setSort(current.field, 'desc'),
+        },
+      ];
+      UIComponents.openDropdown(anchorEl, items, {
+        align: 'right',
+        width: 208,
+        role: 'packs-sort',
+        dropdownClass: 'tp3d-dropdown-sort',
+        activeAnchorClass: 'btn-primary',
+        menuSemantics: true,
+        toggle: true,
+      });
+    }
+
     function updateListHeaderIcons() {
       const headers = document.querySelectorAll('#packs-list thead th[data-sort]');
       headers.forEach(th => {
@@ -863,18 +1100,38 @@ export function createPacksScreen({
         button.classList.toggle('is-asc', sortKey === `${sortField}-asc`);
         button.classList.toggle('is-desc', sortKey === `${sortField}-desc`);
       });
+      if (btnSort) {
+        btnSort.setAttribute('aria-label', 'Sort Load Plans');
+        btnSort.setAttribute('data-tooltip', 'Sort Load Plans');
+      }
+    }
+
+    function updateSearchClearVisibility() {
+      searchClearEl.hidden = searchEl.value.length === 0;
+    }
+
+    function clearSearch() {
+      searchEl.value = '';
+      packsListState.pageIndex = 0;
+      updateSearchClearVisibility();
+      render();
+      searchEl.focus();
     }
 
     function setViewMode(mode) {
+      const nextMode = mode === 'list' ? 'list' : 'grid';
+      UIComponents.closeAllDropdowns();
       const prefs = PreferencesManager.get();
-      prefs.packsViewMode = mode;
+      prefs.packsViewMode = nextMode;
       PreferencesManager.set(prefs);
-      updateViewButtons();
-      render();
+      updateViewButtons(nextMode);
+      render(nextMode);
     }
 
-    function updateViewButtons() {
-      const mode = PreferencesManager.get().packsViewMode || 'grid';
+    function updateViewButtons(modeOverride) {
+      const mode = modeOverride === 'list' || modeOverride === 'grid'
+        ? modeOverride
+        : PreferencesManager.get().packsViewMode || 'grid';
       btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
       btnViewList.classList.toggle('btn-primary', mode === 'list');
     }
@@ -1061,12 +1318,11 @@ export function createPacksScreen({
       render();
     }
 
-    function render() {
+    function render(modeOverride) {
       applyFiltersVisibility();
-      const q = String(searchEl.value || '')
-        .trim()
-        .toLowerCase();
+      const q = normalizeBusinessIdentityComparison(searchEl.value) || '';
       const allPacks = PackLibrary.getPacks().slice();
+      const sourceOrder = new Map(allPacks.map((pack, index) => [pack, index]));
 
       const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
       const compareCases = (a, b) => (a.cases || []).length - (b.cases || []).length;
@@ -1086,11 +1342,16 @@ export function createPacksScreen({
       const compareWeight = (a, b) =>
         ((a.stats && Number.isFinite(a.stats.totalWeight) ? a.stats.totalWeight : 0) || 0) -
         ((b.stats && Number.isFinite(b.stats.totalWeight) ? b.stats.totalWeight : 0) || 0);
+      const compareLoadPlanNumber = (a, b, direction) =>
+        compareBusinessIdentityValues(a.loadPlanNumber, b.loadPlanNumber, { direction }) ||
+        (sourceOrder.get(a) ?? 0) - (sourceOrder.get(b) ?? 0);
       const sorters = {
         'edited-desc': (a, b) => compareLastEdited(b, a),
         'edited-asc': (a, b) => compareLastEdited(a, b),
         'title-asc': (a, b) => compareTitle(a, b),
         'title-desc': (a, b) => compareTitle(b, a),
+        'loadPlanNumber-asc': (a, b) => compareLoadPlanNumber(a, b, 'asc'),
+        'loadPlanNumber-desc': (a, b) => compareLoadPlanNumber(a, b, 'desc'),
         'cases-asc': (a, b) => compareCases(a, b),
         'cases-desc': (a, b) => compareCases(b, a),
         'created-desc': (a, b) => compareCreated(b, a),
@@ -1110,12 +1371,11 @@ export function createPacksScreen({
         'weight-asc': (a, b) => compareWeight(a, b),
         'weight-desc': (a, b) => compareWeight(b, a),
       };
-      allPacks.sort(sorters[sortKey] || sorters['edited-desc']);
       renderFoldersButton(allPacks);
       updateStatusFilterChips(allPacks);
 
       const packs = allPacks
-        .filter(p => !q || (p.title || '').toLowerCase().includes(q) || (p.client || '').toLowerCase().includes(q))
+        .filter(p => packMatchesSearch(p, q))
         .filter(p => {
           if (activeFolderId === null) return true;
           const folderId = p && p.folderId ? String(p.folderId) : null;
@@ -1134,6 +1394,7 @@ export function createPacksScreen({
           if (filters.full && isFull) return true;
           return false;
         });
+      packs.sort(sorters[sortKey] || sorters['edited-desc']);
 
       filteredPacks = packs;
 
@@ -1145,7 +1406,9 @@ export function createPacksScreen({
       }
 
       const pageMeta = getPageMeta(packs);
-      const mode = PreferencesManager.get().packsViewMode || 'grid';
+      const mode = modeOverride === 'list' || modeOverride === 'grid'
+        ? modeOverride
+        : PreferencesManager.get().packsViewMode || 'grid';
       initFooter(mode);
       gridEl.innerHTML = '';
       tbodyEl.innerHTML = '';
@@ -1235,16 +1498,12 @@ export function createPacksScreen({
         const title = document.createElement('div');
         title.textContent = pack.title || 'Untitled Load Plan';
         titleWrap.appendChild(title);
-        appendPackIdentityMetadata(titleWrap, pack, {
+        appendPackListIdentityMetadata(titleWrap, pack, {
           showLoadPlanNumber: badgePrefs.showLoadPlanNumber !== false,
           showCustomerReference: badgePrefs.showCustomerReference !== false,
         });
 
         const stats = PackLibrary.computeStats(pack);
-        const truckLabel = formatTruckDims(pack.truck || {}, prefs.units.length);
-        const statsLabel = formatPackStats(stats, prefs);
-
-        tdTitle.setAttribute('data-tooltip', `${truckLabel} · ${statsLabel}`);
         tdTitle.appendChild(titleWrap);
 
         const tdCases = document.createElement('td');
@@ -1286,6 +1545,11 @@ export function createPacksScreen({
         const tdEdited = document.createElement('td');
         tdEdited.textContent = Utils.formatRelativeTime(pack.lastEdited);
         if (badgePrefs.showEditedTime === false) tdEdited.style.display = 'none';
+
+        const tdNotes = document.createElement('td');
+        tdNotes.className = 'tp3d-management-notes-col';
+        tdNotes.appendChild(createPackNotesButton(pack));
+        tdNotes.hidden = badgePrefs.showNotes === false;
 
         const tdActions = document.createElement('td');
         tdActions.className = 'col-actions';
@@ -1349,6 +1613,7 @@ export function createPacksScreen({
         tr.appendChild(tdVolume);
         tr.appendChild(tdWeight);
         tr.appendChild(tdEdited);
+        tr.appendChild(tdNotes);
         tr.appendChild(tdActions);
         tbodyEl.appendChild(tr);
       });
@@ -1371,6 +1636,10 @@ export function createPacksScreen({
         const th = /** @type {HTMLElement|null} */ (document.querySelector(`#packs-list thead th[data-sort="${key}"]`));
         if (th) th.style.display = show[key] ? '' : 'none';
       });
+      const notesTh = /** @type {HTMLElement|null} */ (
+        document.querySelector('#packs-list thead th[data-column="notes"]')
+      );
+      if (notesTh) notesTh.hidden = badgePrefs.showNotes === false;
     }
 
     function renderGridView(packs) {
@@ -1383,7 +1652,14 @@ export function createPacksScreen({
         card.tabIndex = 0;
         card.addEventListener('click', ev => {
           const targetEl = ev.target instanceof Element ? ev.target : null;
-          if (targetEl && (targetEl.closest('[data-pack-menu]') || targetEl.closest('[data-pack-select]'))) {
+          if (
+            targetEl &&
+            (
+              targetEl.closest('[data-pack-menu]') ||
+              targetEl.closest('[data-pack-select]') ||
+              targetEl.closest('[data-pack-notes]')
+            )
+          ) {
             return;
           }
           openPack(pack.id);
@@ -1409,7 +1685,7 @@ export function createPacksScreen({
         const titleWrap = document.createElement('div');
         titleWrap.className = 'tp3d-packs-titlewrap tp3d-flex-1';
         titleWrap.appendChild(title);
-        appendPackIdentityMetadata(titleWrap, pack, {
+        const identityChips = createPackIdentityChips(pack, {
           showLoadPlanNumber: badgePrefs.showLoadPlanNumber !== false,
           showCustomerReference: badgePrefs.showCustomerReference !== false,
         });
@@ -1535,6 +1811,7 @@ export function createPacksScreen({
         actions.className = 'card-head-actions';
         actions.classList.add('tp3d-packs-card-head-actions');
         actions.appendChild(selectCb);
+        if (badgePrefs.showNotes !== false) actions.appendChild(createPackNotesButton(pack));
         actions.appendChild(kebabBtn);
 
         head.appendChild(titleWrap);
@@ -1544,6 +1821,7 @@ export function createPacksScreen({
 
         if (badgePrefs.showThumbnail !== false) card.appendChild(preview);
         card.appendChild(head);
+        if (identityChips.children.length) card.appendChild(identityChips);
         if (badgePrefs.showEditedTime !== false) {
           const editedBadge = document.createElement('div');
           editedBadge.className = 'badge';

@@ -14,7 +14,10 @@
 // Cases screen (extracted from src/app.js; behavior preserved)
 
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
+import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
 import { getCaseHandlingSummary } from '../services/case-rule-summary.js';
+import { compareBusinessIdentityValues } from '../core/business-identity.js';
+import { getStorageScope, getWorkspaceScope } from '../core/storage.js';
 
 export function createCasesScreen({
   Utils,
@@ -32,6 +35,7 @@ export function createCasesScreen({
 }) {
   const CasesUI = (() => {
     const searchEl = /** @type {HTMLInputElement} */ (document.getElementById('cases-search'));
+    const searchClearEl = /** @type {HTMLButtonElement} */ (document.getElementById('cases-search-clear'));
     const filtersEl = /** @type {HTMLElement} */ (document.getElementById('cases-filters'));
     const gridEl = /** @type {HTMLElement} */ (document.getElementById('cases-grid'));
     const tbodyEl = /** @type {HTMLElement} */ (document.getElementById('cases-tbody'));
@@ -43,6 +47,7 @@ export function createCasesScreen({
     const btnManageCats = document.getElementById('btn-manage-categories');
     const btnViewGrid = document.getElementById('cases-view-grid');
     const btnViewList = document.getElementById('cases-view-list');
+    const btnSort = document.getElementById('cases-sort');
     const btnFiltersToggle = document.getElementById('cases-filters-toggle');
     const btnCardDisplay = document.getElementById('cases-card-display');
     const actionsDefaultEl = document.getElementById('cases-actions-default');
@@ -51,7 +56,18 @@ export function createCasesScreen({
     const btnBulkDelete = document.getElementById('btn-cases-bulk-delete');
 
     const activeCategories = new Set(); // empty = all
-    let sortBy = 'name'; // name, manufacturer, dimensions, volume, weight, category
+    const sortOptions = [
+      { key: 'name', label: 'Name' },
+      { key: 'itemCode', label: 'Item Code' },
+      { key: 'manufacturer', label: 'Manufacturer' },
+      { key: 'length', label: 'Length' },
+      { key: 'width', label: 'Width' },
+      { key: 'height', label: 'Height' },
+      { key: 'volume', label: 'Volume' },
+      { key: 'weight', label: 'Weight' },
+      { key: 'category', label: 'Category' },
+    ];
+    let sortBy = 'name'; // name, itemCode, manufacturer, dimensions, volume, weight, category
     let sortDir = 'asc'; // asc or desc
     const selectedIds = new Set();
     let lastDatasetKey = '';
@@ -66,6 +82,7 @@ export function createCasesScreen({
     let lastCasePageMeta = null;
     let filteredCases = [];
     let filtersOutsideClickHandler = null;
+    let toolbarDropdownCoordinatorInitialized = false;
 
     function mutationBlockedWhileBusy({ notify = true } = {}) {
       if (!OperationLifecycle || typeof OperationLifecycle.isBusy !== 'function' || !OperationLifecycle.isBusy()) {
@@ -79,14 +96,101 @@ export function createCasesScreen({
 
     const beforeMutate = () => !mutationBlockedWhileBusy();
 
+    function getManagementNotesContext() {
+      return `${getStorageScope()}|${getWorkspaceScope()}`;
+    }
+
+    function createManagementIdentityChip(text, accessibleLabel) {
+      const identityChip = document.createElement('div');
+      identityChip.className = 'badge tp3d-management-identity-chip';
+      identityChip.setAttribute('aria-label', accessibleLabel);
+      const chipText = document.createElement('span');
+      chipText.className = 'tp3d-management-identity-chip__text';
+      chipText.textContent = text;
+      identityChip.appendChild(chipText);
+      return identityChip;
+    }
+
+    function openCaseManagementNotes(caseItem, trigger) {
+      const capturedContext = getManagementNotesContext();
+      openNotesOverlay({
+        UIComponents,
+        entityType: 'case',
+        entityId: caseItem.id,
+        capturedContext,
+        getCurrentContext: getManagementNotesContext,
+        resolveEntity: ({ entityId }) => CaseLibrary.getById(entityId),
+        readNote: entity => entity.notes,
+        saveNote: ({ entity, value }) => {
+          const notes = value === null ? null : String(value || '').trim() || null;
+          CaseLibrary.upsert({ ...entity, notes });
+          return CaseLibrary.getById(entity.id);
+        },
+        clearValue: null,
+        title: 'Notes',
+        subtitle: entity => entity.name || 'Case',
+        fieldLabel: 'Case Instructions/Notes',
+        emptyText: 'No case instructions/notes yet.',
+        placeholder: 'Add case instructions or notes…',
+        mutationGuard: () => !mutationBlockedWhileBusy(),
+        getLastEdited: entity => entity.updatedAt,
+        onSaved: () => render(),
+        trigger,
+        missingMessage: 'This case no longer exists.',
+        contextMessage: 'The active workspace changed. Reopen Notes to continue.',
+      });
+    }
+
+    function createCaseNotesButton(caseItem) {
+      const caseName = caseItem.name || 'Case';
+      const hasNotes = Boolean(String(caseItem.notes || '').trim());
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn btn-ghost tp3d-management-notes-btn';
+      btn.setAttribute('data-case-notes', '1');
+      btn.setAttribute('data-notes-entity-type', 'case');
+      btn.setAttribute('data-notes-entity-id', caseItem.id);
+      btn.setAttribute('data-tooltip', 'Notes');
+      btn.setAttribute('aria-label', hasNotes
+        ? `Open notes for ${caseName}, notes available`
+        : `Open notes for ${caseName}`);
+      btn.innerHTML = '<i class="fa-regular fa-file-lines" aria-hidden="true"></i>';
+      if (hasNotes) {
+        const indicator = document.createElement('span');
+        indicator.className = 'tp3d-notes-indicator-dot';
+        indicator.setAttribute('aria-hidden', 'true');
+        btn.appendChild(indicator);
+      }
+      btn.addEventListener('keydown', ev => ev.stopPropagation());
+      btn.addEventListener('click', ev => {
+        ev.stopPropagation();
+        openCaseManagementNotes(caseItem, btn);
+      });
+      return btn;
+    }
+
     function initCasesUI() {
       searchEl.addEventListener(
         'input',
-        Utils.debounce(() => {
-          casesListState.pageIndex = 0;
-          render();
-        }, 300)
+        (() => {
+          const renderSearch = Utils.debounce(() => {
+            casesListState.pageIndex = 0;
+            render();
+          }, 300);
+          return () => {
+            updateSearchClearVisibility();
+            renderSearch();
+          };
+        })()
       );
+      searchEl.addEventListener('keydown', ev => {
+        if (ev.key !== 'Escape') return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (searchEl.value) clearSearch();
+      });
+      searchClearEl.addEventListener('click', clearSearch);
+      updateSearchClearVisibility();
       btnNew.addEventListener('click', () => openCaseModal(null));
       btnTemplate.addEventListener('click', () => ImportExport.downloadCasesTemplate());
       btnImport.addEventListener('click', () => {
@@ -102,6 +206,11 @@ export function createCasesScreen({
         });
       btnViewGrid && btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList && btnViewList.addEventListener('click', () => setViewMode('list'));
+      btnSort &&
+        btnSort.addEventListener('click', ev => {
+          ev.stopPropagation();
+          openSortMenu(btnSort);
+        });
       btnFiltersToggle && btnFiltersToggle.addEventListener('click', ev => { ev.stopPropagation(); toggleFiltersVisible(); });
 
       btnCardDisplay &&
@@ -111,6 +220,7 @@ export function createCasesScreen({
         });
       btnBulkDelete.addEventListener('click', () => bulkDeleteSelected());
       selectAllEl.addEventListener('change', () => toggleAllVisible(selectAllEl.checked));
+      initToolbarDropdownCoordinator();
       initTableHeaders();
       updateViewButtons();
       applyFiltersVisibility();
@@ -122,24 +232,52 @@ export function createCasesScreen({
     }
 
     function setViewMode(mode) {
+      const nextMode = mode === 'grid' ? 'grid' : 'list';
+      UIComponents.closeAllDropdowns();
       const prefs = PreferencesManager.get();
-      prefs.casesViewMode = mode === 'grid' ? 'grid' : 'list';
+      prefs.casesViewMode = nextMode;
       PreferencesManager.set(prefs);
-      updateViewButtons();
-      render();
+      updateViewButtons(nextMode);
+      render(nextMode);
     }
 
-    function updateViewButtons() {
-      const mode = PreferencesManager.get().casesViewMode || 'list';
+    function updateViewButtons(modeOverride) {
+      const mode = modeOverride === 'grid' || modeOverride === 'list'
+        ? modeOverride
+        : PreferencesManager.get().casesViewMode || 'list';
       btnViewGrid && btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
       btnViewList && btnViewList.classList.toggle('btn-primary', mode === 'list');
     }
 
     function toggleFiltersVisible() {
+      const shouldOpen = PreferencesManager.get().casesFiltersVisible !== true;
+      UIComponents.closeAllDropdowns();
+      if (!shouldOpen) return;
+      setFiltersVisible(true);
+    }
+
+    function setFiltersVisible(visible) {
       const prefs = PreferencesManager.get();
-      prefs.casesFiltersVisible = prefs.casesFiltersVisible !== true;
-      PreferencesManager.set(prefs);
+      if ((prefs.casesFiltersVisible === true) !== Boolean(visible)) {
+        prefs.casesFiltersVisible = Boolean(visible);
+        PreferencesManager.set(prefs);
+      }
       applyFiltersVisibility();
+    }
+
+    function initToolbarDropdownCoordinator() {
+      if (toolbarDropdownCoordinatorInitialized) return;
+      toolbarDropdownCoordinatorInitialized = true;
+      UIComponents.registerDropdownSurface({
+        isOpen: () => PreferencesManager.get().casesFiltersVisible === true,
+        close: () => setFiltersVisible(false),
+        getAnchor: () => btnFiltersToggle,
+      });
+      StateStore.subscribe(changes => {
+        if (changes && Object.prototype.hasOwnProperty.call(changes, 'currentScreen')) {
+          UIComponents.closeAllDropdowns();
+        }
+      });
     }
 
     function applyFiltersVisibility() {
@@ -147,6 +285,7 @@ export function createCasesScreen({
       const visible = PreferencesManager.get().casesFiltersVisible === true;
       filtersEl.classList.toggle('is-open', visible);
       btnFiltersToggle && btnFiltersToggle.classList.toggle('btn-primary', visible);
+      btnFiltersToggle && btnFiltersToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
       if (filtersOutsideClickHandler) {
         document.removeEventListener('click', filtersOutsideClickHandler);
         filtersOutsideClickHandler = null;
@@ -155,10 +294,7 @@ export function createCasesScreen({
         filtersOutsideClickHandler = function(ev) {
           const anchor = filtersEl.closest('.tp3d-cases-filter-anchor');
           if (!anchor || !anchor.contains(/** @type {Node} */ (ev.target))) {
-            const prefs = PreferencesManager.get();
-            prefs.casesFiltersVisible = false;
-            PreferencesManager.set(prefs);
-            applyFiltersVisibility();
+            setFiltersVisible(false);
           }
         };
         setTimeout(() => {
@@ -278,6 +414,52 @@ export function createCasesScreen({
       updateHeaderIcons();
     }
 
+    function setSort(sortField, direction, { resetDirection = false } = {}) {
+      const field = sortOptions.some(option => option.key === sortField) ? sortField : 'name';
+      sortBy = field;
+      sortDir = resetDirection ? 'asc' : direction === 'desc' ? 'desc' : 'asc';
+      casesListState.pageIndex = 0;
+      render();
+      updateHeaderIcons();
+    }
+
+    function openSortMenu(anchorEl) {
+      if (!anchorEl) return;
+      const items = [
+        { type: 'header', label: 'Sort Cases' },
+        ...sortOptions.map(option => ({
+          label: option.label,
+          active: option.key === sortBy,
+          rightIcon: option.key === sortBy ? 'fa-solid fa-check' : '',
+          onClick: () => setSort(option.key, sortDir, { resetDirection: option.key !== sortBy }),
+        })),
+        { type: 'divider' },
+        {
+          label: 'Ascending',
+          icon: 'fa-solid fa-arrow-up-a-z',
+          active: sortDir === 'asc',
+          rightIcon: sortDir === 'asc' ? 'fa-solid fa-check' : '',
+          onClick: () => setSort(sortBy, 'asc'),
+        },
+        {
+          label: 'Descending',
+          icon: 'fa-solid fa-arrow-down-z-a',
+          active: sortDir === 'desc',
+          rightIcon: sortDir === 'desc' ? 'fa-solid fa-check' : '',
+          onClick: () => setSort(sortBy, 'desc'),
+        },
+      ];
+      UIComponents.openDropdown(anchorEl, items, {
+        align: 'right',
+        width: 208,
+        role: 'cases-sort',
+        dropdownClass: 'tp3d-dropdown-sort',
+        activeAnchorClass: 'btn-primary',
+        menuSemantics: true,
+        toggle: true,
+      });
+    }
+
     function updateHeaderIcons() {
       const headers = document.querySelectorAll('#screen-cases table thead th[data-sort]');
       headers.forEach(th => {
@@ -288,6 +470,22 @@ export function createCasesScreen({
         sortControl.classList.toggle('is-asc', isActive && sortDir === 'asc');
         sortControl.classList.toggle('is-desc', isActive && sortDir === 'desc');
       });
+      if (btnSort) {
+        btnSort.setAttribute('aria-label', 'Sort Cases');
+        btnSort.setAttribute('data-tooltip', 'Sort Cases');
+      }
+    }
+
+    function updateSearchClearVisibility() {
+      searchClearEl.hidden = searchEl.value.length === 0;
+    }
+
+    function clearSearch() {
+      searchEl.value = '';
+      casesListState.pageIndex = 0;
+      updateSearchClearVisibility();
+      render();
+      searchEl.focus();
     }
 
     function initCasesFooter(mode) {
@@ -357,8 +555,10 @@ export function createCasesScreen({
       });
     }
 
-    function render() {
-      const mode = PreferencesManager.get().casesViewMode || 'list';
+    function render(modeOverride) {
+      const mode = modeOverride === 'grid' || modeOverride === 'list'
+        ? modeOverride
+        : PreferencesManager.get().casesViewMode || 'list';
       initCasesFooter(mode);
       renderFilters();
       renderTable();
@@ -369,7 +569,7 @@ export function createCasesScreen({
     function renderViewMode(mode) {
       const prefs = PreferencesManager.get();
       const viewMode = mode || prefs.casesViewMode || 'list';
-      updateViewButtons();
+      updateViewButtons(viewMode);
       const pageMeta = lastCasePageMeta || getCasesPageMeta(filteredCases);
 
       if (!filteredCases.length) {
@@ -407,7 +607,14 @@ export function createCasesScreen({
         card.tabIndex = 0;
         card.addEventListener('click', ev => {
           const targetEl = ev.target instanceof Element ? ev.target : null;
-          if (targetEl && (targetEl.closest('[data-case-menu]') || targetEl.closest('[data-case-select]'))) {
+          if (
+            targetEl &&
+            (
+              targetEl.closest('[data-case-menu]') ||
+              targetEl.closest('[data-case-select]') ||
+              targetEl.closest('[data-case-notes]')
+            )
+          ) {
             return;
           }
           openCaseModal(c);
@@ -422,18 +629,19 @@ export function createCasesScreen({
         const title = document.createElement('h3');
         title.textContent = c.name || '—';
 
-        const sub = document.createElement('div');
-        sub.className = 'muted';
-        sub.classList.add('tp3d-cases-muted-sm');
-        if (c.itemCode && badgePrefs.showItemCode !== false) {
-          const itemCode = document.createElement('div');
-          itemCode.textContent = `Item Code: ${c.itemCode}`;
-          sub.appendChild(itemCode);
+        const identityChips = document.createElement('div');
+        identityChips.className = 'tp3d-management-identity-chips';
+        const itemCode = String(c.itemCode || '').trim();
+        const manufacturer = String(c.manufacturer || '').trim();
+        if (itemCode && badgePrefs.showItemCode !== false) {
+          identityChips.appendChild(
+            createManagementIdentityChip(`Code: ${itemCode}`, `Item Code: ${itemCode}`)
+          );
         }
-        if (c.manufacturer) {
-          const manufacturer = document.createElement('div');
-          manufacturer.textContent = c.manufacturer;
-          sub.appendChild(manufacturer);
+        if (manufacturer && badgePrefs.showManufacturer !== false) {
+          identityChips.appendChild(
+            createManagementIdentityChip(manufacturer, `Manufacturer: ${manufacturer}`)
+          );
         }
 
         const meta = document.createElement('div');
@@ -473,20 +681,6 @@ export function createCasesScreen({
           const formattedWeight = Utils.formatWeight(c.weight, prefs.units.weight);
           weight.textContent = `Weight: ${formattedWeight}`;
           badgesWrap.appendChild(weight);
-        }
-
-        if (badgePrefs.showFlip !== false) {
-          const flip = document.createElement('div');
-          flip.className = 'badge';
-          flip.textContent = c.canFlip === true ? 'Flip: Yes' : 'Flip: No';
-          badgesWrap.appendChild(flip);
-        }
-
-        if (badgePrefs.showEditedTime !== false) {
-          const edited = document.createElement('div');
-          edited.className = 'badge';
-          edited.textContent = `Edited: ${Utils.formatRelativeTime(c.updatedAt)}`;
-          badgesWrap.appendChild(edited);
         }
 
         if (badgePrefs.showHandling !== false) {
@@ -544,6 +738,7 @@ export function createCasesScreen({
         const actions = document.createElement('div');
         actions.className = 'card-head-actions tp3d-cases-card-head-actions';
         actions.appendChild(selectCb);
+        if (badgePrefs.showNotes !== false) actions.appendChild(createCaseNotesButton(c));
         actions.appendChild(kebabBtn);
 
         const head = document.createElement('div');
@@ -554,7 +749,7 @@ export function createCasesScreen({
         if (badgesWrap.children.length) meta.appendChild(badgesWrap);
 
         card.appendChild(head);
-        if (sub.children.length) card.appendChild(sub);
+        if (identityChips.children.length) card.appendChild(identityChips);
         card.appendChild(meta);
         gridEl.appendChild(card);
       });
@@ -628,9 +823,16 @@ export function createCasesScreen({
 
       const cases = CaseLibrary.search(q, Array.from(activeCategories));
       filteredCases = cases;
+      const sourceOrder = new Map(cases.map((caseRecord, index) => [caseRecord, index]));
 
       // Sort cases
       cases.sort((a, b) => {
+        if (sortBy === 'itemCode') {
+          return (
+            compareBusinessIdentityValues(a.itemCode, b.itemCode, { direction: sortDir }) ||
+            (sourceOrder.get(a) ?? 0) - (sourceOrder.get(b) ?? 0)
+          );
+        }
         let valA, valB;
         switch (sortBy) {
           case 'name':
@@ -737,17 +939,20 @@ export function createCasesScreen({
         const name = document.createElement('div');
         name.textContent = c.name || '—';
         nameWrap.appendChild(name);
-        if (c.itemCode && badgePrefs.showItemCode !== false) {
-          const itemCode = document.createElement('div');
-          itemCode.className = 'muted tp3d-cases-muted-sm';
-          itemCode.textContent = `Item Code: ${c.itemCode}`;
-          nameWrap.appendChild(itemCode);
+        const itemCodeValue = String(c.itemCode || '').trim();
+        if (itemCodeValue && badgePrefs.showItemCode !== false) {
+          const itemCodeMeta = document.createElement('div');
+          itemCodeMeta.className = 'muted tp3d-management-secondary-text';
+          itemCodeMeta.textContent = `Item Code: ${itemCodeValue}`;
+          nameWrap.appendChild(itemCodeMeta);
         }
         tdName.appendChild(nameWrap);
         tr.appendChild(tdName);
 
         const tdMfg = document.createElement('td');
-        tdMfg.textContent = c.manufacturer || '—';
+        tdMfg.classList.add('tp3d-management-secondary-text');
+        tdMfg.textContent = String(c.manufacturer || '').trim() || '—';
+        if (badgePrefs.showManufacturer === false) tdMfg.style.display = 'none';
         tr.appendChild(tdMfg);
 
         const tdLength = document.createElement('td');
@@ -795,22 +1000,28 @@ export function createCasesScreen({
         }
         tr.appendChild(tdCat);
 
-        const tdFlip = document.createElement('td');
+        const tdHandling = document.createElement('td');
         const handlingSummary = getCaseHandlingSummary(c);
         if (handlingSummary.length === 0) {
-          tdFlip.textContent = '—';
+          tdHandling.textContent = '—';
         } else {
           handlingSummary.forEach(label => {
             const ruleChip = document.createElement('span');
             ruleChip.className = 'badge tp3d-handling-chip';
             ruleChip.textContent = label;
-            tdFlip.appendChild(ruleChip);
+            tdHandling.appendChild(ruleChip);
           });
         }
         if (badgePrefs.showHandling === false) {
-          tdFlip.style.display = 'none';
+          tdHandling.style.display = 'none';
         }
-        tr.appendChild(tdFlip);
+        tr.appendChild(tdHandling);
+
+        const tdNotes = document.createElement('td');
+        tdNotes.className = 'tp3d-management-notes-col';
+        tdNotes.appendChild(createCaseNotesButton(c));
+        tdNotes.hidden = badgePrefs.showNotes === false;
+        tr.appendChild(tdNotes);
 
         const tdActions = document.createElement('td');
         tdActions.className = 'col-actions';
@@ -856,6 +1067,7 @@ export function createCasesScreen({
         );
         if (th) th.style.display = visible ? '' : 'none';
       };
+      set('manufacturer', badgePrefs.showManufacturer !== false);
       set('length', badgePrefs.showDims !== false);
       set('width', badgePrefs.showDims !== false);
       set('height', badgePrefs.showDims !== false);
@@ -870,6 +1082,11 @@ export function createCasesScreen({
       if (handlingTh && handlingTh instanceof HTMLElement) {
         handlingTh.style.display = badgePrefs.showHandling !== false ? '' : 'none';
       }
+
+      const notesTh = /** @type {HTMLElement|null} */ (
+        document.querySelector('#screen-cases table thead th[data-column="notes"]')
+      );
+      if (notesTh) notesTh.hidden = badgePrefs.showNotes === false;
     }
 
     function chip(label, key, active, onClick, color, count) {
@@ -990,6 +1207,7 @@ export function createCasesScreen({
         width: Math.max(220, Math.min(rect.width, 240)),
         role: 'categories',
         activeAnchorClass: 'btn-primary',
+        menuSemantics: true,
       });
     }
 

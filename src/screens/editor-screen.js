@@ -13,6 +13,8 @@
 
 import { createCaseGeometry } from '../editor/geometry-factory.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
+import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
+import * as CoreStorage from '../core/storage.js';
 import { buildAutoPackCaseRuleSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
 import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
@@ -5073,177 +5075,44 @@ export function createEditorScreen({
       });
     }
 
-    // Pack Notes modal (Cargo Instructions Phase 3) — the Pack-owned notes tier,
-    // pack.notes, opened from the Inspector's Truck context. It owns nothing else: it
-    // never reads or writes case.notes (Standard Instructions) or
-    // instance.instanceNotes (Item Notes), and saves exclusively through
-    // PackLibrary.update(packId, { notes }). packId is captured up front so a pack
-    // switch while the modal is open can never migrate the draft, and a Save after the
-    // pack is gone fails safely instead of writing anywhere.
-    function openPackNotesModal(pack) {
+    // Load Plan Notes is a Pack-owned single-field overlay. The shared overlay
+    // owns modal state/focus only; this adapter retains PackLibrary ownership,
+    // captures the opening user/workspace/Pack context, and writes only
+    // pack.notes through the canonical Pack update path.
+    function openPackNotesModal(pack, trigger = null) {
       const packId = pack.id;
+      const getNotesContext = () => ({
+        userScope: CoreStorage.getStorageScope(),
+        workspaceScope: CoreStorage.getWorkspaceScope(),
+        packId: StateStore.get('currentPackId'),
+      });
+      const capturedContext = getNotesContext();
 
-      // The same Escape-scoped, notes-styled modal wrapper the Item Notes modal uses
-      // (openNotesModal). Kept local so this action stays self-contained and the Item
-      // Notes path is left byte-for-byte unchanged.
-      function showNotesModal(config) {
-        let modalRef = null;
-        function handleEscape(ev) {
-          if (ev.key === 'Escape' && config.dismissible !== false && modalRef) {
-            ev.preventDefault();
-            modalRef.close();
-          }
-        }
-        modalRef = UIComponents.showModal({
-          ...config,
-          onClose: () => {
-            document.removeEventListener('keydown', handleEscape);
-            if (typeof config.onClose === 'function') config.onClose();
-          },
-        });
-        modalRef.modal.classList.add('tp3d-notes-modal');
-        const heading = modalRef.modal.querySelector('.modal-title');
-        if (heading) {
-          heading.textContent = '';
-          heading.classList.add('tp3d-notes-modal-heading');
-
-          const headingIcon = document.createElement('span');
-          headingIcon.className = 'tp3d-notes-modal-heading-icon';
-          headingIcon.setAttribute('aria-hidden', 'true');
-          const headingIconGlyph = document.createElement('i');
-          headingIconGlyph.className = 'fa-regular fa-file-lines';
-          headingIcon.appendChild(headingIconGlyph);
-
-          const headingCopy = document.createElement('span');
-          headingCopy.className = 'tp3d-notes-modal-heading-copy';
-          const headingTitle = document.createElement('span');
-          headingTitle.className = 'tp3d-notes-modal-heading-title';
-          headingTitle.textContent = config.title || 'Notes';
-          const headingSubtitle = document.createElement('span');
-          headingSubtitle.className = 'tp3d-notes-modal-heading-subtitle';
-          headingSubtitle.textContent = config.subtitle || 'Load Plan';
-          headingCopy.appendChild(headingTitle);
-          headingCopy.appendChild(headingSubtitle);
-
-          heading.appendChild(headingIcon);
-          heading.appendChild(headingCopy);
-        }
-        document.addEventListener('keydown', handleEscape);
-        return modalRef;
-      }
-
-      function resolvePack() {
-        return PackLibrary.getById(packId) || null;
-      }
-
-      function open(state) {
-        const current = resolvePack();
-        if (!current) {
-          UIComponents.showToast('This load plan no longer exists.', 'error', { title: 'Load Plan Notes' });
-          return;
-        }
-        const note = String(current.notes || '').trim();
-        const resolvedState = state === 'auto' ? (note ? 'read' : 'empty') : state;
-        const packTitle = current.title || 'Load Plan';
-
-        const wrap = document.createElement('div');
-        wrap.className = 'tp3d-notes-modal-content';
-
-        if (resolvedState === 'empty') {
-          const emptyState = document.createElement('div');
-          emptyState.className = 'tp3d-notes-empty-state';
-          const emptyIcon = document.createElement('span');
-          emptyIcon.className = 'tp3d-notes-empty-state-icon';
-          emptyIcon.setAttribute('aria-hidden', 'true');
-          const emptyIconGlyph = document.createElement('i');
-          emptyIconGlyph.className = 'fa-regular fa-file-lines';
-          emptyIcon.appendChild(emptyIconGlyph);
-          const emptyMessage = document.createElement('div');
-          emptyMessage.className = 'muted';
-          emptyMessage.textContent = 'No notes for this load plan yet.';
-          emptyState.appendChild(emptyIcon);
-          emptyState.appendChild(emptyMessage);
-          wrap.appendChild(emptyState);
-          showNotesModal({
-            title: 'Load Plan Notes',
-            subtitle: packTitle,
-            content: wrap,
-            actions: [
-              { label: 'Add Note', variant: 'primary', onClick: () => { open('edit'); return true; } },
-            ],
-          });
-          return;
-        }
-
-        if (resolvedState === 'read') {
-          const content = document.createElement('div');
-          content.classList.add('tp3d-editor-sub-sm', 'tp3d-case-notes-read', 'tp3d-notes-item-read');
-          content.textContent = note;
-          wrap.appendChild(content);
-          const currentPackForEdited = resolvePack();
-          if (currentPackForEdited && currentPackForEdited.lastEdited) {
-            const lastEdited = document.createElement('div');
-            lastEdited.className = 'muted tp3d-notes-last-edited';
-            lastEdited.textContent = `Last edited ${Utils.formatRelativeTime(currentPackForEdited.lastEdited)}`;
-            wrap.appendChild(lastEdited);
-          }
-          showNotesModal({
-            title: 'Load Plan Notes',
-            subtitle: packTitle,
-            content: wrap,
-            actions: [
-              { label: 'Close', variant: 'ghost' },
-              { label: 'Edit', variant: 'primary', onClick: () => { open('edit'); return true; } },
-            ],
-          });
-          return;
-        }
-
-        // Edit state: a fresh textarea seeded from the current saved note. Cancel,
-        // Escape, and backdrop click all discard this draft without touching storage —
-        // only Save writes through PackLibrary.update, and closing the dialog any other
-        // way never clears a previously saved note.
-        const fieldWrap = document.createElement('div');
-        fieldWrap.className = 'field';
-        const textarea = document.createElement('textarea');
-        textarea.className = 'input tp3d-textarea-minh-60';
-        textarea.placeholder = 'Add notes for this load plan (handling, delivery, site contact, etc.)...';
-        textarea.value = note;
-        fieldWrap.appendChild(textarea);
-        wrap.appendChild(fieldWrap);
-        showNotesModal({
-          title: 'Load Plan Notes',
-          subtitle: packTitle,
-          content: wrap,
-          actions: [
-            { label: 'Cancel', variant: 'ghost', onClick: () => { open('auto'); return true; } },
-            {
-              label: 'Save',
-              variant: 'primary',
-              onClick: () => {
-                if (editorMutationBlocked()) return false;
-                if (!resolvePack()) {
-                  // Save failure: keep the draft and stay in edit state (returning false
-                  // leaves this modal open with the typed text intact).
-                  UIComponents.showToast('This load plan no longer exists.', 'error', { title: 'Load Plan Notes' });
-                  return false;
-                }
-                const trimmed = textarea.value.trim();
-                // One PackLibrary.update = one Pack update and one Undo/Redo history
-                // entry (packLibrary is in StateStore's significant-state list). Writes
-                // only the Pack-owned notes field; it never touches the Case or the
-                // per-instance notes tiers. Trimmed to match the existing Packs-screen
-                // Edit-Pack notes behavior (cleared -> "").
-                PackLibrary.update(packId, { notes: trimmed });
-                open('auto');
-                return true;
-              },
-            },
-          ],
-        });
-      }
-
-      open('auto');
+      return openNotesOverlay({
+        UIComponents,
+        entityType: 'load plan',
+        entityId: packId,
+        capturedContext,
+        getCurrentContext: getNotesContext,
+        resolveEntity: ({ entityId }) => PackLibrary.getById(entityId),
+        readNote: current => current.notes,
+        saveNote: ({ entityId, value }) => {
+          const updated = PackLibrary.update(entityId, { notes: value });
+          if (!updated) throw new Error('Load plan no longer exists');
+          return updated;
+        },
+        clearValue: '',
+        title: 'Load Plan Notes',
+        subtitle: current => current.title || 'Load Plan',
+        fieldLabel: 'Load Plan Notes',
+        emptyText: 'No notes for this load plan yet.',
+        placeholder: 'Add notes for this load plan (handling, delivery, site contact, etc.)...',
+        mutationGuard: () => !editorMutationBlocked(),
+        getLastEdited: current => current.lastEdited,
+        trigger,
+        missingMessage: 'This load plan no longer exists.',
+        contextMessage: 'The active user, workspace, or load plan changed. Close Load Plan Notes and try again.',
+      });
     }
 
     // Single Notes modal for the Inspector's single selected Pack instance,
@@ -5330,7 +5199,7 @@ export function createEditorScreen({
         section.className = 'tp3d-editor-standard-instructions tp3d-notes-section';
         const label = document.createElement('div');
         label.classList.add('tp3d-editor-fw-semibold');
-        label.textContent = 'Standard Case Instructions';
+        label.textContent = 'Case Instructions/Notes';
         section.appendChild(label);
         const note = String((caseData && caseData.notes) || '').trim();
         const value = document.createElement('div');
@@ -5339,7 +5208,7 @@ export function createEditorScreen({
           value.textContent = note;
         } else {
           value.classList.add('muted', 'tp3d-editor-sub-sm');
-          value.textContent = 'No standard instructions.';
+          value.textContent = 'No case instructions/notes yet.';
         }
         section.appendChild(value);
         return section;
@@ -5556,13 +5425,15 @@ export function createEditorScreen({
         label: 'Load Plan Notes',
         iconClass: 'fa-regular fa-file-lines',
         disabled: Boolean(OperationLifecycle && OperationLifecycle.isBusy()),
-        onClick: () => {
+        onClick: event => {
           if (editorMutationBlocked()) return;
           const activePack = PackLibrary.getById(StateStore.get('currentPackId'));
           if (!activePack) return;
-          openPackNotesModal(activePack);
+          openPackNotesModal(activePack, event.currentTarget);
         },
       });
+      packNotesButton.dataset.notesEntityType = 'load plan';
+      packNotesButton.dataset.notesEntityId = pack.id;
       if (hasLoadPlanNotes) {
         const notesIndicator = document.createElement('span');
         notesIndicator.className = 'tp3d-notes-indicator-dot';

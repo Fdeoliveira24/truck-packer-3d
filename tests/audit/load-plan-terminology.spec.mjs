@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
 
 // Customer-facing "Load Plan" terminology contract.
 //
@@ -35,6 +36,8 @@ const keyboardManagerPath = new URL('../../src/ui/keyboard-manager.js', import.m
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
 const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
+const notesOverlayPath = new URL('../../src/ui/overlays/notes-overlay.js', import.meta.url);
+const caseModalPath = new URL('../../src/ui/overlays/case-modal.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
 
 const SRC_DIR = new URL('../../src/', import.meta.url);
@@ -123,10 +126,11 @@ test('LOAD-PLAN-TERM-3 empty, filtered-empty and search copy say load plans', as
   assert.match(packs, /No matching load plans for/, 'the keyed filtered-empty message must say load plans');
 });
 
-test('LOAD-PLAN-TERM-4 the Editor Pack Notes surface is presented as Load Plan Notes', async () => {
-  const [html, editor] = await Promise.all([
+test('LOAD-PLAN-TERM-4 the Editor Pack Notes surface delegates to the shared Load Plan Notes overlay', async () => {
+  const [html, editor, overlay] = await Promise.all([
     fs.readFile(indexHtmlPath, 'utf8'),
     fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(notesOverlayPath, 'utf8'),
   ]);
   const truckStart = editor.indexOf('function renderTruckInspector(pack, prefs)');
   const truckHeaderEnd = editor.indexOf("const presetRow = document.createElement('div');", truckStart);
@@ -143,6 +147,9 @@ test('LOAD-PLAN-TERM-4 the Editor Pack Notes surface is presented as Load Plan N
   assert.match(editor, /title:\s*'Load Plan Notes',/, 'the notes modal must be titled Load Plan Notes');
   assert.match(editor, /No notes for this load plan yet\./, 'the empty notes state must say load plan');
   assert.match(editor, /This load plan no longer exists\./, 'the missing-record error must say load plan');
+  assert.match(editor, /return openNotesOverlay\(\{/,
+    'Editor Load Plan Notes must use the shared management/Editor overlay');
+  assert.match(overlay, /export function openNotesOverlay\(config\)/);
 
   assert.doesNotMatch(editor, /title:\s*'Pack Notes',/, 'no notes modal may still be titled Pack Notes');
 });
@@ -156,6 +163,44 @@ test('LOAD-PLAN-TERM-4B PDF renders saved pack.notes under the exact Load Plan N
     'the PDF must not retain generic Pack- or Truck-facing notes headings');
   assert.match(app, /const lines = doc\.splitTextToSize\(pack\.notes, pageWidth - margin \* 2\)[\s\S]*?doc\.text\(lines, margin, y\)[\s\S]*?y \+= lines\.length \* 12 \+ 10/,
     'multiline notes must keep using the existing width-aware wrapping and advance subsequent PDF content');
+});
+
+test('CASE-NOTES-TERM active Case surfaces and PDF use Case Instructions/Notes with no rejected customer literal', async () => {
+  const [caseModal, cases, editor, app] = await Promise.all([
+    fs.readFile(caseModalPath, 'utf8'),
+    fs.readFile(casesScreenPath, 'utf8'),
+    fs.readFile(editorScreenPath, 'utf8'),
+    fs.readFile(appPath, 'utf8'),
+  ]);
+  const activeSources = `${caseModal}\n${cases}\n${editor}\n${app}`;
+  assert.doesNotMatch(activeSources, /['"`]Standard Case Instructions['"`]/,
+    'no active customer-facing literal retains the rejected term');
+  assert.doesNotMatch(activeSources, /No standard instructions\./);
+  assert.match(caseModal, /notesLabel\.textContent = 'Case Instructions\/Notes'/);
+  assert.match(cases, /fieldLabel: 'Case Instructions\/Notes'/);
+  assert.match(cases, /emptyText: 'No case instructions\/notes yet\.'/);
+  assert.match(editor, /label\.textContent = 'Case Instructions\/Notes'/);
+  assert.match(editor, /value\.textContent = 'No case instructions\/notes yet\.'/);
+  assert.match(app, /\['Case Instructions\/Notes', entry\.caseNotes\]/);
+  assert.match(editor, /label\.textContent = 'Item Notes'/,
+    'packed-instance terminology remains Item Notes');
+});
+
+test('CASE-NOTES-TERM the in-progress app.js diff is limited to the approved PDF label', async () => {
+  const app = await fs.readFile(appPath, 'utf8');
+  assert.match(app, /\['Case Instructions\/Notes', entry\.caseNotes\]/);
+  const diff = execFileSync('git', ['diff', '--unified=0', '--', 'src/app.js'], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+  if (!diff.trim()) return;
+  const changedLines = diff
+    .split('\n')
+    .filter(line => (/^[+-]/).test(line) && !line.startsWith('---') && !line.startsWith('+++'));
+  assert.deepEqual(changedLines, [
+    "-                ['Standard Case Instructions', entry.caseNotes],",
+    "+                ['Case Instructions/Notes', entry.caseNotes],",
+  ]);
 });
 
 test('LOAD-PLAN-TERM-5 cross-screen references to the business object say load plan', async () => {
@@ -290,18 +335,19 @@ test('LOAD-PLAN-TERM-10 Cargo Instructions tier ownership is unchanged by the te
 
   // Same block-extraction convention as inspector-case-notes.spec.mjs: the
   // function body ends at its closing brace at 4-space indentation.
-  const start = editor.indexOf('function openPackNotesModal(pack)');
+  const start = editor.indexOf('function openPackNotesModal(pack, trigger = null)');
   assert.ok(start > -1, 'openPackNotesModal must still exist under its internal name');
   const end = editor.indexOf('\n    }', start);
   const block = end > start ? editor.slice(start, end) : '';
   assert.ok(block.length > 0, 'the openPackNotesModal body must be extractable');
 
+  assert.match(block, /openNotesOverlay\(\{/, 'Load Plan Notes must use the shared overlay');
   assert.match(block, /PackLibrary\.update\(/, 'Load Plan Notes must still save through PackLibrary.update');
-  assert.doesNotMatch(block, /CaseLibrary/, 'Load Plan Notes must never write Standard Instructions (case.notes)');
+  assert.doesNotMatch(block, /CaseLibrary/, 'Load Plan Notes must never write Case Instructions/Notes (case.notes)');
   assert.doesNotMatch(block, /instanceNotes/, 'Load Plan Notes must never write Item Notes (instanceNotes)');
   assert.doesNotMatch(block, /updateInstance/, 'Load Plan Notes must never touch the per-instance update path');
 
   // The other two tiers keep their own customer-facing names.
-  assert.match(editor, /Standard Instructions/, 'Standard Instructions (Case-owned) must keep its name');
+  assert.match(editor, /Case Instructions\/Notes/, 'Case Instructions/Notes (Case-owned) keeps its approved name');
   assert.match(editor, /Item Notes/, 'Item Notes (instance-owned) must keep its name');
 });

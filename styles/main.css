@@ -569,6 +569,43 @@ textarea:focus {
   font-size: var(--text-xs);
 }
 
+.tp3d-search-clear {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tp3d-search-clear[hidden] {
+  display: none;
+}
+
+.tp3d-search-clear:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.tp3d-search-clear:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 1px;
+}
+
+#packs-search,
+#cases-search {
+  padding-right: 42px;
+}
+
 .search-empty {
   display: none;
   border: 1px solid var(--border-subtle);
@@ -1379,6 +1416,17 @@ tr:hover td {
   background: transparent;
 }
 
+.tp3d-dropdown-sort .dropdown-menu,
+.tp3d-dropdown-card-display .dropdown-menu {
+  width: 100%;
+  min-width: 0;
+}
+
+.tp3d-dropdown-sort .dropdown-item,
+.tp3d-dropdown-card-display .dropdown-item {
+  white-space: nowrap;
+}
+
 .dropdown-item {
   width: 100%;
   border: 0;
@@ -1397,6 +1445,10 @@ tr:hover td {
 
 .dropdown-item:hover {
   background: var(--bg-hover);
+}
+
+.dropdown-item[data-status='1'] {
+  cursor: default;
 }
 
 .dropdown-item[data-variant='danger'] {
@@ -4510,6 +4562,7 @@ body.modal-open {
 .tp3d-packs-titlewrap {
   display: grid;
   gap: 4px;
+  min-width: 0;
 }
 
 .tp3d-packs-card-title-truncate {
@@ -4531,6 +4584,7 @@ body.modal-open {
 .tp3d-packs-card-head-actions {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: var(--space-1);
   margin-left: auto;
 }
@@ -4554,6 +4608,7 @@ body.modal-open {
 .tp3d-cases-card-head-actions {
   display: flex;
   align-items: center;
+  flex: 0 0 auto;
   gap: var(--space-1);
   margin-left: auto;
 }
@@ -4585,8 +4640,58 @@ body.modal-open {
    TP3D Cases Screen (Phase 1.0)
 ================================== */
 
-.tp3d-cases-muted-sm {
-  font-size: var(--text-sm);
+.tp3d-management-identity-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+  min-width: 0;
+}
+
+.tp3d-management-identity-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.tp3d-management-identity-chip__text {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-management-secondary-text {
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.tp3d-management-notes-btn {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+}
+
+.tp3d-management-notes-btn .tp3d-notes-indicator-dot {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  margin: 0;
+}
+
+.tp3d-management-notes-col {
+  width: 60px;
+  min-width: 60px;
+  text-align: center;
 }
 
 .tp3d-cases-td-select {

@@ -34,6 +34,10 @@ export function createUIComponents() {
   let dropdownDocClickTimer = null;
   let dropdownActiveAnchorEl = null;
   let dropdownActiveAnchorClasses = [];
+  let dropdownSemanticAnchorEl = null;
+  const registeredDropdownSurfaces = new Set();
+  let dropdownCoordinatorKeyDownListener = null;
+  let closingDropdowns = false;
 
   const toastTypes = {
     success: { title: 'Success', color: 'var(--success)', icon: '✓' },
@@ -333,7 +337,24 @@ export function createUIComponents() {
   }
 
   function openDropdown(anchorEl, items, options = {}) {
+    const anchorKey = options.anchorKey ? String(options.anchorKey) : '';
+    const fallbackAnchorId = anchorEl && anchorEl.id ? String(anchorEl.id) : '';
+    const resolvedAnchorId = anchorKey || fallbackAnchorId;
+    const role = options.role ? String(options.role) : '';
+    const existing = Array.from(document.querySelectorAll('[data-dropdown="1"]')).find(candidate => {
+      const candidateEl = /** @type {HTMLElement} */ (candidate);
+      return candidateEl.dataset.anchorId === resolvedAnchorId && candidateEl.dataset.role === role;
+    });
+    const shouldToggleClosed = options.toggle === true && Boolean(existing);
     closeAllDropdowns();
+    const menuSemantics = options.menuSemantics === true;
+    const manageTriggerState = menuSemantics || options.manageTriggerState === true;
+    if (shouldToggleClosed) return null;
+    if (manageTriggerState && anchorEl) {
+      dropdownSemanticAnchorEl = anchorEl;
+      anchorEl.setAttribute('aria-haspopup', 'menu');
+      anchorEl.setAttribute('aria-expanded', 'true');
+    }
     const activeAnchorClass = String(options.activeAnchorClass || '').trim();
     if (activeAnchorClass && anchorEl && anchorEl.classList) {
       dropdownActiveAnchorEl = anchorEl;
@@ -387,6 +408,7 @@ export function createUIComponents() {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'dropdown-item';
+      if (menuSemantics) btn.setAttribute('role', 'menuitem');
 
       // Apply variant (e.g., danger for delete actions)
       if (item && item.variant) {
@@ -397,6 +419,11 @@ export function createUIComponents() {
         btn.disabled = true;
         btn.style.opacity = '0.6';
         btn.style.cursor = 'not-allowed';
+      }
+      if (item && item.status === true) {
+        btn.dataset.status = '1';
+        btn.tabIndex = -1;
+        btn.setAttribute('aria-disabled', 'true');
       }
       if (item && item.active) {
         btn.style.background = 'var(--bg-hover)';
@@ -459,20 +486,26 @@ export function createUIComponents() {
       }
       btn.addEventListener('click', ev => {
         ev.stopPropagation();
-        if (btn.disabled) return;
+        if (btn.disabled || (item && item.status === true)) return;
         closeAllDropdowns();
         item.onClick && item.onClick();
+        if (manageTriggerState && anchorEl && typeof anchorEl.focus === 'function') anchorEl.focus();
       });
       wrap.appendChild(btn);
     });
 
     const dropdown = document.createElement('div');
     dropdown.className = 'dropdown';
+    if (options.dropdownClass) {
+      String(options.dropdownClass)
+        .split(/\s+/)
+        .filter(Boolean)
+        .forEach(className => dropdown.classList.add(className));
+    }
     dropdown.dataset.dropdown = '1';
-    const anchorKey = options && options.anchorKey ? String(options.anchorKey) : '';
-    const fallbackAnchorId = anchorEl && anchorEl.id ? String(anchorEl.id) : '';
-    dropdown.dataset.anchorId = anchorKey || fallbackAnchorId;
-    if (options && options.role) dropdown.dataset.role = String(options.role);
+    if (menuSemantics) dropdown.setAttribute('role', 'menu');
+    dropdown.dataset.anchorId = resolvedAnchorId;
+    if (role) dropdown.dataset.role = role;
     dropdown.style.position = 'fixed';
     dropdown.style.zIndex = '16000';
     dropdown.style.visibility = 'hidden';
@@ -519,6 +552,12 @@ export function createUIComponents() {
     positionDropdown();
     wrap.style.visibility = 'visible';
     dropdown.style.visibility = 'visible';
+    if (menuSemantics) {
+      const firstItem = /** @type {HTMLElement | null} */ (
+        wrap.querySelector('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])')
+      );
+      if (firstItem) firstItem.focus();
+    }
     if (dropdownDocClickTimer) {
       window.clearTimeout(dropdownDocClickTimer);
       dropdownDocClickTimer = null;
@@ -534,7 +573,24 @@ export function createUIComponents() {
     }, 0);
 
     dropdownKeyDownListener = ev => {
-      if (ev.key === 'Escape') closeAllDropdowns();
+      if (menuSemantics && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) {
+        const menuItems = /** @type {HTMLElement[]} */ (
+          Array.from(wrap.querySelectorAll('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])'))
+        );
+        if (!menuItems.length) return;
+        ev.preventDefault();
+        const activeElement = document.activeElement instanceof HTMLElement
+          ? document.activeElement
+          : null;
+        const currentIndex = activeElement ? menuItems.indexOf(activeElement) : -1;
+        let nextIndex = currentIndex;
+        if (ev.key === 'Home') nextIndex = 0;
+        else if (ev.key === 'End') nextIndex = menuItems.length - 1;
+        else if (ev.key === 'ArrowDown') nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % menuItems.length;
+        else nextIndex = currentIndex <= 0 ? menuItems.length - 1 : currentIndex - 1;
+        const nextItem = menuItems[nextIndex];
+        if (nextItem) nextItem.focus();
+      }
     };
     document.addEventListener('keydown', dropdownKeyDownListener);
 
@@ -542,33 +598,79 @@ export function createUIComponents() {
     window.addEventListener('resize', dropdownRepositionListener);
     // Capture scroll events from nested scroll containers too.
     window.addEventListener('scroll', dropdownRepositionListener, true);
+    return dropdown;
   }
 
   function closeAllDropdowns() {
-    document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
-    if (dropdownActiveAnchorEl && dropdownActiveAnchorClasses.length) {
-      dropdownActiveAnchorClasses.forEach(className => dropdownActiveAnchorEl.classList.remove(className));
-    }
-    dropdownActiveAnchorEl = null;
-    dropdownActiveAnchorClasses = [];
-    if (dropdownDocClickTimer) {
-      window.clearTimeout(dropdownDocClickTimer);
-      dropdownDocClickTimer = null;
-    }
-    if (dropdownDocClickListener) {
-      document.removeEventListener('click', dropdownDocClickListener);
-      dropdownDocClickListener = null;
-    }
-    if (dropdownKeyDownListener) {
-      document.removeEventListener('keydown', dropdownKeyDownListener);
-      dropdownKeyDownListener = null;
-    }
-    if (dropdownRepositionListener) {
-      window.removeEventListener('resize', dropdownRepositionListener);
-      window.removeEventListener('scroll', dropdownRepositionListener, true);
-      dropdownRepositionListener = null;
+    if (closingDropdowns) return;
+    closingDropdowns = true;
+    try {
+      document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
+      if (dropdownActiveAnchorEl && dropdownActiveAnchorClasses.length) {
+        dropdownActiveAnchorClasses.forEach(className => dropdownActiveAnchorEl.classList.remove(className));
+      }
+      dropdownActiveAnchorEl = null;
+      dropdownActiveAnchorClasses = [];
+      if (dropdownSemanticAnchorEl) dropdownSemanticAnchorEl.setAttribute('aria-expanded', 'false');
+      dropdownSemanticAnchorEl = null;
+      if (dropdownDocClickTimer) {
+        window.clearTimeout(dropdownDocClickTimer);
+        dropdownDocClickTimer = null;
+      }
+      if (dropdownDocClickListener) {
+        document.removeEventListener('click', dropdownDocClickListener);
+        dropdownDocClickListener = null;
+      }
+      if (dropdownKeyDownListener) {
+        document.removeEventListener('keydown', dropdownKeyDownListener);
+        dropdownKeyDownListener = null;
+      }
+      if (dropdownRepositionListener) {
+        window.removeEventListener('resize', dropdownRepositionListener);
+        window.removeEventListener('scroll', dropdownRepositionListener, true);
+        dropdownRepositionListener = null;
+      }
+      registeredDropdownSurfaces.forEach(surface => {
+        if (surface && typeof surface.isOpen === 'function' && surface.isOpen()) surface.close();
+      });
+    } finally {
+      closingDropdowns = false;
     }
   }
 
-  return { showToast, showModal, showAutoPackLoadingOverlay, confirm, openDropdown, closeAllDropdowns };
+  function registerDropdownSurface(surface) {
+    if (!surface || typeof surface.isOpen !== 'function' || typeof surface.close !== 'function') {
+      return () => {};
+    }
+    registeredDropdownSurfaces.add(surface);
+    if (!dropdownCoordinatorKeyDownListener) {
+      dropdownCoordinatorKeyDownListener = ev => {
+        if (ev.key !== 'Escape') return;
+        const registeredOpenSurface = Array.from(registeredDropdownSurfaces).find(entry => entry.isOpen());
+        const hasManagedDropdown = Boolean(dropdownSemanticAnchorEl);
+        const hasDynamicDropdown = Boolean(document.querySelector('[data-dropdown="1"]'));
+        if (!registeredOpenSurface && !hasManagedDropdown && !hasDynamicDropdown) return;
+        const focusTarget = dropdownSemanticAnchorEl ||
+          (registeredOpenSurface && typeof registeredOpenSurface.getAnchor === 'function'
+            ? registeredOpenSurface.getAnchor()
+            : null);
+        ev.preventDefault();
+        ev.stopPropagation();
+        closeAllDropdowns();
+        if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus();
+      };
+      document.addEventListener('keydown', dropdownCoordinatorKeyDownListener);
+    }
+    return () => registeredDropdownSurfaces.delete(surface);
+  }
+
+  return {
+    showToast,
+    showModal,
+    showAutoPackLoadingOverlay,
+    confirm,
+    openDropdown,
+    closeAllDropdowns,
+    registerDropdownSurface,
+  };
 }

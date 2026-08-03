@@ -1,8 +1,8 @@
 # Truck Packer 3D — Master TODO V5
 
-**Last updated:** 2026-07-29
+**Last updated:** 2026-08-03
 
-**Last verified repository state:** Platform-foundation reliability and the final Platform UX–UI Compatibility Closeout are complete; Max Capacity Phase C reporting is closed and merged to `main` at `99be0776d0070f18b18379bbe1e978a3dec03c43`; the evidence-only AutoPack strategy differentiation audit is closed and merged to `main` at `ec1cf4a`, with no production behavior change; the legacy AutoPack solver retirement audit is closed with a **SAFE TO REMOVE AFTER SMALL DEPENDENCY CLEANUP** disposition, and the legacy solver removal is merged to `main` at `716c4d1`, with no production behavior change. The `app.js` P0 modularization is **complete and human-review-approved** on `refactor/app-js-p0-domain-cluster` (modularization-cleanup HEAD `bc9c6fd`): Billing, Organization, Auth, and AccountSwitcher extracted into dedicated modules; the Composition Root feasibility review closed as a no-op by design; and a final cleanup + regression audit. `app.js` reduced 9,510 → 6,867 lines (−2,643, −27.8%). That branch is a **combined release branch** whose base also carries Cargo Instructions Phase 0/1/2, Inspector case notes, and stabilization fixes (all absent from `main`), so the whole set was merged to `main` together via combined PR #7 (merge commit `1199711`); the earlier plan to merge `feat/inspector-case-notes` separately is obsolete. Cargo Instructions Phase 1 and Phase 2 **live browser QA is complete** (authenticated Chrome session: read-only Standard Instructions card, Item Notes create/edit/save/clear, reload persistence, per-instance ownership independence, selection safety; the data-layer survival matrix is covered by the green automated suite). Branch validation: audit 1145 passed / 0 failed / 5 skipped, ESLint 0 errors, `git diff --check` clean. **Cargo Instructions Phase 3 (Pack Notes Editor access) is complete and merged to `main` via PR [#9](https://github.com/Fdeoliveira24/truck-packer-3d/pull/9) at `d0ae772`**, closing the three-tier Cargo Instructions model. The customer-facing **Load Plan terminology alignment** is complete and merged via PR [#10](https://github.com/Fdeoliveira24/truck-packer-3d/pull/10). **Business Identity Contract v1 is completed and approved**, **Business Identity Phase 1 — Core Model and Migration is complete and merged via PR [#14](https://github.com/Fdeoliveira24/truck-packer-3d/pull/14) at `b9585b54483bcd9f788f88c17d19d79fe1fc994c`**, and **Cases and Load Plans Identifier UI is complete and merged via PR [#16](https://github.com/Fdeoliveira24/truck-packer-3d/pull/16) at `22aa2259273e78b244ad796b0ad2571c73f2eaf4`**. The next active task is **Search, Import, Export, and Reporting Integration**, not yet started and unblocked.
+**Last verified repository state:** `main` includes Quantity Controls through PR [#20](https://github.com/Fdeoliveira24/truck-packer-3d/pull/20), merge commit `37d2c4c`. Quantity Controls is complete, including the ecommerce-style Case Qty workflow, Editor temporary Qty selector, multi-unit staging, atomic Undo/Redo, Cases and Load Plans quantity integration, Card Display support, Grid/List persistence, import/export and backup compatibility, PDF quantity reporting, and legacy quantity metadata cleanup. The next active task is **Thermal Load Utilization**, approved and unblocked; implementation has not started.
 
 ## 1. Document Contract
 
@@ -17,7 +17,7 @@
 9. Do not duplicate mutable status in multiple sections.
 10. Each active task must have one branch, one outcome, and one blocker state.
 11. Replace outdated status rather than appending contradictory status.
-12. Billing reliability, the Platform UX/UI Compatibility Closeout, Max Capacity Phase C reporting, the evidence-only AutoPack strategy differentiation audit, the evidence-only legacy AutoPack solver retirement audit, the legacy solver removal, the `app.js` P0 modularization, Cargo Instructions, customer-facing Load Plan terminology, Business Identity Contract v1, Business Identity Phase 1, and Cases and Load Plans Identifier UI are closed. Search, Import, Export, and Reporting Integration (Section 4) is the single active task.
+12. Billing reliability, the Platform UX/UI Compatibility Closeout, Max Capacity Phase C reporting, the evidence-only AutoPack strategy differentiation audit, the evidence-only legacy AutoPack solver retirement audit, the legacy solver removal, the `app.js` P0 modularization, Cargo Instructions, customer-facing Load Plan terminology, Business Identity Contract v1, Business Identity Phase 1, Cases and Load Plans Identifier UI, and Quantity Controls are closed. Thermal Load Utilization (Section 4) is the single active task.
 
 ## 2. Current Status Snapshot
 
@@ -25,12 +25,13 @@ This table is the single mutable status snapshot in V5.
 
 | Area | Status at the last verified repository state |
 |---|---|
-| Repository | `main` carries combined release PR #7 (`1199711`) — the complete, human-approved `app.js` P0 modularization (Billing/Organization/Auth/AccountSwitcher extractions, Composition Root no-op, final cleanup) plus its stacked base — Cargo Instructions Phase 0/1/2 (live QA complete), Inspector case notes, and stabilization fixes; `app.js` 9,510 → 6,867 lines. `feat/inspector-case-notes` was not merged separately (superseded). Cargo Instructions **Phase 3 is complete and merged via PR #9 at `d0ae772`**; the **Load Plan terminology alignment** is complete and merged via PR #10. |
+| Repository | `main` includes Quantity Controls through PR #20, merge commit `37d2c4c`. V4 remains archived; V5 is the only active operational source of truth. |
 | Cargo Instructions Phase 3 — Pack Notes Editor access | Complete and merged to `main` via PR #9 at `d0ae772` (feat commit `95bc315`). Adds a `btn-pack-notes` viewport-toolbar action and a notes-only modal writing exclusively through `PackLibrary.update(packId, { notes })`, gated on Pack presence rather than instance selection. Closes the three-tier Cargo Instructions model (Standard Instructions / Item Notes / Pack Notes). Validation: audit 1154 passed / 0 failed / 5 skipped, ESLint 0 errors, `git diff --check` clean, plus live authenticated Chrome QA. |
 | Customer-facing terminology | Complete and merged via PR #10. "Load Plan" is now the customer-facing business object across navigation, the Load Plans screen, the Editor, Cases references, import/export and Settings copy. Internal Pack architecture, DOM ids, CSS classes, storage keys, route identifiers and the JSON schema (`pack`, `packs`, `packLibrary`, `pack-batch`) are unchanged, and Auto-Pack/Unpack/packed language is preserved. See the Customer-Facing Naming contract in Section 8. |
 | Business Identity Contract v1 | Completed and approved. Locks separate technical, display, business, and external identity; optional Case `itemCode`; required generated Pack `loadPlanNumber`; optional Pack `customerReference`; workspace-scoped normalized uniqueness; duplication/import/migration rules; and no packed-instance business identity in v1. Implementation remains narrowly phased. |
 | Business Identity Phase 1 — Core Model and Migration | Complete and merged via PR #14 at `b9585b54483bcd9f788f88c17d19d79fe1fc994c`. Adds the approved core identity fields, validation/generation primitives, duplication behavior, canonical compatibility, and idempotent local migration while preserving UUIDs, Pack APIs, timestamps, ordering, Undo/Redo, and offline persistence. |
 | Cases and Load Plans Identifier UI | Complete and merged via PR #16 at `22aa2259273e78b244ad796b0ad2571c73f2eaf4`. Adds Case Item Code and Load Plan Number/Customer Reference create-edit validation and secondary management metadata, plus default-on grid Card Display controls, while preserving UUID authority, list/table behavior, search/sort, Editor, and Phase 1 semantics. |
+| Quantity Controls | Complete and merged via PR #20 at `37d2c4c`. Includes the ecommerce-style Case Qty workflow, Editor temporary Qty selector, multi-unit staging, atomic Undo/Redo, Cases Quantity Grid/List integration, Load Plans Cases Qty integration, Card Display Quantity support, the Grid/List persistence fix, import/export and Workspace/App Backup compatibility, PDF quantity reporting, and legacy quantity metadata cleanup. |
 | Supabase Data API grants | Complete, merged, pushed, and applied to development. |
 | Workspace/membership write boundary | Complete. Authenticated clients retain RLS-filtered organization/membership reads and legitimate organization updates, but cannot directly insert organizations or mutate memberships; approved signup and server-controlled creation remain functional. |
 | Server-side workspace creation limit | Complete. `org-create-workspace` supplies the trusted catalog limits to a service-role-only transaction that locks the actor profile, resolves the canonical owner entitlement, counts every owned workspace including archived rows, fails closed on unsafe/unavailable billing identity, and rejects at the effective limit. |
@@ -72,16 +73,25 @@ This table is the single mutable status snapshot in V5.
 
 | Field | Current value |
 |---|---|
-| Task | **Search, Import, Export, and Reporting Integration.** |
-| Branch | Not yet created. |
-| Outcome | Not yet started. |
-| Blocker state | Unblocked. Cases and Load Plans Identifier UI is complete. |
-| Scope boundary | Search, import, export, and reporting integration only. Server-persistence uniqueness, packed-instance identity, and Future Extension work remain separate. Preserve the approved Business Identity Contract v1 and completed identity model/UI behavior. |
+| Task | **Thermal Load Utilization.** |
+| Branch | `feat/thermal-load-utilization`. |
+| Outcome | Product contract approved; implementation not started. |
+| Blocker state | Unblocked. Quantity Controls is complete and merged. |
+| Scope boundary | Professional visual load analysis derived from space geometry and physical cargo instances. It is not refrigeration or temperature-capacity analysis. Implementation technology is not yet defined. |
 | Closeout | Not yet started. |
 
 Only this row is active. The following section is an approved sequence, not simultaneous work.
 
 ## 5. Next Approved Execution Queue
+
+### Thermal Load Utilization — Product Contract
+
+- **Purpose:** Explain occupied cargo volume percentage, empty available space, density distribution within the selected space, and visually inefficient loading areas. It does not represent refrigeration or temperature capacity.
+- **Architecture:** Must work across every current truck layout and remain extensible to garages, storage bays, warehouse zones, containers, and custom spaces.
+- **Data contract:** Utilization is derived from geometry and physical instances, never duplicate stored percentage values; calculations must respect hidden, staged, and loaded states within the existing workspace model.
+- **Future compatibility:** The contract must support later import/export, App Backup, workspace transfer, PDF reporting, PNG/image export, and analytics integration.
+- **UX goal:** A professional logistics-grade analysis tool with clear visual explanations, simple daily operation, and quality competitive with premium logistics-planning software.
+- **Technology boundary:** This contract approves product behavior only. Rendering, calculation, storage, and implementation technology remain undecided.
 
 1. Server-persistence uniqueness contract.
 
@@ -93,7 +103,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 ## 6. Current Blockers
 
-- No open blockers. Cases and Load Plans Identifier UI is complete; Search, Import, Export, and Reporting Integration is approved, not yet started, and unblocked.
+- No open blockers. Quantity Controls is complete; Thermal Load Utilization is approved, not yet started, and unblocked.
 - Commercial pricing is not final, but that remains unrelated and non-blocking.
 - Workspace Slug Phase 2 (friendly slugs) remains deferred, separate required product work — not part of the active queue (see Section 12).
 
@@ -101,6 +111,7 @@ Queue order is approval order. Start one branch at a time and record its active 
 
 | Milestone | Concise result | Evidence |
 |---|---|---|
+| Quantity Controls | Complete and merged to `main`. Delivers temporary ecommerce-style Case Qty entry, atomic multi-unit staging and Undo/Redo, derived Cases and Load Plans quantity surfaces, Card Display and Grid/List persistence support, compatible Load Plan/App Backup/Workspace data exchange, aggregated PDF quantity reporting, and cleanup of rejected legacy quantity metadata without creating a second stored quantity model. | PR [#20](https://github.com/Fdeoliveira24/truck-packer-3d/pull/20), merge commit `37d2c4c` |
 | Cases and Load Plans Identifier UI | Complete and merged to `main`. Adds optional Case Item Code and required Load Plan Number/optional Customer Reference to the existing create/edit flows with Phase 1 inline validation; renders names/titles as primary and populated identifiers as secondary management metadata; adds default-on grid-only Card Display controls; and distinguishes an empty Case library from filtered no matches. UUIDs, Editor, list/table columns, search/sort, schema, migration, import/export, PDF/CSV, and packed-instance identity remain unchanged. Validation: 1,184 passed / 0 failed / 5 skipped, ESLint 0 errors with 19 existing warnings, and operator-authorized live QA. | PR [#16](https://github.com/Fdeoliveira24/truck-packer-3d/pull/16), merge commit `22aa2259273e78b244ad796b0ad2571c73f2eaf4` |
 | Business Identity Phase 1 — Core Model and Migration | Complete and merged to `main`. Adds optional Case `itemCode`, required generated Pack `loadPlanNumber`, optional Pack `customerReference`, shared normalization/validation/availability/generation primitives, canonical-load compatibility, and idempotent local migration outside Undo history. Preserves UUIDs, `caseId` relationships, Pack APIs, timestamps, ordering, geometry, notes, metadata, and offline persistence. | PR [#14](https://github.com/Fdeoliveira24/truck-packer-3d/pull/14), merge commit `b9585b54483bcd9f788f88c17d19d79fe1fc994c` |
 | Business Identity Contract v1 | Completed and approved as a documentation-only architecture gate. Locks optional user-entered workspace-unique Case `itemCode`; required generated, editable, workspace-unique Pack `loadPlanNumber`; optional non-unique Pack `customerReference`; normalized comparison and 64-character validation rules; UUID-preserving duplication/import/migration behavior; fixed presentation priority; and no packed-instance business identity in v1. Implementation is split into Core Model and Migration, identifier UI, integration/reporting, and a later server-persistence uniqueness contract. | [Business Identity Contract v1](../engineering/business-identity-contract-v1.md) |
@@ -254,7 +265,7 @@ Phase C — a small reporting follow-up, without UI redesign or legal, axle, or 
 
 The evidence-only AutoPack strategy differentiation audit is closed and merged to `main` at `ec1cf4a`; it changed no production behavior. Its Max Capacity product-copy clarification is a recommendation only, not approved implementation work.
 
-The evidence-only legacy AutoPack solver retirement audit is closed and merged to `main` at `94dbfe4` with disposition SAFE TO REMOVE AFTER SMALL DEPENDENCY CLEANUP. Following that disposition, `src/services/autopack-legacy-solver.js` was deleted and merged to `main` at `716c4d1`; `buildLegacyAutoPackItems` is unaffected and remains owned by `autopack-item-builder.js`; no solver, engine, or editor behavior changed. The `app.js` P0 modularization is complete and human-approved on the combined release branch `refactor/app-js-p0-domain-cluster` (`bc9c6fd`), which also carries Cargo Instructions Phase 0/1/2 (live QA complete) and Inspector case notes; it was merged to `main` via combined PR #7 (`1199711`). Cargo Instructions Phase 3 (Section 4) is now the single active task. See Section 7 for evidence links.
+The evidence-only legacy AutoPack solver retirement audit is closed and merged to `main` at `94dbfe4` with disposition SAFE TO REMOVE AFTER SMALL DEPENDENCY CLEANUP. Following that disposition, `src/services/autopack-legacy-solver.js` was deleted and merged to `main` at `716c4d1`; `buildLegacyAutoPackItems` is unaffected and remains owned by `autopack-item-builder.js`; no solver, engine, or editor behavior changed. The `app.js` P0 modularization is complete and human-approved on the combined release branch `refactor/app-js-p0-domain-cluster` (`bc9c6fd`), which also carries Cargo Instructions Phase 0/1/2 (live QA complete) and Inspector case notes; it was merged to `main` via combined PR #7 (`1199711`). Quantity Controls is complete; Thermal Load Utilization (Section 4) is now the single active task. See Section 7 for evidence links.
 
 Future AutoPack quality, strategy, manual placement, and performance architecture belong in the reference-only inventory below. They are not active work.
 
@@ -352,7 +363,7 @@ Any future share-link design must use its own dedicated token/credential — the
 
 - Business Identity Phase 1 — Core Model and Migration is complete and merged via PR [#14](https://github.com/Fdeoliveira24/truck-packer-3d/pull/14) at `b9585b54483bcd9f788f88c17d19d79fe1fc994c`.
 - Cases and Load Plans Identifier UI is complete and merged via PR [#16](https://github.com/Fdeoliveira24/truck-packer-3d/pull/16) at `22aa2259273e78b244ad796b0ad2571c73f2eaf4`.
-- Search, Import, Export, and Reporting Integration is the only Active Work, not yet started and unblocked; the server-persistence uniqueness contract remains separately queued.
+- Quantity Controls is complete and merged; Thermal Load Utilization is the only Active Work, while the server-persistence uniqueness contract remains separately queued.
 - Packed-instance identity and every Future Extension in the contract remain deferred.
 - Business identity never replaces internal UUIDs, physical packing signatures, internal Pack fields/APIs, or workspace authorization, and it must never be coupled to the workspace slug.
 

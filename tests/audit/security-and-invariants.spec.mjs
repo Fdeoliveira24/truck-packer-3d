@@ -756,7 +756,7 @@ test('billing pump never runs without proven auth or usable session', async () =
 
 test('phase 1 P0 cross-profile logout: billing-status 401 triggers local sign-out cleanup', async () => {
   const app = await readAppSource();
-  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
+  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{Record<string, any>\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
 
@@ -774,7 +774,7 @@ test('phase 1 P0 cross-profile logout: billing-status 401 triggers local sign-ou
 
 test('phase 1 P0 cross-profile logout: billing 401 path does not catch non-auth errors or leak token data', async () => {
   const app = await readAppSource();
-  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
+  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{Record<string, any>\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
 
@@ -821,7 +821,7 @@ test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate 
 
 test('P0 billing retry reliability C: refreshBilling only reuses successful shared snapshots and force bypasses them', async () => {
   const app = await readAppSource();
-  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{object\} billingSnapshot/);
+  const refreshMatch = app.match(/async function refreshBilling\b[\s\S]*?\/\*\* @param \{Record<string, any>\} billingSnapshot/);
   assert.ok(refreshMatch, 'refreshBilling function must be extractable');
   const refreshBody = refreshMatch[0];
   const classifierMatch = app.match(/function _isShareableBillingSnapshot\(orgId, state\) \{[\s\S]*?\n\}/);
@@ -6986,7 +6986,10 @@ test('AUTO-PACK-A1-R6.3 stack order supports descending-weight multi-layer stack
 
 test('AUTO-PACK-A1-R6.1 solver keeps final validation gate for unsafe packed placements', async () => {
   const src = await fs.readFile(autoPackSolverPath, 'utf8');
-  assert.match(src, /function validatePackedPlacements\(output, packed, zones\)/,
+  // TypeScript 7 checkJs migration: the 4th parameter was previously read via
+  // `arguments[3]` (untypeable under checkJs) and is now a named `options = {}`
+  // parameter — same runtime contract, just declared instead of implicit.
+  assert.match(src, /function validatePackedPlacements\(output, packed, zones, options = \{\}\)/,
     'solver must keep a final validation sweep before returning live placements');
   assert.match(src, /outside usable zones/,
     'validation gate must reject out-of-zone placements');
@@ -12519,7 +12522,12 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack diagnostics report solver and animation timin
   const endStart = src.indexOf("if (diag && typeof diag.autopackEnd === 'function')", packStart);
   const endBlock = endStart >= 0 ? src.slice(endStart, src.indexOf('\n      runtimeWindow.setTimeout', endStart)) : '';
 
-  assert.match(src, /const runStartedAt = nowMs\(\);[\s\S]*let solverMs = 0;[\s\S]*let animationMs = 0;[\s\S]*const animationMetrics = \{ animated: 0, batches: 0, fallbackCount: 0 \};/,
+  // ESLint 10's no-useless-assignment rule flagged the `= 0` initializers as
+  // dead stores: every reachable path assigns solverMs/animationMs from
+  // nowMs() - startedAt before any read (verified — both assignments happen
+  // before the sole read site in the diagnostics block below), so declaring
+  // them without an initializer is runtime-equivalent.
+  assert.match(src, /const runStartedAt = nowMs\(\);[\s\S]*let solverMs;[\s\S]*let animationMs;[\s\S]*const animationMetrics = \{ animated: 0, batches: 0, fallbackCount: 0 \};/,
     'AutoPack must initialize timing and animation metrics for each run');
   assert.match(src, /const solverStartedAt = nowMs\(\);[\s\S]*const packingSolution = runAdaptiveAutoPack\(\{[\s\S]*const solverResult = packingSolution \? packingSolution\.selectedSolution : null;[\s\S]*solverMs = nowMs\(\) - solverStartedAt;/,
     'AutoPack must measure synchronous adaptive solver time');
@@ -16909,7 +16917,7 @@ test('phase 0.7A-1 exportAppJSON top-level payload keys remain limited', async (
     'exportAppJSON must not include workspace export or server identity top-level keys');
 });
 
-test('phase 0.7A-1 exportAppJSON data keys include local backup libraries only', async () => {
+test('phase 0.7A-1 exportAppJSON data keys include sanitized local backup libraries only', async () => {
   const src = await fs.readFile(storagePath, 'utf8');
   const start = src.indexOf('export function exportAppJSON()');
   const end = src.indexOf('\nexport function', start + 1);
@@ -16918,8 +16926,10 @@ test('phase 0.7A-1 exportAppJSON data keys include local backup libraries only',
   assert.ok(fn, 'exportAppJSON must be extractable');
   assert.match(fn, /caseLibrary:\s*state\.caseLibrary/,
     'exportAppJSON data must include caseLibrary');
-  assert.match(fn, /packLibrary:\s*state\.packLibrary/,
-    'exportAppJSON data must include packLibrary');
+  assert.match(fn, /sanitizeLegacyPackQuantityLibrary\(state\.packLibrary\)\.packLibrary/,
+    'exportAppJSON must sanitize obsolete Pack quantity metadata');
+  assert.match(fn, /packLibrary:\s*sanitizedPacks/,
+    'exportAppJSON data must include the sanitized packLibrary');
   assert.match(fn, /folderLibrary:\s*Array\.isArray\(state\.folderLibrary\)/,
     'exportAppJSON data must include folderLibrary once folders are live');
   assert.match(fn, /preferences:\s*state\.preferences/,
@@ -19202,12 +19212,17 @@ test('G1.1C-EXTERIOR-RAILS wheel-well blocked guide zones are not railed as truc
 test('G1.2B-CASE-BROWSER-POLISH Case Browser cards are built by one shared helper, not duplicated per grouping', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
 
-  assert.match(src, /function buildCaseBrowserCard\(c, lengthUnit, prefs, isSelected\)/,
-    'a shared buildCaseBrowserCard(c, lengthUnit, prefs, isSelected) helper must exist');
+  assert.match(src, /function buildCaseBrowserCard\(c, lengthUnit, prefs, isSelected, pack\)/,
+    'a shared buildCaseBrowserCard(c, lengthUnit, prefs, isSelected, pack) helper must exist ' +
+      '(pack added to gate the per-card Qty/Add row)');
 
-  const addCaseCalls = src.match(/addCaseToPack\(c\.id\)/g) || [];
-  assert.equal(addCaseCalls.length, 1,
-    'addCaseToPack(c.id) must appear exactly once now that Category and Manufacturer card bodies share one helper');
+  // Quantity Controls: the Add button now always routes through
+  // PackLibrary.addInstancesToStaging() (never addCaseToPack) once a Load Plan
+  // is open, and no Add control renders at all when it is not. addCaseToPack
+  // remains the drag-to-pack path only.
+  const qtyAddRowCalls = src.match(/card\.appendChild\(buildCaseQtyAddRow\(c, pack\)\)/g) || [];
+  assert.equal(qtyAddRowCalls.length, 1,
+    'card.appendChild(buildCaseQtyAddRow(c, pack)) must appear exactly once now that Category and Manufacturer card bodies share one helper');
 });
 
 test('G1.2B-CASE-BROWSER-POLISH selected-case cue is derived from selectedInstanceIds and the current pack', async () => {
@@ -19233,16 +19248,22 @@ test('G1.2B-CASE-BROWSER-POLISH selected cue is applied per-card via selectedCas
   assert.match(src, /card\.classList\.toggle\('tp3d-editor-case-browser-card--selected', Boolean\(isSelected\)\)/,
     'buildCaseBrowserCard must toggle the selected modifier class based on isSelected');
 
-  const callSites = src.match(/buildCaseBrowserCard\(c, lengthUnit, prefs, selectedCaseIds\.has\(c\.id\)\)/g) || [];
+  const callSites = src.match(/buildCaseBrowserCard\(c, lengthUnit, prefs, selectedCaseIds\.has\(c\.id\), browserPack\)/g) || [];
   assert.equal(callSites.length, 2,
-    'both the Category and Manufacturer grouped branches must call buildCaseBrowserCard with selectedCaseIds.has(c.id)');
+    'both the Category and Manufacturer grouped branches must call buildCaseBrowserCard with ' +
+      'selectedCaseIds.has(c.id) and browserPack (the latter added by Quantity Controls Phase 1)');
 });
 
 test('G1.2B-CASE-BROWSER-POLISH Case Browser cards add no staged/packed badges or thumbnails', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
 
   const helperStart = src.indexOf('function buildCaseBrowserCard');
-  const helperEnd = src.indexOf('\n    function openEditorNewCaseModal', helperStart);
+  // Bounded to buildCaseBrowserCard's own body only, ending at its own
+  // `return card;` (not the next function's declaration) so the JSDoc comment
+  // above the sibling buildCaseQtyAddRow — whose own "N in load · N in truck ·
+  // N staged" readout is an approved, separately-scoped addition, not a
+  // staged/packed badge on the catalog card itself — is excluded too.
+  const helperEnd = src.indexOf('\n      return card;', helperStart);
   const helperBlock = helperStart >= 0 && helperEnd > helperStart
     ? src.slice(helperStart, helperEnd)
     : '';
@@ -19287,8 +19308,10 @@ test('G1.2B-CASE-BROWSER-POLISH Add and drag-to-pack behavior is preserved in th
     'cards must remain draggable');
   assert.match(helperBlock, /ev\.dataTransfer\.setData\('text\/plain', c\.id\)/,
     'dragstart must still set text/plain to the case id');
-  assert.match(helperBlock, /addBtn\.addEventListener\('click', \(\) => addCaseToPack\(c\.id\)\)/,
-    'the Add button must still call addCaseToPack(c.id)');
+  // Quantity Controls: the "+ Add" button now commits the ephemeral Qty draft
+  // through PackLibrary.addInstancesToStaging() instead of addCaseToPack.
+  assert.match(helperBlock, /PackLibrary\.addInstancesToStaging\(packId, c\.id, qty\)/,
+    'the Add button must commit the drafted Qty via PackLibrary.addInstancesToStaging');
 });
 
 test('G1.2B-CASE-BROWSER-POLISH new CSS classes use existing design tokens only', async () => {
@@ -19489,8 +19512,9 @@ test('G1.2C-INSPECTOR-CARD-POLISH G1.2B Case Browser polish remains intact', asy
     fs.readFile(stylesMainPath, 'utf8'),
   ]);
 
-  assert.match(src, /function buildCaseBrowserCard\(c, lengthUnit, prefs, isSelected\)/,
-    'the G1.2B shared buildCaseBrowserCard helper must remain unchanged');
+  assert.match(src, /function buildCaseBrowserCard\(c, lengthUnit, prefs, isSelected, pack\)/,
+    'the G1.2B shared buildCaseBrowserCard helper must remain intact (Quantity Controls Phase 1 added a ' +
+      'trailing pack parameter to gate the per-card target section, otherwise unchanged)');
   assert.match(src, /card\.classList\.toggle\('tp3d-editor-case-browser-card--selected', Boolean\(isSelected\)\)/,
     'the G1.2B selected-case cue toggle must remain unchanged');
   assert.match(css, /\.tp3d-editor-case-browser-card--selected/,

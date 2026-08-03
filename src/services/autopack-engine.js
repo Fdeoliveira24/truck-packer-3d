@@ -802,8 +802,8 @@ export function createAutoPackEngine({
     }
     cancelAllTweens();
     const runStartedAt = nowMs();
-    let solverMs = 0;
-    let animationMs = 0;
+    let solverMs;
+    let animationMs;
     const animationMetrics = { animated: 0, batches: 0, fallbackCount: 0 };
     animationMetrics.skipped = false;
     animationMetrics.strategy = 'batched';
@@ -1102,6 +1102,7 @@ export function createAutoPackEngine({
     return perf && typeof perf.now === 'function' ? perf.now() : Date.now();
   }
 
+  /** @returns {Promise<void>} */
   function waitForAnimationFrames(count = 1) {
     const raf = runtimeWindow.requestAnimationFrame;
     if (typeof raf !== 'function') {

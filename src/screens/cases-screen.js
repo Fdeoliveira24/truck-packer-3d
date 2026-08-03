@@ -66,6 +66,7 @@ export function createCasesScreen({
       { key: 'volume', label: 'Volume' },
       { key: 'weight', label: 'Weight' },
       { key: 'category', label: 'Category' },
+      { key: 'quantity', label: 'Quantity' },
     ];
     let sortBy = 'name'; // name, itemCode, manufacturer, dimensions, volume, weight, category
     let sortDir = 'asc'; // asc or desc
@@ -559,14 +560,19 @@ export function createCasesScreen({
       const mode = modeOverride === 'grid' || modeOverride === 'list'
         ? modeOverride
         : PreferencesManager.get().casesViewMode || 'list';
+      // Workspace-wide physical Quantity per Case: ONE pass over the active
+      // workspace's packLibrary, shared by both the List column/sort and the
+      // Grid chip for this render cycle. Never persisted, never scanned once
+      // per Case.
+      const workspaceQuantities = PackLibrary.getWorkspaceCaseQuantities();
       initCasesFooter(mode);
       renderFilters();
-      renderTable();
-      renderViewMode(mode);
+      renderTable(workspaceQuantities);
+      renderViewMode(mode, workspaceQuantities);
       applyFiltersVisibility();
     }
 
-    function renderViewMode(mode) {
+    function renderViewMode(mode, workspaceQuantities) {
       const prefs = PreferencesManager.get();
       const viewMode = mode || prefs.casesViewMode || 'list';
       updateViewButtons(viewMode);
@@ -583,7 +589,7 @@ export function createCasesScreen({
         if (gridEl) {
           gridEl.style.display = 'grid';
           gridEl.innerHTML = '';
-          renderGridView((pageMeta && pageMeta.slice) || [], prefs);
+          renderGridView((pageMeta && pageMeta.slice) || [], prefs, workspaceQuantities || new Map());
         }
         return;
       }
@@ -592,11 +598,12 @@ export function createCasesScreen({
       if (casesTableWrap) casesTableWrap.style.display = 'block';
     }
 
-    function renderGridView(cases, prefs) {
+    function renderGridView(cases, prefs, workspaceQuantities) {
       if (!gridEl) return;
       gridEl.innerHTML = '';
       const list = Array.isArray(cases) ? cases : [];
       const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
+      const quantities = workspaceQuantities || new Map();
 
       if (!list.length) return;
 
@@ -691,6 +698,14 @@ export function createCasesScreen({
             ruleChip.textContent = label;
             badgesWrap.appendChild(ruleChip);
           });
+        }
+
+        if (badgePrefs.showQuantity !== false) {
+          const qty = quantities.get(c.id) || 0;
+          const qtyBadge = document.createElement('div');
+          qtyBadge.className = 'badge';
+          qtyBadge.textContent = `${qty} unit${qty === 1 ? '' : 's'}`;
+          badgesWrap.appendChild(qtyBadge);
         }
 
         const selectCb = document.createElement('input');
@@ -806,9 +821,10 @@ export function createCasesScreen({
       });
     }
 
-    function renderTable() {
+    function renderTable(workspaceQuantities) {
       const prefs = PreferencesManager.get();
       const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.cases) || {};
+      const quantities = workspaceQuantities || new Map();
       applyListColumnVisibility(prefs);
       const q = String(searchEl.value || '').trim();
       const cats = Array.from(activeCategories).sort();
@@ -866,6 +882,10 @@ export function createCasesScreen({
           case 'category':
             valA = CategoryService.meta(a.category).name.toLowerCase();
             valB = CategoryService.meta(b.category).name.toLowerCase();
+            break;
+          case 'quantity':
+            valA = quantities.get(a.id) || 0;
+            valB = quantities.get(b.id) || 0;
             break;
           default:
             valA = (a.name || '').toLowerCase();
@@ -1017,6 +1037,13 @@ export function createCasesScreen({
         }
         tr.appendChild(tdHandling);
 
+        const tdQty = document.createElement('td');
+        tdQty.textContent = String(quantities.get(c.id) || 0);
+        if (badgePrefs.showQuantity === false) {
+          tdQty.style.display = 'none';
+        }
+        tr.appendChild(tdQty);
+
         const tdNotes = document.createElement('td');
         tdNotes.className = 'tp3d-management-notes-col';
         tdNotes.appendChild(createCaseNotesButton(c));
@@ -1074,12 +1101,16 @@ export function createCasesScreen({
       set('volume', badgePrefs.showVolume !== false);
       set('weight', badgePrefs.showWeight !== false);
       set('category', badgePrefs.showCategory !== false);
+      set('quantity', badgePrefs.showQuantity !== false);
 
-      const catTh = /** @type {HTMLElement|null} */ (
-        document.querySelector('#screen-cases table thead th[data-sort="category"]')
+      // Handling has no sort key (it is not sortable), so it is looked up by its
+      // own stable data-column attribute rather than a positional sibling
+      // traversal from a neighboring header, which silently breaks whenever a
+      // column is inserted or reordered next to it.
+      const handlingTh = /** @type {HTMLElement|null} */ (
+        document.querySelector('#screen-cases table thead th[data-column="handling"]')
       );
-      const handlingTh = catTh ? catTh.nextElementSibling : null;
-      if (handlingTh && handlingTh instanceof HTMLElement) {
+      if (handlingTh) {
         handlingTh.style.display = badgePrefs.showHandling !== false ? '' : 'none';
       }
 

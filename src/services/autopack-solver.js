@@ -2547,8 +2547,7 @@ function frontOverhangValidationRank(placement, retentionContext) {
   return isStepRetainer ? 0 : 1;
 }
 
-function validatePackedPlacements(output, packed, zones) {
-  const options = arguments[3] || {};
+function validatePackedPlacements(output, packed, zones, options = {}) {
   const stageRejected = options.stageRejected !== false;
   const retentionContext = options.retentionContext || null;
   // wheelWells geometry (null for every other mode). When present, containment

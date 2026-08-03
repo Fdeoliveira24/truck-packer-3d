@@ -93,7 +93,7 @@ function getAuthStateSnapshot(api) {
 function recordRuntimeSnapshot(reason, extra = {}) {
   if (!_active) return;
   const api = window.SupabaseClient || window.__TP3D_SUPABASE_API;
-  let modalCount = 0;
+  let modalCount;
   try {
     modalCount = document.querySelectorAll('[data-tp3d-settings-modal="1"]').length;
   } catch {
@@ -178,7 +178,7 @@ function describeNode(node) {
 
   const id = node.id || null;
 
-  let text = '';
+  let text;
   try {
     text = (node.textContent || '').trim().slice(0, 60);
   } catch {
@@ -488,7 +488,7 @@ function trackInflight(fnName, id) {
   const set = _inflight.get(fnName);
   set.add(id);
   if (set.size > 1) {
-    let modalOpen = false;
+    let modalOpen;
     try {
       modalOpen = Boolean(document.querySelector('[data-tp3d-settings-modal="1"]'));
     } catch {

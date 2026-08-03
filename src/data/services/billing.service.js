@@ -85,7 +85,7 @@ function getAnonKey() {
  * @throws {Error} If no session/token or missing anon key.
  */
 async function getFunctionAuthHeaders() {
-  let session = null;
+  let session;
   try {
     const s = await getSupabaseSessionSingleFlight();
     session = s && s.session ? s.session : null;
@@ -144,7 +144,7 @@ async function postFn(path, body) {
     body: JSON.stringify(payload),
   });
   if (_isDebug) {
-    let responseText = '';
+    let responseText;
     try {
       responseText = await res.clone().text();
     } catch (_) {

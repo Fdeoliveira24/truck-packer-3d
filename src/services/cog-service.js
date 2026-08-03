@@ -8,8 +8,8 @@
 
 /**
  * Computes the center of gravity for a pack.
- * @param {object} pack - Pack object with truck and cases
- * @param {object[]} caseLibrary - Array of case definitions
+ * @param {{ truck?: { length?: number, width?: number }, cases?: Array<Record<string, any>> }} pack - Pack object with truck and cases
+ * @param {Record<string, any>[]} caseLibrary - Array of case definitions
  * @returns {object|null} CoG data or null if no valid weight
  */
 export function computeCoG(pack, caseLibrary) {

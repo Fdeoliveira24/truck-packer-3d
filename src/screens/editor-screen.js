@@ -3510,6 +3510,22 @@ export function createEditorScreen({
     const supportsWebGL = Utils.hasWebGL();
     const browserCats = new Set();
     const browserManufacturers = new Set();
+    // Ephemeral per-Case Qty selector drafts, keyed by caseId. Session-only:
+    // never read from or written to StateStore/localStorage/Pack/Case. Survives
+    // Case Browser re-renders (search/filter/group changes) while this Editor
+    // screen instance stays mounted; recreated empty on Editor recreation/reload.
+    const caseQtyDrafts = new Map();
+    const CASE_QTY_MIN = 1;
+    const CASE_QTY_MAX = 10000;
+    function getCaseQtyDraft(caseId) {
+      const stored = caseQtyDrafts.get(caseId);
+      return Number.isFinite(stored) ? stored : CASE_QTY_MIN;
+    }
+    function setCaseQtyDraft(caseId, value) {
+      const clamped = Math.min(CASE_QTY_MAX, Math.max(CASE_QTY_MIN, Math.trunc(value)));
+      caseQtyDrafts.set(caseId, clamped);
+      return clamped;
+    }
     let activationRaf = null;
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
     let showCaseFilters = false;
@@ -4324,6 +4340,25 @@ export function createEditorScreen({
       const prefs = PreferencesManager.get ? PreferencesManager.get() : { units: { length: 'in', weight: 'lb' } };
       const lengthUnit = (prefs.units && prefs.units.length) || 'in';
       const browserPack = PackLibrary.getById(StateStore.get('currentPackId'));
+
+      // Qty/Add controls only apply when a Load Plan is open; show one Case
+      // Browser-level message in their place otherwise (lazily created, same
+      // reuse pattern as the browser tabs above) rather than repeating a
+      // disabled control on every card.
+      const qtyMessageHost = caseListEl && caseListEl.parentElement ? caseListEl.parentElement : null;
+      let qtyMessageEl = /** @type {HTMLElement|null} */ (
+        qtyMessageHost ? qtyMessageHost.querySelector('.tp3d-editor-case-qty-empty-message') : null
+      );
+      if (qtyMessageHost && !qtyMessageEl) {
+        qtyMessageEl = document.createElement('div');
+        qtyMessageEl.className = 'tp3d-editor-case-qty-empty-message muted';
+        qtyMessageEl.textContent = 'Open a Load Plan to add quantities.';
+        qtyMessageHost.insertBefore(qtyMessageEl, caseListEl);
+      }
+      if (qtyMessageEl) {
+        qtyMessageEl.hidden = Boolean(browserPack);
+      }
+
       const selectedInstanceIds = StateStore.get('selectedInstanceIds') || [];
       const selectedCaseIds = new Set();
       if (browserPack && selectedInstanceIds.length) {
@@ -4368,6 +4403,45 @@ export function createEditorScreen({
       });
       setCaseFiltersVisible(showCaseFilters, false);
 
+      // Quantity Controls: a target quantity commit triggers a StateStore-driven
+      // re-render, which tears down and rebuilds every card below. Capture scroll
+      // position and, if a quantity control currently owns focus, which case/role
+      // it belongs to, so a mid-edit commit does not steal focus or jump the list.
+      const savedScrollTop = caseListEl.scrollTop;
+      const activeElRaw = document.activeElement;
+      const activeQtyEl = activeElRaw instanceof HTMLElement ? activeElRaw : null;
+      // selectionStart/selectionEnd only exist on text-selectable inputs, not the
+      // generic HTMLElement type; the cast is safe because the typeof checks
+      // below tolerate any element (e.g. the +/− buttons) reading them as undefined.
+      const activeQtyInput = /** @type {HTMLInputElement} */ (activeQtyEl);
+      const focusedQtyInfo =
+        activeQtyEl && caseListEl.contains(activeQtyEl) && activeQtyEl.dataset.qtyRole
+          ? {
+            caseId: activeQtyEl.dataset.caseId,
+            role: activeQtyEl.dataset.qtyRole,
+            selStart: typeof activeQtyInput.selectionStart === 'number' ? activeQtyInput.selectionStart : null,
+            selEnd: typeof activeQtyInput.selectionEnd === 'number' ? activeQtyInput.selectionEnd : null,
+          }
+          : null;
+      const restoreCaseBrowserFocusAndScroll = () => {
+        caseListEl.scrollTop = savedScrollTop;
+        if (!focusedQtyInfo) return;
+        const nextElRaw = caseListEl.querySelector(
+          `[data-case-id="${CSS.escape(focusedQtyInfo.caseId || '')}"][data-qty-role="${focusedQtyInfo.role}"]`
+        );
+        if (!(nextElRaw instanceof HTMLElement)) return;
+        nextElRaw.focus();
+        const nextInputEl = /** @type {HTMLInputElement} */ (nextElRaw);
+        if (focusedQtyInfo.selStart != null && typeof nextInputEl.setSelectionRange === 'function') {
+          try {
+            nextInputEl.setSelectionRange(focusedQtyInfo.selStart, focusedQtyInfo.selEnd);
+          } catch {
+            // Some input types (e.g. number, in some browsers) do not support
+            // selection reflection — focus restoration above still applies.
+          }
+        }
+      };
+
       caseListEl.innerHTML = '';
       if (caseBrowserGroupBy === 'manufacturer') {
         const mfgGroups = new Map();
@@ -4384,21 +4458,29 @@ export function createEditorScreen({
             hdr.textContent = groupName;
             caseListEl.appendChild(hdr);
             groupCases.forEach(c => {
-              caseListEl.appendChild(buildCaseBrowserCard(c, lengthUnit, prefs, selectedCaseIds.has(c.id)));
+              caseListEl.appendChild(
+                buildCaseBrowserCard(c, lengthUnit, prefs, selectedCaseIds.has(c.id), browserPack)
+              );
             });
           });
+        restoreCaseBrowserFocusAndScroll();
         return;
       }
       cases.forEach(c => {
-        caseListEl.appendChild(buildCaseBrowserCard(c, lengthUnit, prefs, selectedCaseIds.has(c.id)));
+        caseListEl.appendChild(
+          buildCaseBrowserCard(c, lengthUnit, prefs, selectedCaseIds.has(c.id), browserPack)
+        );
       });
+      restoreCaseBrowserFocusAndScroll();
     }
 
     /**
      * Builds a single Case Browser catalog card (shared by the Category and
      * Manufacturer grouped views). Preserves drag-to-pack and Add behavior.
+     * `pack` is the currently open Load Plan (or null) — only when set does the
+     * card grow a Quantity Controls target section.
      */
-    function buildCaseBrowserCard(c, lengthUnit, prefs, isSelected) {
+    function buildCaseBrowserCard(c, lengthUnit, prefs, isSelected, pack) {
       const card = document.createElement('div');
       card.className = 'card';
       card.classList.add('tp3d-editor-card-padding-12', 'tp3d-editor-card-grid-gap-8', 'tp3d-editor-case-browser-card');
@@ -4414,6 +4496,7 @@ export function createEditorScreen({
       const name = document.createElement('div');
       name.classList.add('tp3d-editor-fw-semibold');
       name.textContent = c.name;
+      header.appendChild(name);
       const hasDims =
         c &&
         c.dimensions &&
@@ -4431,15 +4514,6 @@ export function createEditorScreen({
         const weightUnit = (prefs.units && prefs.units.weight) || 'lb';
         weightLabel = weightUnit === 'kg' ? `${(weightNum * 0.453592).toFixed(2)} kg` : `${weightNum.toFixed(2)} lb`;
       }
-      const addBtn = document.createElement('button');
-      addBtn.className = 'btn btn-primary';
-      addBtn.type = 'button';
-      addBtn.classList.add('tp3d-editor-btn-add');
-      addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
-      addBtn.addEventListener('click', () => addCaseToPack(c.id));
-      header.appendChild(name);
-      header.appendChild(addBtn);
-
       const meta1 = document.createElement('div');
       meta1.className = 'tp3d-editor-card-dims tp3d-editor-case-meta-primary';
       const parts = [dimsLabel, volumeLabel, weightLabel].filter(v => v && v !== '—');
@@ -4460,7 +4534,164 @@ export function createEditorScreen({
       card.appendChild(header);
       card.appendChild(meta1);
       card.appendChild(meta2);
+      if (pack) {
+        card.appendChild(buildCaseQtyAddRow(c, pack));
+      }
       return card;
+    }
+
+    /**
+     * Builds the compact Qty stepper + always-"+ Add" row for a Case Browser
+     * card, plus the "in load / in truck / staged" readout beneath it. Qty is
+     * an ephemeral per-Case session draft (caseQtyDrafts) — never read from or
+     * written to the Pack/Case/StateStore/localStorage. Clicking "+ Add"
+     * creates exactly the drafted Qty as new staged physical instances via
+     * PackLibrary.addInstancesToStaging() (one atomic Pack update, one Undo
+     * step), then resets the draft back to 1.
+     */
+    function buildCaseQtyAddRow(c, pack) {
+      const packId = pack.id;
+      const counts = PackLibrary.getCaseInstanceCounts(pack, c.id);
+
+      const section = document.createElement('div');
+      section.className = 'tp3d-editor-case-qty';
+
+      const row = document.createElement('div');
+      row.className = 'tp3d-editor-case-qty-row';
+
+      const label = document.createElement('span');
+      label.className = 'tp3d-editor-case-qty-label';
+      label.textContent = 'Qty';
+      row.appendChild(label);
+
+      const minusBtn = document.createElement('button');
+      minusBtn.type = 'button';
+      minusBtn.className = 'btn btn-sm tp3d-editor-case-qty-btn';
+      minusBtn.textContent = '−';
+      minusBtn.setAttribute('aria-label', `Decrease quantity for ${c.name}`);
+      minusBtn.dataset.caseId = c.id;
+      minusBtn.dataset.qtyRole = 'minus';
+      row.appendChild(minusBtn);
+
+      const input = document.createElement('input');
+      input.type = 'number';
+      input.className = 'input tp3d-editor-case-qty-input';
+      input.min = String(CASE_QTY_MIN);
+      input.max = String(CASE_QTY_MAX);
+      input.step = '1';
+      input.inputMode = 'numeric';
+      input.value = String(getCaseQtyDraft(c.id));
+      input.setAttribute('aria-label', `Quantity to add for ${c.name}`);
+      input.dataset.caseId = c.id;
+      input.dataset.qtyRole = 'input';
+      row.appendChild(input);
+
+      const plusBtn = document.createElement('button');
+      plusBtn.type = 'button';
+      plusBtn.className = 'btn btn-sm tp3d-editor-case-qty-btn';
+      plusBtn.textContent = '+';
+      plusBtn.setAttribute('aria-label', `Increase quantity for ${c.name}`);
+      plusBtn.dataset.caseId = c.id;
+      plusBtn.dataset.qtyRole = 'plus';
+      row.appendChild(plusBtn);
+
+      const addBtn = document.createElement('button');
+      addBtn.type = 'button';
+      addBtn.className = 'btn btn-primary btn-sm tp3d-editor-btn-add';
+      // Label must always remain exactly "+ Add" — never a dynamic count/state.
+      addBtn.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
+      addBtn.setAttribute('aria-label', `Add to staging for ${c.name}`);
+      addBtn.dataset.caseId = c.id;
+      addBtn.dataset.qtyRole = 'add';
+      row.appendChild(addBtn);
+
+      const readout = document.createElement('div');
+      readout.className = 'tp3d-editor-case-qty-readout';
+      readout.textContent = `${counts.inLoad} in load · ${counts.inTruck} in truck · ${counts.staged} staged`;
+
+      section.appendChild(row);
+      section.appendChild(readout);
+
+      const revertInput = () => {
+        input.value = String(getCaseQtyDraft(c.id));
+      };
+
+      // Direct entry must resolve to a whole number >= CASE_QTY_MIN; blank,
+      // zero, negative, fractional, non-numeric, NaN, and infinite values are
+      // all invalid and fall back to reverting the prior valid draft.
+      const parseDirectEntry = () => {
+        const raw = input.value.trim();
+        if (raw === '') return null;
+        const n = Number(raw);
+        if (!Number.isFinite(n) || !Number.isInteger(n) || n < CASE_QTY_MIN) return null;
+        return n;
+      };
+
+      const commitDraft = value => {
+        if (value === null) {
+          revertInput();
+          return;
+        }
+        setCaseQtyDraft(c.id, value);
+        input.value = String(getCaseQtyDraft(c.id));
+      };
+
+      minusBtn.addEventListener('click', () => {
+        commitDraft(getCaseQtyDraft(c.id) - 1);
+      });
+
+      plusBtn.addEventListener('click', () => {
+        commitDraft(getCaseQtyDraft(c.id) + 1);
+      });
+
+      input.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter') {
+          ev.preventDefault();
+          commitDraft(parseDirectEntry());
+        } else if (ev.key === 'Escape') {
+          ev.preventDefault();
+          revertInput();
+          input.blur();
+        }
+      });
+      input.addEventListener('blur', () => {
+        commitDraft(parseDirectEntry());
+      });
+
+      addBtn.addEventListener('click', () => {
+        if (editorMutationBlocked()) return;
+        const qty = getCaseQtyDraft(c.id);
+        minusBtn.disabled = true;
+        plusBtn.disabled = true;
+        input.disabled = true;
+        addBtn.disabled = true;
+        try {
+          // Reset the draft BEFORE the mutating call: addInstancesToStaging's
+          // Pack update triggers a synchronous StateStore-driven re-render
+          // that rebuilds this card from caseQtyDrafts immediately, so the
+          // reset must already be visible by then — not after, which would
+          // leave the stale pre-add value showing on the freshly rebuilt input.
+          setCaseQtyDraft(c.id, CASE_QTY_MIN);
+          // Resolves the latest Pack/Case internally at call time — never
+          // trusts a stale render-time reference.
+          const result = PackLibrary.addInstancesToStaging(packId, c.id, qty);
+          if (!result || result.addedCount <= 0) return;
+          if (result.addedCount === 1) {
+            StateStore.set({ selectedInstanceIds: result.createdInstanceIds }, { skipHistory: true });
+          }
+          const message = result.addedCount === 1
+            ? 'Case added to staging.'
+            : `Added ${result.addedCount} items to staging.`;
+          UIComponents.showToast(message, 'success');
+        } finally {
+          minusBtn.disabled = false;
+          plusBtn.disabled = false;
+          input.disabled = false;
+          addBtn.disabled = false;
+        }
+      });
+
+      return section;
     }
 
     function openEditorNewCaseModal() {

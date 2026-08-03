@@ -2167,9 +2167,18 @@ export function update(packId, patch) {
       required: false,
     });
   }
-  const next = { ...prev, ...cloned };
+  const next = CoreNormalizer.sanitizeLegacyPackQuantityFields({ ...prev, ...cloned });
 
-  const lastEditedKeys = ['title', 'client', 'projectName', 'drawnBy', 'notes', 'truck', 'cases', 'groups'];
+  const lastEditedKeys = [
+    'title',
+    'client',
+    'projectName',
+    'drawnBy',
+    'notes',
+    'truck',
+    'cases',
+    'groups',
+  ];
   const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
   next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
   next.stats = computeStats(next);
@@ -2191,7 +2200,7 @@ export function duplicate(packId) {
   const pack = getById(packId);
   if (!pack) return null;
   const now = Date.now();
-  const copy = Utils.deepClone(pack);
+  const copy = CoreNormalizer.sanitizeLegacyPackQuantityFields(Utils.deepClone(pack));
   copy.id = Utils.uuid();
   copy.title = pack.title + ' (Copy)';
   copy.loadPlanNumber = generateLoadPlanNumber(getPacks());
@@ -2243,6 +2252,116 @@ export function addInstance(packId, caseId, position) {
   const nextCases = [...(pack.cases || []), instance];
   update(packId, { cases: nextCases });
   return instance;
+}
+
+export const BULK_ADD_MAX_QUANTITY = 10000;
+
+const EMPTY_BULK_ADD_RESULT = Object.freeze({
+  requestedCount: 0,
+  addedCount: 0,
+  createdInstanceIds: [],
+  pack: null,
+});
+
+/**
+ * Quantity Controls: bulk-create `count` physical instances of `caseId`, all
+ * placed in staging (never inside the truck), committed as ONE PackLibrary
+ * update/history entry — never one update() per instance. `count` comes from
+ * the Editor's ephemeral Qty selector, not any persisted/computed value.
+ *
+ * Reuses the exact same staging-grid layout formula getStagingLayout() and
+ * findSafeStagingPosition() are built on (normalizeDims, buildAcceptedAabbs,
+ * getPlacementForAabb; same originX/originZ/gap/step math), so placement
+ * conventions never diverge. It does NOT call findSafeStagingPosition() in a
+ * loop: that primitive re-scans its grid from (row=0, col=0) on every call,
+ * which is fine for a single addInstance() but is O(n^2) overlap checks for
+ * an n-item batch (each of the n calls re-checks all instances placed by the
+ * previous calls). Instead this walks the same grid ONCE with a persistent
+ * cursor. Same-size grid cells never overlap each other by construction
+ * (stepX/stepZ >= dims), so a newly placed instance only ever needs checking
+ * against the pack's pre-existing instances (a fixed-size set), not against
+ * the other instances in this same batch — O(n * existingCount) instead of
+ * O(n^2), which is what keeps a 10,000-item batch responsive.
+ */
+export function addInstancesToStaging(packId, caseId, count) {
+  const pack = getById(packId);
+  if (!pack || !caseId) return EMPTY_BULK_ADD_RESULT;
+  const caseData = CaseLibrary.getById(caseId);
+  if (!caseData) return EMPTY_BULK_ADD_RESULT;
+
+  const rawCount = Number(count);
+  if (!Number.isFinite(rawCount)) return EMPTY_BULK_ADD_RESULT;
+  const requestedCount = Math.max(0, Math.min(BULK_ADD_MAX_QUANTITY, Math.trunc(rawCount)));
+  if (requestedCount <= 0) return { ...EMPTY_BULK_ADD_RESULT, requestedCount, pack };
+
+  const dims = normalizeDims(caseData.dimensions);
+  const existingInstances = pack.cases || [];
+  const existingAccepted = buildAcceptedAabbs(pack, existingInstances, CaseLibrary.getCases());
+
+  const layout = getStagingLayout(pack.truck);
+  const truckL = Math.max(layout.truckL, dims.length);
+  const gap = layout.gap;
+  const stepX = Math.max(1, dims.length + gap);
+  const stepZ = Math.max(1, dims.width + gap);
+  const minX = layout.originX + dims.length / 2;
+  const maxX = Math.max(minX, truckL - dims.length / 2);
+  const availableX = Math.max(0, maxX - minX);
+  const cols = Math.max(1, Math.floor(availableX / stepX) + 1);
+  const startZ = layout.originZ + dims.width / 2;
+
+  const newInstances = [];
+  let row = 0;
+  let col = 0;
+  // Generous but finite safety valve: any single pre-existing AABB can only
+  // ever block a bounded run of grid cells, so a free cell is always reached
+  // well within a small multiple of (existingAccepted.length + requestedCount).
+  // This only guards against a pathological truck/case-dims combination —
+  // it must never be the normal termination path.
+  const maxAttempts = (existingAccepted.length + requestedCount) * 4 + 10000;
+  let attempts = 0;
+
+  while (newInstances.length < requestedCount && attempts < maxAttempts) {
+    attempts++;
+    const position = {
+      x: Math.min(minX + col * stepX, maxX),
+      y: dims.height / 2,
+      z: startZ + row * stepZ,
+    };
+    col++;
+    if (col >= cols) {
+      col = 0;
+      row++;
+    }
+    const aabb = makeAabb(position, dims);
+    if (overlapsAny(aabb, existingAccepted)) continue;
+    newInstances.push({
+      id: Utils.uuid(),
+      caseId,
+      transform: {
+        position,
+        rotation: { x: 0, y: 0, z: 0 },
+        scale: { x: 1, y: 1, z: 1 },
+      },
+      hidden: false,
+      groupId: null,
+      // The grid's Z-band always starts outside the truck's usable zones by
+      // construction (originZ = truckWidth/2 + gap), but this is still
+      // classified through the same shared predicate addInstance() uses
+      // rather than hardcoded, so the two paths can never diverge.
+      placement: getPlacementForAabb(pack, aabb),
+    });
+  }
+
+  // Single write: all created instances committed together, one update()
+  // call, one history/Undo entry. Nothing is written if requestedCount is 0.
+  const updatedPack = update(packId, { cases: [...existingInstances, ...newInstances] });
+
+  return {
+    requestedCount,
+    addedCount: newInstances.length,
+    createdInstanceIds: newInstances.map(inst => inst.id),
+    pack: updatedPack,
+  };
 }
 
 export function updateInstance(packId, instanceId, patch) {
@@ -2435,6 +2554,72 @@ export function computeStats(pack, caseLibraryOverride) {
   };
 }
 
+// ============================================================================
+// SECTION: CASE INSTANCE COUNTS — derived, non-persisted quantity classification
+// ============================================================================
+
+const EMPTY_CASE_INSTANCE_COUNTS = Object.freeze({ inTruck: 0, staged: 0, inLoad: 0, hidden: 0 });
+
+/**
+ * Derived (never persisted) per-Case physical instance counts within one Pack.
+ * Reuses the SAME shape-aware truck-geometry classification computeStats()
+ * uses (getTrailerUsableZones/getWheelWellGeometry/isAabbInsideTruckGeometry)
+ * so the Editor Qty readout can never diverge from Pack statistics.
+ */
+export function getCaseInstanceCounts(packOrId, caseId, caseLibraryOverride) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  if (!pack || !caseId) return { ...EMPTY_CASE_INSTANCE_COUNTS };
+
+  const getCase = id => {
+    if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === id) || null;
+    return CaseLibrary.getById(id);
+  };
+  const caseData = getCase(caseId);
+
+  const zonesInches = getTrailerUsableZones(pack.truck);
+  const wheelWell = getWheelWellGeometry(pack.truck);
+
+  let inTruck = 0;
+  let staged = 0;
+  let hidden = 0;
+  (pack.cases || []).forEach(inst => {
+    if (!inst || inst.caseId !== caseId) return;
+    if (inst.hidden) {
+      hidden++;
+      return;
+    }
+    // No resolvable case definition means no geometry to test — consistent with
+    // computeStats() excluding unresolved instances from packed/staged totals.
+    if (!caseData) return;
+    const effDims = getInstanceEffectiveDims(inst, caseData);
+    const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
+    const aabb = makeAabb(pos, effDims);
+    if (isAabbInsideTruckGeometry(aabb, zonesInches, wheelWell)) {
+      inTruck++;
+    } else {
+      staged++;
+    }
+  });
+
+  return { inTruck, staged, inLoad: inTruck + staged, hidden };
+}
+
+/**
+ * Workspace-wide non-hidden physical instance count per Case, aggregated in
+ * ONE pass over the active workspace's packLibrary (never a per-Case scan).
+ * Result is derived for the current render cycle only — never persisted.
+ */
+export function getWorkspaceCaseQuantities() {
+  const counts = new Map();
+  getPacks().forEach(pack => {
+    (pack.cases || []).forEach(inst => {
+      if (!inst || inst.hidden || !inst.caseId) return;
+      counts.set(inst.caseId, (counts.get(inst.caseId) || 0) + 1);
+    });
+  });
+  return counts;
+}
+
 // Cargo equivalence and the import fingerprint share one typed canonical
 // representation (core/cargo-canonical.js): the SAME raw value yields the SAME
 // canonical result in every path, "false" is never truthy, malformed numbers are
@@ -2614,7 +2799,7 @@ export function planPackImport(payload) {
     planNewCase(c, conflictKind, fingerprint);
   });
 
-  const pack = Utils.deepClone(incomingPack);
+  const pack = CoreNormalizer.sanitizeLegacyPackQuantityFields(Utils.deepClone(incomingPack));
   pack.id = currentPacks.some(p => p.id === pack.id) ? Utils.uuid() : pack.id || Utils.uuid();
   pack.title = pack.title ? `${pack.title} (Imported)` : 'Imported Pack';
   const requestedLoadPlanNumber = assertBusinessIdentityValue(pack.loadPlanNumber, {

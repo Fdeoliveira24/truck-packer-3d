@@ -824,7 +824,7 @@ export function createSettingsOverlay({
   }
 
   function _safeAuthSnapshot(userId) {
-    let hasUserJwt = false;
+    let hasUserJwt;
     try {
       const sess = SupabaseClient && typeof SupabaseClient.getSession === 'function'
         ? SupabaseClient.getSession()
@@ -1373,14 +1373,14 @@ export function createSettingsOverlay({
   // NOTE: Phase 2+ will optionally pass a profile row (profiles table) into this helper.
   // Keep one shared source of truth for avatar displayName/initials.
   function getCurrentUserView(profile = null) {
-    let user = null;
+    let user;
     try {
       user = SupabaseClient && SupabaseClient.getUser ? SupabaseClient.getUser() : null;
     } catch {
       user = null;
     }
 
-    let sessionUser = null;
+    let sessionUser;
     try {
       const s = _SessionManager && typeof _SessionManager.get === 'function' ? _SessionManager.get() : null;
       sessionUser = s && s.user ? s.user : null;
@@ -3160,7 +3160,7 @@ export function createSettingsOverlay({
       return;
     }
 
-    let text = '';
+    let text;
     try {
       text = await file.text();
     } catch (err) {
@@ -3168,7 +3168,7 @@ export function createSettingsOverlay({
       return;
     }
 
-    let imported = null;
+    let imported;
     try {
       imported = ImportExport.parseAppImportJSON(text);
     } catch (err) {
@@ -3408,7 +3408,7 @@ export function createSettingsOverlay({
       return;
     }
     if (!lockedOrgId) {
-      let confirmedNoActiveWorkspace = false;
+      let confirmedNoActiveWorkspace;
       try {
         confirmedNoActiveWorkspace = Boolean(
           accountBundleConfirmedNoActiveWorkspace ||
@@ -6899,7 +6899,7 @@ export function createSettingsOverlay({
                     return;
                   }
                   if (isSensitiveRoleChange(role, nextRole)) {
-                    let confirmed = false;
+                    let confirmed;
                     try {
                       confirmed = await UIComponents.confirm({
                         title: 'Change member role',

@@ -54,7 +54,7 @@ export function createImportAppDialog({
       return;
     }
 
-    let text = '';
+    let text;
     try {
       text = await file.text();
     } catch (err) {
@@ -62,7 +62,7 @@ export function createImportAppDialog({
       return;
     }
 
-    let imported = null;
+    let imported;
     try {
       imported = ImportExport.parseAppImportJSON(text);
     } catch (err) {

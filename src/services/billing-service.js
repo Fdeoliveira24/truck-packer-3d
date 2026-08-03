@@ -101,6 +101,10 @@ let _billingRequireAuthoritativeOnNextSignIn = false;
 let _billingGateApplier = null;
 /** @type {null|((orgId:string, meta?:{reason?:string,status?:number|null,message?:string|null})=>boolean)} */
 
+/**
+ * @param {string|null|undefined} value
+ * @returns {string|null}
+ */
 function abbreviateBillingLifecycleId(value) {
   const normalized = value ? String(value) : '';
   return normalized ? normalized.slice(-6) : null;
@@ -1536,7 +1540,7 @@ async function refreshBilling({ force = false, reason = 'manual', authoritativeR
   }
 }
 
-/** @param {object} billingSnapshot – from getBillingState() */
+/** @param {Record<string, any>} billingSnapshot – from getBillingState() */
 function canUseProFeatures(billingSnapshot) {
   const s = billingSnapshot || getBillingState();
   return Boolean(getProRuleSet(s).canUseProFeature);
@@ -1545,7 +1549,7 @@ function canUseProFeatures(billingSnapshot) {
 /**
  * Single source of truth for Pro-only feature gates.
  * Returns billing + role state needed by all Pro-gated actions.
- * @param {object} [billingSnapshot] - from getBillingState(); defaults to current state.
+ * @param {Record<string, any>} [billingSnapshot] - from getBillingState(); defaults to current state.
  * @param {string} [userRole] - override; defaults to orgContext.role in module scope.
  * @returns {{
  *   isProActive: boolean,
@@ -1666,8 +1670,8 @@ let _billingActionGeneration = 0;
 
 function captureBillingActionContext(action) {
   const readCurrent = () => {
-    let authState = null;
-    let authEpoch = null;
+    let authState;
+    let authEpoch;
     try {
       authState = SupabaseClient && typeof SupabaseClient.getAuthState === 'function'
         ? SupabaseClient.getAuthState()

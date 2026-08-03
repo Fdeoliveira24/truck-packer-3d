@@ -576,7 +576,7 @@ test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persisten
   overlay.open({ screen: 'cases' });
   assert.deepEqual(
     menuItems.slice(1).map(entry => entry.label),
-    ['Item Code', 'Manufacturer', 'Notes', 'Dimensions', 'Volume', 'Weight', 'Category', 'Handling']
+    ['Item Code', 'Manufacturer', 'Notes', 'Dimensions', 'Volume', 'Weight', 'Category', 'Handling', 'Quantity']
   );
   assert.equal(menuOptions.width, 200);
   assert.equal(menuOptions.dropdownClass, 'tp3d-dropdown-card-display');
@@ -614,10 +614,9 @@ test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persisten
       'Customer Reference',
       'Notes',
       'Thumbnail',
-      'Cases Count',
       'Dimensions',
       'Shape',
-      'Packed',
+      'Cases Qty',
       'Volume',
       'Weight',
       'Edited Time',
@@ -811,8 +810,8 @@ test('MANAGEMENT-NOTES Grid/List controls preserve ownership, placement, accessi
   assert.equal(packHeaderMatches.length, 2, 'Cases and Load Plans each have exactly one Notes header');
   packHeaderMatches.forEach(header => assert.doesNotMatch(header, /data-sort/,
     'Notes headers are presentation controls, never sort fields'));
-  assert.match(html, /<th[^>]*>Handling<\/th>\s*<th[^>]*data-column="notes"[^>]*>Notes<\/th>\s*<th class="col-actions"/,
-    'Cases Notes sits after Handling and before actions');
+  assert.match(html, /<th[^>]*>Handling<\/th>\s*<th[^>]*data-sort="quantity"[\s\S]*?<\/th>\s*<th[^>]*data-column="notes"[^>]*>Notes<\/th>\s*<th class="col-actions"/,
+    'Cases Notes sits after Handling and Quantity, and before actions');
   assert.match(html, /data-sort="edited"[\s\S]*?<\/th>\s*<th[^>]*data-column="notes"[^>]*>Notes<\/th>\s*<th class="col-actions"/,
     'Load Plan Notes sits after Edited and before actions');
 
@@ -1045,7 +1044,7 @@ test('BUSINESS-IDENTITY-SEARCH-SORT menus, pipelines, and shared Editor behavior
   for (const field of ['name', 'itemCode', 'manufacturer', 'length', 'width', 'height', 'volume', 'weight', 'category']) {
     assert.match(caseSortOptions, new RegExp(`key: '${field}'`));
   }
-  for (const field of ['title', 'loadPlanNumber', 'cases', 'length', 'width', 'height', 'mode', 'packed', 'volume', 'weight', 'edited']) {
+  for (const field of ['title', 'loadPlanNumber', 'casesQty', 'length', 'width', 'height', 'mode', 'volume', 'weight', 'edited']) {
     assert.match(packSortOptions, new RegExp(`key: '${field}'`));
   }
   assert.doesNotMatch(packSortOptions, /customerReference/,
@@ -1068,7 +1067,7 @@ test('BUSINESS-IDENTITY-SEARCH-SORT menus, pipelines, and shared Editor behavior
   assert.match(packsSource, /\{ type: 'header', label: 'Sort Load Plans' \}/);
   assert.doesNotMatch(packsSource, /Sort Load Plans ·|Sort load plans:/);
   assert.match(packsSource, /function updateListHeaderIcons\(\)[\s\S]*setAttribute\('data-tooltip', 'Sort Load Plans'\)/);
-  assert.match(casesSource, /renderGridView\(\(pageMeta && pageMeta\.slice\) \|\| \[\], prefs\)/);
+  assert.match(casesSource, /renderGridView\(\(pageMeta && pageMeta\.slice\) \|\| \[\], prefs, workspaceQuantities \|\| new Map\(\)\)/);
   assert.match(casesSource, /casePageMeta\.slice\.forEach/);
   assert.match(packsSource, /renderListView\(pageMeta\.slice\)/);
   assert.match(packsSource, /renderGridView\(pageMeta\.slice\)/,
@@ -1195,10 +1194,21 @@ test('BUSINESS-IDENTITY-UI management view switching stays atomic and Load Plan 
     assert.match(setViewBlock, /updateViewButtons\(nextMode\)/);
     assert.match(setViewBlock, /render\(nextMode\)/,
       `${label} active button and renderer receive the same validated view mode`);
-    assert.match(
-      renderBlock,
-      new RegExp(`const mode = modeOverride === '(?:list|grid)' \\|\\| modeOverride === '(?:list|grid)'[\\s\\S]*\\? modeOverride[\\s\\S]*: PreferencesManager\\.get\\(\\)\\.${preference} \\|\\| '${fallback}'`)
-    );
+    if (label === 'Load Plans') {
+      // Load Plans resolves its fallback through one canonical resolveViewMode()
+      // helper rather than a fresh PreferencesManager re-read on every render —
+      // see packs-screen.js's currentViewMode/resolveViewMode for why a fresh
+      // re-read here was the root cause of Grid silently reverting to List.
+      assert.match(
+        renderBlock,
+        /const mode = modeOverride === '(?:list|grid)' \|\| modeOverride === '(?:list|grid)'[\s\S]*\? modeOverride[\s\S]*: resolveViewMode\(\)/
+      );
+    } else {
+      assert.match(
+        renderBlock,
+        new RegExp(`const mode = modeOverride === '(?:list|grid)' \\|\\| modeOverride === '(?:list|grid)'[\\s\\S]*\\? modeOverride[\\s\\S]*: PreferencesManager\\.get\\(\\)\\.${preference} \\|\\| '${fallback}'`)
+      );
+    }
   }
 
   const packRenderBlock = packsSource.slice(

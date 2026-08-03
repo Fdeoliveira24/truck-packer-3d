@@ -108,7 +108,7 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
   function mapAuthError(err, action) {
     const raw = err?.message ? String(err.message) : '';
     const msg = raw.toLowerCase();
-    let friendly = '';
+    let friendly;
     let hideDebug = false;
 
     if (msg.includes('invalid login credentials')) {

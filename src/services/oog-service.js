@@ -7,9 +7,13 @@
  */
 
 /**
+ * @typedef {{ truck?: { length?: number, width?: number, height?: number }, cases?: Array<Record<string, any>> }} OOGPack
+ */
+
+/**
  * Computes OOG warnings for cases that exceed truck dimensions.
- * @param {object} pack - Pack object with truck and cases
- * @param {object[]} caseLibrary - Array of case definitions
+ * @param {OOGPack} pack - Pack object with truck and cases
+ * @param {Record<string, any>[]} caseLibrary - Array of case definitions
  * @returns {object[]} Array of warning objects
  */
 export function computeOOGWarnings(pack, caseLibrary) {
@@ -65,8 +69,8 @@ export function computeOOGWarnings(pack, caseLibrary) {
 
 /**
  * Computes pallet weight constraint warnings.
- * @param {object} pack - Pack object
- * @param {object[]} caseLibrary - Case definitions
+ * @param {OOGPack} pack - Pack object
+ * @param {Record<string, any>[]} caseLibrary - Case definitions
  * @returns {object[]} Array of pallet warning objects
  */
 export function computePalletWarnings(pack, caseLibrary) {

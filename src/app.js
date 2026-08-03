@@ -661,7 +661,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
 
     (function installWrapperDetective() {
-      let enabled = false;
+      let enabled;
       try {
         enabled = Boolean(window && window.localStorage && window.localStorage.getItem('tp3dDebug') === '1');
       } catch {
@@ -1048,7 +1048,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function getWorkspaceCreationLimitBlock() {
-      let snapshot = null;
+      let snapshot;
       try {
         snapshot = (window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function')
           ? window.__TP3D_BILLING.getBillingState()
@@ -1254,14 +1254,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function getSidebarAvatarView() {
-      let user = null;
+      let user;
       try {
         user = SupabaseClient && typeof SupabaseClient.getUser === 'function' ? SupabaseClient.getUser() : null;
       } catch {
         user = null;
       }
 
-      let sessionUser = null;
+      let sessionUser;
       try {
         const s = SessionManager.get();
         sessionUser = s && s.user ? s.user : null;
@@ -1702,43 +1702,51 @@ const TP3D_BUILD_STAMP = Object.freeze({
           doc.setFontSize(9);
           doc.setFont('helvetica', 'bold');
           const x0 = margin;
-          const x1 = margin + 24;
-          const x2 = margin + 260;
-          const x3 = margin + 360;
-          const x4 = margin + 470;
-          doc.text('#', x0, y);
-          doc.text('Name', x1, y);
-          doc.text('Category', x2, y);
-          doc.text('Dims', x3, y);
-          doc.text('Weight', x4, y);
-          y += 8;
-          doc.line(margin, y, pageWidth - margin, y);
-          y += 14;
+          const xQty = margin + 22;
+          const xName = margin + 55;
+          const xCategory = margin + 255;
+          const xDims = margin + 350;
+          const xWeight = margin + 450;
+          const writeChecklistHeader = () => {
+            doc.setFontSize(9);
+            doc.setFont('helvetica', 'bold');
+            doc.text('#', x0, y);
+            doc.text('Qty', xQty, y);
+            doc.text('Name', xName, y);
+            doc.text('Category', xCategory, y);
+            doc.text('Dims', xDims, y);
+            doc.text('Unit Weight', xWeight, y);
+            y += 8;
+            doc.line(margin, y, pageWidth - margin, y);
+            y += 14;
+            doc.setFont('helvetica', 'normal');
+          };
+          writeChecklistHeader();
 
-          doc.setFont('helvetica', 'normal');
           entries.forEach((e, idx) => {
-            if (y > pageHeight - margin) {
+            const nameLines = doc.splitTextToSize(String(e.name || '—'), xCategory - xName - 8);
+            const categoryLines = doc.splitTextToSize(String(e.category || '—'), xDims - xCategory - 8);
+            const dimsLines = doc.splitTextToSize(String(e.dims || '—'), xWeight - xDims - 8);
+            const weightLines = doc.splitTextToSize(String(e.weight || '—'), pageWidth - margin - xWeight);
+            const rowHeight = Math.max(
+              nameLines.length,
+              categoryLines.length,
+              dimsLines.length,
+              weightLines.length
+            ) * 12;
+            if (y + rowHeight > pageHeight - margin) {
               doc.addPage();
               y = margin;
-              doc.setFont('helvetica', 'bold');
-              doc.text('#', x0, y);
-              doc.text('Name', x1, y);
-              doc.text('Category', x2, y);
-              doc.text('Dims', x3, y);
-              doc.text('Weight', x4, y);
-              y += 8;
-              doc.line(margin, y, pageWidth - margin, y);
-              y += 14;
-              doc.setFont('helvetica', 'normal');
+              writeChecklistHeader();
             }
 
-            const lineHeight = 14;
             doc.text(String(idx + 1), x0, y);
-            doc.text(e.name, x1, y);
-            doc.text(e.category, x2, y);
-            doc.text(e.dims, x3, y);
-            doc.text(e.weight, x4, y);
-            y += lineHeight;
+            doc.text(String(e.qty), xQty, y);
+            doc.text(nameLines, xName, y);
+            doc.text(categoryLines, xCategory, y);
+            doc.text(dimsLines, xDims, y);
+            doc.text(weightLines, xWeight, y);
+            y += rowHeight;
           });
 
           // Cargo Instructions manifest. Standard Case Instructions are
@@ -1916,34 +1924,28 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       function buildChecklist(pack) {
         const prefs = PreferencesManager.get();
-        const truck = pack.truck;
         const unitLen = prefs.units.length;
         const unitWt = prefs.units.weight;
-        return (pack.cases || []).map(inst => {
-          const c = CaseLibrary.getById(inst.caseId);
-          if (!c) return { name: `Missing case (${inst && inst.caseId ? inst.caseId : 'unknown'})`, category: '—', dims: '—', weight: '—', packed: false };
+        return ImportExport.buildCaseChecklistRows(pack).map(row => {
+          const c = row.caseData;
+          if (!c) {
+            return {
+              qty: row.qty,
+              name: `Missing case (${row.caseId || 'unknown'})`,
+              category: '—',
+              dims: '—',
+              weight: '—',
+            };
+          }
           const meta = CategoryService.meta(c.category);
           return {
+            qty: row.qty,
             name: c.name,
             category: meta.name,
             dims: Utils.formatDims(c.dimensions, unitLen),
             weight: Utils.formatWeight(Number(c.weight) || 0, unitWt),
-            packed: isInsideTruckInstance(inst, c, truck) && !inst.hidden,
           };
         });
-      }
-
-      function isInsideTruckInstance(inst, c, truck) {
-        if (!inst || !c || !truck) return false;
-        const zonesInches = TrailerGeometry.getTrailerUsableZones(truck);
-        const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-        const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-        const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
-        const aabb = {
-          min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-          max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-        };
-        return TrailerGeometry.isAabbContainedInAnyZone(aabb, zonesInches);
       }
 
       function renderCameraToDataUrl(camera, width, height, options = {}) {
@@ -2766,7 +2768,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const truth = AuthService.getAuthTruthSnapshot();
       let status = truth.status;
       let session = truth.session;
-      let user = truth.user;
+      let user;
       let userId = truth.userId;
       let hasToken = truth.hasToken;
       let hintOnly = false;
@@ -4002,7 +4004,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
       }
 
-      let hidden = false;
+      let hidden;
       try {
         hidden = typeof document !== 'undefined' && document.hidden === true;
       } catch {
@@ -4065,7 +4067,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     async function refreshOrgContext(reason, { force = false, forceEmit = false } = {}) {
-      let hidden = false;
+      let hidden;
       try {
         hidden = typeof document !== 'undefined' && document.hidden === true;
       } catch {
@@ -4155,7 +4157,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
       }
 
-      let hidden = false;
+      let hidden;
       try {
         hidden = typeof document !== 'undefined' && document.hidden === true;
       } catch {
@@ -4165,7 +4167,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         authRefreshQueued = true;
         return;
       }
-      let online = true;
+      let online;
       try {
         online = typeof navigator === 'undefined' || navigator.onLine !== false;
       } catch {
@@ -4192,7 +4194,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return null;
       }
 
-      let hidden = false;
+      let hidden;
       try {
         hidden = typeof document !== 'undefined' && document.hidden === true;
       } catch {
@@ -4202,7 +4204,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         authRefreshQueued = true;
         return null;
       }
-      let online = true;
+      let online;
       try {
         online = typeof navigator === 'undefined' || navigator.onLine !== false;
       } catch {
@@ -4934,7 +4936,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
       };
 
-      let supabaseInitOk = false;
+      let supabaseInitOk;
       const cfg = window.__TP3D_SUPABASE && typeof window.__TP3D_SUPABASE === 'object' ? window.__TP3D_SUPABASE : null;
       const url = cfg ? cfg.url : '';
       const anonKey = cfg ? String(cfg.anonKey || '') : '';
@@ -5626,7 +5628,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               return;
             }
 
-            let hidden = false;
+            let hidden;
             try {
               hidden = typeof document !== 'undefined' && document.hidden === true;
             } catch {

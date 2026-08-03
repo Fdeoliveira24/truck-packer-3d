@@ -54,6 +54,36 @@ function safeId(value) {
   return safeString(value, '') || uuid();
 }
 
+/**
+ * Compatibility-only cleanup for the rejected Target/Missing quantity model.
+ * Legacy files remain importable, but the obsolete field is never interpreted,
+ * converted into physical instances, or allowed back across a save/export boundary.
+ * @param {Record<string, any>} pack
+ * @returns {Record<string, any>}
+ */
+export function sanitizeLegacyPackQuantityFields(pack) {
+  const source = pack && typeof pack === 'object' && !Array.isArray(pack) ? pack : {};
+  if (!Object.prototype.hasOwnProperty.call(source, 'caseRequirements')) return source;
+  const next = { ...source };
+  delete next.caseRequirements;
+  return next;
+}
+
+/**
+ * @param {unknown} packLibrary
+ * @returns {{ packLibrary: any[], changed: boolean }}
+ */
+export function sanitizeLegacyPackQuantityLibrary(packLibrary) {
+  let changed = false;
+  const packs = Array.isArray(packLibrary) ? packLibrary : [];
+  const sanitized = packs.map(pack => {
+    const next = sanitizeLegacyPackQuantityFields(pack);
+    if (next !== pack) changed = true;
+    return next;
+  });
+  return { packLibrary: sanitized, changed };
+}
+
 function normalizeOrientedDims(value) {
   const dims = value && typeof value === 'object' ? value : {};
   const length = positiveNumber(dims.length, 0);
@@ -101,6 +131,20 @@ export function normalizePreferences(prefs) {
   if (hasLegacyTrailerMode && !hasShapeMode) {
     next.gridCardBadges.packs.showShapeMode = inPacks.showTrailerMode !== false;
   }
+  // Cases Qty replaces the separate "Cases Count" and "Packed" Card Display
+  // options. Compatibility rule: if the user has not yet saved an explicit
+  // showCasesQty preference, derive its initial value from BOTH legacy flags
+  // so a user who had hidden either the old count or the old packed value
+  // does not suddenly see the consolidated Cases Qty reappear. Once
+  // showCasesQty is saved, it is the sole source of truth and legacy keys are
+  // no longer consulted.
+  const hasNewCasesQty = Object.prototype.hasOwnProperty.call(inPacks, 'showCasesQty');
+  if (!hasNewCasesQty) {
+    const legacyCasesCount = inPacks.showCasesCount !== false;
+    const legacyPacked = inPacks.showPacked !== false;
+    next.gridCardBadges.packs.showCasesQty = legacyCasesCount && legacyPacked;
+  }
+  next.gridCardBadges.packs.showCasesQty = next.gridCardBadges.packs.showCasesQty !== false;
   next.gridCardBadges.packs.showLoadPlanNumber = next.gridCardBadges.packs.showLoadPlanNumber !== false;
   next.gridCardBadges.packs.showCustomerReference = next.gridCardBadges.packs.showCustomerReference !== false;
   next.gridCardBadges.packs.showNotes = next.gridCardBadges.packs.showNotes !== false;
@@ -122,6 +166,8 @@ export function normalizePreferences(prefs) {
   next.gridCardBadges.cases.showHandling = next.gridCardBadges.cases.showHandling !== false;
   next.gridCardBadges.cases.showNotes = next.gridCardBadges.cases.showNotes !== false;
   next.gridCardBadges.cases.showEditedTime = next.gridCardBadges.cases.showEditedTime !== false;
+  // Workspace-wide physical Quantity chip/column (derived, never persisted itself).
+  next.gridCardBadges.cases.showQuantity = next.gridCardBadges.cases.showQuantity !== false;
   next.units = next.units && typeof next.units === 'object' ? next.units : base.units;
   next.units.length = CoreUtils.lengthUnits.includes(next.units.length) ? next.units.length : base.units.length;
   next.units.weight = CoreUtils.weightUnits.includes(next.units.weight) ? next.units.weight : base.units.weight;

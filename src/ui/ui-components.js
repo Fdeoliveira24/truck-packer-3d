@@ -583,7 +583,7 @@ export function createUIComponents() {
           ? document.activeElement
           : null;
         const currentIndex = activeElement ? menuItems.indexOf(activeElement) : -1;
-        let nextIndex = currentIndex;
+        let nextIndex;
         if (ev.key === 'Home') nextIndex = 0;
         else if (ev.key === 'End') nextIndex = menuItems.length - 1;
         else if (ev.key === 'ArrowDown') nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % menuItems.length;

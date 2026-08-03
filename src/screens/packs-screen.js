@@ -108,12 +108,11 @@ export function createPacksScreen({
     const sortOptions = [
       { key: 'title', label: 'Title' },
       { key: 'loadPlanNumber', label: 'Load Plan Number' },
-      { key: 'cases', label: 'Cases' },
+      { key: 'casesQty', label: 'Cases Qty' },
       { key: 'length', label: 'Length' },
       { key: 'width', label: 'Width' },
       { key: 'height', label: 'Height' },
       { key: 'mode', label: 'Shape' },
-      { key: 'packed', label: 'Packed' },
       { key: 'volume', label: 'Volume' },
       { key: 'weight', label: 'Weight' },
       { key: 'edited', label: 'Edited' },
@@ -121,6 +120,26 @@ export function createPacksScreen({
     let activeFolderId = null;
     let datasetKey = '';
     let sortKey = 'edited-desc';
+    // Canonical Load Plans view-mode value. Set once from the persisted
+    // preference at first use (resolveViewMode's fallback branch), then only
+    // ever changed by an explicit Grid/List click in setViewMode(). Every
+    // other read in this module (render, updateViewButtons, updateBulkActions,
+    // any delayed/async rerender) must go through resolveViewMode() rather
+    // than re-reading the live preference fresh from PreferencesManager each
+    // time — a fresh read here is exactly what let a stale/racing full-preferences
+    // write (e.g. a workspace-scoped storage reload landing between the
+    // debounced 250ms save and its flush) silently revert an explicit Grid
+    // selection back to an old persisted 'list' value on the next unrelated
+    // rerender. The Cases screen keeps its own separate view-mode preference
+    // and local state, entirely independent of this one.
+    let currentViewMode = null;
+    function resolveViewMode() {
+      if (currentViewMode === 'grid' || currentViewMode === 'list') return currentViewMode;
+      // First initialization only: no valid canonical value yet, so fall back
+      // to the persisted preference (defaulting to grid).
+      currentViewMode = PreferencesManager.get().packsViewMode === 'list' ? 'list' : 'grid';
+      return currentViewMode;
+    }
     const packsListState = {
       pageIndex: 0,
       rowsPerPage: 50,
@@ -465,7 +484,7 @@ export function createPacksScreen({
       if (!featureFlags.trailerPresetsEnabled) return;
 
       const selected = Array.from(selectedIds);
-      let packId = null;
+      let packId;
       if (selected.length === 1) {
         packId = selected[0];
       } else if (selected.length === 0) {
@@ -1121,17 +1140,22 @@ export function createPacksScreen({
     function setViewMode(mode) {
       const nextMode = mode === 'list' ? 'list' : 'grid';
       UIComponents.closeAllDropdowns();
+      // Explicit selection is the only thing allowed to change the canonical
+      // value. Order matters: canonical state first, then persistence, then
+      // the matching render, then the button/ARIA state — so a render
+      // triggered anywhere in between already sees the new mode.
+      currentViewMode = nextMode;
       const prefs = PreferencesManager.get();
       prefs.packsViewMode = nextMode;
       PreferencesManager.set(prefs);
-      updateViewButtons(nextMode);
       render(nextMode);
+      updateViewButtons(nextMode);
     }
 
     function updateViewButtons(modeOverride) {
       const mode = modeOverride === 'list' || modeOverride === 'grid'
         ? modeOverride
-        : PreferencesManager.get().packsViewMode || 'grid';
+        : resolveViewMode();
       btnViewGrid.classList.toggle('btn-primary', mode === 'grid');
       btnViewList.classList.toggle('btn-primary', mode === 'list');
     }
@@ -1275,7 +1299,7 @@ export function createPacksScreen({
     }
 
     function updateBulkActions() {
-      const mode = PreferencesManager.get().packsViewMode || 'grid';
+      const mode = resolveViewMode();
       const count = selectedIds.size;
       if (count > 0) {
         defaultActionsEl.style.display = 'none';
@@ -1323,9 +1347,19 @@ export function createPacksScreen({
       const q = normalizeBusinessIdentityComparison(searchEl.value) || '';
       const allPacks = PackLibrary.getPacks().slice();
       const sourceOrder = new Map(allPacks.map((pack, index) => [pack, index]));
+      const casesQtyByPack = new Map(
+        allPacks.map(pack => [
+          pack,
+          (pack.cases || []).reduce((total, instance) => total + (instance && !instance.hidden ? 1 : 0), 0),
+        ])
+      );
 
       const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
-      const compareCases = (a, b) => (a.cases || []).length - (b.cases || []).length;
+      // Cases Qty sorts by total active non-hidden physical instances
+      // (inTruck + staged), matching the List/Grid "Cases Qty" value below —
+      // derive it directly from the live instances rather than persisted stats,
+      // which can be absent or stale on normalized/imported Load Plans.
+      const compareCasesQty = (a, b) => (casesQtyByPack.get(a) || 0) - (casesQtyByPack.get(b) || 0);
       const compareLastEdited = (a, b) => (a.lastEdited || 0) - (b.lastEdited || 0);
       const compareCreated = (a, b) => (a.createdAt || 0) - (b.createdAt || 0);
       const compareLength = (a, b) => (a.truck?.length || 0) - (b.truck?.length || 0);
@@ -1335,7 +1369,6 @@ export function createPacksScreen({
         trailerModeLabel(a && a.truck && a.truck.shapeMode).localeCompare(
           trailerModeLabel(b && b.truck && b.truck.shapeMode)
         );
-      const comparePacked = (a, b) => ((a.stats && a.stats.packedCases) || 0) - ((b.stats && b.stats.packedCases) || 0);
       const compareVolume = (a, b) =>
         ((a.stats && Number.isFinite(a.stats.volumePercent) ? a.stats.volumePercent : 0) || 0) -
         ((b.stats && Number.isFinite(b.stats.volumePercent) ? b.stats.volumePercent : 0) || 0);
@@ -1352,8 +1385,8 @@ export function createPacksScreen({
         'title-desc': (a, b) => compareTitle(b, a),
         'loadPlanNumber-asc': (a, b) => compareLoadPlanNumber(a, b, 'asc'),
         'loadPlanNumber-desc': (a, b) => compareLoadPlanNumber(a, b, 'desc'),
-        'cases-asc': (a, b) => compareCases(a, b),
-        'cases-desc': (a, b) => compareCases(b, a),
+        'casesQty-asc': (a, b) => compareCasesQty(a, b),
+        'casesQty-desc': (a, b) => compareCasesQty(b, a),
         'created-desc': (a, b) => compareCreated(b, a),
         'created-asc': (a, b) => compareCreated(a, b),
         'length-asc': (a, b) => compareLength(a, b),
@@ -1364,8 +1397,6 @@ export function createPacksScreen({
         'height-desc': (a, b) => compareHeight(b, a),
         'mode-asc': (a, b) => compareMode(a, b),
         'mode-desc': (a, b) => compareMode(b, a),
-        'packed-asc': (a, b) => comparePacked(a, b),
-        'packed-desc': (a, b) => comparePacked(b, a),
         'volume-asc': (a, b) => compareVolume(a, b),
         'volume-desc': (a, b) => compareVolume(b, a),
         'weight-asc': (a, b) => compareWeight(a, b),
@@ -1406,9 +1437,14 @@ export function createPacksScreen({
       }
 
       const pageMeta = getPageMeta(packs);
-      const mode = modeOverride === 'list' || modeOverride === 'grid'
-        ? modeOverride
-        : PreferencesManager.get().packsViewMode || 'grid';
+      // modeOverride is only ever passed by setViewMode(), which has already
+      // updated the canonical currentViewMode before calling render(); every
+      // other caller (rerenders, delayed callbacks, event-driven updates)
+      // resolves through the same canonical value here — never a fresh
+      // PreferencesManager re-read, which is what let a racing/stale full
+      // preferences write silently flip an explicit Grid selection back to
+      // an old persisted value on the next unrelated rerender.
+      const mode = modeOverride === 'list' || modeOverride === 'grid' ? modeOverride : resolveViewMode();
       initFooter(mode);
       gridEl.innerHTML = '';
       tbodyEl.innerHTML = '';
@@ -1506,9 +1542,13 @@ export function createPacksScreen({
         const stats = PackLibrary.computeStats(pack);
         tdTitle.appendChild(titleWrap);
 
-        const tdCases = document.createElement('td');
-        tdCases.textContent = (pack.cases || []).length;
-        if (badgePrefs.showCasesCount === false) tdCases.style.display = 'none';
+        const tdCasesQty = document.createElement('td');
+        const inTruckQty = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
+        const totalQty = stats
+          ? Math.max(0, (stats.totalCases || 0) - (stats.hiddenCases || 0))
+          : null;
+        tdCasesQty.textContent = inTruckQty === null || totalQty === null ? '—' : `${inTruckQty}/${totalQty}`;
+        if (badgePrefs.showCasesQty === false) tdCasesQty.style.display = 'none';
 
         const tdLength = document.createElement('td');
         tdLength.textContent = Utils.formatLength(pack.truck.length, prefs.units.length);
@@ -1525,12 +1565,6 @@ export function createPacksScreen({
         const tdMode = document.createElement('td');
         tdMode.textContent = trailerModeLabel(pack && pack.truck && pack.truck.shapeMode);
         if (badgePrefs.showShapeMode === false) tdMode.style.display = 'none';
-
-        const tdPacked = document.createElement('td');
-        const packedCases = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
-        const totalCases = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : null;
-        tdPacked.textContent = packedCases === null || totalCases === null ? '—' : `${packedCases}/${totalCases}`;
-        if (badgePrefs.showPacked === false) tdPacked.style.display = 'none';
 
         const tdVolume = document.createElement('td');
         const volumePercent = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : null;
@@ -1604,12 +1638,11 @@ export function createPacksScreen({
 
         tr.appendChild(tdCheck);
         tr.appendChild(tdTitle);
-        tr.appendChild(tdCases);
+        tr.appendChild(tdCasesQty);
         tr.appendChild(tdLength);
         tr.appendChild(tdWidth);
         tr.appendChild(tdHeight);
         tr.appendChild(tdMode);
-        tr.appendChild(tdPacked);
         tr.appendChild(tdVolume);
         tr.appendChild(tdWeight);
         tr.appendChild(tdEdited);
@@ -1622,12 +1655,11 @@ export function createPacksScreen({
     function applyListColumnVisibility(prefs) {
       const badgePrefs = (prefs.gridCardBadges && prefs.gridCardBadges.packs) || {};
       const show = {
-        cases: badgePrefs.showCasesCount !== false,
+        casesQty: badgePrefs.showCasesQty !== false,
         length: badgePrefs.showTruckDims !== false,
         width: badgePrefs.showTruckDims !== false,
         height: badgePrefs.showTruckDims !== false,
         mode: badgePrefs.showShapeMode !== false,
-        packed: badgePrefs.showPacked !== false,
         volume: badgePrefs.showVolume !== false,
         weight: badgePrefs.showWeight !== false,
         edited: badgePrefs.showEditedTime !== false,
@@ -1696,13 +1728,6 @@ export function createPacksScreen({
         const badgesWrap = document.createElement('div');
         badgesWrap.className = 'pack-meta-badges';
 
-        if (badgePrefs.showCasesCount !== false) {
-          const count = document.createElement('div');
-          count.className = 'badge';
-          count.textContent = `Case count: ${(pack.cases || []).length}`;
-          badgesWrap.appendChild(count);
-        }
-
         if (badgePrefs.showTruckDims !== false) {
           const truck = document.createElement('div');
           truck.className = 'badge';
@@ -1717,21 +1742,21 @@ export function createPacksScreen({
           badgesWrap.appendChild(mode);
         }
 
-        const showPacked = badgePrefs.showPacked !== false;
+        const showCasesQty = badgePrefs.showCasesQty !== false;
         const showVolume = badgePrefs.showVolume !== false;
         const showWeight = badgePrefs.showWeight !== false;
-        if (showPacked || showVolume || showWeight) {
+        if (showCasesQty || showVolume || showWeight) {
           const stats = PackLibrary.computeStats(pack);
-          const loaded = stats && Number.isFinite(stats.totalCases) ? stats.totalCases : 0;
-          const packed = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
+          const inTruck = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
+          const total = stats ? Math.max(0, (stats.totalCases || 0) - (stats.hiddenCases || 0)) : 0;
           const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
           const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
 
-          if (showPacked) {
-            const packedBadge = document.createElement('div');
-            packedBadge.className = 'badge';
-            packedBadge.textContent = `Packed: ${packed}/${loaded}`;
-            badgesWrap.appendChild(packedBadge);
+          if (showCasesQty) {
+            const casesQtyBadge = document.createElement('div');
+            casesQtyBadge.className = 'badge';
+            casesQtyBadge.textContent = `Cases Qty: ${inTruck}/${total}`;
+            badgesWrap.appendChild(casesQtyBadge);
           }
           if (showVolume) {
             const volBadge = document.createElement('div');

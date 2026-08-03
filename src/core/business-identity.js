@@ -105,6 +105,11 @@ export function assertBusinessIdentityValue(value, options = {}) {
   return result.value;
 }
 
+/**
+ * @param {string} value
+ * @param {Record<string, any>[]} records
+ * @param {{ field?: string, required?: boolean, excludeId?: string|null }} [options]
+ */
 function checkAvailability(value, records, {
   field,
   required,
@@ -171,6 +176,10 @@ function secureRandomValues(length) {
   return cryptoApi.getRandomValues(new Uint8Array(length));
 }
 
+/**
+ * @param {object[]} packs
+ * @param {{ maxAttempts?: number, randomValues?: (length: number, attempt: number) => Uint8Array }} [options]
+ */
 export function generateLoadPlanNumber(packs, {
   maxAttempts = LOAD_PLAN_NUMBER_MAX_ATTEMPTS,
   randomValues = secureRandomValues,

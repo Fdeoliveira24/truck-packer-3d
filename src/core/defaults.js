@@ -29,6 +29,7 @@ export const defaultPreferences = {
       showThumbnail: true,
       showShapeMode: true,
       showPacked: true,
+      showCasesQty: true,
       showVolume: true,
       showWeight: true,
       showEditedTime: true,
@@ -44,6 +45,7 @@ export const defaultPreferences = {
       showHandling: true,
       showNotes: true,
       showEditedTime: true,
+      showQuantity: true,
     },
   },
   units: { length: 'in', weight: 'lb' },
@@ -69,6 +71,12 @@ export const categories = [
   { key: 'default', name: 'Default', color: '#9ca3af' },
 ];
 
+/**
+ * Seed Cases are volume-less until the caller computes and assigns `volume`
+ * from `dimensions` (see callers in app.js) — declared here as optional so
+ * that assignment type-checks without changing the seed data itself.
+ * @returns {Array<Record<string, any> & { volume?: number }>}
+ */
 export function seedCases() {
   const now = Date.now();
   return [

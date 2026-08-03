@@ -1013,7 +1013,7 @@ export async function getSessionSingleFlightSafe(client, { force = false } = {})
   }
 
   // 2) if tab is hidden, avoid thundering herd
-  let hidden = false;
+  let hidden;
   try {
     hidden = typeof document !== 'undefined' && document.hidden === true;
   } catch {
@@ -1410,7 +1410,7 @@ async function validateSessionOrSignOut({ source = 'unknown', silent = true } = 
   }
 
   // Soft session validation: retry once and do not sign out on first null.
-  let soft = null;
+  let soft;
   try {
     soft = await validateSessionSoft(client);
   } catch {
@@ -1823,7 +1823,7 @@ export async function awaitAuthReady({ timeoutMs = 5000 } = {}) {
 async function getAuthedUserId() {
   requireClient();
 
-  let hidden = false;
+  let hidden;
   try {
     hidden = typeof document !== 'undefined' && document.hidden === true;
   } catch {
@@ -2979,10 +2979,9 @@ export async function getOrganizationMembers(orgId) {
       getOrganizationMembersFn._profileSelect =
         'id, display_name, first_name, last_name, full_name, avatar_url';
     }
-    let profileRows = null;
     const primarySelect = getOrganizationMembersFn._profileSelect;
     const primaryRes = await client.from('profiles').select(primarySelect).in('id', userIds);
-    profileRows = primaryRes.data;
+    const profileRows = primaryRes.data;
     if (primaryRes.error) throw primaryRes.error;
 
     profiles = Array.isArray(profileRows) ? profileRows : [];
@@ -3291,7 +3290,7 @@ export async function uploadOrgLogo(orgId, file) {
 /**
  * Create a new organization + owner membership.
  * @param {{ name: string }} params
- * @returns {Promise<{ org: object, membership: object }>}
+ * @returns {Promise<{ org: Record<string, any> & { id: string, name?: string }, membership: object }>}
  */
 export async function createOrganization({ name }) {
   const normalizedName = String(name || '').trim().replace(/\s+/g, ' ');
@@ -3385,7 +3384,7 @@ export async function requestAccountDeletion() {
   }
 
   async function readResponsePayload(res) {
-    let text = '';
+    let text;
     try {
       text = await res.clone().text();
     } catch {
@@ -3404,11 +3403,10 @@ export async function requestAccountDeletion() {
     }
   }
 
-  let response = null;
-  let data = null;
-  let msg = '';
+  let data;
+  let msg;
 
-  response = await fetch(getFunctionUrl(), {
+  const response = await fetch(getFunctionUrl(), {
     method: 'POST',
     headers: await getFunctionHeaders(),
     body: '{}',

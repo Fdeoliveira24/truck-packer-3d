@@ -137,6 +137,11 @@ export function createCardDisplayOverlay({
           setFlag('cases.showHandling', cases.showHandling === false)
         )
       );
+      items.push(
+        item('Quantity', cases.showQuantity !== false, () =>
+          setFlag('cases.showQuantity', cases.showQuantity === false)
+        )
+      );
     } else {
       items.push({ type: 'header', label: 'Card Display - Load Plans' });
       items.push(
@@ -160,11 +165,6 @@ export function createCardDisplayOverlay({
         )
       );
       items.push(
-        item('Cases Count', packs.showCasesCount !== false, () =>
-          setFlag('packs.showCasesCount', packs.showCasesCount === false)
-        )
-      );
-      items.push(
         item('Dimensions', packs.showTruckDims !== false, () =>
           setFlag('packs.showTruckDims', packs.showTruckDims === false)
         )
@@ -175,7 +175,9 @@ export function createCardDisplayOverlay({
         )
       );
       items.push(
-        item('Packed', packs.showPacked !== false, () => setFlag('packs.showPacked', packs.showPacked === false))
+        item('Cases Qty', packs.showCasesQty !== false, () =>
+          setFlag('packs.showCasesQty', packs.showCasesQty === false)
+        )
       );
       items.push(
         item('Volume', packs.showVolume !== false, () => setFlag('packs.showVolume', packs.showVolume === false))

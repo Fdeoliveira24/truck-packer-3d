@@ -967,7 +967,7 @@ export function createImportPackDialog({
       parsingName.textContent = 'Reading ' + file.name + '…';
       showState('parsing');
 
-      let text = '';
+      let text;
       try {
         text = await file.text();
       } catch (err) {

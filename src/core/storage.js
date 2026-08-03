@@ -15,7 +15,10 @@ import { APP_VERSION } from './version.js';
 import * as Utils from './utils/index.js';
 import { debounce } from './browser.js';
 import * as StateStore from './state-store.js';
-import { normalizeAppData } from './normalizer.js';
+import {
+  normalizeAppData,
+  sanitizeLegacyPackQuantityLibrary,
+} from './normalizer.js';
 import {
   migrateLoadPlanNumbers,
   normalizeBusinessIdentityLibraries,
@@ -177,8 +180,11 @@ export function load() {
     }
     const effectiveWorkspacePayload = workspaceDataAvailable ? workspacePayload : legacyWorkspacePayload;
     const hasEffectiveWorkspaceData = hasWorkspaceData(effectiveWorkspacePayload);
+    const quantitySanitization = hasEffectiveWorkspaceData
+      ? sanitizeLegacyPackQuantityLibrary(effectiveWorkspacePayload.packLibrary)
+      : { packLibrary: [], changed: false };
     const identityMigration = hasEffectiveWorkspaceData
-      ? migrateLoadPlanNumbers(effectiveWorkspacePayload.packLibrary)
+      ? migrateLoadPlanNumbers(quantitySanitization.packLibrary)
       : { packLibrary: [], changed: false };
     const identityLibraries = hasEffectiveWorkspaceData
       ? normalizeBusinessIdentityLibraries(
@@ -187,11 +193,12 @@ export function load() {
         )
       : { caseLibrary: null, packLibrary: null };
 
-    // Persist only the additive Load Plan Number migration at the workspace
-    // storage boundary. Keep version/savedAt and every other field byte-for-byte
-    // equivalent after JSON serialization. Legacy combined data remains under
-    // its existing guarded finalization flow below.
-    if (workspaceDataAvailable && identityMigration.changed) {
+    // Persist only the additive Load Plan Number migration and removal of the
+    // rejected legacy quantity-target field at the workspace storage boundary.
+    // Keep version/savedAt and every other field byte-for-byte equivalent after
+    // JSON serialization. Legacy combined data remains under its existing
+    // guarded finalization flow below.
+    if (workspaceDataAvailable && (identityMigration.changed || quantitySanitization.changed)) {
       try {
         window.localStorage.setItem(
           workspaceKey,
@@ -203,7 +210,7 @@ export function load() {
       } catch (migrationErr) {
         emit('storage:write_error', {
           key: workspaceKey,
-          message: migrationErr && migrationErr.message ? migrationErr.message : 'Identity migration write failed',
+          message: migrationErr && migrationErr.message ? migrationErr.message : 'Storage compatibility migration write failed',
           error: migrationErr,
         });
       }
@@ -292,11 +299,12 @@ export function finalizeLegacyMigration() {
 
   const state = StateStore.get();
   const savedAt = Date.now();
+  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
   const workspacePayload = {
     version: APP_VERSION,
     savedAt,
     caseLibrary: state.caseLibrary,
-    packLibrary: state.packLibrary,
+    packLibrary: sanitizedPacks,
     folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
     currentPackId: state.currentPackId,
   };
@@ -338,6 +346,7 @@ export function saveNow() {
   const workspaceKey = getWorkspaceScopedKey();
   try {
     const state = StateStore.get();
+    const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
     const userPayload = {
       version: APP_VERSION,
       savedAt: Date.now(),
@@ -347,7 +356,7 @@ export function saveNow() {
       version: APP_VERSION,
       savedAt: userPayload.savedAt,
       caseLibrary: state.caseLibrary,
-      packLibrary: state.packLibrary,
+      packLibrary: sanitizedPacks,
       folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
       currentPackId: state.currentPackId,
     };
@@ -388,13 +397,14 @@ export function clearAll() {
 
 export function exportAppJSON() {
   const state = StateStore.get();
+  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
   const payload = {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
     exportedAt: Date.now(),
     data: {
       caseLibrary: state.caseLibrary,
-      packLibrary: state.packLibrary,
+      packLibrary: sanitizedPacks,
       folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
       preferences: state.preferences,
     },
@@ -404,7 +414,8 @@ export function exportAppJSON() {
 
 export function exportWorkspaceJSON(workspaceName) {
   const state = StateStore.get();
-  const strippedPacks = (Array.isArray(state.packLibrary) ? state.packLibrary : []).map(pack => ({
+  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
+  const strippedPacks = sanitizedPacks.map(pack => ({
     ...(pack || {}),
     thumbnail: null,
     thumbnailUpdatedAt: null,

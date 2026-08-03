@@ -7,9 +7,13 @@
  */
 
 /**
+ * @typedef {{ length?: number, width?: number, height?: number }} CaseDims
+ */
+
+/**
  * Creates a THREE.js geometry based on case shape.
- * @param {object} caseData - Case data with shape and dimensions
- * @param {function} toWorld - Function to convert inches to world units
+ * @param {{ shape?: string, dimensions?: CaseDims }} caseData - Case data with shape and dimensions
+ * @param {(inches: number) => number} toWorld - Function to convert inches to world units
  * @returns {any} The geometry for the case
  */
 export function createCaseGeometry(caseData, toWorld) {
@@ -34,7 +38,7 @@ export function createCaseGeometry(caseData, toWorld) {
 
 /**
  * Calculate volume in cubic inches, accounting for shape.
- * @param {object} dims - Dimensions {length, width, height} in inches
+ * @param {CaseDims} dims - Dimensions {length, width, height} in inches
  * @param {string} shape - Shape type ('box', 'cylinder', 'drum')
  * @returns {number} Volume in cubic inches
  */

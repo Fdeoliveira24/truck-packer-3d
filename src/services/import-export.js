@@ -14,6 +14,7 @@
 import * as Utils from '../core/utils/index.js';
 import * as Defaults from '../core/defaults.js';
 import * as CoreStorage from '../core/storage.js';
+import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
 import { APP_VERSION } from '../core/version.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
@@ -436,26 +437,89 @@ export function buildCargoInstructionsManifest(pack, getCaseById = CaseLibrary.g
   return { caseEntries, itemEntries };
 }
 
+/**
+ * Aggregate the PDF checklist's existing physical-instance set by reusable
+ * Case identity. Resolved Cases group strictly by caseId; unresolved references
+ * use a deterministic missing-reference key. Input order defines row order.
+ * Hidden instances remain included because the legacy checklist included every
+ * entry in pack.cases.
+ * @param {Record<string, any>} pack
+ * @param {(caseId: string) => Record<string, any>|null} [getCaseById]
+ * @returns {Array<{
+ *   identityKey: string,
+ *   qty: number,
+ *   caseId: string|null,
+ *   caseData: Record<string, any>|null
+ * }>}
+ */
+export function buildCaseChecklistRows(pack, getCaseById = CaseLibrary.getById) {
+  const rows = [];
+  const rowsByIdentity = new Map();
+  const instances = Array.isArray(pack && pack.cases) ? pack.cases : [];
+
+  instances.forEach(instance => {
+    const caseId = String(instance && instance.caseId ? instance.caseId : '').trim();
+    const caseData = caseId ? getCaseById(caseId) : null;
+    const identityKey = caseData ? `case:${caseId}` : `missing:${caseId || 'unknown'}`;
+    let row = rowsByIdentity.get(identityKey);
+    if (!row) {
+      row = {
+        identityKey,
+        qty: 0,
+        caseId: caseId || null,
+        caseData: caseData || null,
+      };
+      rowsByIdentity.set(identityKey, row);
+      rows.push(row);
+    }
+    row.qty += 1;
+  });
+
+  return rows;
+}
+
 export function buildPackExportPayload(pack) {
+  const sanitizedPack = CoreNormalizer.sanitizeLegacyPackQuantityFields(pack);
   const exportedPack = {
-    ...(pack || {}),
+    ...sanitizedPack,
     folderId: null,
   };
-  const packCases = Array.isArray(pack && pack.cases) ? pack.cases : [];
-  // Dangling instances are preserved in the exported pack (never silently dropped),
-  // but their case definitions cannot be bundled. Report them so a reader/re-import
+  const packCases = Array.isArray(sanitizedPack.cases) ? sanitizedPack.cases : [];
+  // Bundled Case definitions and unresolved references reflect every Case
+  // referenced by a physical (non-hidden) instance in this Load Plan. Dangling
+  // instances (case deleted) are preserved (never silently dropped) but their
+  // case definitions cannot be bundled — report them so a reader/re-import
   // knows the export is incomplete and will require repair.
-  const unresolvedCaseRefs = [...new Set(
-    packCases
-      .filter(i => i && !i.hidden && !CaseLibrary.getById(i.caseId))
-      .map(i => String(i.caseId || '').trim() || 'unknown')
-  )];
+  const bundledCases = [];
+  const unresolvedCaseRefs = [];
+  const seenCaseIds = new Set();
+  const seenUnresolvedRefs = new Set();
+  packCases.forEach(instance => {
+    if (!instance || instance.hidden) return;
+    const caseId = String(instance.caseId || '').trim();
+    if (!caseId) {
+      if (!seenUnresolvedRefs.has('unknown')) {
+        seenUnresolvedRefs.add('unknown');
+        unresolvedCaseRefs.push('unknown');
+      }
+      return;
+    }
+    if (seenCaseIds.has(caseId)) return;
+    seenCaseIds.add(caseId);
+    const caseData = CaseLibrary.getById(caseId);
+    if (caseData) {
+      bundledCases.push(caseData);
+    } else if (!seenUnresolvedRefs.has(caseId)) {
+      seenUnresolvedRefs.add(caseId);
+      unresolvedCaseRefs.push(caseId);
+    }
+  });
   const payload = {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
     exportedAt: Date.now(),
     pack: exportedPack,
-    bundledCases: packCases.map(i => CaseLibrary.getById(i.caseId)).filter(Boolean),
+    bundledCases,
   };
   if (unresolvedCaseRefs.length) {
     payload.unresolvedCaseRefs = unresolvedCaseRefs;
@@ -476,7 +540,10 @@ export function parsePackImportJSON(jsonText) {
   const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
   if (!parsed) throw new Error('Invalid JSON');
   const payload = parsed.pack ? parsed : { pack: parsed };
-  return payload;
+  return {
+    ...payload,
+    pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(payload.pack),
+  };
 }
 
 export function parsePackBatchImportJSON(jsonText) {
@@ -502,7 +569,11 @@ export function parsePackBatchImportJSON(jsonText) {
   // Normalize each entry to { pack, bundledCases } — same shape importPackPayload expects.
   return parsed.packs.map(entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    return entry.pack ? entry : { pack: entry };
+    const payload = entry.pack ? entry : { pack: entry };
+    return {
+      ...payload,
+      pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(payload.pack),
+    };
   });
 }
 
@@ -530,9 +601,10 @@ export function parseWorkspaceImportJSON(jsonText) {
   if (data.folderLibrary != null && !Array.isArray(data.folderLibrary)) {
     throw new Error('Invalid folderLibrary in workspace export');
   }
+  const sanitizedPacks = CoreNormalizer.sanitizeLegacyPackQuantityLibrary(data.packLibrary).packLibrary;
   return {
     caseLibrary: data.caseLibrary,
-    packLibrary: data.packLibrary,
+    packLibrary: sanitizedPacks,
     folderLibrary: Array.isArray(data.folderLibrary) ? data.folderLibrary : [],
     workspaceName: parsed.workspaceName ? String(parsed.workspaceName) : '',
   };

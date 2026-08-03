@@ -16,7 +16,7 @@ import { canonicalOrientationLock } from '../core/orientation.js';
 
 /**
  * Case-level active non-default handling rules, as short chip labels.
- * @param {object} caseData
+ * @param {Record<string, any>} caseData
  * @returns {string[]}
  */
 export function getCaseHandlingSummary(caseData = {}) {
@@ -55,7 +55,7 @@ export function getCaseHandlingSummary(caseData = {}) {
  * Per-instance handling note. Currently only the manual exact-orientation lock
  * is an instance-level override; it is shown separately from case-level rules so
  * users can tell "this case's policy" from "this placed item is locked".
- * @param {object} instance
+ * @param {Record<string, any>} instance
  * @returns {string[]}
  */
 export function getInstanceHandlingSummary(instance = {}) {

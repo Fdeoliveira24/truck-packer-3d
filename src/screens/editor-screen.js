@@ -14,6 +14,21 @@
 import { createCaseGeometry } from '../editor/geometry-factory.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
 import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
+import {
+  buildSpaceUtilizationResult,
+  clampSpaceUtilizationPixels,
+  createSpaceUtilizationAnalysisDetails,
+  createSpaceUtilizationGauge,
+  findSpaceUtilizationSafePosition,
+  getSpaceUtilizationDockedPosition,
+  getSpaceUtilizationGaugeDetail,
+  getSpaceUtilizationGaugeStyle,
+  getSpaceUtilizationSafeBounds,
+  shouldShowSpaceUtilizationGauge,
+  spaceUtilizationPixelsFromPreference,
+  spaceUtilizationPreferenceFromPixels,
+  toggleSpaceUtilizationGaugeVisibility,
+} from '../ui/space-utilization-gauge.js';
 import * as CoreStorage from '../core/storage.js';
 import { buildAutoPackCaseRuleSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
@@ -3526,11 +3541,18 @@ export function createEditorScreen({
       caseQtyDrafts.set(caseId, clamped);
       return clamped;
     }
-    let activationRaf = null;
+    let layoutRaf = null;
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
     let showCaseFilters = false;
     let caseBrowserGroupBy = 'category';
     let viewportHintOpen = false;
+    let lastSpaceUtilizationSnapshot = null;
+    let activeSpaceUtilizationDragCleanup = null;
+    let spaceUtilizationCollapsed = false;
+    let activeSpaceUtilizationAnalysis = null;
+    let spaceUtilizationResizeObserver = null;
+    let sceneHostResizeObserver = null;
+    let spaceUtilizationToggleBtn = null;
     // Pending (uncommitted) truck geometry edited via the preset/shape dropdowns.
     // The committed truck stays pack.truck and the scene keeps rendering it until the
     // user clicks "Update truck"; this only pre-fills the inspector form. Tagged with
@@ -3554,6 +3576,473 @@ export function createEditorScreen({
 
     function getAutoPackResultsHost() {
       return viewportEl ? viewportEl.closest('.canvas-wrap') : null;
+    }
+
+    function syncSpaceUtilizationToggle(preferences = PreferencesManager.get()) {
+      if (!(spaceUtilizationToggleBtn instanceof HTMLButtonElement)) return;
+      const visible = shouldShowSpaceUtilizationGauge(preferences);
+      const label = visible ? 'Hide Space Utilization' : 'Show Space Utilization';
+      spaceUtilizationToggleBtn.classList.toggle('is-active', visible);
+      spaceUtilizationToggleBtn.setAttribute('aria-pressed', visible ? 'true' : 'false');
+      spaceUtilizationToggleBtn.setAttribute('aria-label', label);
+      spaceUtilizationToggleBtn.dataset.tooltip = label;
+      spaceUtilizationToggleBtn.removeAttribute('title');
+    }
+
+    function ensureSpaceUtilizationToggle() {
+      const host = getAutoPackResultsHost();
+      if (!(host instanceof HTMLElement)) return null;
+      const existing = host.querySelector('[data-role="space-utilization-visibility-toggle"]');
+      if (existing instanceof HTMLButtonElement) {
+        spaceUtilizationToggleBtn = existing;
+        syncSpaceUtilizationToggle();
+        return existing;
+      }
+
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'viewport-hint-icon tp3d-utilization-toggle';
+      button.dataset.role = 'space-utilization-visibility-toggle';
+      button.innerHTML = '<i class="fa-solid fa-gauge-high" aria-hidden="true"></i>';
+      button.addEventListener('pointerdown', event => event.stopPropagation());
+      button.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') event.stopPropagation();
+      });
+      button.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        const prefs = PreferencesManager.get();
+        const next = toggleSpaceUtilizationGaugeVisibility(prefs);
+        PreferencesManager.set(next);
+        syncSpaceUtilizationToggle(next);
+        renderSpaceUtilizationGauge(PackLibrary.getById(StateStore.get('currentPackId')));
+      });
+      spaceUtilizationToggleBtn = button;
+      if (viewportHintBtn && viewportHintBtn.parentElement === host) {
+        viewportHintBtn.insertAdjacentElement('afterend', button);
+      } else {
+        host.appendChild(button);
+      }
+      syncSpaceUtilizationToggle();
+      return button;
+    }
+
+    function removeSpaceUtilizationGauge() {
+      if (activeSpaceUtilizationDragCleanup) activeSpaceUtilizationDragCleanup(false);
+      const host = getAutoPackResultsHost();
+      const existing = host && host.querySelector('[data-role="space-utilization-gauge"]');
+      if (existing) existing.remove();
+    }
+
+    function getSpaceUtilizationGaugeBounds(host, gauge) {
+      const hostRect = host.getBoundingClientRect();
+      const gaugeRect = gauge.getBoundingClientRect();
+      return getSpaceUtilizationSafeBounds(
+        { width: hostRect.width, height: hostRect.height },
+        { width: gaugeRect.width || gauge.offsetWidth, height: gaugeRect.height || gauge.offsetHeight }
+      );
+    }
+
+    function getSpaceUtilizationObstructions(host, gauge) {
+      const hostRect = host.getBoundingClientRect();
+      const elementObstructions = [
+        host.querySelector('#viewport-toolbar'),
+        host.querySelector('#viewport-hint-icon'),
+        host.querySelector('[data-role="space-utilization-visibility-toggle"]'),
+        host.querySelector('[data-role="autopack-results-panel"]'),
+      ].filter(element => element instanceof HTMLElement && element !== gauge && element.hidden !== true)
+        .map(element => element.getBoundingClientRect())
+        .filter(rect => rect.width > 0 && rect.height > 0)
+        .map(rect => ({
+          left: rect.left - hostRect.left,
+          top: rect.top - hostRect.top,
+          right: rect.right - hostRect.left,
+          bottom: rect.bottom - hostRect.top,
+        }));
+      const axisBase = Math.max(80, Math.floor(Math.min(hostRect.width, hostRect.height) * 0.12));
+      const axisSize = axisBase + 36;
+      const axisPad = 10;
+      const axisObstruction = {
+        left: hostRect.width - axisSize - axisPad,
+        top: hostRect.height - axisSize - axisPad,
+        right: hostRect.width - axisPad,
+        bottom: hostRect.height - axisPad,
+      };
+      return [...elementObstructions, axisObstruction];
+    }
+
+    function getSpaceUtilizationBottomControlsRight(host) {
+      const hostRect = host.getBoundingClientRect();
+      return [viewportHintBtn, ensureSpaceUtilizationToggle()]
+        .filter(element => element instanceof HTMLElement && element.hidden !== true)
+        .map(element => element.getBoundingClientRect())
+        .filter(rect => rect.width > 0 && rect.height > 0)
+        .reduce((right, rect) => Math.max(right, rect.right - hostRect.left), 0);
+    }
+
+    function avoidSpaceUtilizationObstructions(host, gauge, requestedPosition, bounds) {
+      return findSpaceUtilizationSafePosition(
+        requestedPosition,
+        bounds,
+        { width: gauge.offsetWidth, height: gauge.offsetHeight },
+        getSpaceUtilizationObstructions(host, gauge)
+      );
+    }
+
+    function applySpaceUtilizationGaugePosition(gauge, host, preferencePosition) {
+      const bounds = getSpaceUtilizationGaugeBounds(host, gauge);
+      const dockedPosition = getSpaceUtilizationDockedPosition(
+        bounds,
+        getSpaceUtilizationBottomControlsRight(host)
+      );
+      const requested = spaceUtilizationPixelsFromPreference(preferencePosition, bounds, dockedPosition);
+      const position = avoidSpaceUtilizationObstructions(host, gauge, requested, bounds);
+      gauge.style.left = `${position.x}px`;
+      gauge.style.top = `${position.y}px`;
+      return { bounds, position };
+    }
+
+    function persistSpaceUtilizationGaugePosition(position, bounds) {
+      const prefs = PreferencesManager.get();
+      PreferencesManager.set({
+        ...prefs,
+        spaceUtilization: {
+          ...(prefs.spaceUtilization || {}),
+          position: spaceUtilizationPreferenceFromPixels(position, bounds),
+        },
+      });
+    }
+
+    function attachSpaceUtilizationGaugeDrag(gauge, host) {
+      const handle = gauge.querySelector('[data-role="space-utilization-drag-handle"]');
+      if (!(handle instanceof HTMLElement)) return;
+
+      const moveByKeyboard = event => {
+        if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Home'].includes(event.key)) return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === 'Home') {
+          const prefs = PreferencesManager.get();
+          PreferencesManager.set({
+            ...prefs,
+            spaceUtilization: {
+              ...(prefs.spaceUtilization || {}),
+              position: { mode: 'bottom-left', x: 0, y: 1 },
+            },
+          });
+          applySpaceUtilizationGaugePosition(gauge, host, { mode: 'bottom-left', x: 0, y: 1 });
+          return;
+        }
+        const bounds = getSpaceUtilizationGaugeBounds(host, gauge);
+        const current = {
+          x: finiteStyleNumber(gauge.style.left, bounds.minX),
+          y: finiteStyleNumber(gauge.style.top, bounds.maxY),
+        };
+        const step = event.shiftKey ? 24 : 12;
+        if (event.key === 'ArrowLeft') current.x -= step;
+        if (event.key === 'ArrowRight') current.x += step;
+        if (event.key === 'ArrowUp') current.y -= step;
+        if (event.key === 'ArrowDown') current.y += step;
+        const next = avoidSpaceUtilizationObstructions(
+          host,
+          gauge,
+          clampSpaceUtilizationPixels(current, bounds),
+          bounds
+        );
+        gauge.style.left = `${next.x}px`;
+        gauge.style.top = `${next.y}px`;
+        persistSpaceUtilizationGaugePosition(next, bounds);
+      };
+      handle.addEventListener('keydown', moveByKeyboard);
+
+      handle.addEventListener('pointerdown', event => {
+        if (event.button !== 0 || activeSpaceUtilizationDragCleanup) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const bounds = getSpaceUtilizationGaugeBounds(host, gauge);
+        const startPosition = {
+          x: finiteStyleNumber(gauge.style.left, bounds.minX),
+          y: finiteStyleNumber(gauge.style.top, bounds.maxY),
+        };
+        const controls = SceneManager.getControls && SceneManager.getControls();
+        const controlsWereEnabled = controls ? controls.enabled !== false : false;
+        if (controls) controls.enabled = false;
+        host.classList.add('is-util-gauge-dragging');
+        gauge.classList.add('is-dragging');
+        let moved = false;
+        let latestPosition = startPosition;
+        const startPointer = { x: event.clientX, y: event.clientY };
+
+        try {
+          handle.setPointerCapture(event.pointerId);
+        } catch {
+          // Pointer capture is optional; window listeners below preserve the drag.
+        }
+
+        const onMove = moveEvent => {
+          moveEvent.preventDefault();
+          moveEvent.stopPropagation();
+          const dx = moveEvent.clientX - startPointer.x;
+          const dy = moveEvent.clientY - startPointer.y;
+          if (!moved && Math.hypot(dx, dy) < 4) return;
+          moved = true;
+          latestPosition = clampSpaceUtilizationPixels({
+            x: startPosition.x + dx,
+            y: startPosition.y + dy,
+          }, bounds);
+          gauge.style.left = `${latestPosition.x}px`;
+          gauge.style.top = `${latestPosition.y}px`;
+        };
+
+        /** @type {(event: PointerEvent) => void} */
+        let onUp = () => {};
+        /** @type {(event: PointerEvent) => void} */
+        let onCancel = () => {};
+        /** @type {(event: KeyboardEvent) => void} */
+        let onKeyDown = () => {};
+        const cleanup = (commit = true) => {
+          window.removeEventListener('pointermove', onMove, true);
+          window.removeEventListener('pointerup', onUp, true);
+          window.removeEventListener('pointercancel', onCancel, true);
+          window.removeEventListener('keydown', onKeyDown, true);
+          host.classList.remove('is-util-gauge-dragging');
+          gauge.classList.remove('is-dragging');
+          if (controls) controls.enabled = controlsWereEnabled;
+          activeSpaceUtilizationDragCleanup = null;
+          if (!commit) {
+            gauge.style.left = `${startPosition.x}px`;
+            gauge.style.top = `${startPosition.y}px`;
+            return;
+          }
+          if (moved) {
+            latestPosition = avoidSpaceUtilizationObstructions(host, gauge, latestPosition, bounds);
+            persistSpaceUtilizationGaugePosition(latestPosition, bounds);
+          }
+        };
+        onUp = upEvent => {
+          upEvent.preventDefault();
+          upEvent.stopPropagation();
+          cleanup(true);
+        };
+        onCancel = cancelEvent => {
+          cancelEvent.preventDefault();
+          cancelEvent.stopPropagation();
+          cleanup(false);
+        };
+        onKeyDown = keyEvent => {
+          if (keyEvent.key !== 'Escape') return;
+          keyEvent.preventDefault();
+          keyEvent.stopPropagation();
+          cleanup(false);
+          handle.focus();
+        };
+        activeSpaceUtilizationDragCleanup = cleanup;
+        window.addEventListener('pointermove', onMove, true);
+        window.addEventListener('pointerup', onUp, true);
+        window.addEventListener('pointercancel', onCancel, true);
+        window.addEventListener('keydown', onKeyDown, true);
+      });
+    }
+
+    function finiteStyleNumber(value, fallback) {
+      const number = Number.parseFloat(value);
+      return Number.isFinite(number) ? number : fallback;
+    }
+
+    function getSpaceUtilizationSnapshotKey(pack) {
+      const workspaceScope = CoreStorage.getWorkspaceScope();
+      return pack && pack.id && workspaceScope ? `${workspaceScope}:${pack.id}` : null;
+    }
+
+    function setSpaceUtilizationCollapsed(gauge, host, collapsed) {
+      spaceUtilizationCollapsed = collapsed === true;
+      gauge.classList.toggle('is-collapsed', spaceUtilizationCollapsed);
+      gauge.dataset.collapsed = spaceUtilizationCollapsed ? 'true' : 'false';
+      const body = gauge.querySelector('.tp3d-util-gauge__body');
+      const summary = gauge.querySelector('.tp3d-util-gauge__collapsed-summary');
+      const details = gauge.querySelector('[data-role="space-utilization-analysis-action"]');
+      const hide = gauge.querySelector('[data-role="space-utilization-hide-action"]');
+      const toggle = gauge.querySelector('[data-role="space-utilization-collapse-action"]');
+      if (body instanceof HTMLElement) body.hidden = spaceUtilizationCollapsed;
+      if (summary instanceof HTMLElement) summary.hidden = !spaceUtilizationCollapsed;
+      if (details instanceof HTMLElement) details.hidden = spaceUtilizationCollapsed;
+      if (hide instanceof HTMLElement) hide.hidden = spaceUtilizationCollapsed;
+      if (toggle instanceof HTMLElement) {
+        const label = spaceUtilizationCollapsed ? 'Expand gauge' : 'Collapse gauge';
+        toggle.setAttribute('aria-label', label);
+        toggle.dataset.tooltip = label;
+        toggle.setAttribute('aria-expanded', spaceUtilizationCollapsed ? 'false' : 'true');
+        toggle.removeAttribute('title');
+        toggle.innerHTML = `<i class="fa-solid fa-chevron-${spaceUtilizationCollapsed ? 'down' : 'up'}" aria-hidden="true"></i>`;
+      }
+      const prefs = PreferencesManager.get();
+      applySpaceUtilizationGaugePosition(
+        gauge,
+        host,
+        prefs.spaceUtilization && prefs.spaceUtilization.position
+      );
+    }
+
+    function openSpaceUtilizationAnalysis(result, lengthUnit, trigger, contextKey) {
+      if (!(trigger instanceof HTMLElement)) return;
+      if (activeSpaceUtilizationAnalysis) activeSpaceUtilizationAnalysis.close({ restoreFocus: false });
+      const content = createSpaceUtilizationAnalysisDetails({ result, lengthUnit });
+      let modalRef = null;
+      let closed = false;
+      let restoreFocusOnClose = true;
+      const handleKeydown = event => {
+        if (!modalRef) return;
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          event.stopPropagation();
+          modalRef.close();
+          return;
+        }
+        if (event.key !== 'Tab') return;
+        const focusables = Array.from(modalRef.modal.querySelectorAll(
+          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+        )).filter(element => element instanceof HTMLElement && !element.hasAttribute('disabled') && !element.hidden);
+        if (!focusables.length) {
+          event.preventDefault();
+          modalRef.modal.focus();
+          return;
+        }
+        const first = focusables[0];
+        const last = focusables[focusables.length - 1];
+        if (event.shiftKey && (document.activeElement === first || document.activeElement === modalRef.modal)) {
+          event.preventDefault();
+          last.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first.focus();
+        }
+      };
+      const close = ({ restoreFocus = true } = {}) => {
+        restoreFocusOnClose = restoreFocus;
+        if (modalRef) modalRef.close();
+      };
+      modalRef = UIComponents.showModal({
+        title: 'Space Utilization Analysis',
+        content,
+        actions: [{ label: 'Close' }],
+        onClose: () => {
+          if (closed) return;
+          closed = true;
+          document.removeEventListener('keydown', handleKeydown, true);
+          if (activeSpaceUtilizationAnalysis && activeSpaceUtilizationAnalysis.close === close) {
+            activeSpaceUtilizationAnalysis = null;
+          }
+          if (!restoreFocusOnClose) return;
+          const host = getAutoPackResultsHost();
+          const focusTarget = trigger.isConnected
+            ? trigger
+            : host && host.querySelector('[data-role="space-utilization-analysis-action"]');
+          if (focusTarget instanceof HTMLElement) focusTarget.focus();
+        },
+      });
+      activeSpaceUtilizationAnalysis = { close, contextKey };
+      modalRef.modal.classList.add('tp3d-util-analysis-modal');
+      modalRef.modal.setAttribute('role', 'dialog');
+      modalRef.modal.setAttribute('aria-modal', 'true');
+      modalRef.modal.setAttribute('tabindex', '-1');
+      const title = modalRef.modal.querySelector('.modal-title');
+      const closeButton = modalRef.modal.querySelector('.modal-header .btn');
+      if (title instanceof HTMLElement) {
+        title.id = 'tp3d-space-utilization-analysis-title';
+        modalRef.modal.setAttribute('aria-labelledby', title.id);
+      }
+      if (closeButton instanceof HTMLElement) closeButton.setAttribute('aria-label', 'Close Space Utilization Analysis');
+      document.addEventListener('keydown', handleKeydown, true);
+      (closeButton instanceof HTMLElement ? closeButton : modalRef.modal).focus();
+    }
+
+    function attachSpaceUtilizationGaugeActions(gauge, host, result, lengthUnit, contextKey) {
+      const collapse = gauge.querySelector('[data-role="space-utilization-collapse-action"]');
+      const details = gauge.querySelector('[data-role="space-utilization-analysis-action"]');
+      const hide = gauge.querySelector('[data-role="space-utilization-hide-action"]');
+      if (collapse instanceof HTMLElement) {
+        collapse.addEventListener('click', event => {
+          event.stopPropagation();
+          setSpaceUtilizationCollapsed(gauge, host, !spaceUtilizationCollapsed);
+        });
+      }
+      if (details instanceof HTMLElement) {
+        details.addEventListener('click', event => {
+          event.stopPropagation();
+          openSpaceUtilizationAnalysis(result, lengthUnit, details, contextKey);
+        });
+      }
+      if (hide instanceof HTMLElement) {
+        hide.addEventListener('click', event => {
+          event.stopPropagation();
+          const prefs = PreferencesManager.get();
+          PreferencesManager.set({
+            ...prefs,
+            spaceUtilization: {
+              ...(prefs.spaceUtilization || {}),
+              showGauge: false,
+            },
+          });
+          syncSpaceUtilizationToggle();
+          removeSpaceUtilizationGauge();
+        });
+      }
+    }
+
+    function renderSpaceUtilizationGauge(pack) {
+      const host = getAutoPackResultsHost();
+      const prefs = PreferencesManager.get();
+      ensureSpaceUtilizationToggle();
+      syncSpaceUtilizationToggle(prefs);
+      const snapshotKey = getSpaceUtilizationSnapshotKey(pack);
+      if (activeSpaceUtilizationAnalysis && activeSpaceUtilizationAnalysis.contextKey !== snapshotKey) {
+        activeSpaceUtilizationAnalysis.close({ restoreFocus: false });
+      }
+      removeSpaceUtilizationGauge();
+      if (!host || !shouldShowSpaceUtilizationGauge(prefs)) return;
+
+      if (!snapshotKey) lastSpaceUtilizationSnapshot = null;
+      let result = buildSpaceUtilizationResult(pack, PackLibrary);
+      const busy = Boolean(OperationLifecycle && OperationLifecycle.isBusy && OperationLifecycle.isBusy());
+      if (snapshotKey && busy) {
+        const previousResult = lastSpaceUtilizationSnapshot && lastSpaceUtilizationSnapshot.key === snapshotKey
+          ? lastSpaceUtilizationSnapshot.result
+          : null;
+        result = previousResult
+          ? { state: 'updating', previousResult }
+          : { state: 'unavailable', source: null };
+      } else if (snapshotKey && result.state !== 'unavailable') {
+        lastSpaceUtilizationSnapshot = { key: snapshotKey, result };
+      }
+
+      const lengthUnit = prefs.units && prefs.units.length;
+      const gauge = createSpaceUtilizationGauge({
+        result,
+        style: getSpaceUtilizationGaugeStyle(prefs),
+        detail: getSpaceUtilizationGaugeDetail(prefs),
+        lengthUnit,
+        collapsed: spaceUtilizationCollapsed,
+      });
+      host.appendChild(gauge);
+      applySpaceUtilizationGaugePosition(
+        gauge,
+        host,
+        prefs.spaceUtilization && prefs.spaceUtilization.position
+      );
+      attachSpaceUtilizationGaugeDrag(gauge, host);
+      attachSpaceUtilizationGaugeActions(gauge, host, result, lengthUnit, snapshotKey);
+    }
+
+    function clampSpaceUtilizationGaugePosition() {
+      const host = getAutoPackResultsHost();
+      const gauge = host && host.querySelector('[data-role="space-utilization-gauge"]');
+      if (!(host instanceof HTMLElement) || !(gauge instanceof HTMLElement)) return;
+      const prefs = PreferencesManager.get();
+      applySpaceUtilizationGaugePosition(
+        gauge,
+        host,
+        prefs.spaceUtilization && prefs.spaceUtilization.position
+      );
     }
 
     function removeAutoPackResultsPanel() {
@@ -3741,6 +4230,7 @@ export function createEditorScreen({
           window.removeEventListener('pointerup', onUp);
           if (dragging && nextPosition) {
             patchAutoPackResultsState({ position: nextPosition });
+            clampSpaceUtilizationGaugePosition();
           }
         };
         window.addEventListener('pointermove', onMove);
@@ -4018,6 +4508,8 @@ export function createEditorScreen({
         });
       }
 
+      ensureSpaceUtilizationToggle();
+
       caseSearchEl.addEventListener('input', Utils.debounce(renderCaseBrowser, 250));
       if (caseFilterToggleEl) {
         const searchWrapEl = caseSearchEl ? caseSearchEl.closest('.tp3d-editor-case-search') : null;
@@ -4052,7 +4544,10 @@ export function createEditorScreen({
       // operation (AutoPack/Unpack/Truck Change/preview capture) begins or ends.
       if (OperationLifecycle && typeof OperationLifecycle.subscribe === 'function') {
         OperationLifecycle.subscribe(() => {
-          if (StateStore.get('currentScreen') === 'editor') refreshActionButtons();
+          if (StateStore.get('currentScreen') === 'editor') {
+            refreshActionButtons();
+            renderSpaceUtilizationGauge(PackLibrary.getById(StateStore.get('currentPackId')));
+          }
         });
       }
 
@@ -4144,6 +4639,19 @@ export function createEditorScreen({
       if (window.visualViewport && typeof window.visualViewport.addEventListener === 'function') {
         window.visualViewport.addEventListener('resize', handleViewportChange);
       }
+      const utilizationHost = getAutoPackResultsHost();
+      if (!spaceUtilizationResizeObserver && utilizationHost && typeof ResizeObserver === 'function') {
+        spaceUtilizationResizeObserver = new ResizeObserver(() => {
+          if (StateStore.get('currentScreen') === 'editor') clampSpaceUtilizationGaugePosition();
+        });
+        spaceUtilizationResizeObserver.observe(utilizationHost);
+      }
+      if (!sceneHostResizeObserver && viewportEl && typeof ResizeObserver === 'function') {
+        sceneHostResizeObserver = new ResizeObserver(() => {
+          if (StateStore.get('currentScreen') === 'editor') syncEditorSceneLayout();
+        });
+        sceneHostResizeObserver.observe(viewportEl);
+      }
     }
 
     function ensureScene() {
@@ -4169,6 +4677,7 @@ export function createEditorScreen({
         renderCaseBrowser();
         renderInspectorNoPack();
         renderAutoPackResultsPanel(null);
+        renderSpaceUtilizationGauge(null);
         SceneManager.resize();
         return;
       }
@@ -4181,38 +4690,30 @@ export function createEditorScreen({
       renderCaseBrowser();
       renderInspector(pack);
       renderAutoPackResultsPanel(pack);
+      renderSpaceUtilizationGauge(pack);
       SceneManager.resize();
+    }
+
+    function syncEditorSceneLayout() {
+      if (!initialized || !viewportEl || StateStore.get('currentScreen') !== 'editor') return;
+      const rect = viewportEl.getBoundingClientRect();
+      if (rect.width <= 2 || rect.height <= 2) return;
+      SceneManager.resize();
+      clampSpaceUtilizationGaugePosition();
+    }
+
+    function scheduleEditorSceneLayoutSync() {
+      if (layoutRaf) window.cancelAnimationFrame(layoutRaf);
+      layoutRaf = window.requestAnimationFrame(() => {
+        layoutRaf = null;
+        syncEditorSceneLayout();
+      });
     }
 
     function onActivated() {
       if (!supportsWebGL || !viewportEl) return;
       ensureScene();
-      if (activationRaf) {
-        window.cancelAnimationFrame(activationRaf);
-        activationRaf = null;
-      }
-      let attempts = 0;
-      const maxAttempts = 8;
-      const finish = () => {
-        activationRaf = null;
-        if (typeof SceneManager.resize === 'function') SceneManager.resize();
-      };
-      const attemptResize = () => {
-        attempts += 1;
-        const rect = viewportEl.getBoundingClientRect();
-        const width = Math.floor(rect.width);
-        const height = Math.floor(rect.height);
-        if (width > 2 && height > 2) {
-          finish();
-          return;
-        }
-        if (attempts >= maxAttempts) {
-          finish();
-          return;
-        }
-        activationRaf = window.requestAnimationFrame(attemptResize);
-      };
-      activationRaf = window.requestAnimationFrame(attemptResize);
+      scheduleEditorSceneLayoutSync();
     }
 
     function normalizeBrowserFilterKey(value) {
@@ -6546,27 +7047,20 @@ export function createEditorScreen({
 
     function setPanelVisible(side, visible) {
       const isMobile = window.matchMedia('(max-width: 899px)').matches;
-      const defaultCol = which => {
-        const compact = window.matchMedia('(max-width: 1279px)').matches;
-        if (which === 'left') return compact ? '270px' : '290px';
-        return compact ? '300px' : '340px';
-      };
       if (side === 'left' && !visible) {
         setCaseFiltersVisible(false, false);
       }
       if (side === 'left') {
         if (isMobile) leftEl.classList.toggle('open', visible);
-        else shellEl.style.setProperty('--left-col', visible ? defaultCol('left') : '0px');
+        else shellEl.classList.toggle('is-left-panel-hidden', !visible);
       }
       if (side === 'right') {
         if (isMobile) rightEl.classList.toggle('open', visible);
-        else shellEl.style.setProperty('--right-col', visible ? defaultCol('right') : '0px');
+        else shellEl.classList.toggle('is-right-panel-hidden', !visible);
       }
 
       if (StateStore.get('currentScreen') === 'editor') {
-        window.requestAnimationFrame(() => {
-          if (SceneManager && typeof SceneManager.resize === 'function') SceneManager.resize();
-        });
+        scheduleEditorSceneLayoutSync();
       }
     }
 
@@ -6576,16 +7070,14 @@ export function createEditorScreen({
         if (isMobile) {
           setPanelVisible('left', !leftEl.classList.contains('open'));
         } else {
-          const current = getComputedStyle(shellEl).getPropertyValue('--left-col').trim() || '290px';
-          setPanelVisible('left', current === '0px');
+          setPanelVisible('left', shellEl.classList.contains('is-left-panel-hidden'));
         }
       }
       if (side === 'right') {
         if (isMobile) {
           setPanelVisible('right', !rightEl.classList.contains('open'));
         } else {
-          const current = getComputedStyle(shellEl).getPropertyValue('--right-col').trim() || '340px';
-          setPanelVisible('right', current === '0px');
+          setPanelVisible('right', shellEl.classList.contains('is-right-panel-hidden'));
         }
       }
     }

@@ -576,7 +576,7 @@ test('BUSINESS-IDENTITY-UI Card Display toggles use existing defaults, persisten
   overlay.open({ screen: 'cases' });
   assert.deepEqual(
     menuItems.slice(1).map(entry => entry.label),
-    ['Item Code', 'Manufacturer', 'Notes', 'Dimensions', 'Volume', 'Weight', 'Category', 'Handling', 'Quantity']
+    ['Item Code', 'Manufacturer', 'Quantity', 'Dimensions', 'Volume', 'Weight', 'Category', 'Handling', 'Notes']
   );
   assert.equal(menuOptions.width, 200);
   assert.equal(menuOptions.dropdownClass, 'tp3d-dropdown-card-display');
@@ -810,8 +810,8 @@ test('MANAGEMENT-NOTES Grid/List controls preserve ownership, placement, accessi
   assert.equal(packHeaderMatches.length, 2, 'Cases and Load Plans each have exactly one Notes header');
   packHeaderMatches.forEach(header => assert.doesNotMatch(header, /data-sort/,
     'Notes headers are presentation controls, never sort fields'));
-  assert.match(html, /<th[^>]*>Handling<\/th>\s*<th[^>]*data-sort="quantity"[\s\S]*?<\/th>\s*<th[^>]*data-column="notes"[^>]*>Notes<\/th>\s*<th class="col-actions"/,
-    'Cases Notes sits after Handling and Quantity, and before actions');
+  assert.match(html, /<th[^>]*>Handling<\/th>\s*<th[^>]*data-column="notes"[^>]*>Notes<\/th>\s*<th class="col-actions"/,
+    'Cases Notes sits after Handling and before actions');
   assert.match(html, /data-sort="edited"[\s\S]*?<\/th>\s*<th[^>]*data-column="notes"[^>]*>Notes<\/th>\s*<th class="col-actions"/,
     'Load Plan Notes sits after Edited and before actions');
 

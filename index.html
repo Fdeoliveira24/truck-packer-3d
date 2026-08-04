@@ -253,7 +253,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
 
     <!-- ===== STYLES: App CSS (single-file) ===== -->
-    <link rel="stylesheet" href="styles/main.css?v=20260703-autopack-quality2" />
+    <link rel="stylesheet" href="styles/main.css?v=20260803-space-utilization-polish" />
     <style media="not all">
       /* moved to styles/main.css */
     </style>
@@ -696,6 +696,15 @@
                         </span>
                       </span>
                     </th>
+                    <th scope="col" data-sort="quantity">
+                      <span class="th-sort" role="button" tabindex="0">
+                        <span class="th-label">Quantity</span>
+                        <span class="th-chevrons" aria-hidden="true">
+                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
+                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
+                        </span>
+                      </span>
+                    </th>
                     <th scope="col" data-sort="length">
                       <span class="th-sort" role="button" tabindex="0">
                         <span class="th-label">Length</span>
@@ -751,15 +760,6 @@
                       </span>
                     </th>
                     <th scope="col" data-column="handling">Handling</th>
-                    <th scope="col" data-sort="quantity">
-                      <span class="th-sort" role="button" tabindex="0">
-                        <span class="th-label">Quantity</span>
-                        <span class="th-chevrons" aria-hidden="true">
-                          <i class="fa-solid fa-chevron-up th-chevron th-chevron-up"></i>
-                          <i class="fa-solid fa-chevron-down th-chevron th-chevron-down"></i>
-                        </span>
-                      </span>
-                    </th>
                     <th class="tp3d-management-notes-col" scope="col" data-column="notes">Notes</th>
                     <th class="col-actions" scope="col"></th>
                   </tr>
@@ -1180,7 +1180,7 @@
           boot.showAppStatusOverlay('maintenance');
         }
       } else {
-        import('./src/app.js?v=20260703-autopack-quality2').catch(err => {
+        import('./src/app.js?v=20260803-space-utilization-polish').catch(err => {
           console.error('[TruckPackerApp] app import failed:', err);
           if (typeof boot.showAppStatusOverlay === 'function') {
             boot.showAppStatusOverlay('fatal');

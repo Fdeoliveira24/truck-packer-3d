@@ -3031,7 +3031,7 @@ export function createSettingsOverlay({
     render({ source: 'setResourcesSubView' });
   }
 
-  function savePrefsFromForm({ length, weight, theme, labelSize, hiddenOpacity }) {
+  function savePrefsFromForm({ length, weight, theme, labelSize, hiddenOpacity, spaceUtilization }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
     next.units.length = length;
@@ -3039,6 +3039,15 @@ export function createSettingsOverlay({
     next.theme = theme;
     next.labelFontSize = Utils.clamp(Number(labelSize) || 12, 8, 24);
     next.hiddenCaseOpacity = Utils.clamp(Number(hiddenOpacity) || 0.3, 0, 1);
+    const previousGaugePosition = prev.spaceUtilization && prev.spaceUtilization.position;
+    next.spaceUtilization = {
+      showGauge: Boolean(spaceUtilization && spaceUtilization.showGauge === true),
+      style: spaceUtilization && spaceUtilization.style === 'arc' ? 'arc' : 'spatial',
+      detail: spaceUtilization && spaceUtilization.detail === 'standard' ? 'standard' : 'minimal',
+      position: previousGaugePosition && typeof previousGaugePosition === 'object'
+        ? { ...previousGaugePosition }
+        : { mode: 'bottom-left', x: 0, y: 1 },
+    };
     PreferencesManager.set(next);
     PreferencesManager.applyTheme(next.theme);
     UIComponents.showToast('Preferences saved', 'success');
@@ -4744,6 +4753,103 @@ export function createSettingsOverlay({
       `;
       theme.value = prefs.theme;
 
+      const utilizationPrefs = prefs.spaceUtilization || {};
+      const showUtilizationGauge = doc.createElement('button');
+      showUtilizationGauge.type = 'button';
+      showUtilizationGauge.className = 'tp3d-pref-switch';
+      showUtilizationGauge.dataset.role = 'space-utilization-visibility';
+      showUtilizationGauge.setAttribute('role', 'switch');
+      showUtilizationGauge.setAttribute('aria-label', 'Show Space Utilization gauge');
+      const switchTrack = doc.createElement('span');
+      switchTrack.className = 'tp3d-pref-switch__track';
+      switchTrack.setAttribute('aria-hidden', 'true');
+      const switchThumb = doc.createElement('span');
+      switchThumb.className = 'tp3d-pref-switch__thumb';
+      switchTrack.appendChild(switchThumb);
+      const switchValue = doc.createElement('span');
+      switchValue.className = 'tp3d-pref-switch__value';
+      const setGaugeVisibility = enabled => {
+        const isEnabled = enabled === true;
+        showUtilizationGauge.dataset.value = isEnabled ? 'on' : 'off';
+        showUtilizationGauge.setAttribute('aria-checked', isEnabled ? 'true' : 'false');
+        showUtilizationGauge.classList.toggle('is-on', isEnabled);
+        switchValue.textContent = isEnabled ? 'On' : 'Off';
+      };
+      showUtilizationGauge.appendChild(switchTrack);
+      showUtilizationGauge.appendChild(switchValue);
+      setGaugeVisibility(utilizationPrefs.showGauge === true);
+      showUtilizationGauge.addEventListener('click', () => {
+        setGaugeVisibility(showUtilizationGauge.dataset.value !== 'on');
+      });
+
+      const createSegmentedControl = (role, label, options, selectedValue) => {
+        const control = doc.createElement('div');
+        control.className = 'tp3d-pref-segmented';
+        control.dataset.role = role;
+        control.setAttribute('role', 'group');
+        control.setAttribute('aria-label', label);
+        const selectValue = (value, focus = false) => {
+          const resolved = options.some(option => option.value === value) ? value : options[0].value;
+          control.dataset.value = resolved;
+          Array.from(control.querySelectorAll('button')).forEach(button => {
+            const selected = button.dataset.value === resolved;
+            button.setAttribute('aria-pressed', selected ? 'true' : 'false');
+            button.classList.toggle('is-selected', selected);
+            button.tabIndex = selected ? 0 : -1;
+            if (selected && focus) button.focus();
+          });
+        };
+        options.forEach((option, index) => {
+          const button = doc.createElement('button');
+          button.type = 'button';
+          button.className = 'tp3d-pref-segmented__option';
+          button.dataset.value = option.value;
+          button.textContent = option.label;
+          button.addEventListener('click', () => selectValue(option.value));
+          button.addEventListener('keydown', event => {
+            if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+            event.preventDefault();
+            const lastIndex = options.length - 1;
+            const nextIndex = event.key === 'Home'
+              ? 0
+              : event.key === 'End'
+                ? lastIndex
+                : event.key === 'ArrowLeft'
+                  ? (index - 1 + options.length) % options.length
+                  : (index + 1) % options.length;
+            selectValue(options[nextIndex].value, true);
+          });
+          control.appendChild(button);
+        });
+        selectValue(selectedValue);
+        return control;
+      };
+
+      const utilizationStyle = createSegmentedControl(
+        'space-utilization-style',
+        'Space Utilization gauge style',
+        [{ value: 'spatial', label: 'Spatial' }, { value: 'arc', label: 'Arc' }],
+        utilizationPrefs.style === 'arc' ? 'arc' : 'spatial'
+      );
+      const utilizationDetail = createSegmentedControl(
+        'space-utilization-detail',
+        'Space Utilization gauge detail',
+        [{ value: 'minimal', label: 'Minimal' }, { value: 'standard', label: 'Standard' }],
+        utilizationPrefs.detail === 'standard' ? 'standard' : 'minimal'
+      );
+      showUtilizationGauge.classList.add('tp3d-prefs-util-switch');
+      utilizationStyle.classList.add('tp3d-prefs-util-control');
+      utilizationDetail.classList.add('tp3d-prefs-util-control');
+      const utilizationPositionMode = utilizationPrefs.position && utilizationPrefs.position.mode === 'custom'
+        ? 'Custom'
+        : 'Docked bottom-left';
+
+      const utilizationRow = (label, control) => {
+        const utilizationRowEl = row(label, control);
+        utilizationRowEl.classList.add('tp3d-prefs-util-row');
+        return utilizationRowEl;
+      };
+
       const prefsCard = doc.createElement('div');
       prefsCard.className = 'card tp3d-settings-card-max tp3d-prefs-card';
 
@@ -4763,6 +4869,49 @@ export function createSettingsOverlay({
 
       labelSize.classList.add('tp3d-prefs-number-input');
       prefsCard.appendChild(row('Label Font Size', labelSize));
+
+      const utilizationHeading = doc.createElement('div');
+      utilizationHeading.className = 'tp3d-prefs-heading tp3d-prefs-util-heading';
+      utilizationHeading.textContent = 'Space Utilization';
+      prefsCard.appendChild(utilizationHeading);
+      prefsCard.appendChild(utilizationRow('Show gauge', showUtilizationGauge));
+      prefsCard.appendChild(utilizationRow('Gauge style', utilizationStyle));
+      prefsCard.appendChild(utilizationRow('Gauge detail', utilizationDetail));
+
+      const positionControl = doc.createElement('div');
+      positionControl.className = 'tp3d-prefs-position-control';
+      const positionActions = doc.createElement('div');
+      positionActions.className = 'tp3d-prefs-position-actions';
+      const positionStatus = doc.createElement('div');
+      positionStatus.className = 'tp3d-prefs-position-status';
+      positionStatus.dataset.role = 'space-utilization-position';
+      positionStatus.setAttribute('aria-label', `Current gauge position: ${utilizationPositionMode}`);
+      positionStatus.textContent = utilizationPositionMode;
+      const resetPosition = doc.createElement('button');
+      resetPosition.type = 'button';
+      resetPosition.className = 'btn tp3d-prefs-reset-position';
+      resetPosition.dataset.role = 'space-utilization-reset-position';
+      resetPosition.setAttribute('aria-label', 'Reset Space Utilization gauge position to bottom-left');
+      resetPosition.textContent = 'Reset';
+      resetPosition.addEventListener('click', () => {
+        const next = Utils.deepClone(PreferencesManager.get());
+        next.spaceUtilization = {
+          ...(next.spaceUtilization || {}),
+          position: { mode: 'bottom-left', x: 0, y: 1 },
+        };
+        PreferencesManager.set(next);
+        positionStatus.textContent = 'Docked bottom-left';
+        positionStatus.setAttribute('aria-label', 'Current gauge position: Docked bottom-left');
+        UIComponents.showToast('Gauge position reset', 'success', { title: 'Space Utilization', duration: 1600 });
+      });
+      positionActions.appendChild(positionStatus);
+      positionActions.appendChild(resetPosition);
+      positionControl.appendChild(positionActions);
+      const positionHelper = doc.createElement('div');
+      positionHelper.className = 'tp3d-prefs-helper';
+      positionHelper.textContent = 'Drag the gauge in the Editor to set a custom position.';
+      positionControl.appendChild(positionHelper);
+      prefsCard.appendChild(utilizationRow('Position', positionControl));
 
       const appearanceHeading = doc.createElement('div');
       appearanceHeading.className = 'tp3d-prefs-heading';
@@ -4828,6 +4977,11 @@ export function createSettingsOverlay({
           theme: theme.value,
           labelSize: labelSize.value,
           hiddenOpacity: hiddenOpacity.value,
+          spaceUtilization: {
+            showGauge: showUtilizationGauge.dataset.value === 'on',
+            style: utilizationStyle.dataset.value,
+            detail: utilizationDetail.dataset.value,
+          },
         })
       );
       actions.appendChild(saveBtn);

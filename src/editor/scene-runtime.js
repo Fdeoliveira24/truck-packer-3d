@@ -42,7 +42,7 @@ export function createSceneRuntime({
     let cogMarker = null;
     let environmentSize = 0;
     const perf = { lastTime: 0, lowMs: 0, perfMode: false, fps: 60 };
-    let viewSize = { width: 1, height: 1 };
+    let viewSize = { width: 1, height: 1, pixelRatio: 1 };
 
     // Dev-only performance overlay
     const DevOverlay = (() => {
@@ -173,9 +173,10 @@ export function createSceneRuntime({
         alpha: true,
         powerPreference: 'high-performance',
       });
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      renderer.setPixelRatio(pixelRatio);
       renderer.setSize(width, height);
-      viewSize = { width, height };
+      viewSize = { width, height, pixelRatio };
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFSoftShadowMap;
       renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -512,12 +513,14 @@ export function createSceneRuntime({
     function resize() {
       if (!renderer || !camera || !containerEl) return;
       const { width, height } = getContainerSize();
-      if (width === viewSize.width && height === viewSize.height) return;
-      viewSize = { width, height };
+      const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      if (width === viewSize.width && height === viewSize.height && pixelRatio === viewSize.pixelRatio) return;
+      viewSize = { width, height, pixelRatio };
       camera.aspect = width / height;
       camera.updateProjectionMatrix();
-      renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+      renderer.setPixelRatio(pixelRatio);
       renderer.setSize(width, height);
+      render();
     }
 
     function refreshTheme() {

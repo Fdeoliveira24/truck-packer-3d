@@ -179,6 +179,27 @@ export function normalizePreferences(prefs) {
   next.showBevels = next.showBevels !== false;
   next.labelFontSize = CoreUtils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
   next.hiddenCaseOpacity = CoreUtils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
+  const incomingSpaceUtilization = next.spaceUtilization && typeof next.spaceUtilization === 'object'
+    ? next.spaceUtilization
+    : {};
+  const incomingGaugePosition = incomingSpaceUtilization.position && typeof incomingSpaceUtilization.position === 'object'
+    ? incomingSpaceUtilization.position
+    : {};
+  const customX = Number(incomingGaugePosition.x);
+  const customY = Number(incomingGaugePosition.y);
+  const hasCustomPosition = incomingGaugePosition.mode === 'custom' && Number.isFinite(customX) && Number.isFinite(customY);
+  next.spaceUtilization = {
+    showGauge: incomingSpaceUtilization.showGauge === true,
+    style: incomingSpaceUtilization.style === 'arc' ? 'arc' : 'spatial',
+    detail: incomingSpaceUtilization.detail === 'standard' ? 'standard' : 'minimal',
+    position: hasCustomPosition
+      ? {
+          mode: 'custom',
+          x: CoreUtils.clamp(customX, 0, 1),
+          y: CoreUtils.clamp(customY, 0, 1),
+        }
+      : { ...base.spaceUtilization.position },
+  };
   next.snapping = next.snapping && typeof next.snapping === 'object' ? next.snapping : base.snapping;
   next.snapping.enabled = Boolean(next.snapping.enabled);
   next.snapping.gridSize = Math.max(0.25, finiteNumber(next.snapping.gridSize, base.snapping.gridSize));

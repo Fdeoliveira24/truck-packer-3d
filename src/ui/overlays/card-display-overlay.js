@@ -114,8 +114,8 @@ export function createCardDisplayOverlay({
         )
       );
       items.push(
-        item('Notes', cases.showNotes !== false, () =>
-          setFlag('cases.showNotes', cases.showNotes === false)
+        item('Quantity', cases.showQuantity !== false, () =>
+          setFlag('cases.showQuantity', cases.showQuantity === false)
         )
       );
       items.push(
@@ -138,8 +138,8 @@ export function createCardDisplayOverlay({
         )
       );
       items.push(
-        item('Quantity', cases.showQuantity !== false, () =>
-          setFlag('cases.showQuantity', cases.showQuantity === false)
+        item('Notes', cases.showNotes !== false, () =>
+          setFlag('cases.showNotes', cases.showNotes === false)
         )
       );
     } else {

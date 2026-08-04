@@ -56,6 +56,12 @@ export const defaultPreferences = {
   showBevels: true,
   labelFontSize: 12,
   hiddenCaseOpacity: 0.3,
+  spaceUtilization: {
+    showGauge: false,
+    style: 'spatial',
+    detail: 'minimal',
+    position: { mode: 'bottom-left', x: 0, y: 1 },
+  },
   snapping: { enabled: true, gridSize: 1 },
   camera: { defaultView: 'perspective' },
   export: { screenshotResolution: '1920x1080', pdfIncludeStats: true },

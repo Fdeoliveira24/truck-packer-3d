@@ -1117,48 +1117,55 @@ test('Requirement 64: existing security/invariant tests remain valid — the obs
 // catTh.nextElementSibling. That was correct only while Handling sat
 // immediately after Category in the header. Once a Quantity <th> was
 // inserted between Category and Handling, "handlingTh" silently became a
-// reference to the Quantity header instead — so toggling "Handling" in Card
-// Display hid/showed the Quantity header (driven by showHandling), while the
-// real Handling header was never touched by any visibility logic and stayed
-// permanently visible. The row <td> cells were correctly wired to their own
-// flags throughout; only the header lookup (and its position relative to the
-// body's append order) was wrong. Fixed by: reordering the header/body cells
-// to the same Category -> Handling -> Quantity -> Notes sequence, and
-// replacing the positional lookup with a stable data-column="handling"
-// selector (matching the existing data-column="notes" convention).
+// reference to an adjacent header instead — so changing the visible column
+// order could silently connect Handling visibility to the wrong field. Keep
+// the stable data-column="handling" selector (matching Notes) while Quantity
+// remains independently addressable through data-sort="quantity".
 // ===========================================================================
 
-test('Cases List header order is Category, Handling, Quantity, Notes (matches required final column order)', async () => {
+test('Cases List header order places Quantity between Manufacturer and Length while preserving the stable tail columns', async () => {
   const html = await fs.readFile(indexHtmlPath, 'utf8');
   const tableStart = html.indexOf('id="cases-tbody"');
   assert.ok(tableStart > 0, 'expected to find the Cases table');
   const headerBlock = html.slice(0, tableStart);
+  const manufacturerIdx = headerBlock.lastIndexOf('data-sort="manufacturer"');
+  const quantityIdx = headerBlock.lastIndexOf('data-sort="quantity"');
+  const lengthIdx = headerBlock.lastIndexOf('data-sort="length"');
   const categoryIdx = headerBlock.lastIndexOf('data-sort="category"');
   const handlingIdx = headerBlock.lastIndexOf('data-column="handling"');
-  const quantityIdx = headerBlock.lastIndexOf('data-sort="quantity"');
   const notesIdx = headerBlock.lastIndexOf('data-column="notes"');
-  assert.ok(categoryIdx > 0 && handlingIdx > 0 && quantityIdx > 0 && notesIdx > 0,
-    'Category, Handling, Quantity, and Notes headers must all be present in the Cases table');
+  assert.ok(
+    manufacturerIdx > 0 && quantityIdx > 0 && lengthIdx > 0 &&
+      categoryIdx > 0 && handlingIdx > 0 && notesIdx > 0,
+    'Manufacturer, Quantity, Length, Category, Handling, and Notes headers must all be present'
+  );
+  assert.ok(manufacturerIdx < quantityIdx, 'Quantity header must come after Manufacturer');
+  assert.ok(quantityIdx < lengthIdx, 'Quantity header must come before Length');
   assert.ok(categoryIdx < handlingIdx, 'Handling header must come after Category');
-  assert.ok(handlingIdx < quantityIdx, 'Handling header must come before Quantity header (required final order)');
-  assert.ok(quantityIdx < notesIdx, 'Quantity header must come before Notes');
+  assert.ok(handlingIdx < notesIdx, 'Notes header must come after Handling');
 });
 
-test('Cases List row cells are appended in the same order as the headers: tdCat, tdHandling, tdQty, tdNotes', async () => {
+test('Cases List row cells match the Quantity-between-Manufacturer-and-Length header order', async () => {
   const src = await fs.readFile(casesScreenPath, 'utf8');
-  const rowStart = src.indexOf("const tdCat = document.createElement('td');");
+  const rowStart = src.indexOf("const tdMfg = document.createElement('td');");
   const rowEnd = src.indexOf("const tdActions = document.createElement('td');", rowStart);
   assert.ok(rowStart > 0 && rowEnd > rowStart, 'expected to find the Cases row-cell construction block');
   const rowBlock = src.slice(rowStart, rowEnd);
+  const manufacturerIdx = rowBlock.indexOf('tr.appendChild(tdMfg)');
+  const quantityIdx = rowBlock.indexOf('tr.appendChild(tdQty)');
+  const lengthIdx = rowBlock.indexOf('tr.appendChild(tdLength)');
   const catIdx = rowBlock.indexOf("tr.appendChild(tdCat)");
   const handlingIdx = rowBlock.indexOf("tr.appendChild(tdHandling)");
-  const qtyIdx = rowBlock.indexOf("tr.appendChild(tdQty)");
   const notesIdx = rowBlock.indexOf("const tdNotes = document.createElement('td')");
-  assert.ok(catIdx >= 0 && handlingIdx >= 0 && qtyIdx >= 0 && notesIdx >= 0,
-    'tdCat, tdHandling, tdQty, and tdNotes must all be present');
+  assert.ok(
+    manufacturerIdx >= 0 && quantityIdx >= 0 && lengthIdx >= 0 &&
+      catIdx >= 0 && handlingIdx >= 0 && notesIdx >= 0,
+    'tdMfg, tdQty, tdLength, tdCat, tdHandling, and tdNotes must all be present'
+  );
+  assert.ok(manufacturerIdx < quantityIdx, 'tdQty must be appended after tdMfg');
+  assert.ok(quantityIdx < lengthIdx, 'tdQty must be appended before tdLength');
   assert.ok(catIdx < handlingIdx, 'tdHandling must be appended after tdCat');
-  assert.ok(handlingIdx < qtyIdx, 'tdHandling must be appended before tdQty (matches header order — this is the exact swap that was fixed)');
-  assert.ok(qtyIdx < notesIdx, 'tdQty must be appended before tdNotes');
+  assert.ok(handlingIdx < notesIdx, 'tdNotes must be appended after tdHandling');
 });
 
 test('applyListColumnVisibility looks up the Handling header by a stable data-column selector, not a positional DOM traversal', async () => {
@@ -1177,7 +1184,7 @@ test('applyListColumnVisibility looks up the Handling header by a stable data-co
 for (const [handlingOn, quantityOn] of [[true, true], [false, true], [true, false], [false, false]]) {
   test(`Cases List cell visibility: Handling ${handlingOn ? 'on' : 'off'}, Quantity ${quantityOn ? 'on' : 'off'} — each column responds only to its own flag`, async () => {
     const src = await fs.readFile(casesScreenPath, 'utf8');
-    const rowStart = src.indexOf("const tdCat = document.createElement('td');");
+    const rowStart = src.indexOf("const tdMfg = document.createElement('td');");
     const rowEnd = src.indexOf("const tdActions = document.createElement('td');", rowStart);
     const rowBlock = src.slice(rowStart, rowEnd);
 
@@ -1209,16 +1216,45 @@ for (const [handlingOn, quantityOn] of [[true, true], [false, true], [true, fals
   });
 }
 
-test('Cases Grid chips: Handling and Quantity chips are each gated by their own flag only', async () => {
+test('Cases Grid metadata follows the canonical Quantity, Dimensions, Volume, Weight, Category, Handling order', async () => {
   const src = await fs.readFile(casesScreenPath, 'utf8');
-  const gridStart = src.indexOf("if (badgePrefs.showHandling !== false) {");
+  const gridStart = src.indexOf("if (badgePrefs.showQuantity !== false) {");
   const gridEnd = src.indexOf("const selectCb = document.createElement('input');");
   const gridBlock = src.slice(gridStart, gridEnd);
-  const handlingChipBlock = gridBlock.slice(0, gridBlock.indexOf('if (badgePrefs.showQuantity'));
-  const qtyChipBlock = gridBlock.slice(gridBlock.indexOf('if (badgePrefs.showQuantity'));
-  assert.doesNotMatch(handlingChipBlock, /showQuantity/, 'the Handling chip block must not reference showQuantity');
-  assert.doesNotMatch(qtyChipBlock, /showHandling/, 'the Quantity chip block must not reference showHandling');
+  const fieldIndexes = [
+    'showQuantity',
+    'showDims',
+    'showVolume',
+    'showWeight',
+    'showCategory',
+    'showHandling',
+  ].map(field => gridBlock.indexOf(`badgePrefs.${field}`));
+  assert.ok(fieldIndexes.every(index => index >= 0), 'all canonical Grid fields must be present');
+  assert.deepEqual(fieldIndexes, [...fieldIndexes].sort((a, b) => a - b),
+    'Grid fields must be composed in canonical display order');
+
+  const qtyChipBlock = gridBlock.slice(
+    gridBlock.indexOf('if (badgePrefs.showQuantity'),
+    gridBlock.indexOf('if (badgePrefs.showDims')
+  );
+  const handlingChipBlock = gridBlock.slice(gridBlock.indexOf('if (badgePrefs.showHandling'));
+  assert.doesNotMatch(qtyChipBlock, /showHandling/, 'the Quantity chip must not reference showHandling');
+  assert.doesNotMatch(handlingChipBlock, /showQuantity/, 'the Handling chip must not reference showQuantity');
   assert.match(qtyChipBlock, /qtyBadge\.textContent = `\$\{qty\} unit\$\{qty === 1 \? '' : 's'\}`;/);
+
+  const cardAppendBlock = src.slice(
+    src.indexOf('card.appendChild(head);', gridStart),
+    src.indexOf('gridEl.appendChild(card);', gridStart)
+  );
+  const cardAppendIndexes = [
+    'card.appendChild(head)',
+    'card.appendChild(identityChips)',
+    'card.appendChild(meta)',
+    'card.appendChild(actions)',
+  ].map(statement => cardAppendBlock.indexOf(statement));
+  assert.ok(cardAppendIndexes.every(index => index >= 0));
+  assert.deepEqual(cardAppendIndexes, [...cardAppendIndexes].sort((a, b) => a - b),
+    'Grid DOM order must keep Name, identity, metadata, then Notes/actions');
 });
 
 test('Handling and Quantity defaults are independent and legacy-compatible: both default true, neither toggle affects the other via defaults/normalization', async () => {

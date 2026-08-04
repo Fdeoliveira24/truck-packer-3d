@@ -657,11 +657,12 @@ export function createCasesScreen({
         const badgesWrap = document.createElement('div');
         badgesWrap.className = 'pack-meta-badges';
 
-        if (badgePrefs.showCategory !== false) {
-          const cat = document.createElement('div');
-          cat.className = 'badge';
-          cat.textContent = CategoryService.meta(c.category).name;
-          badgesWrap.appendChild(cat);
+        if (badgePrefs.showQuantity !== false) {
+          const qty = quantities.get(c.id) || 0;
+          const qtyBadge = document.createElement('div');
+          qtyBadge.className = 'badge';
+          qtyBadge.textContent = `${qty} unit${qty === 1 ? '' : 's'}`;
+          badgesWrap.appendChild(qtyBadge);
         }
 
         if (badgePrefs.showDims !== false) {
@@ -690,6 +691,13 @@ export function createCasesScreen({
           badgesWrap.appendChild(weight);
         }
 
+        if (badgePrefs.showCategory !== false) {
+          const cat = document.createElement('div');
+          cat.className = 'badge';
+          cat.textContent = CategoryService.meta(c.category).name;
+          badgesWrap.appendChild(cat);
+        }
+
         if (badgePrefs.showHandling !== false) {
           // Active non-default AutoPack handling rules (shared single source).
           getCaseHandlingSummary(c).forEach(label => {
@@ -698,14 +706,6 @@ export function createCasesScreen({
             ruleChip.textContent = label;
             badgesWrap.appendChild(ruleChip);
           });
-        }
-
-        if (badgePrefs.showQuantity !== false) {
-          const qty = quantities.get(c.id) || 0;
-          const qtyBadge = document.createElement('div');
-          qtyBadge.className = 'badge';
-          qtyBadge.textContent = `${qty} unit${qty === 1 ? '' : 's'}`;
-          badgesWrap.appendChild(qtyBadge);
         }
 
         const selectCb = document.createElement('input');
@@ -759,13 +759,13 @@ export function createCasesScreen({
         const head = document.createElement('div');
         head.className = 'card-head tp3d-cases-card-head';
         head.appendChild(title);
-        head.appendChild(actions);
 
         if (badgesWrap.children.length) meta.appendChild(badgesWrap);
 
         card.appendChild(head);
         if (identityChips.children.length) card.appendChild(identityChips);
         card.appendChild(meta);
+        card.appendChild(actions);
         gridEl.appendChild(card);
       });
     }
@@ -975,6 +975,13 @@ export function createCasesScreen({
         if (badgePrefs.showManufacturer === false) tdMfg.style.display = 'none';
         tr.appendChild(tdMfg);
 
+        const tdQty = document.createElement('td');
+        tdQty.textContent = String(quantities.get(c.id) || 0);
+        if (badgePrefs.showQuantity === false) {
+          tdQty.style.display = 'none';
+        }
+        tr.appendChild(tdQty);
+
         const tdLength = document.createElement('td');
         tdLength.textContent = Utils.formatLength(c.dimensions.length, prefs.units.length);
         if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showDims === false) {
@@ -1036,13 +1043,6 @@ export function createCasesScreen({
           tdHandling.style.display = 'none';
         }
         tr.appendChild(tdHandling);
-
-        const tdQty = document.createElement('td');
-        tdQty.textContent = String(quantities.get(c.id) || 0);
-        if (badgePrefs.showQuantity === false) {
-          tdQty.style.display = 'none';
-        }
-        tr.appendChild(tdQty);
 
         const tdNotes = document.createElement('td');
         tdNotes.className = 'tp3d-management-notes-col';

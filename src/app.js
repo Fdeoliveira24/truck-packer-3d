@@ -384,13 +384,27 @@ const TP3D_BUILD_STAMP = Object.freeze({
 });
 
 (async function () {
-  try {
-    if (window.__TP3D_BOOT && window.__TP3D_BOOT.threeReady) {
-      await window.__TP3D_BOOT.threeReady;
+  async function ensureThreeRuntimeReady() {
+    const failureMessage =
+      'Cargo Planner could not load its 3D rendering runtime. Start the application through the supported npm/Vite development or production build and reload.';
+    try {
+      const bootState = window.__TP3D_BOOT;
+      const readinessResult = bootState && bootState.threeReady ? await bootState.threeReady : false;
+      if (readinessResult !== true || !window.THREE || !window.THREE.OrbitControls) {
+        throw new Error(failureMessage);
+      }
+      return true;
+    } catch (error) {
+      console.error(`[TruckPackerApp] ${failureMessage}`, error);
+      const bootState = window.__TP3D_BOOT;
+      if (bootState && typeof bootState.showAppStatusOverlay === 'function') {
+        bootState.showAppStatusOverlay('fatal', { message: failureMessage });
+      }
+      return false;
     }
-  } catch (_) {
-    // Ignore boot errors
   }
+
+  if (!(await ensureThreeRuntimeReady())) return;
 
   const UIComponents = createUIComponents();
   try { window.__TP3D_UI = UIComponents; } catch (_) { /* ignore */ }

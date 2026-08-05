@@ -17,16 +17,33 @@ logistics. Built with Three.js for real-time 3D rendering and interactive packin
 - **Grid & Shadows**: Toggle visual aids for better spatial awareness
 - **Keyboard Shortcuts**: Efficient workflow with comprehensive keyboard controls
 - **Dev Overlay**: Toggle FPS/memory/renderer stats in the editor (press `P`)
-- **Hardened Imports**: CDN error capture, ESM Three.js/OrbitControls, and sanitized JSON imports
+- **Hardened Imports**: npm-owned Three.js/OrbitControls runtime and sanitized JSON imports
 
 ## Quick Start
 
-1. **Serve the app (recommended)**: Use VSCode Live Server (or any static HTTP server) and open
-   `index.html`. ES module imports do not reliably work from `file://`.
-2. **Create a pack**: Click "New Pack" on the Packs screen
-3. **Add cases**: Go to Cases library and create equipment cases with dimensions
-4. **Start packing**: Open your pack in the Editor and drag cases from the sidebar to the 3D truck
-5. **Export**: Save your work as JSON or export to PDF/Excel for sharing
+1. **Use the supported Node toolchain**: Node `^20.19.0` or `>=22.12.0` (the Vite 8 requirement).
+2. **Install reproducibly**: Run `npm ci`.
+3. **Start development**: Run `npm run dev`.
+4. **Open the app**: Visit `http://localhost:5500/index.html`.
+5. **Create a pack**: Click "New Pack" on the Packs screen.
+6. **Add cases**: Go to Cases library and create equipment cases with dimensions.
+7. **Start packing**: Open your pack in the Editor and drag cases from the sidebar to the 3D truck.
+8. **Export**: Save your work as JSON or export to PDF/Excel for sharing.
+
+## Development and Production Builds
+
+Phase 1A keeps Three.js at r160 (`0.160.0`) while moving its delivery to npm and Vite. Three.js and
+OrbitControls are bundled into application-owned production assets; the running app no longer
+depends on a third-party Three.js CDN.
+
+- `npm ci` installs the exact dependency graph from `package-lock.json`.
+- `npm run dev` starts Vite at `http://localhost:5500/index.html`.
+- `npm run build` creates the static production output in `dist/`.
+- `npm run preview` serves the built output at `http://localhost:5500/index.html` after the
+  development server is stopped.
+
+The `dist/` directory is a static deployment artifact. No application server or server-side
+rendering runtime is required.
 
 ## Phase 1 (SaaS-Ready Foundation)
 
@@ -130,10 +147,11 @@ Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and 
 ## Technical Details
 
 - **Framework**: Vanilla JavaScript (ES6+)
-- **3D Engine**: Three.js v0.160.0
+- **3D Engine**: Three.js r160 / `0.160.0`, installed from npm
+- **Development and Build Tool**: Vite `8.2.0`
 - **Type Checking**: `typescript` is kept as a dev tool to run `npm run typecheck` (`tsc` with
   `--allowJs --checkJs`) against JavaScript sources
-- **File Format**: Single HTML file (~6100 lines)
+- **Production Format**: Static HTML, CSS, JavaScript, and application-owned bundled assets
 - **Storage**: Browser localStorage with JSON export/import
 - **Browser Requirements**: Modern browser with WebGL support
 
@@ -141,7 +159,11 @@ Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and 
 
 ```
 truck-packer-3d/
-├── index.html          # Complete application (HTML/CSS/JS)
+├── index.html          # Static application shell and boot contract
+├── src/                # Application modules
+├── styles/             # Application styles
+├── tests/              # Automated contract and behavior checks
+├── vite.config.js      # Development, preview, and static build configuration
 └── README.md           # This file
 ```
 
@@ -173,8 +195,9 @@ Click the **Help** button in the topbar for quick reference on Export/Import fea
 
 ## Security & Performance
 
-- **Three.js/OrbitControls via ESM**: Loaded from `esm.sh`, ready on Safari 14+ without import maps;
-  app init waits for Three.js to be ready.
+- **Three.js/OrbitControls via npm**: Vite bundles both from the same pinned `three@0.160.0`
+  package; the temporary `window.THREE` contract remains available and app init still waits for
+  Three.js readiness.
 - **Sanitized JSON**: All imports and localStorage loads strip dangerous keys (`__proto__`,
   `prototype`, `constructor`) to reduce prototype pollution risk.
 - **Safe Rendering**: User/imported text now uses `textContent` instead of `innerHTML` in dialogs

@@ -5,6 +5,9 @@
   "description": "A professional 3D truck packing visualization tool",
   "main": "index.html",
   "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
     "lint": "npm run lint:js && npm run lint:css && npm run lint:html",
     "test": "node --test tests/audit/*.spec.mjs",
     "test:stress": "TP3D_STRESS=1 node --test --test-name-pattern \"PHASE-E1|PHASE-E2A|PHASE-E2B|AUTO-PACK-A1-PERF-1\" tests/audit/security-and-invariants.spec.mjs",
@@ -61,10 +64,14 @@
     "stylelint": "^17.14.1",
     "stylelint-config-html": "^1.1.0",
     "stylelint-config-standard": "^40.0.0",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "8.2.0"
   },
   "engines": {
-    "node": ">=18.0.0",
+    "node": "^20.19.0 || >=22.12.0",
     "npm": ">=9.0.0"
+  },
+  "dependencies": {
+    "three": "0.160.0"
   }
 }

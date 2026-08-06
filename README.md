@@ -3,7 +3,7 @@
 A professional 3D truck packing visualization tool for planning equipment loads, tours, and
 logistics. Built with Three.js for real-time 3D rendering and interactive packing simulations.
 
-![Truck Packer 3D](https://img.shields.io/badge/Three.js-0.160.0-049EF4?logo=three.js&logoColor=white)
+![Truck Packer 3D](https://img.shields.io/badge/Three.js-0.185.1-049EF4?logo=three.js&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
 ## Features
@@ -32,9 +32,9 @@ logistics. Built with Three.js for real-time 3D rendering and interactive packin
 
 ## Development and Production Builds
 
-Phase 1A keeps Three.js at r160 (`0.160.0`) while moving its delivery to npm and Vite. Three.js and
-OrbitControls are bundled into application-owned production assets; the running app no longer
-depends on a third-party Three.js CDN.
+Three.js is pinned to r185 (`0.185.1`) and delivered through npm and Vite. Three.js and OrbitControls
+are bundled into application-owned production assets; the running app does not depend on a
+third-party Three.js CDN.
 
 - `npm ci` installs the exact dependency graph from `package-lock.json`.
 - `npm run dev` starts Vite at `http://localhost:5500/index.html`.
@@ -147,13 +147,13 @@ Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and 
 ## Technical Details
 
 - **Framework**: Vanilla JavaScript (ES6+)
-- **3D Engine**: Three.js r160 / `0.160.0`, installed from npm
+- **3D Engine**: Three.js r185 / `0.185.1`, installed from npm
 - **Development and Build Tool**: Vite `8.2.0`
 - **Type Checking**: `typescript` is kept as a dev tool to run `npm run typecheck` (`tsc` with
   `--allowJs --checkJs`) against JavaScript sources
 - **Production Format**: Static HTML, CSS, JavaScript, and application-owned bundled assets
 - **Storage**: Browser localStorage with JSON export/import
-- **Browser Requirements**: Modern browser with WebGL support
+- **Browser Requirements**: Modern browser with WebGL 2 support
 
 ## File Structure
 
@@ -184,10 +184,11 @@ truck-packer-3d/
 
 - ✅ Chrome 90+ (ES2020 support)
 - ✅ Firefox 103+ (backdrop-filter support; 88-102 partial support)
-- ✅ Safari 13.1+ (optional chaining support; 14+ recommended)
+- ✅ Safari 15+ (WebGL 2 support)
 - ✅ Edge 90+ (ES2020 support)
 
-**Note**: Requires ES2020 features including optional chaining (`?.`) and nullish coalescing (`??`).
+**Note**: Requires WebGL 2 and ES2020 features including optional chaining (`?.`) and nullish
+coalescing (`??`).
 
 ## Help
 
@@ -195,7 +196,7 @@ Click the **Help** button in the topbar for quick reference on Export/Import fea
 
 ## Security & Performance
 
-- **Three.js/OrbitControls via npm**: Vite bundles both from the same pinned `three@0.160.0`
+- **Three.js/OrbitControls via npm**: Vite bundles both from the same pinned `three@0.185.1`
   package; the temporary `window.THREE` contract remains available and app init still waits for
   Three.js readiness.
 - **Sanitized JSON**: All imports and localStorage loads strip dangerous keys (`__proto__`,

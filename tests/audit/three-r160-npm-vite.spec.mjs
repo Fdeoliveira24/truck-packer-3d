@@ -5,6 +5,8 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { runInNewContext } from 'node:vm';
+import * as installedThree from 'three';
+import { OrbitControls as InstalledOrbitControls } from 'three/addons/controls/OrbitControls.js';
 
 const repoRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 const read = relativePath => readFileSync(join(repoRoot, relativePath), 'utf8');
@@ -15,6 +17,8 @@ const bootstrapSource = read('src/bootstrap/three-runtime.js');
 const viteSource = read('vite.config.js');
 const readme = read('README.md');
 const appSource = read('src/app.js');
+const browserSource = read('src/core/browser.js');
+const sceneRuntimeSource = read('src/editor/scene-runtime.js');
 
 function git(args) {
   return spawnSync('git', args, { cwd: repoRoot, encoding: 'utf8' });
@@ -67,8 +71,8 @@ async function runThreeRuntimeGuard({ readiness = true, includeThree = true, inc
   return { errorCalls, overlayCalls, result };
 }
 
-test('package.json pins Three.js exactly to 0.160.0', () => {
-  assert.equal(packageJson.dependencies.three, '0.160.0');
+test('package.json pins Three.js exactly to 0.185.1', () => {
+  assert.equal(packageJson.dependencies.three, '0.185.1');
 });
 
 test('package.json pins Vite exactly to 8.2.0', () => {
@@ -80,7 +84,7 @@ test('package.json pins Vite exactly to 8.2.0', () => {
 test('package-lock is present and eligible to be tracked', () => {
   assert.ok(existsSync(join(repoRoot, 'package-lock.json')));
   assert.notEqual(git(['check-ignore', '-q', 'package-lock.json']).status, 0);
-  assert.equal(packageLock.packages[''].dependencies.three, '0.160.0');
+  assert.equal(packageLock.packages[''].dependencies.three, '0.185.1');
   assert.equal(packageLock.packages[''].devDependencies.vite, '8.2.0');
 });
 
@@ -93,8 +97,17 @@ test('the temporary window.THREE compatibility object remains', () => {
   assert.match(bootstrapSource, /window\.THREE = \{ \.\.\.THREE, OrbitControls \};/u);
 });
 
-test('the bootstrap enforces Three.js revision 160', () => {
-  assert.match(bootstrapSource, /THREE\.REVISION !== '160'/u);
+test('the bootstrap and installed package enforce Three.js revision 185', () => {
+  assert.match(bootstrapSource, /THREE\.REVISION !== '185'/u);
+  assert.equal(installedThree.REVISION, '185');
+  assert.equal(typeof InstalledOrbitControls, 'function');
+});
+
+test('r185 compatibility uses the supported soft PCF shadow mode and environment defaults', () => {
+  assert.match(sceneRuntimeSource, /renderer\.shadowMap\.type = THREE\.PCFShadowMap;/u);
+  assert.doesNotMatch(sceneRuntimeSource, /PCFSoftShadowMap/u);
+  assert.match(sceneRuntimeSource, /scene\.environment = envRT\.texture;/u);
+  assert.equal(new installedThree.Scene().environmentIntensity, 1);
 });
 
 test('OrbitControls remains exposed through window.THREE', () => {
@@ -225,9 +238,8 @@ test('node_modules remains ignored', () => {
   assert.equal(git(['check-ignore', '-q', 'node_modules/phase-1a-probe']).status, 0);
 });
 
-test('scene, camera, lighting, material, geometry, packing, collision, and utilization owners are unchanged', () => {
+test('feature owners outside the approved scene compatibility change are unchanged', () => {
   const protectedPaths = [
-    'src/editor/scene-runtime.js',
     'src/screens/editor-screen.js',
     'src/editor/geometry-factory.js',
     'src/services/autopack-engine.js',
@@ -252,11 +264,14 @@ test('no WebGPU integration was added', () => {
   assert.doesNotMatch([indexHtml, bootstrapSource, viteSource].join('\n'), /WebGPU/iu);
 });
 
-test('the documented browser floor remains unchanged', () => {
+test('the r185 runtime requires WebGL 2 without changing Vite output targets', () => {
   assert.match(readme, /Chrome 90\+/u);
   assert.match(readme, /Firefox 103\+/u);
-  assert.match(readme, /Safari 13\.1\+/u);
+  assert.match(readme, /Safari 15\+/u);
   assert.match(readme, /Edge 90\+/u);
+  assert.match(readme, /WebGL 2/u);
+  assert.match(browserSource, /canvas\.getContext\('webgl2'\)/u);
+  assert.doesNotMatch(browserSource, /experimental-webgl/u);
   assert.match(viteSource, /target: \['chrome90', 'edge90', 'firefox103', 'safari13\.1'\]/u);
 });
 
@@ -279,7 +294,7 @@ test('no unrelated dependency declaration changed', () => {
     vite: '8.2.0',
   };
   assert.deepEqual(packageJson.devDependencies, expectedDevDependencies);
-  assert.deepEqual(packageJson.dependencies, { three: '0.160.0' });
+  assert.deepEqual(packageJson.dependencies, { three: '0.185.1' });
 });
 
 test('the migration does not add or weaken a Content Security Policy', () => {

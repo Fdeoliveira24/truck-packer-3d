@@ -53,6 +53,7 @@ import {
   isAabbWithinTruckMinusBlocked,
   isWheelWellSupportedAndStable,
 } from '../packing-core/wheel-well-model.js';
+import { computeSpaceUtilization } from '../packing-core/space-utilization-engine.js';
 import { repairDependentPlacements } from '../packing-core/repair.js';
 import { computeCoG } from './cog-service.js';
 import { computePalletWarnings } from './oog-service.js';
@@ -2073,6 +2074,9 @@ export {
   isAabbContainedInAnyZone,
   getFrontBonusBlockedZones,
   getWheelWellsBlockedZones,
+  getInstanceEffectiveDims,
+  makeAabb,
+  isAabbInsideTruckGeometry,
 };
 
 export function getPacks() {
@@ -2476,73 +2480,54 @@ function computeShapeAwareOOGWarnings(pack, caseLibrary) {
 }
 
 export function computeStats(pack, caseLibraryOverride) {
-  const zonesInches = getTrailerUsableZones(pack && pack.truck);
-  const statsWheelWell = getWheelWellGeometry(pack && pack.truck);
-  const truckVol = getTrailerCapacityInches3(pack && pack.truck);
-  let usedIn3 = 0;
+  const caseLib = Array.isArray(caseLibraryOverride) ? caseLibraryOverride : CaseLibrary.getCases();
+  const spaceUtilization = computeSpaceUtilization({
+    pack,
+    caseLibrary: caseLib,
+    geometry: {
+      getTrailerUsableZones,
+      getTrailerCapacityInches3,
+      getFrontBonusBlockedZones,
+      getInstanceEffectiveDims,
+      makeAabb,
+      isAabbInsideTruckGeometry,
+    },
+  });
   let totalWeight = 0;
-  let packedCases = 0;
-  let stagedCases = 0;
-  let hiddenCases = 0;
-  let unresolvedInstances = 0;
   let maxCapacityProfileCount = 0;
-  const getCase = caseId => {
-    if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === caseId) || null;
-    return CaseLibrary.getById(caseId);
-  };
-  (pack.cases || []).forEach(inst => {
-    if (inst.hidden) hiddenCases++;
-    const c = getCase(inst.caseId);
-    if (!c) {
-      // Instance references a missing case definition. Do not silently treat the
-      // totals as complete and never invent dimensions — surface it so the
-      // editor/Inspector/Stats/PDF/export can warn and the totals read incomplete.
-      if (!inst.hidden) unresolvedInstances++;
-      return;
-    }
-    if (inst.hidden) return;
-    const dims = c.dimensions || { length: 0, width: 0, height: 0 };
-    // Use oriented dimensions from AutoPack if available, else fall back to original
-    const od = inst.orientedDims || null;
-    const effDims = od || dims;
-    const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-    const half = { x: effDims.length / 2, y: effDims.height / 2, z: effDims.width / 2 };
-    const aabb = {
-      min: { x: pos.x - half.x, y: pos.y - half.y, z: pos.z - half.z },
-      max: { x: pos.x + half.x, y: pos.y + half.y, z: pos.z + half.z },
-    };
-    const insideTruck = isAabbInsideTruckGeometry(aabb, zonesInches, statsWheelWell);
-    if (!insideTruck) {
-      stagedCases++;
-      return;
-    }
-    packedCases++;
+  const loadedInstanceIds = new Set(
+    spaceUtilization.instanceAabbs
+      .filter(entry => entry.placement === 'loaded')
+      .map(entry => entry.instanceId)
+  );
+  ((pack && pack.cases) || []).forEach(inst => {
+    if (!inst || inst.hidden || !loadedInstanceIds.has(inst.id == null ? null : String(inst.id))) return;
+    const c = caseLib.find(caseData => caseData && caseData.id === inst.caseId) || null;
+    if (!c) return;
     // Contract C: packedProfile === 'max-capacity' on a currently packed instance
     // means active Max Capacity profile membership, not per-instance evidence
     // that a relaxed rule was individually required. See docs/audits/
     // max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md.
     if (instanceUsesMaxCapacityProfile(inst)) maxCapacityProfileCount++;
-    usedIn3 += c.volume || Utils.volumeInCubicInches(dims);
     totalWeight += Number(c.weight) || 0;
   });
-  const volumePercent = truckVol > 0 ? (usedIn3 / truckVol) * 100 : 0;
-  const caseLib = Array.isArray(caseLibraryOverride) ? caseLibraryOverride : CaseLibrary.getCases();
   const cog = computeCoG(pack, caseLib);
   const oogWarnings = computeShapeAwareOOGWarnings(pack, caseLib);
   const palletWarnings = computePalletWarnings(pack, caseLib);
   // Completeness: when any instance is unresolved, weight/volume/utilization totals
   // are necessarily incomplete (we never fabricate the missing item's physical
   // contribution). Surfaces must avoid any "complete"/"fits all" wording when false.
-  const totalsComplete = unresolvedInstances === 0;
-  return {
-    totalCases: (pack.cases || []).length,
-    hiddenCases,
-    packedCases,
-    stagedCases,
-    unresolvedInstances,
+  const totalsComplete = spaceUtilization.unresolvedCount === 0 &&
+    spaceUtilization.diagnostics.geometry.length === 0;
+  const stats = {
+    totalCases: ((pack && pack.cases) || []).length,
+    hiddenCases: spaceUtilization.hiddenCount,
+    packedCases: spaceUtilization.loadedCount,
+    stagedCases: spaceUtilization.stagedCount,
+    unresolvedInstances: spaceUtilization.unresolvedCount,
     maxCapacityProfileCount,
-    volumeUsed: usedIn3,
-    volumePercent,
+    volumeUsed: spaceUtilization.cargoCubeVolume,
+    volumePercent: spaceUtilization.cargoCubePercent,
     totalWeight,
     cog,
     oogWarnings,
@@ -2552,6 +2537,14 @@ export function computeStats(pack, caseLibraryOverride) {
     volumeComplete: totalsComplete,
     utilizationComplete: totalsComplete,
   };
+  // Pack updates retain the legacy enumerable stats shape. The richer engine
+  // result is available to live consumers but cannot be serialized into Pack
+  // persistence by JSON/object-spread paths.
+  Object.defineProperty(stats, 'spaceUtilization', {
+    value: spaceUtilization,
+    enumerable: false,
+  });
+  return stats;
 }
 
 // ============================================================================

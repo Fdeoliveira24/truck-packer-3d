@@ -125,18 +125,46 @@ function packFixture() {
 }
 
 function libraryFixture(overrides = {}) {
+  const getTrailerCapacityInches3 = overrides.getTrailerCapacityInches3 || (() => 200000);
+  const computeStats = overrides.computeStats || (() => ({
+    volumePercent: 37.4,
+    volumeUsed: 74800,
+    packedCases: 4,
+    stagedCases: 2,
+    unresolvedInstances: 0,
+    totalsComplete: true,
+    utilizationComplete: true,
+  }));
   return {
-    computeStats: () => ({
-      volumePercent: 37.4,
-      volumeUsed: 74800,
-      packedCases: 4,
-      stagedCases: 2,
-      unresolvedInstances: 0,
-      totalsComplete: true,
-      utilizationComplete: true,
-    }),
-    getTrailerCapacityInches3: () => 200000,
     ...overrides,
+    computeStats: () => {
+      const stats = computeStats();
+      if (stats.spaceUtilization) return stats;
+      const usableVolume = Number(getTrailerCapacityInches3());
+      Object.defineProperty(stats, 'spaceUtilization', {
+        enumerable: false,
+        value: {
+          status: stats.unresolvedInstances > 0 || stats.totalsComplete === false || stats.utilizationComplete === false
+            ? 'incomplete'
+            : 'ready',
+          usableVolume,
+          cargoCubePercent: stats.volumePercent,
+          cargoCubeVolume: stats.volumeUsed,
+          occupiedEnvelopeVolume: stats.volumeUsed,
+          spatialUtilizationPercent: stats.volumePercent,
+          overlapVolume: 0,
+          outsideVolume: 0,
+          blockedIntersectionVolume: 0,
+          loadedCount: stats.packedCases,
+          stagedCount: stats.stagedCases,
+          hiddenCount: 0,
+          unresolvedCount: stats.unresolvedInstances,
+          diagnostics: { outside: [], blockedIntersections: [], overlaps: [] },
+        },
+      });
+      return stats;
+    },
+    getTrailerCapacityInches3,
   };
 }
 

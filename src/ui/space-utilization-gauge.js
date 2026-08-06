@@ -222,16 +222,17 @@ export function spaceUtilizationPreferenceFromPixels(position, bounds) {
  */
 export function buildSpaceUtilizationResult(pack, PackLibrary) {
   const unavailable = { state: 'unavailable', source: null };
-  if (!pack || !PackLibrary || typeof PackLibrary.computeStats !== 'function' ||
-      typeof PackLibrary.getTrailerCapacityInches3 !== 'function') {
+  if (!pack || !PackLibrary || typeof PackLibrary.computeStats !== 'function') {
     return unavailable;
   }
 
   try {
     const stats = PackLibrary.computeStats(pack);
-    const usableVolume = Number(PackLibrary.getTrailerCapacityInches3(pack.truck));
-    const percentage = Number(stats && stats.volumePercent);
-    const occupiedVolume = Number(stats && stats.volumeUsed);
+    const engineResult = stats && stats.spaceUtilization;
+    if (!engineResult || typeof engineResult !== 'object') return unavailable;
+    const usableVolume = Number(engineResult.usableVolume);
+    const percentage = Number(engineResult.cargoCubePercent);
+    const occupiedVolume = Number(engineResult.cargoCubeVolume);
     if (!Number.isFinite(usableVolume) || usableVolume <= 0 ||
         !Number.isFinite(percentage) || percentage < 0 || percentage > 100.05 ||
         !Number.isFinite(occupiedVolume) || occupiedVolume < 0) {
@@ -239,18 +240,36 @@ export function buildSpaceUtilizationResult(pack, PackLibrary) {
     }
 
     const normalizedPercentage = clamp(percentage, 0, 100);
-    const unresolvedCount = Math.max(0, Math.trunc(finiteNumber(stats.unresolvedInstances)));
-    const incomplete = unresolvedCount > 0 || stats.utilizationComplete === false || stats.totalsComplete === false;
+    const unresolvedCount = Math.max(0, Math.trunc(finiteNumber(engineResult.unresolvedCount)));
+    const state = engineResult.status === 'ready'
+      ? 'valid'
+      : engineResult.status === 'invalid' || engineResult.status === 'incomplete'
+        ? engineResult.status
+        : 'unavailable';
+    if (state === 'unavailable') return unavailable;
+    const attentionInstanceIds = new Set([
+      ...(engineResult.diagnostics?.outside || []).map(item => item.instanceId),
+      ...(engineResult.diagnostics?.blockedIntersections || []).map(item => item.instanceId),
+      ...(engineResult.diagnostics?.overlaps || []).flatMap(item => item.instanceIds || []),
+    ].filter(Boolean));
     return {
-      state: incomplete ? 'incomplete' : 'valid',
+      state,
       source: 'PackLibrary.computeStats(pack)',
+      engineResult,
       percentage: normalizedPercentage,
       occupiedVolume,
       usableVolume,
       availableVolume: Math.max(0, usableVolume - occupiedVolume),
-      loadedCount: Math.max(0, Math.trunc(finiteNumber(stats.packedCases))),
-      stagedCount: Math.max(0, Math.trunc(finiteNumber(stats.stagedCases))),
+      loadedCount: Math.max(0, Math.trunc(finiteNumber(engineResult.loadedCount))),
+      stagedCount: Math.max(0, Math.trunc(finiteNumber(engineResult.stagedCount))),
+      hiddenCount: Math.max(0, Math.trunc(finiteNumber(engineResult.hiddenCount))),
       unresolvedCount,
+      spatialUtilizationPercent: finiteNumber(engineResult.spatialUtilizationPercent),
+      occupiedEnvelopeVolume: finiteNumber(engineResult.occupiedEnvelopeVolume),
+      overlapVolume: finiteNumber(engineResult.overlapVolume),
+      outsideVolume: finiteNumber(engineResult.outsideVolume),
+      blockedIntersectionVolume: finiteNumber(engineResult.blockedIntersectionVolume),
+      attentionCount: attentionInstanceIds.size,
     };
   } catch {
     return unavailable;

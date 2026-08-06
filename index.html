@@ -143,7 +143,7 @@
       window.__TP3D_BOOT.threeReady = import('./src/bootstrap/three-runtime.js')
         .then(module => module.installThreeRuntime())
         .catch(error => {
-          window.__tp3dCdnFail('three@0.160.0 (npm/Vite) / OrbitControls', 'npm:three@0.160.0', 'three');
+          window.__tp3dCdnFail('three@0.185.1 (npm/Vite) / OrbitControls', 'npm:three@0.185.1', 'three');
           console.error('[TP3D] Three.js npm runtime failed:', error);
           return false;
         });

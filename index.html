@@ -2,7 +2,7 @@
 <!--
   TRUCK PACKER 3D
   Version: 1.0.1 (MVP)
-  A production-ready, single-file 3D logistics planning workspace.
+  A production-ready 3D logistics planning workspace.
 
   QUICK START:
   1) Open this file in a modern browser (Chrome/Edge/Firefox/Safari).
@@ -10,8 +10,8 @@
   3) Open a pack (Editor), add cases, drag to place, or AutoPack.
 
   NOTE:
-  - Works on file:// for demos. For best results, run on http(s):// (some browsers restrict features on file://).
-  - CDN libraries are required; if any CDN fails, the app shows a recovery message.
+  - Run through Vite on http(s):// so application modules and bundled dependencies load correctly.
+  - Non-Three.js CDN libraries retain their existing local recovery paths.
 -->
 <html lang="en" data-theme="light">
   <head>
@@ -136,49 +136,17 @@
       })();
     </script>
 
-    <!-- 3D Rendering (ES Modules) -->
-    <!--
-      NOTE (compatibility): Import maps are not supported in Safari 14, so we avoid them.
-      We load ESM via esm.sh, which rewrites internal bare imports for broad compatibility.
-    -->
+    <!-- 3D Rendering (npm package, bundled by Vite) -->
     <script type="module">
       window.__TP3D_BOOT = window.__TP3D_BOOT || { cdnFailures: [] };
-      // ===== BOOT: THREE.js ESM loader (sets window.THREE + OrbitControls) =====
-      window.__TP3D_BOOT.threeReady = (async function () {
-        const primaryBase = 'https://esm.sh/three@0.160.0';
-        const fallbackBase = 'https://cdn.skypack.dev/three@0.160.0';
-        try {
-          const ThreeModule = await import(primaryBase);
-          const Orbit = await import(`${primaryBase}/examples/jsm/controls/OrbitControls.js`);
-          window.THREE = { ...ThreeModule, OrbitControls: Orbit.OrbitControls };
-          window.__tp3dVendorOk && window.__tp3dVendorOk('three');
-          return true;
-        } catch (_err) {
-          try {
-            const ThreeModule = await import(fallbackBase);
-            const Orbit = await import(`${fallbackBase}/examples/jsm/controls/OrbitControls.js`);
-            window.THREE = { ...ThreeModule, OrbitControls: Orbit.OrbitControls };
-            window.__tp3dVendorOk && window.__tp3dVendorOk('three');
-            return true;
-          } catch (err2) {
-            try {
-              const localThree = './vendor/three.module.js';
-              const localOrbit = './vendor/OrbitControls.module.js';
-              const ThreeModule = await import(localThree);
-              const Orbit = await import(localOrbit);
-              window.THREE = { ...ThreeModule, OrbitControls: Orbit.OrbitControls };
-              window.__tp3dVendorOk && window.__tp3dVendorOk('three');
-              return true;
-            } catch (err3) {
-              window.__tp3dCdnFail('three@0.160.0 (ESM) / OrbitControls', primaryBase, 'three');
-              window.__tp3dCdnFail('three@0.160.0 (local module) / OrbitControls', './vendor/three.module.js', 'three');
-              console.error(err2);
-              console.error(err3);
-              return false;
-            }
-          }
-        }
-      })();
+      // ===== BOOT: THREE.js npm runtime (sets window.THREE + OrbitControls) =====
+      window.__TP3D_BOOT.threeReady = import('./src/bootstrap/three-runtime.js')
+        .then(module => module.installThreeRuntime())
+        .catch(error => {
+          window.__tp3dCdnFail('three@0.160.0 (npm/Vite) / OrbitControls', 'npm:three@0.160.0', 'three');
+          console.error('[TP3D] Three.js npm runtime failed:', error);
+          return false;
+        });
     </script>
 
     <!-- Animation -->

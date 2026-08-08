@@ -4896,6 +4896,8 @@ export function createEditorScreen({
 
       if (!sel.length) {
         renderTruckInspector(pack, prefs);
+        // Space Utilization belongs only in the Truck/default Inspector state.
+        renderSpaceUtilizationSection(pack);
       } else if (sel.length > 1) {
         renderMultiInspector(pack, sel);
       } else {
@@ -4904,13 +4906,13 @@ export function createEditorScreen({
         if (!inst) {
           StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
           renderTruckInspector(pack, prefs);
+          renderSpaceUtilizationSection(pack);
         } else {
           const c = CaseLibrary.getById(inst.caseId);
           if (!c) renderUnresolvedCaseInspector(pack, inst);
           else renderSingleInspector(pack, inst, c, prefs);
         }
       }
-      renderSpaceUtilizationSection(pack);
     }
 
     function renderSpaceUtilizationSection(pack) {

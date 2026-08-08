@@ -383,7 +383,7 @@ test('volume formatting uses readable cubic feet or cubic metres without losing 
   assert.doesNotMatch(formatSpaceUtilizationVolume(7135920, 'in'), /in³/);
 });
 
-test('Inspector Spatial gauge has one authoritative bar and four capacity rows', () => {
+test('Inspector Spatial gauge has one authoritative bar, a remaining subline, and volume rows', () => {
   const gauge = createSpaceUtilizationGauge({
     documentRef: testDocument,
     result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
@@ -394,6 +394,7 @@ test('Inspector Spatial gauge has one authoritative bar and four capacity rows',
   assert.ok(byClass(gauge, 'tp3d-util-gauge__spatial'));
   assert.ok(byClass(gauge, 'tp3d-util-gauge__occupied'));
   assert.ok(byClass(gauge, 'tp3d-util-gauge__empty'));
+  assert.ok(byClass(gauge, 'tp3d-util-gauge__remaining'));
   assert.ok(byClass(gauge, 'tp3d-util-gauge__stats'));
   assert.match(textTree(gauge), /37\.4%.*Occupied.*Remaining.*Used volume.*Available volume/);
   assert.equal(byRole(gauge, 'space-utilization-drag-handle'), null);
@@ -454,7 +455,7 @@ test('Spatial and Arc gauges remain bounded at 0, 1, 50, 99, and 100 percent', a
   assert.doesNotMatch(css, /\.tp3d-util-gauge__headline\s*{[^}]*position:\s*absolute/);
 });
 
-test('Inspector gauge shows only occupied, remaining, used volume, and available volume', () => {
+test('Inspector gauge shows occupied/remaining once (in the headline) and volume rows in stats', () => {
   const gauge = createSpaceUtilizationGauge({
     documentRef: testDocument,
     result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
@@ -464,10 +465,17 @@ test('Inspector gauge shows only occupied, remaining, used volume, and available
   });
   const stats = byClass(gauge, 'tp3d-util-gauge__stats');
   const labels = walk(stats).filter(element => element.tagName === 'DT').map(element => element.textContent);
-  assert.deepEqual(labels, ['Occupied', 'Remaining', 'Used volume', 'Available volume']);
+  assert.deepEqual(labels, ['Used volume', 'Available volume']);
   assert.doesNotMatch(textTree(stats), /Usable volume|Occupied volume|Empty volume|in³/);
   const usedValue = walk(stats).find(element => element.title.includes('in³ base volume'));
   assert.ok(usedValue);
+
+  // Occupied/Remaining appear exactly once each, outside the stats rows.
+  const occupiedLabel = byClass(gauge, 'tp3d-util-gauge__occupied-label');
+  assert.equal(occupiedLabel.textContent, 'Occupied');
+  const remaining = byClass(gauge, 'tp3d-util-gauge__remaining');
+  assert.match(remaining.textContent, /Remaining/);
+  assert.doesNotMatch(textTree(stats), /Occupied|Remaining/);
 });
 
 

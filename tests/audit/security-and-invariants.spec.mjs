@@ -19661,8 +19661,13 @@ test('G1.2D-INSPECTOR-FINAL-POLISH visual CSS is scoped, tokenized, and keeps to
 
   assert.match(css, /#inspector-body \.card \.label\s*\{[^}]*font-size:\s*var\(--text-xs\)[^}]*font-weight:\s*var\(--font-medium\)/s,
     'general Inspector labels must remain 12px and medium weight');
-  assert.match(css, /#inspector-body \.card \.tp3d-editor-dims-row \.field \.label,\n#inspector-body \.card > \.field\.tp3d-editor-field-wrap-full \.label,\n#inspector-body \.card \.tp3d-editor-inline-position-field \.label\s*\{[^}]*font-size:\s*var\(--text-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,
-    'dimension, full-width offset, and X/Y/Z position labels must use 14px and medium weight through specific structural selectors');
+  assert.match(css, /#inspector-body \.card > \.field\.tp3d-editor-field-wrap-full \.label,\n#inspector-body \.card \.tp3d-editor-inline-position-field \.label\s*\{[^}]*font-size:\s*var\(--text-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,
+    'full-width offset and X/Y/Z position labels must use 14px and medium weight through specific structural selectors');
+  // Superseded by the Editor UI/UX refinement pass: Length/Width/Height are unit
+  // labels, not primary field labels, and now render smaller/lighter (~11px) so
+  // the values carry the visual weight instead of the unit text.
+  assert.match(css, /#inspector-body \.card \.tp3d-editor-dims-row \.field \.label\s*\{[^}]*font-size:\s*11px/s,
+    'Length/Width/Height unit labels must render at the smaller, subtle unit-label scale');
   assert.match(css, /#inspector-body \.card \.input,\n#inspector-body \.card \.select\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-size:\s*var\(--text-sm\)/s,
     'Inspector inputs/selects must use the compact 14px scale and shared 6px radius under #inspector-body');
   assert.match(css, /#inspector-body \.card \.btn\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,

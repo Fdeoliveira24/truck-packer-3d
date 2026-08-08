@@ -325,8 +325,25 @@ export function buildSpaceUtilizationArcSegments(percentage, count = ARC_SEGMENT
       x: ARC_CENTER_X + ARC_RADIUS * Math.cos(angle),
       y: ARC_CENTER_Y - ARC_RADIUS * Math.sin(angle),
       rotation: -90 + progress * 180,
+      // Each segment's own position along the 0-100 scale, so filled segments
+      // sweep through the same green -> yellow -> orange -> red progression
+      // as the overall capacity color, rather than one flat fill color.
+      tier: getUtilizationDensityTier(progress * 100),
     };
   });
+}
+
+/**
+ * The exact point on the arc for the current percentage (not stepped to a
+ * segment), used to place a precise current-position indicator.
+ */
+function arcIndicatorPoint(percentage) {
+  const progress = clamp(percentage, 0, 100) / 100;
+  const angle = Math.PI - progress * Math.PI;
+  return {
+    x: ARC_CENTER_X + ARC_RADIUS * Math.cos(angle),
+    y: ARC_CENTER_Y - ARC_RADIUS * Math.sin(angle),
+  };
 }
 
 export function formatSpaceUtilizationVolume(volumeInches3, lengthUnit = 'in') {
@@ -351,6 +368,14 @@ function appendTextElement(documentRef, parent, tagName, className, text) {
 }
 
 function makeSpatialGauge(documentRef, presentation) {
+  const wrap = documentRef.createElement('div');
+  wrap.className = 'tp3d-util-gauge__spatial-wrap';
+  const ticks = documentRef.createElement('div');
+  ticks.className = 'tp3d-util-gauge__spatial-ticks';
+  appendTextElement(documentRef, ticks, 'span', '', '0%');
+  appendTextElement(documentRef, ticks, 'span', '', '100%');
+  wrap.appendChild(ticks);
+
   const chart = documentRef.createElement('div');
   chart.className = 'tp3d-util-gauge__spatial';
   chart.setAttribute('role', 'img');
@@ -359,9 +384,13 @@ function makeSpatialGauge(documentRef, presentation) {
   occupied.className = 'tp3d-util-gauge__occupied';
   const empty = documentRef.createElement('span');
   empty.className = 'tp3d-util-gauge__empty';
+  const marker = documentRef.createElement('span');
+  marker.className = 'tp3d-util-gauge__spatial-marker';
   chart.appendChild(occupied);
   chart.appendChild(empty);
-  return chart;
+  chart.appendChild(marker);
+  wrap.appendChild(chart);
+  return wrap;
 }
 
 function makeArcGauge(documentRef, presentation) {
@@ -379,9 +408,19 @@ function makeArcGauge(documentRef, presentation) {
     segmentEl.style.setProperty('--util-arc-x', String(segment.x));
     segmentEl.style.setProperty('--util-arc-y', String(segment.y));
     segmentEl.style.setProperty('--util-arc-rotation', String(segment.rotation));
+    // Each segment shows its own position along the capacity scale so the
+    // filled portion of the arc sweeps green -> yellow -> orange -> red.
+    segmentEl.style.setProperty('--util-density-current', `var(--util-density-${segment.tier})`);
     segments.appendChild(segmentEl);
   });
   chart.appendChild(segments);
+
+  const indicator = arcIndicatorPoint(presentation.chartPercentage || 0);
+  const indicatorEl = documentRef.createElement('span');
+  indicatorEl.className = 'tp3d-util-gauge__arc-indicator';
+  indicatorEl.style.setProperty('--util-arc-x', String(indicator.x));
+  indicatorEl.style.setProperty('--util-arc-y', String(indicator.y));
+  chart.appendChild(indicatorEl);
   return chart;
 }
 
@@ -404,6 +443,12 @@ function appendHeadline(documentRef, parent, presentation) {
   return headline;
 }
 
+function appendRemaining(documentRef, parent, presentation) {
+  if (presentation.state === 'valid' && presentation.statusLine) {
+    appendTextElement(documentRef, parent, 'div', 'tp3d-util-gauge__remaining', presentation.statusLine);
+  }
+}
+
 function measuredResult(result) {
   return result && result.state === 'updating' && result.previousResult
     ? result.previousResult
@@ -420,9 +465,9 @@ function appendDefinitionRow(documentRef, list, label, value, options = {}) {
 function appendStandardStats(documentRef, parent, result, lengthUnit) {
   const stats = documentRef.createElement('dl');
   stats.className = 'tp3d-util-gauge__stats';
+  // Occupied/Remaining already live in the headline and the remaining
+  // subline above — the stats rows cover what isn't shown yet: volumes.
   [
-    ['Occupied', percentText(result.percentage)],
-    ['Remaining', percentText(100 - finiteNumber(result.percentage))],
     [
       'Used volume',
       formatSpaceUtilizationVolume(result.occupiedVolume, lengthUnit),
@@ -511,8 +556,9 @@ export function createSpaceUtilizationGauge({
   const primary = documentRef.createElement('div');
   primary.className = 'tp3d-util-gauge__primary';
   if (resolvedStyle === 'arc' && presentation.chartPercentage !== null) primary.appendChild(makeArcGauge(documentRef, presentation));
-  appendHeadline(documentRef, primary, presentation);
   if (resolvedStyle === 'spatial' && presentation.chartPercentage !== null) primary.appendChild(makeSpatialGauge(documentRef, presentation));
+  appendHeadline(documentRef, primary, presentation);
+  appendRemaining(documentRef, primary, presentation);
   body.appendChild(primary);
   if (presentation.subline) {
     appendTextElement(documentRef, body, 'div', 'tp3d-util-gauge__subline', presentation.subline);

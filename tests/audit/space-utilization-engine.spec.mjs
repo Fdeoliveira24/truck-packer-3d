@@ -5,7 +5,6 @@ import { computeSpaceUtilization } from '../../src/packing-core/space-utilizatio
 import * as PackLibrary from '../../src/services/pack-library.js';
 import {
   buildSpaceUtilizationResult,
-  createSpaceUtilizationAnalysisDetails,
   createSpaceUtilizationGauge,
 } from '../../src/ui/space-utilization-gauge.js';
 
@@ -339,7 +338,7 @@ test('UTIL-ENGINE-15 results are deterministic and inputs are never mutated', ()
   assert.deepEqual([caseData], beforeCases);
 });
 
-test('UTIL-ENGINE-16 gauge and Analysis Details consume the same engine result', () => {
+test('UTIL-ENGINE-16 Inspector gauge consumes the shared engine result', () => {
   const caseData = makeCase();
   const pack = {
     id: 'shared-result',
@@ -359,10 +358,8 @@ test('UTIL-ENGINE-16 gauge and Analysis Details consume the same engine result',
   closeTo(result.percentage, stats.spaceUtilization.cargoCubePercent);
 
   const gauge = createSpaceUtilizationGauge({ documentRef: testDocument, result });
-  const details = createSpaceUtilizationAnalysisDetails({ documentRef: testDocument, result });
   assert.match(textTree(gauge), /0\.5%/);
-  assert.match(textTree(details), /0\.5%/);
-  assert.equal(computeCount, 1, 'rendering both consumers must not trigger another calculation path');
+  assert.equal(computeCount, 1, 'rendering the gauge must not trigger another calculation path');
 });
 
 test('UTIL-ENGINE-17 calculated spatial utilization is not persisted', () => {

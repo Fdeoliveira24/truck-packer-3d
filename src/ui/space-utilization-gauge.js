@@ -10,8 +10,7 @@ export const BOTTOM_LEFT_GAUGE_POSITION = Object.freeze({
   y: 1,
 });
 
-// Density tiers intentionally exclude diagnostics. Red belongs to validity,
-// never to the ordinary utilization scale.
+// Density tiers describe capacity only. Red means near capacity, not invalid.
 export const UTILIZATION_DENSITY_TIERS = Object.freeze([
   'very-low',
   'low',
@@ -287,36 +286,12 @@ export function buildSpaceUtilizationPresentation(result) {
     : null;
   const emptyPercentage = percentage === null ? null : clamp(100 - percentage, 0, 100);
 
-  if (state === 'valid' && percentage !== null) {
+  if (percentage !== null) {
     return {
       state,
       headline: `${percentText(percentage)} Occupied`,
       subline: '',
-      statusLine: `Valid · ${percentText(emptyPercentage)} empty`,
-      chartPercentage: percentage,
-    };
-  }
-  if (state === 'invalid' && percentage !== null) {
-    const attentionCount = Math.max(0, Math.trunc(finiteNumber(value.attentionCount)));
-    return {
-      state,
-      headline: `${percentText(percentage)} Geometric Preview`,
-      subline: 'Preview — Not Validated',
-      statusLine: attentionCount > 0
-        ? `${attentionCount} item${attentionCount === 1 ? '' : 's'} require attention`
-        : 'Items require attention',
-      chartPercentage: percentage,
-    };
-  }
-  if (state === 'incomplete' && percentage !== null) {
-    const unresolvedCount = Math.max(0, Math.trunc(finiteNumber(value.unresolvedCount)));
-    return {
-      state,
-      headline: 'Analysis Incomplete',
-      subline: `Partial analysis: ${percentText(percentage)}`,
-      statusLine: unresolvedCount > 0
-        ? `${unresolvedCount} unresolved Case${unresolvedCount === 1 ? '' : 's'} require attention`
-        : 'Unresolved Cases require attention',
+      statusLine: `${percentText(emptyPercentage)} Remaining`,
       chartPercentage: percentage,
     };
   }
@@ -435,14 +410,6 @@ function measuredResult(result) {
     : (result || {});
 }
 
-function shortStatus(presentation) {
-  if (presentation.state === 'valid') return 'Valid';
-  if (presentation.state === 'invalid') return 'Preview';
-  if (presentation.state === 'incomplete') return 'Incomplete';
-  if (presentation.state === 'updating') return 'Updating';
-  return 'Unavailable';
-}
-
 function appendDefinitionRow(documentRef, list, label, value, options = {}) {
   appendTextElement(documentRef, list, 'dt', options.labelClass || '', label);
   const valueEl = appendTextElement(documentRef, list, 'dd', options.valueClass || '', value);
@@ -454,8 +421,8 @@ function appendStandardStats(documentRef, parent, result, lengthUnit) {
   const stats = documentRef.createElement('dl');
   stats.className = 'tp3d-util-gauge__stats';
   [
-    ['Loaded', String(Math.max(0, Math.trunc(finiteNumber(result.loadedCount))))],
-    ['Staged', String(Math.max(0, Math.trunc(finiteNumber(result.stagedCount))))],
+    ['Occupied', percentText(result.percentage)],
+    ['Remaining', percentText(100 - finiteNumber(result.percentage))],
     [
       'Used volume',
       formatSpaceUtilizationVolume(result.occupiedVolume, lengthUnit),
@@ -477,124 +444,22 @@ function appendStandardStats(documentRef, parent, result, lengthUnit) {
 }
 
 /**
- * Build the truthful, global-volume-only content used by Analysis Details.
- * @param {{
- *   documentRef?: Document,
- *   result?: Record<string, any>,
- *   lengthUnit?: string,
- * }} [options]
- */
-export function createSpaceUtilizationAnalysisDetails({
-  documentRef = document,
-  result,
-  lengthUnit = 'in',
-} = {}) {
-  const presentation = buildSpaceUtilizationPresentation(result);
-  const measured = measuredResult(result);
-  const hasMeasurement = presentation.chartPercentage !== null;
-  const emptyPercentage = hasMeasurement
-    ? clamp(100 - presentation.chartPercentage, 0, 100)
-    : null;
-  const root = documentRef.createElement('div');
-  root.className = 'tp3d-util-analysis';
-  root.dataset.role = 'space-utilization-analysis-details';
-
-  const overview = documentRef.createElement('section');
-  overview.className = 'tp3d-util-analysis__section';
-  appendTextElement(documentRef, overview, 'h4', 'tp3d-util-analysis__heading', 'Overview');
-  const headline = documentRef.createElement('div');
-  headline.className = 'tp3d-util-analysis__headline';
-  appendTextElement(
-    documentRef,
-    headline,
-    'strong',
-    'tp3d-util-analysis__primary-value',
-    hasMeasurement ? percentText(presentation.chartPercentage) : '—'
-  );
-  appendTextElement(documentRef, headline, 'span', '', 'occupied');
-  appendTextElement(
-    documentRef,
-    headline,
-    'span',
-    'tp3d-util-analysis__empty-value',
-    emptyPercentage === null ? '— empty' : `${percentText(emptyPercentage)} empty`
-  );
-  overview.appendChild(headline);
-
-  const overviewList = documentRef.createElement('dl');
-  overviewList.className = 'tp3d-util-analysis__list';
-  const rows = [
-    ['Status', shortStatus(presentation)],
-    ['Loaded', String(Math.max(0, Math.trunc(finiteNumber(measured.loadedCount))))],
-    ['Staged', String(Math.max(0, Math.trunc(finiteNumber(measured.stagedCount))))],
-    [
-      'Usable volume',
-      hasMeasurement ? formatSpaceUtilizationVolume(measured.usableVolume, lengthUnit) : '—',
-      hasMeasurement ? baseVolumeTitle(measured.usableVolume) : '',
-    ],
-    [
-      'Occupied volume',
-      hasMeasurement ? formatSpaceUtilizationVolume(measured.occupiedVolume, lengthUnit) : '—',
-      hasMeasurement ? baseVolumeTitle(measured.occupiedVolume) : '',
-    ],
-    [
-      'Available volume',
-      hasMeasurement ? formatSpaceUtilizationVolume(measured.availableVolume, lengthUnit) : '—',
-      hasMeasurement ? baseVolumeTitle(measured.availableVolume) : '',
-    ],
-  ];
-  rows.forEach(([label, value, title]) => appendDefinitionRow(documentRef, overviewList, label, value, {
-    labelClass: 'tp3d-util-analysis__label',
-    valueClass: 'tp3d-util-analysis__value',
-    title,
-  }));
-  overview.appendChild(overviewList);
-  root.appendChild(overview);
-
-  const coverage = documentRef.createElement('section');
-  coverage.className = 'tp3d-util-analysis__section';
-  appendTextElement(documentRef, coverage, 'h4', 'tp3d-util-analysis__heading', 'Analysis Coverage');
-  appendTextElement(documentRef, coverage, 'strong', 'tp3d-util-analysis__coverage-title', 'Global volume analysis');
-  appendTextElement(
-    documentRef,
-    coverage,
-    'p',
-    'tp3d-util-analysis__copy',
-    'This analysis compares the volume of loaded Cases with the usable space capacity.'
-  );
-  root.appendChild(coverage);
-
-  const density = documentRef.createElement('section');
-  density.className = 'tp3d-util-analysis__section tp3d-util-analysis__section--info';
-  appendTextElement(documentRef, density, 'h4', 'tp3d-util-analysis__heading', 'Density Availability');
-  appendTextElement(
-    documentRef,
-    density,
-    'p',
-    'tp3d-util-analysis__copy',
-    'Spatial density analysis is not yet available.'
-  );
-  root.appendChild(density);
-  return root;
-}
-
-/**
  * @param {{
  *   documentRef?: Document,
  *   result?: Record<string, any>,
  *   style?: string,
  *   detail?: string,
  *   lengthUnit?: string,
- *   collapsed?: boolean,
+ *   onStyleChange?: (style: string) => void,
  * }} [options]
  */
 export function createSpaceUtilizationGauge({
   documentRef = document,
   result,
   style = 'spatial',
-  detail = 'minimal',
+  detail = 'standard',
   lengthUnit = 'in',
-  collapsed = false,
+  onStyleChange = null,
 } = {}) {
   const presentation = buildSpaceUtilizationPresentation(result);
   const resolvedStyle = style === 'arc' ? 'arc' : 'spatial';
@@ -603,15 +468,12 @@ export function createSpaceUtilizationGauge({
   const sequence = ++gaugeSequence;
   const titleId = `tp3d-util-gauge-title-${sequence}`;
   const summaryId = `tp3d-util-gauge-summary-${sequence}`;
-  const bodyId = `tp3d-util-gauge-body-${sequence}`;
-  const isCollapsed = collapsed === true;
   gauge.className = `tp3d-util-gauge tp3d-util-gauge--${resolvedStyle} tp3d-util-gauge--${resolvedDetail} ` +
-    `tp3d-util-gauge--${presentation.state}${isCollapsed ? ' is-collapsed' : ''}`;
+    `tp3d-util-gauge--${presentation.state}`;
   gauge.dataset.role = 'space-utilization-gauge';
   gauge.dataset.state = presentation.state;
   gauge.dataset.style = resolvedStyle;
   gauge.dataset.detail = resolvedDetail;
-  gauge.dataset.collapsed = isCollapsed ? 'true' : 'false';
   gauge.setAttribute('aria-labelledby', titleId);
   gauge.setAttribute('aria-describedby', summaryId);
   if (presentation.chartPercentage !== null) {
@@ -621,70 +483,31 @@ export function createSpaceUtilizationGauge({
 
   const header = documentRef.createElement('div');
   header.className = 'tp3d-util-gauge__header';
-  const handle = documentRef.createElement('button');
-  handle.type = 'button';
-  handle.className = 'tp3d-util-gauge__icon-btn tp3d-util-gauge__drag';
-  handle.dataset.role = 'space-utilization-drag-handle';
-  handle.setAttribute('aria-label', 'Move Space Utilization gauge. Drag or use the arrow keys.');
-  handle.dataset.tooltip = 'Move gauge';
-  const grip = documentRef.createElement('i');
-  grip.className = 'fa-solid fa-grip-vertical';
-  grip.setAttribute('aria-hidden', 'true');
-  handle.appendChild(grip);
-  header.appendChild(handle);
   const title = appendTextElement(documentRef, header, 'span', 'tp3d-util-gauge__title', 'Space Utilization');
   title.id = titleId;
-
-  const collapsedSummary = documentRef.createElement('span');
-  collapsedSummary.className = 'tp3d-util-gauge__collapsed-summary';
-  collapsedSummary.hidden = !isCollapsed;
-  appendTextElement(
-    documentRef,
-    collapsedSummary,
-    'strong',
-    'tp3d-util-gauge__collapsed-percent',
-    presentation.chartPercentage === null ? '—' : percentText(presentation.chartPercentage)
-  );
-  appendTextElement(documentRef, collapsedSummary, 'span', 'tp3d-util-gauge__collapsed-status', shortStatus(presentation));
-  header.appendChild(collapsedSummary);
-
-  const actions = documentRef.createElement('div');
-  actions.className = 'tp3d-util-gauge__header-actions';
-  const detailsButton = documentRef.createElement('button');
-  detailsButton.type = 'button';
-  detailsButton.className = 'tp3d-util-gauge__icon-btn';
-  detailsButton.dataset.role = 'space-utilization-analysis-action';
-  detailsButton.setAttribute('aria-label', 'View analysis details');
-  detailsButton.dataset.tooltip = 'View analysis details';
-  detailsButton.hidden = isCollapsed;
-  detailsButton.innerHTML = '<i class="fa-solid fa-chart-column" aria-hidden="true"></i>';
-  actions.appendChild(detailsButton);
-  const collapseButton = documentRef.createElement('button');
-  collapseButton.type = 'button';
-  collapseButton.className = 'tp3d-util-gauge__icon-btn';
-  collapseButton.dataset.role = 'space-utilization-collapse-action';
-  collapseButton.setAttribute('aria-label', isCollapsed ? 'Expand gauge' : 'Collapse gauge');
-  collapseButton.setAttribute('aria-expanded', isCollapsed ? 'false' : 'true');
-  collapseButton.setAttribute('aria-controls', bodyId);
-  collapseButton.dataset.tooltip = isCollapsed ? 'Expand gauge' : 'Collapse gauge';
-  collapseButton.innerHTML = `<i class="fa-solid fa-chevron-${isCollapsed ? 'down' : 'up'}" aria-hidden="true"></i>`;
-  actions.appendChild(collapseButton);
-  const hideButton = documentRef.createElement('button');
-  hideButton.type = 'button';
-  hideButton.className = 'tp3d-util-gauge__icon-btn';
-  hideButton.dataset.role = 'space-utilization-hide-action';
-  hideButton.setAttribute('aria-label', 'Hide Space Utilization');
-  hideButton.dataset.tooltip = 'Hide Space Utilization';
-  hideButton.hidden = isCollapsed;
-  hideButton.innerHTML = '<i class="fa-solid fa-xmark" aria-hidden="true"></i>';
-  actions.appendChild(hideButton);
-  header.appendChild(actions);
+  const styleControl = documentRef.createElement('div');
+  styleControl.className = 'tp3d-util-gauge__style-control';
+  styleControl.setAttribute('role', 'group');
+  styleControl.setAttribute('aria-label', 'Space Utilization display');
+  ['arc', 'spatial'].forEach(value => {
+    const button = documentRef.createElement('button');
+    button.type = 'button';
+    button.textContent = value === 'arc' ? 'Arc' : 'Spatial';
+    button.dataset.value = value;
+    button.setAttribute('aria-pressed', value === resolvedStyle ? 'true' : 'false');
+    if (value === resolvedStyle) button.classList.add('is-selected');
+    if (typeof onStyleChange === 'function') {
+      button.addEventListener('click', () => {
+        if (value !== resolvedStyle) onStyleChange(value);
+      });
+    }
+    styleControl.appendChild(button);
+  });
+  header.appendChild(styleControl);
   gauge.appendChild(header);
 
   const body = documentRef.createElement('div');
   body.className = 'tp3d-util-gauge__body';
-  body.id = bodyId;
-  body.hidden = isCollapsed;
   const primary = documentRef.createElement('div');
   primary.className = 'tp3d-util-gauge__primary';
   if (resolvedStyle === 'arc' && presentation.chartPercentage !== null) primary.appendChild(makeArcGauge(documentRef, presentation));
@@ -694,34 +517,13 @@ export function createSpaceUtilizationGauge({
   if (presentation.subline) {
     appendTextElement(documentRef, body, 'div', 'tp3d-util-gauge__subline', presentation.subline);
   }
-  if (presentation.statusLine) {
-    const status = documentRef.createElement('div');
-    status.className = 'tp3d-util-gauge__status';
-    const icon = documentRef.createElement('i');
-    icon.className = presentation.state === 'invalid'
-      ? 'fa-solid fa-triangle-exclamation'
-      : presentation.state === 'incomplete'
-        ? 'fa-solid fa-circle-exclamation'
-        : 'fa-regular fa-circle-check';
-    icon.setAttribute('aria-hidden', 'true');
-    status.appendChild(icon);
-    appendTextElement(documentRef, status, 'span', '', presentation.statusLine);
-    body.appendChild(status);
-  }
-  if (resolvedDetail === 'standard' && presentation.state !== 'unavailable') {
+  if (presentation.state !== 'unavailable') {
     appendStandardStats(documentRef, body, measuredResult(result), lengthUnit);
   }
   gauge.appendChild(body);
 
-  const measured = measuredResult(result);
   const summaryParts = [presentation.headline, presentation.subline, presentation.statusLine]
     .filter(Boolean);
-  if (presentation.chartPercentage !== null) {
-    summaryParts.push(
-      `${Math.max(0, Math.trunc(finiteNumber(measured.loadedCount)))} loaded`,
-      `${Math.max(0, Math.trunc(finiteNumber(measured.stagedCount)))} staged`
-    );
-  }
   const screenReaderSummary = appendTextElement(
     documentRef,
     gauge,

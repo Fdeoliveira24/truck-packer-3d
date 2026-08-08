@@ -19338,7 +19338,7 @@ test('G1.2B-CASE-BROWSER-POLISH new CSS classes use existing design tokens only'
 
 // ── G1.2C-INSPECTOR-CARD-POLISH ──────────────────────────────────────────────
 
-test('G1.2C-INSPECTOR-CARD-POLISH Stats card uses label/value rows and keeps the same stat labels', async () => {
+test('G1.2C-INSPECTOR-CARD-POLISH Load Summary uses the approved neutral label/value rows', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
 
   const statsStart = src.indexOf('const statsEl = document.createElement');
@@ -19347,26 +19347,17 @@ test('G1.2C-INSPECTOR-CARD-POLISH Stats card uses label/value rows and keeps the
   const statsBlock = src.slice(statsStart, statsEnd);
 
   const labelValueRows = statsBlock.match(/<div class="row space-between">/g) || [];
-  // 4 always-present stat rows + 1 conditional "Unresolved cases" row (dangling refs)
-  // + 1 conditional "Max Capacity profile" row (Phase C, Contract C profile-membership count).
-  assert.equal(labelValueRows.length, 6,
-    'Stats card renders the 4 core label/value rows plus the conditional Unresolved and Max Capacity profile rows');
-  assert.match(statsBlock, /Unresolved cases/, 'Stats card surfaces an Unresolved cases row');
-  assert.match(statsBlock, /unresolvedCount > 0/, 'the Unresolved row is conditional on unresolvedCount');
-  assert.match(statsBlock, /Max Capacity profile/, 'Stats card surfaces a Max Capacity profile row');
-  assert.match(statsBlock, /maxCapacityProfileCount > 0/, 'the Max Capacity profile row is conditional on maxCapacityProfileCount');
-  assert.match(statsBlock, /\$\{stats\.maxCapacityProfileCount \|\| 0\}|stats\.maxCapacityProfileCount/,
-    'the Max Capacity profile row must read from the canonical stats.maxCapacityProfileCount value');
+  assert.equal(labelValueRows.length, 3, 'Load Summary renders exactly three neutral rows');
+  assert.match(statsBlock, /Load Summary/);
 
-  ['Cases loaded', 'Packed (in truck)', 'Volume used', 'Total weight'].forEach(label => {
+  ['In truck', 'Staged', 'Total weight'].forEach(label => {
     const escapedLabel = label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     assert.match(statsBlock, new RegExp(`<span class="muted tp3d-editor-fs-sm">${escapedLabel}</span>`),
       `Stats card must keep the "${label}" label`);
   });
 
-  assert.match(statsBlock, /\$\{stats\.totalCases\}/, 'Stats card must keep using stats.totalCases');
-  assert.match(statsBlock, /\$\{stats\.packedCases\}/, 'Stats card must keep using stats.packedCases');
-  assert.match(statsBlock, /\$\{stats\.volumePercent\.toFixed\(1\)\}%/, 'Stats card must keep using stats.volumePercent');
+  assert.match(statsBlock, /\$\{utilization\.loadedCount \|\| 0\}/);
+  assert.match(statsBlock, /\$\{utilization\.stagedCount \|\| 0\}/);
   assert.match(statsBlock, /\$\{Utils\.formatWeight\(stats\.totalWeight, prefs\.units\.weight\)\}/,
     'Stats card must keep using Utils.formatWeight(stats.totalWeight, ...)');
 

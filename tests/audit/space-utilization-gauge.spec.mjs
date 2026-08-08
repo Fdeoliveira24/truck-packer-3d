@@ -414,7 +414,7 @@ test('header exposes only the accessible Arc and Spatial preference control', ()
   const control = byClass(gauge, 'tp3d-util-gauge__style-control');
   assert.equal(control.getAttribute('aria-label'), 'Space Utilization display');
   const buttons = walk(control).filter(element => element.tagName === 'BUTTON');
-  assert.deepEqual(buttons.map(button => button.textContent), ['Arc', 'Spatial']);
+  assert.deepEqual(buttons.map(button => button.textContent), ['Arc', 'Scale']);
   assert.deepEqual(buttons.map(button => button.getAttribute('aria-pressed')), ['false', 'true']);
   buttons[0].listeners.get('click')();
   assert.equal(selected, 'arc');
@@ -451,7 +451,7 @@ test('Spatial and Arc gauges remain bounded at 0, 1, 50, 99, and 100 percent', a
   assert.equal(buildSpaceUtilizationArcSegments(100).every(segment => segment.fill === 1), true);
   assert.equal(buildSpaceUtilizationArcSegments(50).reduce((sum, segment) => sum + segment.fill, 0), 10);
   assert.match(css, /\.tp3d-util-gauge--arc \.tp3d-util-gauge__primary\s*{[\s\S]*grid-template-columns:/);
-  assert.match(css, /\.tp3d-util-gauge__arc,[\s\S]*width:\s*96px;/);
+  assert.match(css, /\.tp3d-util-gauge__arc,[\s\S]*width:\s*140px;/);
   assert.doesNotMatch(css, /\.tp3d-util-gauge__headline\s*{[^}]*position:\s*absolute/);
 });
 

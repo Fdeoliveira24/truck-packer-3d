@@ -23,9 +23,9 @@ const SAFE_MARGIN = 12;
 const DEFAULT_DOCK_LEFT = 88;
 const DOCK_CONTROL_GAP = 24;
 const ARC_SEGMENT_COUNT = 20;
-const ARC_CENTER_X = 48;
-const ARC_CENTER_Y = 44;
-const ARC_RADIUS = 36;
+const ARC_CENTER_X = 70;
+const ARC_CENTER_Y = 62;
+const ARC_RADIUS = 52;
 let gaugeSequence = 0;
 
 function finiteNumber(value, fallback = 0) {
@@ -335,7 +335,8 @@ export function buildSpaceUtilizationArcSegments(percentage, count = ARC_SEGMENT
 
 /**
  * The exact point on the arc for the current percentage (not stepped to a
- * segment), used to place a precise current-position indicator.
+ * segment), used to place a precise current-position tick. Rotation matches
+ * the segment convention so the tick reads as a radial notch, not a knob.
  */
 function arcIndicatorPoint(percentage) {
   const progress = clamp(percentage, 0, 100) / 100;
@@ -343,6 +344,7 @@ function arcIndicatorPoint(percentage) {
   return {
     x: ARC_CENTER_X + ARC_RADIUS * Math.cos(angle),
     y: ARC_CENTER_Y - ARC_RADIUS * Math.sin(angle),
+    rotation: -90 + progress * 180,
   };
 }
 
@@ -380,14 +382,19 @@ function makeSpatialGauge(documentRef, presentation) {
   chart.className = 'tp3d-util-gauge__spatial';
   chart.setAttribute('role', 'img');
   chart.setAttribute('aria-label', `${presentation.headline}. ${presentation.statusLine || presentation.subline}`.trim());
+  // .occupied is the persistent green -> yellow -> orange -> red capacity
+  // scale (always shown in full); .empty is a muted overlay marking the
+  // not-yet-reached portion so the scale still reads as a fill level.
   const occupied = documentRef.createElement('span');
   occupied.className = 'tp3d-util-gauge__occupied';
   const empty = documentRef.createElement('span');
   empty.className = 'tp3d-util-gauge__empty';
-  const marker = documentRef.createElement('span');
-  marker.className = 'tp3d-util-gauge__spatial-marker';
   chart.appendChild(occupied);
   chart.appendChild(empty);
+  // Non-interactive triangle tick (not a round endpoint dot) marking the
+  // current position on the scale.
+  const marker = documentRef.createElement('span');
+  marker.className = 'tp3d-util-gauge__spatial-marker';
   chart.appendChild(marker);
   wrap.appendChild(chart);
   return wrap;
@@ -420,6 +427,7 @@ function makeArcGauge(documentRef, presentation) {
   indicatorEl.className = 'tp3d-util-gauge__arc-indicator';
   indicatorEl.style.setProperty('--util-arc-x', String(indicator.x));
   indicatorEl.style.setProperty('--util-arc-y', String(indicator.y));
+  indicatorEl.style.setProperty('--util-arc-rotation', String(indicator.rotation));
   chart.appendChild(indicatorEl);
   return chart;
 }
@@ -513,7 +521,7 @@ export function createSpaceUtilizationGauge({
   const sequence = ++gaugeSequence;
   const titleId = `tp3d-util-gauge-title-${sequence}`;
   const summaryId = `tp3d-util-gauge-summary-${sequence}`;
-  gauge.className = `tp3d-util-gauge tp3d-util-gauge--${resolvedStyle} tp3d-util-gauge--${resolvedDetail} ` +
+  gauge.className = `card tp3d-util-gauge tp3d-util-gauge--${resolvedStyle} tp3d-util-gauge--${resolvedDetail} ` +
     `tp3d-util-gauge--${presentation.state}`;
   gauge.dataset.role = 'space-utilization-gauge';
   gauge.dataset.state = presentation.state;
@@ -537,7 +545,9 @@ export function createSpaceUtilizationGauge({
   ['arc', 'spatial'].forEach(value => {
     const button = documentRef.createElement('button');
     button.type = 'button';
-    button.textContent = value === 'arc' ? 'Arc' : 'Spatial';
+    // The stored preference stays 'spatial' for compatibility; only the
+    // visible label changed to "Scale" to match the capacity-scale visual.
+    button.textContent = value === 'arc' ? 'Arc' : 'Scale';
     button.dataset.value = value;
     button.setAttribute('aria-pressed', value === resolvedStyle ? 'true' : 'false');
     if (value === resolvedStyle) button.classList.add('is-selected');

@@ -146,13 +146,11 @@ function sliceFn(src, startNeedle, endNeedle) {
   return src.slice(start, end);
 }
 
-test('PHASE-C-RPT-7 renderTruckInspector Stats card reads the canonical stats.maxCapacityProfileCount value', async () => {
+test('PHASE-C-RPT-7 Inspector Load Summary omits the secondary Max Capacity profile row', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderTruckInspector(pack, prefs)', 'function renderMultiInspector(pack, selected)');
   assert.match(block, /const stats = PackLibrary\.computeStats\(pack\);/, 'must read from the canonical computeStats() call already in this function, not a separate derivation');
-  assert.match(block, /const maxCapacityProfileCount = stats\.maxCapacityProfileCount \|\| 0;/, 'must read the value directly off the canonical stats object');
-  assert.match(block, /maxCapacityProfileCount > 0/, 'row must be conditional on a positive count');
-  assert.match(block, /Max Capacity profile/, 'row label must describe profile membership, not relaxation evidence');
+  assert.doesNotMatch(block, /maxCapacityProfileCount|Max Capacity profile/);
   assert.equal(block.includes('Rules violated'), false);
   assert.equal(block.includes('Unsafe cases'), false);
   assert.equal(block.includes('Relaxed cases'), false);

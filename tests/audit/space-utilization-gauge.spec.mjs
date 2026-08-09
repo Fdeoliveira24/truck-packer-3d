@@ -7,11 +7,9 @@ import { normalizePreferences } from '../../src/core/normalizer.js';
 import {
   BOTTOM_LEFT_GAUGE_POSITION,
   UTILIZATION_DENSITY_TIERS,
-  buildSpaceUtilizationArcSegments,
   buildSpaceUtilizationPresentation,
   buildSpaceUtilizationResult,
   clampSpaceUtilizationPixels,
-  createSpaceUtilizationAnalysisDetails,
   createSpaceUtilizationGauge,
   findSpaceUtilizationSafePosition,
   formatSpaceUtilizationVolume,
@@ -49,6 +47,7 @@ class TestElement {
     this.id = '';
     this.title = '';
     this.type = '';
+    this.listeners = new Map();
     this._classes = new Set();
     this.classList = {
       add: (...names) => names.forEach(name => this._classes.add(name)),
@@ -82,6 +81,10 @@ class TestElement {
 
   getAttribute(name) {
     return this.attributes.get(name) || null;
+  }
+
+  addEventListener(name, handler) {
+    this.listeners.set(name, handler);
   }
 }
 
@@ -125,22 +128,50 @@ function packFixture() {
 }
 
 function libraryFixture(overrides = {}) {
+  const getTrailerCapacityInches3 = overrides.getTrailerCapacityInches3 || (() => 200000);
+  const computeStats = overrides.computeStats || (() => ({
+    volumePercent: 37.4,
+    volumeUsed: 74800,
+    packedCases: 4,
+    stagedCases: 2,
+    unresolvedInstances: 0,
+    totalsComplete: true,
+    utilizationComplete: true,
+  }));
   return {
-    computeStats: () => ({
-      volumePercent: 37.4,
-      volumeUsed: 74800,
-      packedCases: 4,
-      stagedCases: 2,
-      unresolvedInstances: 0,
-      totalsComplete: true,
-      utilizationComplete: true,
-    }),
-    getTrailerCapacityInches3: () => 200000,
     ...overrides,
+    computeStats: () => {
+      const stats = computeStats();
+      if (stats.spaceUtilization) return stats;
+      const usableVolume = Number(getTrailerCapacityInches3());
+      Object.defineProperty(stats, 'spaceUtilization', {
+        enumerable: false,
+        value: {
+          status: stats.unresolvedInstances > 0 || stats.totalsComplete === false || stats.utilizationComplete === false
+            ? 'incomplete'
+            : 'ready',
+          usableVolume,
+          cargoCubePercent: stats.volumePercent,
+          cargoCubeVolume: stats.volumeUsed,
+          occupiedEnvelopeVolume: stats.volumeUsed,
+          spatialUtilizationPercent: stats.volumePercent,
+          overlapVolume: 0,
+          outsideVolume: 0,
+          blockedIntersectionVolume: 0,
+          loadedCount: stats.packedCases,
+          stagedCount: stats.stagedCases,
+          hiddenCount: 0,
+          unresolvedCount: stats.unresolvedInstances,
+          diagnostics: { outside: [], blockedIntersections: [], overlaps: [] },
+        },
+      });
+      return stats;
+    },
+    getTrailerCapacityInches3,
   };
 }
 
-test('Space Utilization gauge defaults are hidden, Spatial, Minimal, and bottom-left', () => {
+test('Space Utilization gauge defaults are hidden, Scale-compatible, Minimal, and bottom-left', () => {
   assert.deepEqual(defaultPreferences.spaceUtilization, {
     showGauge: false,
     style: 'spatial',
@@ -158,7 +189,7 @@ test('legacy preference records normalize without requiring Space Utilization ke
   assert.deepEqual(normalized.spaceUtilization, defaultPreferences.spaceUtilization);
 });
 
-test('visibility and style remain independent preferences', () => {
+test('visibility remains independent while rendering always uses Scale', () => {
   const hiddenArc = normalizePreferences({
     spaceUtilization: {
       showGauge: false,
@@ -168,7 +199,7 @@ test('visibility and style remain independent preferences', () => {
     },
   });
   assert.equal(shouldShowSpaceUtilizationGauge(hiddenArc), false);
-  assert.equal(getSpaceUtilizationGaugeStyle(hiddenArc), 'arc');
+  assert.equal(getSpaceUtilizationGaugeStyle(hiddenArc), 'spatial');
   assert.equal(getSpaceUtilizationGaugeDetail(hiddenArc), 'standard');
 
   const visibleSpatial = normalizePreferences({
@@ -296,7 +327,7 @@ test('live result calculation does not store derived utilization on Pack or Case
   assert.equal(Object.hasOwn(pack.cases[0], 'spaceUtilization'), false);
 });
 
-test('incomplete and unavailable results are explicit and never certified as Occupied', () => {
+test('incomplete measurements remain capacity-only while unavailable results are explicit', () => {
   const incomplete = buildSpaceUtilizationResult(packFixture(), libraryFixture({
     computeStats: () => ({
       volumePercent: 63.2,
@@ -310,9 +341,9 @@ test('incomplete and unavailable results are explicit and never certified as Occ
   }));
   const incompleteCopy = buildSpaceUtilizationPresentation(incomplete);
   assert.equal(incomplete.state, 'incomplete');
-  assert.equal(incompleteCopy.headline, 'Analysis Incomplete');
-  assert.equal(incompleteCopy.subline, 'Partial analysis: 63.2%');
-  assert.match(incompleteCopy.statusLine, /3 unresolved Cases require attention/);
+  assert.equal(incompleteCopy.headline, '63.2% Occupied');
+  assert.equal(incompleteCopy.subline, '');
+  assert.equal(incompleteCopy.statusLine, '36.8% Remaining');
 
   const unavailable = buildSpaceUtilizationResult(packFixture(), libraryFixture({
     getTrailerCapacityInches3: () => 0,
@@ -327,19 +358,20 @@ test('incomplete and unavailable results are explicit and never certified as Occ
   });
 });
 
-test('valid empty/full plus future invalid/updating presentations use the approved language', () => {
+test('all measured states use capacity language', () => {
   assert.equal(buildSpaceUtilizationPresentation({ state: 'valid', percentage: 0 }).headline, '0.0% Occupied');
-  assert.equal(buildSpaceUtilizationPresentation({ state: 'valid', percentage: 100 }).statusLine, 'Valid · 0.0% empty');
+  assert.equal(buildSpaceUtilizationPresentation({ state: 'valid', percentage: 100 }).statusLine, '0.0% Remaining');
   const invalid = buildSpaceUtilizationPresentation({ state: 'invalid', percentage: 84.6, attentionCount: 2 });
-  assert.equal(invalid.headline, '84.6% Geometric Preview');
-  assert.equal(invalid.subline, 'Preview — Not Validated');
-  assert.equal(invalid.statusLine, '2 items require attention');
+  assert.equal(invalid.headline, '84.6% Occupied');
+  assert.equal(invalid.subline, '');
+  assert.equal(invalid.statusLine, '15.4% Remaining');
   const updating = buildSpaceUtilizationPresentation({
     state: 'updating',
     previousResult: { state: 'valid', percentage: 42 },
   });
-  assert.equal(updating.headline, 'Updating utilization…');
-  assert.equal(updating.subline, 'Showing previous analysis');
+  assert.equal(updating.headline, '42.0% Occupied');
+  assert.equal(updating.subline, '');
+  assert.equal(updating.statusLine, '58.0% Remaining');
   assert.equal(updating.chartPercentage, 42);
 });
 
@@ -350,7 +382,7 @@ test('volume formatting uses readable cubic feet or cubic metres without losing 
   assert.doesNotMatch(formatSpaceUtilizationVolume(7135920, 'in'), /in³/);
 });
 
-test('compact Spatial Minimal has one authoritative bar and no detail rows', () => {
+test('Inspector Spatial gauge has one authoritative bar, a remaining subline, and volume rows', () => {
   const gauge = createSpaceUtilizationGauge({
     documentRef: testDocument,
     result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
@@ -361,82 +393,55 @@ test('compact Spatial Minimal has one authoritative bar and no detail rows', () 
   assert.ok(byClass(gauge, 'tp3d-util-gauge__spatial'));
   assert.ok(byClass(gauge, 'tp3d-util-gauge__occupied'));
   assert.ok(byClass(gauge, 'tp3d-util-gauge__empty'));
-  assert.equal(byClass(gauge, 'tp3d-util-gauge__stats'), null);
-  assert.match(textTree(gauge), /37\.4%.*Occupied.*Valid · 62\.6% empty/);
-  assert.ok(byRole(gauge, 'space-utilization-drag-handle'));
-  assert.ok(byRole(gauge, 'space-utilization-analysis-action'));
-  assert.ok(byRole(gauge, 'space-utilization-hide-action'));
-  assert.ok(byRole(gauge, 'space-utilization-collapse-action'));
+  assert.ok(byClass(gauge, 'tp3d-util-gauge__remaining'));
+  assert.ok(byClass(gauge, 'tp3d-util-gauge__stats'));
+  assert.match(textTree(gauge), /37\.4%.*Occupied.*Remaining.*Used volume.*Available volume/);
+  assert.equal(byRole(gauge, 'space-utilization-drag-handle'), null);
+  assert.equal(byRole(gauge, 'space-utilization-analysis-action'), null);
+  assert.equal(byRole(gauge, 'space-utilization-hide-action'), null);
+  assert.equal(byRole(gauge, 'space-utilization-collapse-action'), null);
 });
 
-test('header action order uses one app tooltip plus an accessible name, without native title duplication', () => {
+test('header has no visualization selector controls', () => {
   const gauge = createSpaceUtilizationGauge({
     documentRef: testDocument,
     result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
   });
-  const roles = walk(byClass(gauge, 'tp3d-util-gauge__header'))
-    .map(element => element.dataset.role)
-    .filter(Boolean);
-  assert.deepEqual(roles, [
-    'space-utilization-drag-handle',
-    'space-utilization-analysis-action',
-    'space-utilization-collapse-action',
-    'space-utilization-hide-action',
-  ]);
-  const details = byRole(gauge, 'space-utilization-analysis-action');
-  const collapse = byRole(gauge, 'space-utilization-collapse-action');
-  const hide = byRole(gauge, 'space-utilization-hide-action');
-  assert.equal(details.title, '');
-  assert.equal(details.dataset.tooltip, 'View analysis details');
-  assert.equal(details.getAttribute('aria-label'), 'View analysis details');
-  assert.equal(collapse.title, '');
-  assert.equal(collapse.dataset.tooltip, 'Collapse gauge');
-  assert.equal(collapse.getAttribute('aria-label'), 'Collapse gauge');
-  assert.equal(hide.title, '');
-  assert.equal(hide.dataset.tooltip, 'Hide Space Utilization');
-  assert.equal(hide.getAttribute('aria-label'), 'Hide Space Utilization');
-  const drag = byRole(gauge, 'space-utilization-drag-handle');
-  assert.equal(drag.title, '');
-  assert.equal(drag.dataset.tooltip, 'Move gauge');
+  assert.equal(byClass(gauge, 'tp3d-util-gauge__style-control'), null);
+  assert.equal(walk(gauge).some(element => element.tagName === 'BUTTON'), false);
+  assert.equal(textTree(gauge).includes('Arc'), false);
+  assert.equal(textTree(gauge).includes('Scale'), false);
 });
 
-test('Spatial and Arc gauges remain bounded at 0, 1, 50, 99, and 100 percent', async () => {
+test('Scale gauge remains bounded at 0, 1, 50, 99, and 100 percent', async () => {
   const css = await fs.readFile(cssPath, 'utf8');
   [0, 1, 50, 99, 100].forEach(percentage => {
     const result = { ...buildSpaceUtilizationResult(packFixture(), libraryFixture()), percentage };
-    const arcGauge = createSpaceUtilizationGauge({
-      documentRef: testDocument,
-      result,
-      style: 'arc',
-      detail: 'minimal',
-    });
-    const spatialGauge = createSpaceUtilizationGauge({
+    const gauge = createSpaceUtilizationGauge({
       documentRef: testDocument,
       result,
       style: 'spatial',
       detail: 'minimal',
     });
-    const arc = byClass(arcGauge, 'tp3d-util-gauge__arc');
-    const headline = byClass(arcGauge, 'tp3d-util-gauge__headline');
-    assert.ok(arc);
+    const scale = byClass(gauge, 'tp3d-util-gauge__spatial');
+    const headline = byClass(gauge, 'tp3d-util-gauge__headline');
+    assert.ok(scale);
     assert.ok(headline);
-    assert.equal(walk(arc).includes(headline), false);
-    assert.equal(walk(arc).filter(element => element.classList.contains('tp3d-util-gauge__arc-segment')).length, 20);
-    assert.equal(spatialGauge.styleValues.get('--util-occupied-percent'), String(percentage));
-    const segments = buildSpaceUtilizationArcSegments(percentage);
-    assert.equal(segments.length, 20);
-    assert.ok(segments.every(segment => segment.fill >= 0 && segment.fill <= 1));
+    assert.equal(walk(scale).includes(headline), false);
+    assert.equal(gauge.styleValues.get('--util-occupied-percent'), String(percentage));
+    assert.ok(byClass(gauge, 'tp3d-util-gauge__occupied'));
+    assert.ok(byClass(gauge, 'tp3d-util-gauge__empty'));
+    assert.ok(byClass(gauge, 'tp3d-util-gauge__spatial-marker'));
+    assert.equal(byClass(gauge, 'tp3d-util-gauge__arc'), null);
+    assert.equal(byClass(gauge, 'tp3d-util-gauge__arc-segment'), null);
   });
-  assert.equal(buildSpaceUtilizationArcSegments(0).every(segment => segment.fill === 0), true);
-  assert.equal(buildSpaceUtilizationArcSegments(100).every(segment => segment.fill === 1), true);
-  assert.equal(buildSpaceUtilizationArcSegments(50).reduce((sum, segment) => sum + segment.fill, 0), 10);
-  assert.match(css, /\.tp3d-util-gauge--arc \.tp3d-util-gauge__primary\s*{[\s\S]*grid-template-columns:/);
-  assert.match(css, /\.tp3d-util-gauge__arc\s*{[^}]*overflow:\s*visible;/);
-  assert.match(css, /\.tp3d-util-gauge__arc-segments\s*{[^}]*overflow:\s*visible;/);
+  assert.match(css, /\.tp3d-util-gauge__visual\s*{[\s\S]*width:\s*100%;/);
+  assert.match(css, /\.tp3d-util-gauge__spatial\s*{[\s\S]*width:\s*100%;/);
+  assert.doesNotMatch(css, /\.tp3d-util-gauge__arc/);
   assert.doesNotMatch(css, /\.tp3d-util-gauge__headline\s*{[^}]*position:\s*absolute/);
 });
 
-test('Standard adds only Loaded, Staged, Used volume, and Available volume', () => {
+test('Inspector gauge shows occupied/remaining once (in the headline) and volume rows in stats', () => {
   const gauge = createSpaceUtilizationGauge({
     documentRef: testDocument,
     result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
@@ -446,50 +451,21 @@ test('Standard adds only Loaded, Staged, Used volume, and Available volume', () 
   });
   const stats = byClass(gauge, 'tp3d-util-gauge__stats');
   const labels = walk(stats).filter(element => element.tagName === 'DT').map(element => element.textContent);
-  assert.deepEqual(labels, ['Loaded', 'Staged', 'Used volume', 'Available volume']);
+  assert.deepEqual(labels, ['Used volume', 'Available volume']);
   assert.doesNotMatch(textTree(stats), /Usable volume|Occupied volume|Empty volume|in³/);
   const usedValue = walk(stats).find(element => element.title.includes('in³ base volume'));
   assert.ok(usedValue);
+
+  // Occupied/Remaining appear exactly once each, outside the stats rows.
+  const occupiedLabel = byClass(gauge, 'tp3d-util-gauge__occupied-label');
+  assert.equal(occupiedLabel.textContent, 'Occupied');
+  const remaining = byClass(gauge, 'tp3d-util-gauge__remaining');
+  assert.match(remaining.textContent, /Remaining/);
+  assert.doesNotMatch(textTree(stats), /Occupied|Remaining/);
 });
 
-test('collapsed mode is independent from detail and exposes only its compact summary actions', () => {
-  const gauge = createSpaceUtilizationGauge({
-    documentRef: testDocument,
-    result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
-    style: 'arc',
-    detail: 'standard',
-    collapsed: true,
-  });
-  assert.equal(gauge.dataset.style, 'arc');
-  assert.equal(gauge.dataset.detail, 'standard');
-  assert.equal(gauge.dataset.collapsed, 'true');
-  assert.equal(byClass(gauge, 'tp3d-util-gauge__body').hidden, true);
-  assert.equal(byClass(gauge, 'tp3d-util-gauge__collapsed-summary').hidden, false);
-  assert.equal(byRole(gauge, 'space-utilization-analysis-action').hidden, true);
-  assert.equal(byRole(gauge, 'space-utilization-hide-action').hidden, true);
-  assert.equal(byRole(gauge, 'space-utilization-collapse-action').getAttribute('aria-expanded'), 'false');
-  assert.match(textTree(gauge), /37\.4%.*Valid/);
-});
 
-test('Analysis Details uses live global-volume values and explicitly defers spatial density', () => {
-  const details = createSpaceUtilizationAnalysisDetails({
-    documentRef: testDocument,
-    result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
-    lengthUnit: 'in',
-  });
-  const text = textTree(details);
-  assert.match(text, /Overview.*37\.4%.*62\.6% empty/);
-  assert.match(text, /Loaded.*4.*Staged.*2/);
-  assert.match(text, /Usable volume.*115\.7 ft³/);
-  assert.match(text, /Occupied volume.*43\.3 ft³/);
-  assert.match(text, /Available volume.*72\.5 ft³/);
-  assert.match(text, /Global volume analysis/);
-  assert.match(text, /This analysis compares the volume of loaded Cases with the usable space capacity\./);
-  assert.match(text, /Spatial density analysis is not yet available\./);
-  assert.doesNotMatch(text, /Front|Middle|Rear|height layer|density cell|zone finding|heatmap/i);
-});
-
-test('semantic palette has five density tiers, neutral Empty hatching, and separate red diagnostics', async () => {
+test('semantic palette progresses from clear through green and orange to near-capacity red', async () => {
   const css = await fs.readFile(cssPath, 'utf8');
   assert.deepEqual(UTILIZATION_DENSITY_TIERS, ['very-low', 'low', 'medium', 'high', 'very-high']);
   assert.equal(UTILIZATION_DENSITY_TIERS.includes('invalid'), false);
@@ -497,26 +473,18 @@ test('semantic palette has five density tiers, neutral Empty hatching, and separ
   assert.match(css, /--util-density-low:\s*#8bc8c6;/);
   assert.match(css, /--util-density-medium:\s*#4fa36c;/);
   assert.match(css, /--util-density-high:\s*#e3b341;/);
-  assert.match(css, /--util-density-very-high:\s*#d97706;/);
-  assert.match(css, /--util-invalid:\s*#b42318;/);
+  assert.match(css, /--util-density-very-high:\s*#dc2626;/);
   assert.match(css, /--util-empty-background:\s*#f8fafc;/);
-  assert.match(css, /--util-empty-hatch:\s*#cbd5e1;/);
-  assert.match(css, /\.tp3d-util-gauge__empty[\s\S]*repeating-linear-gradient/);
+  assert.doesNotMatch(css, /\.tp3d-util-gauge__empty[\s\S]{0,250}repeating-linear-gradient/);
 });
 
-test('quick control and compact Preferences styling keep the approved responsive contracts', async () => {
+test('Inspector presentation removes viewport and obsolete Preferences controls', async () => {
   const css = await fs.readFile(cssPath, 'utf8');
-  assert.match(css, /\.viewport-hint-icon\s*{[^}]*width:\s*32px;[^}]*height:\s*32px;[^}]*border-radius:\s*50%;[^}]*background:\s*var\(--bg-elevated\);[^}]*box-shadow:\s*var\(--shadow-sm\);/);
-  assert.match(css, /\.viewport-hint-icon\s*{[^}]*z-index:\s*12;/);
-  assert.match(css, /\.tp3d-utilization-toggle\s*{[^}]*left:\s*54px;/);
-  assert.match(css, /\.tp3d-utilization-toggle\.is-active\s*{[^}]*color:\s*var\(--accent-primary\);/);
-  assert.match(css, /#screen-editor \.viewport-hint-icon\[data-tooltip\]::after\s*{[^}]*width:\s*max-content;[^}]*min-width:\s*0;[^}]*max-width:\s*min\(280px, calc\(100vw - 24px\)\);/);
-  assert.match(css, /\.tp3d-prefs-util-row\s*{[^}]*grid-template-columns:\s*minmax\(140px, 1fr\) auto;/);
-  assert.match(css, /\.tp3d-prefs-util-control,[\s\S]*width:\s*min\(248px, 100%\);/);
-  assert.match(css, /\.tp3d-prefs-util-control \.tp3d-pref-segmented__option\.is-selected\s*{[^}]*background:\s*var\(--accent-primary\);[^}]*color:\s*var\(--text-inverse\);/);
-  assert.match(css, /\.tp3d-prefs-position-actions\s*{[^}]*grid-template-columns:\s*minmax\(0, 1fr\) 72px;/);
-  assert.match(css, /\.tp3d-prefs-position-status\s*{[^}]*min-height:\s*36px;[^}]*border-radius:\s*var\(--radius-md\);/);
-  assert.match(css, /@media \(max-width: 640px\)[\s\S]*\.tp3d-prefs-util-row\s*{[^}]*grid-template-columns:\s*1fr;/);
+  assert.match(css, /\.tp3d-util-gauge\s*{[^}]*width:\s*100%;/);
+  assert.doesNotMatch(css, /\.tp3d-util-gauge__style-control/);
+  assert.doesNotMatch(css, /\.tp3d-utilization-toggle/);
+  assert.doesNotMatch(css, /\.tp3d-util-analysis/);
+  assert.doesNotMatch(css, /\.tp3d-util-gauge--invalid/);
 });
 
 test('Editor panel and navigation layout changes resize the measured scene host without fixed panel-width polling', async () => {
@@ -540,7 +508,7 @@ test('Editor panel and navigation layout changes resize the measured scene host 
   assert.match(css, /\.editor-shell\.is-right-panel-hidden\s*{[\s\S]*grid-template-columns:\s*var\(--left-col\) minmax\(0, 1fr\);/);
 });
 
-test('integration stays Editor-only and does not introduce persistence, database, or sample-data wiring', async () => {
+test('integration stays Inspector-only and does not introduce persistence, database, or sample-data wiring', async () => {
   const [gaugeSource, editorSource, settingsSource, importExportSource, packModelSource, caseModelSource] = await Promise.all([
     fs.readFile(gaugePath, 'utf8'),
     fs.readFile(editorPath, 'utf8'),
@@ -550,35 +518,14 @@ test('integration stays Editor-only and does not introduce persistence, database
     fs.readFile(caseModelPath, 'utf8'),
   ]);
   assert.doesNotMatch(gaugeSource, /supabase|migration|database/i);
-  assert.doesNotMatch(`${gaugeSource}\n${editorSource}\n${settingsSource}`, /71\.7%/);
-  assert.match(editorSource, /buildSpaceUtilizationResult\(pack, PackLibrary\)/);
-  assert.match(editorSource, /controls\.enabled = false/);
-  assert.match(editorSource, /spaceUtilizationPreferenceFromPixels/);
-  assert.match(editorSource, /CoreStorage\.getWorkspaceScope\(\)/);
-  assert.match(editorSource, /showGauge: false/);
-  assert.match(editorSource, /ResizeObserver/);
-  assert.match(editorSource, /viewport-toolbar/);
-  assert.match(editorSource, /space-utilization-visibility-toggle/);
-  assert.match(editorSource, /Show Space Utilization/);
-  assert.match(editorSource, /Hide Space Utilization/);
-  assert.match(editorSource, /setAttribute\('aria-pressed', visible \? 'true' : 'false'\)/);
-  assert.match(editorSource, /classList\.toggle\('is-active', visible\)/);
-  assert.match(editorSource, /spaceUtilizationToggleBtn\.removeAttribute\('title'\)/);
-  assert.match(editorSource, /class="fa-solid fa-gauge-high"/);
-  assert.match(editorSource, /toggleSpaceUtilizationGaugeVisibility\(prefs\)/);
-  assert.match(editorSource, /event\.key === 'Enter' \|\| event\.key === ' '/);
-  assert.doesNotMatch(editorSource, /fa-(?:solid )?fa-thermometer|fa-thermometer/i);
-  assert.match(editorSource, /space-utilization-analysis-action/);
-  assert.match(editorSource, /event\.key === 'Escape'/);
-  assert.match(editorSource, /function setSpaceUtilizationCollapsed[\s\S]*applySpaceUtilizationGaugePosition\([\s\S]*prefs\.spaceUtilization/);
-  assert.match(settingsSource, /setAttribute\('role', 'switch'\)/);
-  assert.match(settingsSource, /tp3d-pref-segmented/);
-  assert.match(settingsSource, /Current gauge position:/);
-  assert.match(settingsSource, /Docked bottom-left/);
-  assert.match(settingsSource, /tp3d-prefs-util-row/);
-  assert.match(settingsSource, /tp3d-prefs-reset-position/);
-  assert.match(settingsSource, /resetPosition\.textContent = 'Reset'/);
-  assert.match(settingsSource, /position: \{ mode: 'bottom-left', x: 0, y: 1 \}/);
-  assert.doesNotMatch(settingsSource, /utilizationPosition\.value/);
+  assert.match(editorSource, /function renderSpaceUtilizationSection\(pack\)/);
+  assert.match(editorSource, /inspectorEl\.appendChild\(gauge\)/);
+  assert.doesNotMatch(editorSource, /getSpaceUtilizationGaugeStyle|onStyleChange|spaceUtilization: \{ \.\.\.\(prefs\.spaceUtilization \|\| \{\}\), style \}/);
+  assert.match(editorSource, /Load Summary/);
+  assert.match(editorSource, />In truck</);
+  assert.match(editorSource, />Staged</);
+  assert.doesNotMatch(editorSource, /space-utilization-visibility-toggle|Space Utilization Analysis|setSpaceUtilizationCollapsed/);
+  assert.doesNotMatch(settingsSource, /Show gauge|Gauge detail|Current gauge position|tp3d-prefs-reset-position/);
+  assert.doesNotMatch(gaugeSource, /Geometric Preview|Not Validated|require attention|space-utilization-analysis-action/);
   assert.doesNotMatch(`${importExportSource}\n${packModelSource}\n${caseModelSource}`, /spaceUtilization/i);
 });

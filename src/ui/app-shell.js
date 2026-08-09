@@ -23,6 +23,7 @@ export function createAppShell({
     const topbarSubtitle = document.getElementById('topbar-subtitle');
     const contentRoot = document.querySelector('.content');
     const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
+    const toastContainer = document.getElementById('toast-container');
 
     const screenTitles = {
       packs: { title: 'Load Plans', subtitle: 'Load plan library' },
@@ -58,6 +59,7 @@ export function createAppShell({
         if (!window.matchMedia('(max-width: 899px)').matches) {
           sidebar.classList.remove('open');
         }
+        placeToastContainer(StateStore.get('currentScreen'));
       });
     }
 
@@ -65,9 +67,23 @@ export function createAppShell({
       StateStore.set({ currentScreen: screenKey }, { skipHistory: true });
     }
 
+    // Toasts default to a fixed bottom-right dock. In the Editor, that spot
+    // sits on top of Inspector content, so on desktop (not the fixed mobile
+    // overlay layout) dock toasts inside the canvas instead, safely below the
+    // floating toolbar. Reparenting (not just CSS) keeps this to the Editor
+    // only, since #toast-container is shared by every screen.
+    function placeToastContainer(screen) {
+      if (!toastContainer) return;
+      const canvasWrap = document.querySelector('.canvas-wrap');
+      const isMobile = window.matchMedia('(max-width: 899px)').matches;
+      const targetParent = screen === 'editor' && canvasWrap && !isMobile ? canvasWrap : document.body;
+      if (toastContainer.parentElement !== targetParent) targetParent.appendChild(toastContainer);
+    }
+
     function renderShell() {
       const screen = StateStore.get('currentScreen');
       navButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-nav') === screen));
+      placeToastContainer(screen);
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       const el = document.getElementById(`screen-${screen}`);
       if (el) {

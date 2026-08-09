@@ -4585,8 +4585,14 @@ body.modal-open {
   justify-items: center;
 }
 
+.tp3d-util-gauge__body,
+.tp3d-util-gauge__primary {
+  width: 100%;
+}
+
 .tp3d-util-gauge__visual {
   width: 100%;
+  justify-self: stretch;
   box-sizing: border-box;
   padding-inline: 6px;
 }

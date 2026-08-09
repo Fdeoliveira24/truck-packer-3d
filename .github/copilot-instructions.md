@@ -18,9 +18,14 @@ Type `/graphify` in Copilot Chat to build or update the graph.
 
 ## project-memory routing
 
-- History/prior decision/previous fix/"why did we": run `tools/project-memory query "<question>"`.
-- Code structure/ownership/"where is": use CODE Graphify against `graphify-out/graph.json`.
+- History/prior decision/previous fix/"why did we": run `bash tools/project-memory query "<question>"`.
+- Code structure/ownership/"where is": use Graphify against `graphify-out/graph.json`.
 - Current behavior: verify directly in current source and active contracts/docs.
 - Generic programming question: do not claim project memory retrieval happened unless it was actually run.
 - Conflict: current source and current authoritative contract win over historical memory.
 - Keep retrieval small: up to 3 short passages; never inject entire notes/folders or full graph artifacts.
+
+## current roadmap
+
+`docs/product/TP3D-MASTER-TODO-V6.md` is the current operational roadmap and approved queue.
+`docs/product/TP3D-MASTER-TODO-V5.md` is frozen/historical — do not use it to determine active work.

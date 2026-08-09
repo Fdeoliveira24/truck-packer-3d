@@ -1,689 +1,104 @@
-# CLAUDE.md
-Last updated: 2026-05-03
-Project: Truck Packer 3D
+# CLAUDE.md — Truck Packer 3D
 
-This file is the working instruction sheet for AI coding assistants used on this repo.
-It is meant to reduce regressions, keep changes small, and keep the app aligned with the current product and billing direction.
+**Last updated:** 2026-08-08
+**For:** Claude Code. See `AGENTS.md` for the complete authority and invariant reference.
 
 ---
 
-## 1. Project summary
+## Authority Hierarchy
 
-Truck Packer 3D is a static browser app for 3D load planning.
-It uses:
-- Three.js editor/runtime
-- local scoped state and local storage
-- Supabase for auth, orgs, invites, storage, and Edge Functions
-- Stripe for subscription billing
+1. **Current source + tests** — definitive truth about current implementation.
+2. **Domain contracts** — `docs/product/BILLING_ENTITLEMENT_RULES.md`, `docs/engineering/autopack-engine-contract.md`.
+3. **V6 roadmap** — `docs/product/TP3D-MASTER-TODO-V6.md` — current operational status and approved queue.
+4. **Project memory** — `bash tools/project-memory query "<question>"` — history and rationale.
+5. **Graphify** — code index only, not authority.
 
-Primary product concepts:
-- users
-- organizations / workspaces
-- owner / admin / member roles
-- packs / cases
-- billing / trials / paid plans
-- AutoPack and PDF export as important gated features
+Current source + tests wins over memory, Graphify, and all prior docs. V6 wins over V5.
 
 ---
 
-## 2. Current business model decision
+## Retrieval Routing
 
-### Locked direction
-Truck Packer 3D is moving to:
-- **owner-account billing**
-- **workspace limits by plan**
-- **members never pay separately**
+| Question | Use |
+|---|---|
+| History / "why did we" / prior decisions | `bash tools/project-memory query "<question>"` — up to 3 passages |
+| Code structure / "where is" / relationships | `graphify query/path/explain` against `graphify-out/graph.json` |
+| Current behavior | Source and tests only |
+| Generic programming | No retrieval needed |
 
-That means:
-- one paid owner can cover multiple workspaces
-- workspaces can be included in plan or over limit
-- frontend gates must use normalized entitlement, not raw per-workspace payment rows only
-
-Read and follow:
-- `docs/product/TP3D-MASTER-TODO-V5.md`
-- `docs/product/BILLING_ENTITLEMENT_RULES.md`
-
-If older notes conflict with those documents, the newer docs win.
+Never load full `graph.json`, `GRAPH_REPORT.md`, or entire vault folders.
 
 ---
 
-## 3. Non-negotiable rules
+## Working Rules
 
-1. **Keep changes surgical.**
-   Do not broaden scope without a clear reason.
-
-2. **No refactor mixed with behavior changes** unless a bug fix truly requires it.
-
-3. **No new files unless explicitly requested** or clearly necessary for a contained feature.
-
-4. **Do not rewrite working architecture just because it is large.**
-   Stabilize first. Clean up later.
-
-5. **Do not change billing semantics in UI first.**
-   Backend truth must lead.
-
-6. **Do not guess from local state when `/billing-status` is available.**
-   Billing truth comes from the backend response.
-
-7. **Preserve workspace switch safety.**
-   No stale org, stale billing, stale member, stale invite, stale editor, or stale preview leakage.
-
-8. **Treat auth, billing, org switching, cross-tab state, and storage scope as P0 risk.**
-
-9. **Do not break owner-only money actions.**
-   Owners only for checkout, portal, plan changes, payment fixes.
-
-10. **Do not remove existing safety guards** unless a proven bug requires replacement.
+1. **Inspect before edit.** `git status -sb`, `git diff --name-only` first.
+2. **Minimal changes.** No refactor mixed with behavior. No unnecessary files.
+3. **Fix root causes** — not symptoms, not UI polish over data bugs.
+4. **Do not rewrite working architecture** because it is large.
+5. **Backend leads billing changes.** Do not change entitlement in UI first.
+6. **Stop on unexpected dirty state.** Confirm before proceeding.
+7. **Protect production/Supabase data.** Never use it as a fixture.
+8. **Never log secrets, tokens, or PII** even behind debug flags.
 
 ---
 
-## 4. Editing style rules
+## Git Discipline
 
-When changing code:
-- prefer the smallest safe diff
-- reuse existing helpers and patterns
-- avoid moving code unless necessary
-- avoid renaming public/runtime functions unless required
-- keep logging minimal and safe
-- avoid introducing more inline styles or new ad-hoc UI patterns
-
-When touching UI:
-- preserve current styling patterns
-- preserve dark-mode behavior
-- preserve modal and overlay patterns already in use
-- do not add flashy temporary UI instead of fixing the real bug
+- `git status -sb` before any edit.
+- `git diff --check` before commit.
+- One focused change per commit.
+- Never `--force` push, `reset --hard`, or drop unrecognized work without user confirmation.
 
 ---
 
-## 5. Billing rules AI must follow
+## Critical Invariants (summary — full list in AGENTS.md)
 
-### 5.1 Stripe and billing truth
-- Stripe is the billing/payment truth.
-- `/billing-status` is the app entitlement truth.
-- `billing_customers` is a projection, not the only truth.
-
-### 5.2 Separate raw payment status from entitlement
-Do not overload raw `status` with synthetic values.
-Use additive normalized fields such as:
-- `entitlementStatus`
-- `workspaceIncluded`
-- `workspaceCount`
-- `workspaceLimit`
-- `billingOwnerUserId`
-- `canManageBilling`
-
-### 5.3 Required entitlement states
-Allowed normalized entitlement states:
-- `active`
-- `trialing`
-- `trial_expired`
-- `included_in_plan`
-- `workspace_limit_reached`
-- `owner_subscription_required`
-- `billing_unavailable`
-
-### 5.4 Owner inheritance rule
-Do **not** gate owner inheritance on `ownerUserId !== currentUserId`.
-The owner’s own second or third workspace is exactly the case that must inherit plan coverage when within limit.
-
-### 5.5 Frontend gating rule
-Frontend feature gates must use normalized entitlement status, not only raw workspace payment rows.
+- Auth, billing, workspace switching, cross-tab state, and storage are **P0 risk.**
+- Use `src/core/operation-lifecycle.js` for all mutating editor operations.
+- AutoPack / Unpack / Truck Change / preview capture are mutually disruptive — guard all paths.
+- Billing entitlement uses normalized `entitlementStatus` field, not raw `status`.
+- Owners only for checkout, portal, plan, and payment actions.
+- Space Utilization is capacity-only — not a safety, compliance, or load-quality score.
+- Three.js is r185.1 via npm/Vite. No React/R3F rewrite. No WebGPU migration now.
 
 ---
 
-## 6. Workspace switching rules AI must follow
+## Implementation Workflow (Claude Code)
 
-Workspace switching is sensitive.
-Any change in this area must preserve all of the following:
-- active org updates correctly
-- billing org and active org reconcile correctly
-- settings overlay updates to the correct org
-- billing tab does not keep stale previous-org state
-- members/invites do not show stale previous-org data
-- packs/cases transient UI state resets safely
-- editor scene / preview capture does not leak into another workspace
-- cross-tab sync remains safe
+See `src/CLAUDE.md` for scoped implementation workflow steps.
 
-If a change touches workspace switching, mention exact verification steps.
+Short version:
+1. Identify symptom and owning module.
+2. Read only the owner file and relevant tests — not the full app.
+3. Make the smallest safe fix.
+4. Run `npm test` / `npm run lint` / `git diff --check`.
+5. Summarize: files changed, why, risk, manual checklist.
+
+For large files (`src/app.js`, `src/screens/editor-screen.js`, `src/ui/overlays/settings-overlay.js`): read targeted line ranges only.
 
 ---
 
-## 7. Auth and cross-tab rules AI must follow
+## Memory Infrastructure
 
-- user-scoped storage must stay isolated per signed-in user
-- logout must use canonical helper behavior
-- no timed reload right after signOut
-- transient signed-out wobble must not wipe org state incorrectly
-- cross-tab org sync must remain guarded by user and freshness
-- cross-tab billing sync must not apply wrong-org snapshots
+```
+Config:    .ai/memory.json
+CLI:       bash tools/project-memory query|record|promote "<text>"
+Vault:     Truck-Packer-3D Obsidian Markdown vault (at path in .ai/memory.json)
+```
 
-Do not remove auth/billing guards casually.
-
----
-
-## 8. Current Operational Status
-
-Read `docs/product/TP3D-MASTER-TODO-V5.md` for the current active task, approved branch, blockers, execution queue, and last verified repository state. Confirm git state before editing. Do not duplicate mutable project status in agent instruction files.
+Record meaningful completed work. Promote only durable Decisions/Lessons/Problems.
+Explicit `tools/project-memory` retrieval works without a semantic memory graph.
 
 ---
 
-## 9. What not to change in the first entitlement pass
+## Graphify
 
-Do not broadly rewrite:
-- Stripe checkout architecture
-- Stripe portal architecture
-- Stripe webhook architecture
-- workspace creation flow
-- org switching order
-- Supabase schema unless a minimal additive change is required
-- local storage model unless the bug clearly requires it
-
-For the first pass, backend entitlement logic should be additive and controlled.
+`graphify query/path/explain` for code relationships. Start with `graphify-out/wiki/index.md`.
+`graphify update .` after significant code changes.
+Do not read `graph.json` wholesale. Do not hardcode node/edge counts.
 
 ---
-
-## 10. Expected implementation order for billing entitlement work
-
-When implementing owner-account billing with workspace limits, follow this order:
-
-1. backend `/billing-status`
-   - resolve active org
-   - resolve workspace owner
-   - resolve owner billing truth
-   - count owner workspaces vs plan limit
-   - return normalized entitlement fields
-
-2. frontend `src/app.js`
-   - store new fields in billing state
-   - update `getProRuleSet()`
-   - update AutoPack/PDF gating
-   - update sidebar billing notice behavior
-
-3. settings billing UI
-   - update wording and CTA logic only after backend + app gates are correct
-
-Do not start with UI wording only.
-
----
-
-## 11. Testing expectations
-
-For any meaningful fix, always include:
-- exact files changed
-- why each change is needed
-- risk level
-- lint/test results if available
-- manual verification checklist
-
-For billing/workspace changes, manual checks should usually include:
-- owner with 1 workspace
-- owner with multiple workspaces
-- non-owner member
-- same-tab workspace switch
-- cross-tab workspace switch if relevant
-- AutoPack gate
-- PDF export gate
-- Settings Billing tab
-- Settings Members tab if org scoping was touched
-
----
-
-## 12. Safe communication pattern for AI work
-
-When proposing changes:
-- state what is confirmed
-- separate confirmed causes from guesses
-- do not patch UI to hide an unfixed data bug
-- do not claim launch readiness if entitlement/workspace rules are still unresolved
-
-When asked to implement:
-- stay inside the approved scope
-- do not sneak in unrelated cleanup
-- mention any out-of-scope change clearly if one was truly necessary
-
----
-
-## 13. Repo-specific cautions
-
-- `src/app.js` is large and sensitive. Avoid broad edits without need.
-- `src/ui/overlays/settings-overlay.js` is also sensitive and full of org-scoped rendering/state.
-- `src/core/storage.js` and auth/billing helpers are P0-risk areas.
-- This app is shipped as static assets. There is no required build step for normal release validation.
-
-Typical validation commands:
-- `npm test`
-- `npm run lint`
-- `npm run -s typecheck` when relevant
-- optional stress/UI checks when already part of repo workflow
-
----
-
-## 14. Final instruction
-
-When in doubt:
-- choose the smaller safe change
-- preserve current working behavior
-- favor backend truth over UI guesswork
-- favor launch stability over elegance
-- document follow-up work instead of widening the patch
-
----
-
-## 15. graphify — Knowledge Graph Navigation
-
-This project has a pre-built knowledge graph in `graphify-out/`.
-
-### Context Navigation
-When you need to understand the codebase, docs, or any files in this project:
-1. ALWAYS query the knowledge graph first: `/graphify query "your question"`
-2. Only read raw files if I explicitly say "read the file" or "look at the raw file"
-3. Use `graphify-out/wiki/index.md` as your navigation entrypoint for browsing structured community summaries
-
-### Quick reference
-- `graphify-out/wiki/index.md` — community index (start here for browsing)
-- `graphify-out/GRAPH_REPORT.md` — full audit report (god nodes, surprising connections)
-- `graphify-out/graph.json` — raw graph data for queries
-- `graphify-out/graph.html` — interactive visualization (open in browser)
-
-### Key graph facts (as of 2026-05-12)
-- **5,773 nodes · 12,250 edges · 230 communities**
-- God nodes: `js()` (444 edges), `copy()` (189), `Vector3` (77)
-- Key communities: `Core App Runtime`, `Supabase Client & Auth`, `Security & Invariant Specs`
-- Run `/graphify --update` after significant code changes to keep the graph current
-
-# CLAUDE.md — Truck Packer 3D (TP3D) Agent Operating Guide
-
-**Last updated:** 2026-06-25
-
-This file is the working instruction sheet for AI coding assistants used on this repo. It is meant to reduce regressions, keep changes small, and keep the app aligned with the current product direction.
-
----
-
-## 1. Project summary
-
-Truck Packer 3D is a static browser app for 3D load planning.
-It uses:
-
-- Three.js editor/runtime
-- local scoped state and local storage
-- Supabase for auth, orgs, invites, storage, and Edge Functions
-- Stripe for subscription billing
-
-Primary product concepts:
-
-- users
-- organizations / workspaces
-- owner / admin / member roles
-- packs / cases
-- billing / trials / paid plans
-- AutoPack and PDF export as important gated features
-
----
-
-## 2. Current source of truth
-
-Read `docs/product/TP3D-MASTER-TODO-V5.md` for the current active task, approved branch, blockers, execution queue, and last verified repository state. Confirm git state before editing. Do not duplicate mutable project status in agent instruction files.
-
-Use `docs/product/BILLING_ENTITLEMENT_RULES.md` and `docs/engineering/autopack-engine-contract.md` for permanent domain behavior within their defined scopes.
-
----
-
-## 3. Non-negotiable rules
-
-1. **Keep changes surgical.** Do not broaden scope without a clear reason.
-2. **No refactor mixed with behavior changes** unless a bug fix truly requires it.
-3. **No new files unless explicitly requested** or clearly necessary for a contained feature.
-4. **Do not rewrite working architecture just because it is large.** Stabilize first. Clean up later.
-5. **Do not change billing semantics in UI first.** Backend truth must lead.
-6. **Do not guess from local state when `/billing-status` is available.** Billing truth comes from the backend response.
-7. **Preserve workspace switch safety.** No stale org, stale billing, stale member, stale invite, stale editor, or stale preview leakage.
-8. **Treat auth, billing, org switching, cross-tab state, and storage scope as P0 risk.**
-9. **Do not break owner-only money actions.** Owners only for checkout, portal, plan changes, payment fixes.
-10. **Do not remove existing safety guards** unless a proven bug requires replacement.
-11. **Do not hide data/state bugs with UI polish.** Fix the lifecycle or source-of-truth issue first.
-
----
-
-## 4. Editing style rules
-
-When changing code:
-
-- prefer the smallest safe diff
-- reuse existing helpers and patterns
-- avoid moving code unless necessary
-- avoid renaming public/runtime functions unless required
-- keep logging minimal and safe
-- avoid introducing more inline styles or new ad-hoc UI patterns
-
-When touching UI:
-
-- preserve current styling patterns
-- preserve dark-mode behavior
-- preserve modal and overlay patterns already in use
-- do not add flashy temporary UI instead of fixing the real bug
-- show clear working states when long operations run
-- keep copy professional and tied to the actual operation result
-
----
-
-## 5. AutoPack Permanent Safety Reminders
-
-- Large-load snap threshold is `> 300` packed placements.
-- Large-load snap is a performance safety foundation, not a final solver performance solution.
-- The solver can still block the main thread on 800–1200+ cases.
-- Web Worker/chunking and InstancedMesh/LOD are later architecture phases.
-- Wheel Wells safety baseline: wheel-well shelves support cases that fit the shelf; wider cases require an explicit bridge/support contract and V5 approval.
-- Front Overhang safety baseline: C2 requires rear retention before loading the raised deck; any wall-building strategy must preserve that contract and receive V5 approval.
-
----
-
-## 6. Operation lifecycle guard rails
-
-AutoPack, Unpack, Truck Change, preview capture, and animation are mutually disruptive editor operations. A visual spinner is not enough; the code must prevent stale or overlapping mutations.
-
-Rules:
-
-- Use one authoritative operation lifecycle/lock for mutating editor operations.
-- Guard all mutating paths, not only toolbar buttons.
-- Mutating paths include AutoPack, Unpack, Update Truck, truck preset/mode/shape/config changes, drag, rotate, nudge, delete, add, duplicate, paste, keyboard shortcuts, export/share if state can be unstable, and preview capture.
-- InteractionManager and global shortcuts must respect the operation lifecycle lock.
-- Drag, rotate, nudge, delete, duplicate, paste, and add-case actions cannot mutate while AutoPack, Unpack, Truck Change, or preview capture is active.
-- Do not block camera orbit/pan/zoom or read-only inspection unless a specific bug requires it.
-- A stale operation token must not be able to finish or overwrite a newer operation.
-- Large-load AutoPack may snap to final layout for performance, but final saved state must never depend on animation completion.
-- During synchronous solver work, true cancel is not available without later architecture work. Do not fake live progress or cancel behavior that the code cannot safely honor.
-
----
-
-## 7. Pending truck vs committed truck
-
-Truck edit form state and committed scene state are separate.
-
-Rules:
-
-- Changing truck preset/mode/shape/config should update pending form state only.
-- Do not open the Truck Change preview modal until the user explicitly clicks **Update truck**.
-- Pending config controls should render for the pending truck type. Example: selecting Wheel Wells should show Wheel Wells settings in the form before commit.
-- The 3D scene should keep showing the committed truck until Update Truck is confirmed.
-- Cancel/X/Escape from the Truck Change preview must restore the committed truck, scene, and form state.
-
----
-
-## 8. Billing rules AI must follow
-
-### 8.1 Stripe and billing truth
-
-- Stripe is the billing/payment truth.
-- `/billing-status` is the app entitlement truth.
-- `billing_customers` is a projection, not the only truth.
-
-### 8.2 Separate raw payment status from entitlement
-
-Do not overload raw `status` with synthetic values.
-Use additive normalized fields such as:
-
-- `entitlementStatus`
-- `workspaceIncluded`
-- `workspaceCount`
-- `workspaceLimit`
-- `billingOwnerUserId`
-- `canManageBilling`
-
-### 8.3 Required entitlement states
-
-Allowed normalized entitlement states:
-
-- `active`
-- `trialing`
-- `trial_expired`
-- `included_in_plan`
-- `workspace_limit_reached`
-- `owner_subscription_required`
-- `billing_unavailable`
-
-### 8.4 Owner inheritance rule
-
-Do **not** gate owner inheritance on `ownerUserId !== currentUserId`.
-The owner’s own second or third workspace is exactly the case that must inherit plan coverage when within limit.
-
-### 8.5 Frontend gating rule
-
-Frontend feature gates must use normalized entitlement status, not only raw workspace payment rows.
-
----
-
-## 9. Workspace switching rules AI must follow
-
-Workspace switching is sensitive.
-Any change in this area must preserve all of the following:
-
-- active org updates correctly
-- billing org and active org reconcile correctly
-- settings overlay updates to the correct org
-- billing tab does not keep stale previous-org state
-- members/invites do not show stale previous-org data
-- packs/cases transient UI state resets safely
-- editor scene / preview capture does not leak into another workspace
-- cross-tab sync remains safe
-
-If a change touches workspace switching, mention exact verification steps.
-
----
-
-## 10. Auth and cross-tab rules AI must follow
-
-- user-scoped storage must stay isolated per signed-in user
-- logout must use canonical helper behavior
-- no timed reload right after signOut
-- transient signed-out wobble must not wipe org state incorrectly
-- cross-tab org sync must remain guarded by user and freshness
-- cross-tab billing sync must not apply wrong-org snapshots
-
-Do not remove auth/billing guards casually.
-
----
-
-## 11. Current Operational Status
-
-Read `docs/product/TP3D-MASTER-TODO-V5.md` for the current active task, approved branch, blockers, execution queue, and last verified repository state. Confirm git state before editing. Do not duplicate mutable project status in agent instruction files.
-
----
-
-## 12. Expected implementation order for billing entitlement work
-
-When implementing owner-account billing with workspace limits, follow this order:
-
-1. backend `/billing-status`
-   - resolve active org
-   - resolve workspace owner
-   - resolve owner billing truth
-   - count owner workspaces vs plan limit
-   - return normalized entitlement fields
-
-2. frontend `src/app.js`
-   - store new fields in billing state
-   - update `getProRuleSet()`
-   - update AutoPack/PDF gating
-   - update sidebar billing notice behavior
-
-3. settings billing UI
-   - update wording and CTA logic only after backend + app gates are correct
-
-Do not start with UI wording only.
-
----
-
-## 13. File structure and ownership
-
-Common areas:
-
-- `src/app.js`  
-  Main app wiring, workspace/session lifecycle, top-level runtime glue, keyboard shortcuts.
-
-- `src/screens/editor-screen.js`  
-  Editor UI, case interactions, AutoPack/Unpack/Truck controls, scene rendering integration.
-
-- `src/services/autopack-engine.js`  
-  AutoPack orchestration, staging, persistence, animation/snap path.
-
-- `src/services/autopack-solver.js`  
-  Solver geometry, scoring, placement generation, hard-rule placement logic.
-
-- `src/ui/truck-change-controller.js`  
-  Truck-change preview, reconciliation, confirm/cancel flow.
-
-- `src/core/operation-lifecycle.js`  
-  Single-operation lifecycle guard for mutating editor workflows. Use it to prevent overlapping AutoPack, Unpack, Truck Change, preview capture, and direct editor mutations.
-
-- `src/core/*`  
-  State store, session, storage, events, defaults.
-
-- `src/ui/overlays/settings-overlay.js`  
-  Settings UI, billing UI, org/members/invites rendering.
-
-When changing behavior, prefer editing the owner layer:
-
-- UI bug → overlay module, editor-screen, or app wiring
-- Auth/session bug → `supabase-client.js`
-- State bug → state-store or normalizer
-- AutoPack/Unpack/Truck Change lifecycle bug → operation-lifecycle, editor-screen, autopack-engine, truck-change-controller, and app wiring only
-- Solver geometry/packing-quality bug → autopack-solver/autopack-engine only when V5 explicitly scopes or approves that work
-
----
-
-## 14. Testing expectations
-
-For any meaningful fix, always include:
-
-- exact files changed
-- why each change is needed
-- risk level
-- lint/test results if available
-- manual verification checklist
-
-Typical validation commands:
-
-- `npm test`
-- `npm run lint`
-- `npm run -s typecheck` when relevant
-- `git diff --check`
-- `git diff --cached --check`
-- optional stress/UI checks when already part of repo workflow
-
-For billing/workspace changes, manual checks should usually include:
-
-- owner with 1 workspace
-- owner with multiple workspaces
-- non-owner member
-- same-tab workspace switch
-- cross-tab workspace switch if relevant
-- AutoPack gate
-- PDF export gate
-- Settings Billing tab
-- Settings Members tab if org scoping was touched
-
-When V5 explicitly scopes AutoPack operation lifecycle work, manual checks should usually include:
-
-- AutoPack 1200 shows controlled working state and does not allow conflicting operations
-- Unpack 1200 shows controlled working state and does not allow conflicting operations
-- truck preset/shape change does not open preview immediately
-- Update Truck opens preview only on explicit click
-- Cancel from Truck Change preview restores committed scene/form
-- drag/rotate/nudge/delete/duplicate/paste/add are blocked while busy
-- camera orbit/pan/zoom remains usable where safe
-
----
-
-## 15. Safe communication pattern for AI work
-
-When proposing changes:
-
-- state what is confirmed
-- separate confirmed causes from guesses
-- do not patch UI to hide an unfixed data bug
-- do not claim launch readiness if entitlement/workspace/operation lifecycle rules are still unresolved
-
-When asked to implement:
-
-- stay inside the approved scope
-- do not sneak in unrelated cleanup
-- mention any out-of-scope change clearly if one was truly necessary
-
----
-
-## 16. Repo-specific cautions
-
-- `src/app.js` is large and sensitive. Avoid broad edits without need.
-- `src/screens/editor-screen.js` is large and sensitive. Guard direct editor mutations carefully.
-- `src/ui/overlays/settings-overlay.js` is sensitive and full of org-scoped rendering/state.
-- `src/core/storage.js` and auth/billing helpers are P0-risk areas.
-- `src/core/operation-lifecycle.js` should stay small and pure.
-- This app is shipped as static assets. There is no required build step for normal release validation.
-
----
-
-## 17. Core principles
-
-1. Fix root causes.
-2. Keep changes small.
-3. Guard async code against races.
-4. Respect offline and hidden tab conditions.
-5. Avoid duplicate listeners and duplicate network calls.
-6. Never leak secrets into logs.
-7. Prefer simple code that the next person can follow.
-8. Protect confirmed product behavior before adding new features.
-9. Treat clean UI and correct state as the same workflow, not separate patches.
-
----
-
-## 18. graphify — Knowledge Graph Navigation
-
-This project has a pre-built knowledge graph in `graphify-out/`.
-
-### Context Navigation
-
-When you need to understand the codebase, docs, or any files in this project:
-
-1. ALWAYS query the knowledge graph first: `/graphify query "your question"`
-2. Only read raw files if the user explicitly says "read the file" or "look at the raw file"
-3. Use `graphify-out/wiki/index.md` as your navigation entrypoint for browsing structured community summaries
-
-### Quick reference
-
-- `graphify-out/wiki/index.md` — community index (start here for browsing)
-- `graphify-out/GRAPH_REPORT.md` — full audit report (god nodes, surprising connections)
-- `graphify-out/graph.json` — raw graph data for queries
-- `graphify-out/graph.html` — interactive visualization (open in browser)
-
-### Key graph facts (as of 2026-05-12)
-
-- **5,773 nodes · 12,250 edges · 230 communities**
-- God nodes: `js()` (444 edges), `copy()` (189), `Vector3` (77)
-- Key communities: `Core App Runtime`, `Supabase Client & Auth`, `Security & Invariant Specs`
-- Run `/graphify --update` after significant code changes to keep the graph current
-
----
-
-## 19. Final instruction
-
-When in doubt:
-
-- choose the smaller safe change
-- preserve current working behavior
-- favor backend truth over UI guesswork
-- favor launch stability over elegance
-- document follow-up work instead of widening the patch
-- wait for validation when Codex or Claude finds a merge-blocking nuance
-
-## graphify
-
-This project has a knowledge graph at graphify-out/ with god nodes, community structure, and cross-file relationships.
-
-Rules:
-- For codebase questions, first run `graphify query "<question>"` when graphify-out/graph.json exists. Use `graphify path "<A>" "<B>"` for relationships and `graphify explain "<concept>"` for focused concepts. These return a scoped subgraph, usually much smaller than GRAPH_REPORT.md or raw grep output.
-- If graphify-out/wiki/index.md exists, use it for broad navigation instead of raw source browsing.
-- Read graphify-out/GRAPH_REPORT.md only for broad architecture review or when query/path/explain do not surface enough context.
-- After modifying code, run `graphify update .` to keep the graph current (AST-only, no API cost).
 
 <!-- OPENWIKI:START -->
 
@@ -695,18 +110,6 @@ The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do
 
 <!-- OPENWIKI:END -->
 
-## 20. Project Memory Routing
+## Security Follow-Up
 
-- History, prior decisions, previous fixes, or "why did we" questions:
-   - Use `tools/project-memory query "<question>"` first.
-   - Keep retrieval project-scoped to Truck-Packer-3D and return up to 3 short passages.
-- Code structure, dependency, ownership, or "where is" questions:
-   - Use CODE Graphify (`graphify query/path/explain`) against `graphify-out/graph.json`.
-- Current behavior questions:
-   - Verify directly in current source and active contracts/docs.
-- Generic programming questions:
-   - Do not automatically retrieve project memory or graph context unless repo-specific context is requested.
-- Conflict resolution:
-   - Current source and current authoritative contract win over historical memory.
-- Token discipline:
-   - Never inject full notes, folders, `graph.json`, or `GRAPH_REPORT.md` into context.
+`.claude/settings.local.json` is git-ignored and was previously flagged as potentially containing credential-bearing commands. Do not print or modify it during normal coding sessions. A dedicated credential/security cleanup is tracked in the V6 technical debt section.

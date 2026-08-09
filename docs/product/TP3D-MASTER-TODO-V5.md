@@ -1,4 +1,14 @@
-# Truck Packer 3D — Master TODO V5
+> **SUPERSEDED — HISTORICAL REFERENCE ONLY.**
+> This document (V5) is now a frozen historical roadmap. The active operational status, approved
+> execution queue, and current blockers are in
+> [`docs/product/TP3D-MASTER-TODO-V6.md`](./TP3D-MASTER-TODO-V6.md).
+> Do not use V5 to determine current active work. V5 is retained for historical context only.
+> Last verified V5 state: `main` at `37d2c4c` (Quantity Controls merged, Thermal Load Utilization
+> listed as next active task — subsequently renamed and shipped as Space Utilization, see V6).
+
+---
+
+# Truck Packer 3D — Master TODO V5 (Historical)
 
 **Last updated:** 2026-08-03
 

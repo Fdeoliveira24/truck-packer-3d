@@ -223,17 +223,22 @@ Built with:
 
 **Version**: 1.0.0  
 **Author**: 360 Virtual Tour Solutions  
-**Last Updated**: January 2026
+**Last Updated**: August 2026
 
-## Recent Changes (Jan 2026)
+## Current Roadmap
 
-- Cases UI: made search icon styling consistent between Packs and Cases screens.
-- Case editor: moved to a more compact 2-column grid layout for faster editing.
-- Categories: added inline rename + color editing in the Case modal and a redesigned "Manage
-  Categories" modal (card layout, delete confirmation, New Category action).
-- Table: added column sorting (Name, Manufacturer, Volume, Weight, Category) with visual sort
-  indicators; improved weight formatting to 2 decimal places.
-- UX: reduced modal width for a tighter, more professional look; removed redundant per-case color
-  field (cases inherit category color by default).
+See [`docs/product/TP3D-MASTER-TODO-V6.md`](docs/product/TP3D-MASTER-TODO-V6.md) for the active
+operational status, approved execution queue, and next milestone.
 
-These changes improve inventory workflows and streamline case/category management.
+## Recent Major Milestones (2026)
+
+- **Project AI memory/retrieval infrastructure** — `tools/project-memory` CLI, Obsidian vault
+  integration, and Graphify routing for scoped AI context retrieval.
+- **Generic Space Utilization Engine** — capacity-only spatial analysis (occupied %, remaining
+  space, density visualization); not a safety or compliance score.
+- **Three.js r185.1 via npm/Vite** — Three.js migrated from vendor CDN to npm + Vite build
+  pipeline; pinned at `three@0.185.1`.
+- **Quantity Controls** — ecommerce-style Case Qty, atomic Undo/Redo, Load Plans qty surfaces.
+- **Business Identity** — Case item codes, Load Plan numbers, customer references.
+- **Billing/Platform Foundation** — server-side workspace limits, org security, slug integrity,
+  normalized billing entitlement.

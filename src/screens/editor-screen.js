@@ -813,8 +813,6 @@ export function createCaseScene({
       instances.clear();
       edgesCache.forEach(entry => entry.geometry.dispose());
       edgesCache.clear();
-      textureCache.forEach(entry => entry.textures.forEach(t => t.dispose()));
-      textureCache.clear();
       hoveredId = null;
       draggedId = null;
       selectedIds = new Set();
@@ -871,7 +869,31 @@ export function createCaseScene({
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
       const catColor = CategoryService.meta(caseData.category).color;
       const color = String(catColor || caseData.color || '#ff9f1c');
-      return `${caseData.id}:${d.length}x${d.width}x${d.height}:${color}`;
+      const isPallet = caseData.isPallet === true;
+      const textureColor = String(isPallet ? '#A0522D' : (catColor || caseData.color || '#8B4513'));
+      const rawShape = String(caseData.shape || 'box').toLowerCase();
+      const shape = rawShape === 'cylinder' || rawShape === 'drum' ? 'cylinder' : 'box';
+      const name = caseData.name || (isPallet ? 'Pallet' : 'Case');
+      const labelName = name.substring(0, 16);
+      const weightLabel = `${caseData.weight || 0} lb`;
+      const showHandlingArrows = !caseData.canFlip && !isPallet;
+      const palletWarning = isPallet && caseData.maxPalletWeight > 0
+        ? `Warning limit: ${caseData.maxPalletWeight} lb`
+        : '';
+      return JSON.stringify([
+        caseData.id,
+        d.length,
+        d.width,
+        d.height,
+        color,
+        textureColor,
+        shape,
+        isPallet,
+        labelName,
+        weightLabel,
+        showHandlingArrows,
+        palletWarning,
+      ]);
     }
 
     function acquireEdgeGeometry(signature, boxGeometry) {
@@ -964,7 +986,6 @@ export function createCaseScene({
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
           mats.forEach(m => {
             if (!m) return;
-            if (m.map && m.map.dispose) m.map.dispose();
             if (m.dispose) m.dispose();
           });
         }

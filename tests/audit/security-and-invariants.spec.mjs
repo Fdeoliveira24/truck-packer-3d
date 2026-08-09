@@ -10348,6 +10348,138 @@ test('RECON CaseScene sync removes an existing mesh when its case definition bec
   }
 });
 
+test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScene owner releases them', async () => {
+  const previousThree = globalThis.THREE;
+  const previousDocument = globalThis.document;
+  const THREE = await import(`${vendorThreePath.href}?t=${Date.now()}-${Math.random()}`);
+  globalThis.THREE = THREE;
+  globalThis.document = {
+    createElement() {
+      return {
+        width: 0,
+        height: 0,
+        getContext: () => ({
+          fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {},
+        }),
+      };
+    },
+  };
+
+  try {
+    const Editor = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
+    const scene = new THREE.Scene();
+    const caseData = {
+      id: 'case-shared',
+      name: 'Shared Case',
+      dimensions: { length: 20, width: 18, height: 16 },
+      weight: 10,
+      color: '#8844aa',
+      category: 'default',
+      canFlip: true,
+      shape: 'box',
+    };
+    const categoryColors = { priority: '#2255aa' };
+    const CaseScene = Editor.createCaseScene({
+      SceneManager: {
+        getScene: () => scene,
+        toWorld: value => Number(value) || 0,
+        vecInchesToWorld: position => new THREE.Vector3(position.x, position.y, position.z),
+      },
+      CaseLibrary: { getById: id => (id === caseData.id ? caseData : null) },
+      CategoryService: { meta: category => ({ color: categoryColors[category] || null }) },
+      PackLibrary: {}, StateStore: {}, TrailerGeometry: {},
+      Utils: {
+        clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
+        getCssVar: () => '#ff9f1c',
+      },
+      PreferencesManager: { get: () => ({ hiddenCaseOpacity: 0.3 }) },
+    });
+    const makeInstance = (id, x = 10) => ({
+      id,
+      caseId: caseData.id,
+      transform: {
+        position: { x, y: 8, z: 10 },
+        rotation: { x: 0, y: 0, z: 0 },
+      },
+      placement: 'packed',
+    });
+    const textureFor = id => CaseScene.getObject(id).userData.mesh.material[0].map;
+
+    const first = makeInstance('instance-a');
+    const second = makeInstance('instance-b', 40);
+    CaseScene.sync({ id: 'pack', cases: [first] });
+    const sharedTexture = textureFor(first.id);
+    let sharedDisposeCount = 0;
+    sharedTexture.addEventListener('dispose', () => { sharedDisposeCount += 1; });
+
+    CaseScene.sync({ id: 'pack', cases: [first, second] });
+    assert.strictEqual(textureFor(second.id), sharedTexture,
+      'a second case with the same visual signature acquires the cached CanvasTexture');
+
+    CaseScene.sync({ id: 'pack', cases: [second] });
+    assert.strictEqual(textureFor(second.id), sharedTexture,
+      'the surviving case keeps referencing the shared cached CanvasTexture');
+    assert.equal(sharedDisposeCount, 0,
+      'removing one shared owner must not dispose the surviving case texture');
+
+    CaseScene.sync({ id: 'pack', cases: [] });
+    assert.equal(sharedDisposeCount, 1,
+      'the cache disposes the shared CanvasTexture exactly once after the final owner releases it');
+
+    CaseScene.sync({ id: 'pack', cases: [first] });
+    const recreatedTexture = textureFor(first.id);
+    assert.notStrictEqual(recreatedTexture, sharedTexture,
+      'acquiring after final release creates a valid new CanvasTexture');
+    let recreatedDisposeCount = 0;
+    recreatedTexture.addEventListener('dispose', () => { recreatedDisposeCount += 1; });
+
+    caseData.name = 'Changed Label';
+    CaseScene.sync({ id: 'pack', cases: [first] });
+    const changedSignatureTexture = textureFor(first.id);
+    assert.notStrictEqual(changedSignatureTexture, recreatedTexture,
+      'changing generated label content releases the old signature and acquires a new texture');
+    assert.equal(recreatedDisposeCount, 1,
+      'a signature change disposes the old texture exactly once after its final release');
+
+    let activeTexture = changedSignatureTexture;
+    let activeDisposeCount = 0;
+    activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    const identityChanges = [
+      ['weight label', () => { caseData.weight = 11; }],
+      ['handling arrows', () => { caseData.canFlip = false; }],
+      ['body color', () => { caseData.color = '#1188cc'; }],
+      ['texture fallback color', () => { caseData.color = null; }],
+      ['explicit default edge color', () => { caseData.color = '#ff9f1c'; }],
+      ['category color', () => { caseData.category = 'priority'; }],
+      ['dimensions', () => { caseData.dimensions = { length: 21, width: 18, height: 16 }; }],
+      ['visual geometry shape', () => { caseData.shape = 'cylinder'; }],
+      ['pallet rendering', () => { caseData.isPallet = true; }],
+      ['pallet warning label', () => { caseData.maxPalletWeight = 50; }],
+    ];
+    for (const [label, mutate] of identityChanges) {
+      mutate();
+      CaseScene.sync({ id: 'pack', cases: [first] });
+      const nextTexture = textureFor(first.id);
+      assert.notStrictEqual(nextTexture, activeTexture,
+        `${label} changes the current visual-resource signature`);
+      assert.equal(activeDisposeCount, 1,
+        `${label} releases the prior signature exactly once`);
+      activeTexture = nextTexture;
+      activeDisposeCount = 0;
+      activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    }
+
+    CaseScene.clear();
+    assert.equal(activeDisposeCount, 1,
+      'clear releases and disposes the final signature exactly once');
+  } finally {
+    if (previousThree === undefined) delete globalThis.THREE;
+    else globalThis.THREE = previousThree;
+    if (previousDocument === undefined) delete globalThis.document;
+    else globalThis.document = previousDocument;
+  }
+});
+
 test('RECON repack reports partial failure and requires a second explicit staging decision', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);

@@ -4541,10 +4541,6 @@ body.modal-open {
   display: grid;
   gap: 6px;
   justify-items: center;
-}
-
-.tp3d-util-gauge__body,
-.tp3d-util-gauge__primary {
   width: 100%;
 }
 

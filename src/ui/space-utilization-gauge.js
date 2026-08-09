@@ -24,8 +24,12 @@ const DEFAULT_DOCK_LEFT = 88;
 const DOCK_CONTROL_GAP = 24;
 const ARC_SEGMENT_COUNT = 20;
 const ARC_CENTER_X = 70;
-const ARC_CENTER_Y = 62;
+const ARC_CENTER_Y = 44;
 const ARC_RADIUS = 52;
+// A flatter vertical radius than ARC_RADIUS keeps the arc's width but lowers
+// its apex, so it reads as a straighter capacity instrument rather than a
+// deep, rounded dial.
+const ARC_RADIUS_Y = 34;
 let gaugeSequence = 0;
 
 function finiteNumber(value, fallback = 0) {
@@ -321,14 +325,13 @@ export function buildSpaceUtilizationArcSegments(percentage, count = ARC_SEGMENT
     const angle = Math.PI - progress * Math.PI;
     return {
       index,
+      // Every filled segment shares the single current-utilization color
+      // (set on the gauge root); unused segments stay neutral. Capacity color
+      // is a function of the overall percentage, not each segment's position.
       fill: clamp(filledSegments - index, 0, 1),
       x: ARC_CENTER_X + ARC_RADIUS * Math.cos(angle),
-      y: ARC_CENTER_Y - ARC_RADIUS * Math.sin(angle),
+      y: ARC_CENTER_Y - ARC_RADIUS_Y * Math.sin(angle),
       rotation: -90 + progress * 180,
-      // Each segment's own position along the 0-100 scale, so filled segments
-      // sweep through the same green -> yellow -> orange -> red progression
-      // as the overall capacity color, rather than one flat fill color.
-      tier: getUtilizationDensityTier(progress * 100),
     };
   });
 }
@@ -343,7 +346,7 @@ function arcIndicatorPoint(percentage) {
   const angle = Math.PI - progress * Math.PI;
   return {
     x: ARC_CENTER_X + ARC_RADIUS * Math.cos(angle),
-    y: ARC_CENTER_Y - ARC_RADIUS * Math.sin(angle),
+    y: ARC_CENTER_Y - ARC_RADIUS_Y * Math.sin(angle),
     rotation: -90 + progress * 180,
   };
 }
@@ -382,15 +385,20 @@ function makeSpatialGauge(documentRef, presentation) {
   chart.className = 'tp3d-util-gauge__spatial';
   chart.setAttribute('role', 'img');
   chart.setAttribute('aria-label', `${presentation.headline}. ${presentation.statusLine || presentation.subline}`.trim());
-  // .occupied is the persistent green -> yellow -> orange -> red capacity
-  // scale (always shown in full); .empty is a muted overlay marking the
-  // not-yet-reached portion so the scale still reads as a fill level.
+  // .occupied is the filled portion, colored by the overall current
+  // utilization tier; .empty is the neutral remainder, so only the occupied
+  // portion of the scale ever shows an active color. Both live inside a
+  // clipped track layer so the pill shape stays clean; the marker sits
+  // outside that clip so it isn't cut off where it overhangs the track.
+  const track = documentRef.createElement('span');
+  track.className = 'tp3d-util-gauge__spatial-track';
   const occupied = documentRef.createElement('span');
   occupied.className = 'tp3d-util-gauge__occupied';
   const empty = documentRef.createElement('span');
   empty.className = 'tp3d-util-gauge__empty';
-  chart.appendChild(occupied);
-  chart.appendChild(empty);
+  track.appendChild(occupied);
+  track.appendChild(empty);
+  chart.appendChild(track);
   // Non-interactive triangle tick (not a round endpoint dot) marking the
   // current position on the scale.
   const marker = documentRef.createElement('span');
@@ -415,9 +423,10 @@ function makeArcGauge(documentRef, presentation) {
     segmentEl.style.setProperty('--util-arc-x', String(segment.x));
     segmentEl.style.setProperty('--util-arc-y', String(segment.y));
     segmentEl.style.setProperty('--util-arc-rotation', String(segment.rotation));
-    // Each segment shows its own position along the capacity scale so the
-    // filled portion of the arc sweeps green -> yellow -> orange -> red.
-    segmentEl.style.setProperty('--util-density-current', `var(--util-density-${segment.tier})`);
+    // No per-segment color override: every filled segment inherits the same
+    // --util-density-current the gauge root sets from the overall
+    // percentage, so only the occupied portion is colorized and unused
+    // segments stay neutral.
     segments.appendChild(segmentEl);
   });
   chart.appendChild(segments);

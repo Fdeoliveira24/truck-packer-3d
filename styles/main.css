@@ -4495,15 +4495,21 @@ body.modal-open {
   Inspector Space Utilization
 ================================== */
 
-/* Uses the shared .card surface (background, border, radius) so Space
-   Utilization visually matches Load Summary; #inspector-body .card already
-   sets the Inspector-appropriate padding and drops the shadow. */
+/* Uses the shared .card surface (border, radius) so Space Utilization
+   visually matches Load Summary; #inspector-body .card already sets the
+   Inspector-appropriate padding and drops the shadow. Background is the
+   dedicated neutral inspector-card surface, not the plain .card white. */
 .tp3d-util-gauge {
   --util-density-current: var(--util-density-medium);
   display: grid;
   gap: 14px;
   width: 100%;
+  background: #f6f7fb;
   color: var(--text-primary);
+}
+
+[data-theme='dark'] .tp3d-util-gauge {
+  background: var(--bg-secondary);
 }
 
 .tp3d-util-density--very-low { --util-density-current: var(--util-density-very-low); }
@@ -4524,7 +4530,7 @@ body.modal-open {
   overflow: hidden;
   color: var(--text-primary);
   font-size: var(--text-base);
-  font-weight: var(--font-bold);
+  font-weight: var(--font-semibold);
   line-height: var(--leading-tight);
   white-space: nowrap;
   text-overflow: ellipsis;
@@ -4548,7 +4554,7 @@ body.modal-open {
   color: var(--text-secondary);
   cursor: pointer;
   font: inherit;
-  font-size: 11px;
+  font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   transition: background-color 0.15s ease, color 0.15s ease;
 }
@@ -4597,9 +4603,9 @@ body.modal-open {
 
 .tp3d-util-gauge__occupied-label {
   color: var(--text-secondary);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-weight: var(--font-semibold);
-  letter-spacing: 0.08em;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
@@ -4620,7 +4626,7 @@ body.modal-open {
   display: flex;
   justify-content: space-between;
   color: var(--text-muted);
-  font-size: 10px;
+  font-size: var(--text-xs);
   font-variant-numeric: tabular-nums;
 }
 
@@ -4631,34 +4637,31 @@ body.modal-open {
   margin-bottom: 8px;
 }
 
-/* The persistent green -> yellow -> orange -> red capacity scale. Always
-   shown in full (not clipped to the current percentage) so the whole
-   capacity range stays visible for context, per the Space Utilization
-   instrument requirement. */
+/* Clips .occupied/.empty to a clean pill; the marker lives outside this
+   layer (see .tp3d-util-gauge__spatial-marker) so its overhang isn't cut. */
+.tp3d-util-gauge__spatial-track {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+}
+
+/* Only the occupied portion is colorized, using the same current-tier color
+   as the Arc (cooler at low occupancy, green/yellow at medium, orange/red as
+   it nears capacity). The unused remainder stays neutral. */
 .tp3d-util-gauge__occupied {
   position: absolute;
   inset: 0;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    var(--util-density-very-low) 0%,
-    var(--util-density-low) 25%,
-    var(--util-density-medium) 50%,
-    var(--util-density-high) 75%,
-    var(--util-density-very-high) 100%
-  );
+  width: calc(var(--util-occupied-percent, 0) * 1%);
+  background: var(--util-density-current);
 }
 
-/* Muted overlay covering the not-yet-reached portion of the scale, so the
-   vivid colors up to the current position still read as "how full". */
 .tp3d-util-gauge__empty {
   position: absolute;
   inset: 0;
   left: calc(var(--util-occupied-percent, 0) * 1%);
-  border-radius: 0 999px 999px 0;
-  background: var(--bg-elevated);
-  opacity: 0.65;
+  background: var(--util-empty-background);
 }
 
 /* Non-interactive triangle tick (no round endpoint dot, so it never reads
@@ -4679,7 +4682,7 @@ body.modal-open {
 .tp3d-util-gauge__arc,
 .tp3d-util-gauge__arc-segments {
   width: 140px;
-  height: 76px;
+  height: 58px;
 }
 
 .tp3d-util-gauge__arc {
@@ -4754,6 +4757,7 @@ body.modal-open {
 
 .tp3d-util-gauge__stat-value {
   color: var(--text-primary);
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
   font-weight: var(--font-semibold);
   text-align: right;

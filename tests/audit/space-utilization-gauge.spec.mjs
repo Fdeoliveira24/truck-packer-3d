@@ -7,7 +7,6 @@ import { normalizePreferences } from '../../src/core/normalizer.js';
 import {
   BOTTOM_LEFT_GAUGE_POSITION,
   UTILIZATION_DENSITY_TIERS,
-  buildSpaceUtilizationArcSegments,
   buildSpaceUtilizationPresentation,
   buildSpaceUtilizationResult,
   clampSpaceUtilizationPixels,
@@ -172,7 +171,7 @@ function libraryFixture(overrides = {}) {
   };
 }
 
-test('Space Utilization gauge defaults are hidden, Spatial, Minimal, and bottom-left', () => {
+test('Space Utilization gauge defaults are hidden, Scale-compatible, Minimal, and bottom-left', () => {
   assert.deepEqual(defaultPreferences.spaceUtilization, {
     showGauge: false,
     style: 'spatial',
@@ -190,7 +189,7 @@ test('legacy preference records normalize without requiring Space Utilization ke
   assert.deepEqual(normalized.spaceUtilization, defaultPreferences.spaceUtilization);
 });
 
-test('visibility and style remain independent preferences', () => {
+test('visibility remains independent while rendering always uses Scale', () => {
   const hiddenArc = normalizePreferences({
     spaceUtilization: {
       showGauge: false,
@@ -200,7 +199,7 @@ test('visibility and style remain independent preferences', () => {
     },
   });
   assert.equal(shouldShowSpaceUtilizationGauge(hiddenArc), false);
-  assert.equal(getSpaceUtilizationGaugeStyle(hiddenArc), 'arc');
+  assert.equal(getSpaceUtilizationGaugeStyle(hiddenArc), 'spatial');
   assert.equal(getSpaceUtilizationGaugeDetail(hiddenArc), 'standard');
 
   const visibleSpatial = normalizePreferences({
@@ -403,57 +402,42 @@ test('Inspector Spatial gauge has one authoritative bar, a remaining subline, an
   assert.equal(byRole(gauge, 'space-utilization-collapse-action'), null);
 });
 
-test('header exposes only the accessible Arc and Spatial preference control', () => {
-  let selected = null;
+test('header has no visualization selector controls', () => {
   const gauge = createSpaceUtilizationGauge({
     documentRef: testDocument,
     result: buildSpaceUtilizationResult(packFixture(), libraryFixture()),
-    style: 'spatial',
-    onStyleChange: value => { selected = value; },
   });
-  const control = byClass(gauge, 'tp3d-util-gauge__style-control');
-  assert.equal(control.getAttribute('aria-label'), 'Space Utilization display');
-  const buttons = walk(control).filter(element => element.tagName === 'BUTTON');
-  assert.deepEqual(buttons.map(button => button.textContent), ['Arc', 'Scale']);
-  assert.deepEqual(buttons.map(button => button.getAttribute('aria-pressed')), ['false', 'true']);
-  buttons[0].listeners.get('click')();
-  assert.equal(selected, 'arc');
+  assert.equal(byClass(gauge, 'tp3d-util-gauge__style-control'), null);
+  assert.equal(walk(gauge).some(element => element.tagName === 'BUTTON'), false);
+  assert.equal(textTree(gauge).includes('Arc'), false);
+  assert.equal(textTree(gauge).includes('Scale'), false);
 });
 
-test('Spatial and Arc gauges remain bounded at 0, 1, 50, 99, and 100 percent', async () => {
+test('Scale gauge remains bounded at 0, 1, 50, 99, and 100 percent', async () => {
   const css = await fs.readFile(cssPath, 'utf8');
   [0, 1, 50, 99, 100].forEach(percentage => {
     const result = { ...buildSpaceUtilizationResult(packFixture(), libraryFixture()), percentage };
-    const arcGauge = createSpaceUtilizationGauge({
-      documentRef: testDocument,
-      result,
-      style: 'arc',
-      detail: 'minimal',
-    });
-    const spatialGauge = createSpaceUtilizationGauge({
+    const gauge = createSpaceUtilizationGauge({
       documentRef: testDocument,
       result,
       style: 'spatial',
       detail: 'minimal',
     });
-    const arc = byClass(arcGauge, 'tp3d-util-gauge__arc');
-    const headline = byClass(arcGauge, 'tp3d-util-gauge__headline');
-    assert.ok(arc);
+    const scale = byClass(gauge, 'tp3d-util-gauge__spatial');
+    const headline = byClass(gauge, 'tp3d-util-gauge__headline');
+    assert.ok(scale);
     assert.ok(headline);
-    assert.equal(walk(arc).includes(headline), false);
-    assert.equal(walk(arc).filter(element => element.classList.contains('tp3d-util-gauge__arc-segment')).length, 20);
-    assert.equal(spatialGauge.styleValues.get('--util-occupied-percent'), String(percentage));
-    const segments = buildSpaceUtilizationArcSegments(percentage);
-    assert.equal(segments.length, 20);
-    assert.ok(segments.every(segment => segment.fill >= 0 && segment.fill <= 1));
+    assert.equal(walk(scale).includes(headline), false);
+    assert.equal(gauge.styleValues.get('--util-occupied-percent'), String(percentage));
+    assert.ok(byClass(gauge, 'tp3d-util-gauge__occupied'));
+    assert.ok(byClass(gauge, 'tp3d-util-gauge__empty'));
+    assert.ok(byClass(gauge, 'tp3d-util-gauge__spatial-marker'));
+    assert.equal(byClass(gauge, 'tp3d-util-gauge__arc'), null);
+    assert.equal(byClass(gauge, 'tp3d-util-gauge__arc-segment'), null);
   });
-  assert.equal(buildSpaceUtilizationArcSegments(0).every(segment => segment.fill === 0), true);
-  assert.equal(buildSpaceUtilizationArcSegments(100).every(segment => segment.fill === 1), true);
-  assert.equal(buildSpaceUtilizationArcSegments(50).reduce((sum, segment) => sum + segment.fill, 0), 10);
-  assert.match(css, /\.tp3d-util-gauge--arc \.tp3d-util-gauge__primary\s*{[\s\S]*grid-template-columns:/);
   assert.match(css, /\.tp3d-util-gauge__visual\s*{[\s\S]*width:\s*100%;/);
-  assert.match(css, /\.tp3d-util-gauge__arc,[\s\S]*width:\s*100%;/);
-  assert.match(css, /\.tp3d-util-gauge__arc\s*{[\s\S]*aspect-ratio:\s*140\s*\/\s*58;/);
+  assert.match(css, /\.tp3d-util-gauge__spatial\s*{[\s\S]*width:\s*100%;/);
+  assert.doesNotMatch(css, /\.tp3d-util-gauge__arc/);
   assert.doesNotMatch(css, /\.tp3d-util-gauge__headline\s*{[^}]*position:\s*absolute/);
 });
 
@@ -497,7 +481,7 @@ test('semantic palette progresses from clear through green and orange to near-ca
 test('Inspector presentation removes viewport and obsolete Preferences controls', async () => {
   const css = await fs.readFile(cssPath, 'utf8');
   assert.match(css, /\.tp3d-util-gauge\s*{[^}]*width:\s*100%;/);
-  assert.match(css, /\.tp3d-util-gauge__style-control/);
+  assert.doesNotMatch(css, /\.tp3d-util-gauge__style-control/);
   assert.doesNotMatch(css, /\.tp3d-utilization-toggle/);
   assert.doesNotMatch(css, /\.tp3d-util-analysis/);
   assert.doesNotMatch(css, /\.tp3d-util-gauge--invalid/);
@@ -536,7 +520,7 @@ test('integration stays Inspector-only and does not introduce persistence, datab
   assert.doesNotMatch(gaugeSource, /supabase|migration|database/i);
   assert.match(editorSource, /function renderSpaceUtilizationSection\(pack\)/);
   assert.match(editorSource, /inspectorEl\.appendChild\(gauge\)/);
-  assert.match(editorSource, /spaceUtilization: \{ \.\.\.\(prefs\.spaceUtilization \|\| \{\}\), style \}/);
+  assert.doesNotMatch(editorSource, /getSpaceUtilizationGaugeStyle|onStyleChange|spaceUtilization: \{ \.\.\.\(prefs\.spaceUtilization \|\| \{\}\), style \}/);
   assert.match(editorSource, /Load Summary/);
   assert.match(editorSource, />In truck</);
   assert.match(editorSource, />Staged</);

@@ -17,7 +17,6 @@ import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
 import {
   buildSpaceUtilizationResult,
   createSpaceUtilizationGauge,
-  getSpaceUtilizationGaugeStyle,
 } from '../ui/space-utilization-gauge.js';
 import * as CoreStorage from '../core/storage.js';
 import { buildAutoPackCaseRuleSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
@@ -4923,16 +4922,8 @@ export function createEditorScreen({
       const result = buildSpaceUtilizationResult(pack, PackLibrary);
       const gauge = createSpaceUtilizationGauge({
         result,
-        style: getSpaceUtilizationGaugeStyle(prefs),
         detail: 'standard',
         lengthUnit: prefs.units && prefs.units.length,
-        onStyleChange: style => {
-          PreferencesManager.set({
-            ...prefs,
-            spaceUtilization: { ...(prefs.spaceUtilization || {}), style },
-          });
-          renderSpaceUtilizationSection(pack);
-        },
       });
       inspectorEl.appendChild(gauge);
     }

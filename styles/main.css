@@ -4521,7 +4521,7 @@ body.modal-open {
 .tp3d-util-gauge__header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-start;
   gap: 12px;
 }
 
@@ -4534,48 +4534,6 @@ body.modal-open {
   line-height: var(--leading-tight);
   white-space: nowrap;
   text-overflow: ellipsis;
-}
-
-.tp3d-util-gauge__style-control {
-  display: inline-flex;
-  flex: 0 0 auto;
-  padding: 2px;
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--bg-tertiary);
-}
-
-.tp3d-util-gauge__style-control button {
-  min-height: 26px;
-  padding: 4px 10px;
-  border: 0;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  font: inherit;
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  transition: background-color 0.15s ease, color 0.15s ease;
-}
-
-.tp3d-util-gauge__style-control button:hover {
-  color: var(--text-primary);
-}
-
-.tp3d-util-gauge__style-control button.is-selected {
-  background: var(--accent-primary);
-  color: #fff;
-  box-shadow: none;
-}
-
-.tp3d-util-gauge__style-control button.is-selected:hover {
-  color: #fff;
-}
-
-.tp3d-util-gauge__style-control button:focus-visible {
-  outline: 2px solid var(--accent-primary);
-  outline-offset: 1px;
 }
 
 .tp3d-util-gauge__body,
@@ -4693,69 +4651,6 @@ body.modal-open {
   pointer-events: none;
 }
 
-.tp3d-util-gauge__arc,
-.tp3d-util-gauge__arc-segments {
-  width: 100%;
-  max-width: 100%;
-  height: auto;
-}
-
-.tp3d-util-gauge__arc {
-  position: relative;
-  aspect-ratio: 140 / 58;
-  max-width: 100%;
-}
-
-.tp3d-util-gauge__arc-segments {
-  position: absolute;
-  inset: 0;
-}
-
-.tp3d-util-gauge__arc-segment {
-  position: absolute;
-  top: calc(var(--util-arc-y) * 1%);
-  left: calc(var(--util-arc-x) * 1%);
-  width: 4.285714%;
-  min-width: 4px;
-  height: 29.310345%;
-  min-height: 12px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: linear-gradient(
-    90deg,
-    var(--util-density-current) 0,
-    var(--util-density-current) calc(var(--util-arc-fill, 0) * 100%),
-    var(--util-empty-background) calc(var(--util-arc-fill, 0) * 100%)
-  );
-  transform: translate(-50%, -50%) rotate(calc(var(--util-arc-rotation) * 1deg));
-}
-
-/* A radial notch, not a knob: same shape family as the segments, so it never
-   reads as a draggable handle. */
-.tp3d-util-gauge__arc-indicator {
-  position: absolute;
-  top: calc(var(--util-arc-y) * 1%);
-  left: calc(var(--util-arc-x) * 1%);
-  width: 2.142857%;
-  min-width: 2px;
-  height: 34.482759%;
-  min-height: 14px;
-  background: var(--text-primary);
-  border-radius: 999px;
-  opacity: 0.85;
-  transform: translate(-50%, -50%) rotate(calc(var(--util-arc-rotation) * 1deg));
-  pointer-events: none;
-}
-
-.tp3d-util-gauge--arc .tp3d-util-gauge__primary {
-  grid-template-columns: 1fr;
-  justify-items: center;
-}
-
-.tp3d-util-gauge--arc .tp3d-util-gauge__stats {
-  grid-column: 1 / -1;
-}
-
 .tp3d-util-gauge__stats {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -4782,27 +4677,6 @@ body.modal-open {
   font-variant-numeric: tabular-nums;
   font-weight: var(--font-semibold);
   text-align: right;
-}
-
-@media (pointer: coarse) {
-  .tp3d-util-gauge__style-control button {
-    min-height: 44px;
-  }
-}
-
-/* The Inspector's right column bottoms out at a fixed 248px between the
-   mobile overlay breakpoint and the wide-desktop breakpoint (see
-   .editor-shell --right-col below) — the one range narrow enough that the
-   title and the Arc/Scale control can't both stay comfortable on one row. */
-@media (min-width: 900px) and (max-width: 1279px) {
-  .tp3d-util-gauge__header {
-    flex-wrap: wrap;
-  }
-
-  .tp3d-util-gauge__title {
-    flex: 1 1 100%;
-    white-space: normal;
-  }
 }
 
 /* Desktop-only: dock toasts inside the canvas (upper-right, below the

@@ -22,16 +22,6 @@ export const UTILIZATION_DENSITY_TIERS = Object.freeze([
 const SAFE_MARGIN = 12;
 const DEFAULT_DOCK_LEFT = 88;
 const DOCK_CONTROL_GAP = 24;
-const ARC_SEGMENT_COUNT = 20;
-const ARC_VIEWBOX_WIDTH = 140;
-const ARC_VIEWBOX_HEIGHT = 58;
-const ARC_CENTER_X = 70;
-const ARC_CENTER_Y = 44;
-const ARC_RADIUS = 52;
-// A flatter vertical radius than ARC_RADIUS keeps the arc's width but lowers
-// its apex, so it reads as a straighter capacity instrument rather than a
-// deep, rounded dial.
-const ARC_RADIUS_Y = 34;
 let gaugeSequence = 0;
 
 function finiteNumber(value, fallback = 0) {
@@ -72,9 +62,10 @@ export function toggleSpaceUtilizationGaugeVisibility(preferences) {
 }
 
 export function getSpaceUtilizationGaugeStyle(preferences) {
-  return preferences && preferences.spaceUtilization && preferences.spaceUtilization.style === 'arc'
-    ? 'arc'
-    : 'spatial';
+  // Product decision: only the Scale (spatial) visualization is rendered.
+  // Keep this helper for backward compatibility with stored preferences.
+  void preferences;
+  return 'spatial';
 }
 
 export function getSpaceUtilizationGaugeDetail(preferences) {
@@ -319,40 +310,6 @@ export function buildSpaceUtilizationPresentation(result) {
   };
 }
 
-export function buildSpaceUtilizationArcSegments(percentage, count = ARC_SEGMENT_COUNT) {
-  const segmentCount = Math.max(1, Math.trunc(finiteNumber(count, ARC_SEGMENT_COUNT)));
-  const filledSegments = clamp(percentage, 0, 100) / 100 * segmentCount;
-  return Array.from({ length: segmentCount }, (_, index) => {
-    const progress = segmentCount === 1 ? 0.5 : index / (segmentCount - 1);
-    const angle = Math.PI - progress * Math.PI;
-    return {
-      index,
-      // Every filled segment shares the single current-utilization color
-      // (set on the gauge root); unused segments stay neutral. Capacity color
-      // is a function of the overall percentage, not each segment's position.
-      fill: clamp(filledSegments - index, 0, 1),
-      x: ARC_CENTER_X + ARC_RADIUS * Math.cos(angle),
-      y: ARC_CENTER_Y - ARC_RADIUS_Y * Math.sin(angle),
-      rotation: -90 + progress * 180,
-    };
-  });
-}
-
-/**
- * The exact point on the arc for the current percentage (not stepped to a
- * segment), used to place a precise current-position tick. Rotation matches
- * the segment convention so the tick reads as a radial notch, not a knob.
- */
-function arcIndicatorPoint(percentage) {
-  const progress = clamp(percentage, 0, 100) / 100;
-  const angle = Math.PI - progress * Math.PI;
-  return {
-    x: ARC_CENTER_X + ARC_RADIUS * Math.cos(angle),
-    y: ARC_CENTER_Y - ARC_RADIUS_Y * Math.sin(angle),
-    rotation: -90 + progress * 180,
-  };
-}
-
 export function formatSpaceUtilizationVolume(volumeInches3, lengthUnit = 'in') {
   const volume = Math.max(0, finiteNumber(volumeInches3));
   const metric = lengthUnit === 'cm' || lengthUnit === 'm';
@@ -414,39 +371,6 @@ function makeSpatialGauge(documentRef, presentation) {
   chart.appendChild(marker);
   wrap.appendChild(chart);
   return wrap;
-}
-
-function makeArcGauge(documentRef, presentation) {
-  const chart = documentRef.createElement('div');
-  chart.className = 'tp3d-util-gauge__arc';
-  chart.setAttribute('role', 'img');
-  chart.setAttribute('aria-label', `${presentation.headline}. ${presentation.statusLine || presentation.subline}`.trim());
-  const segments = documentRef.createElement('div');
-  segments.className = 'tp3d-util-gauge__arc-segments';
-  buildSpaceUtilizationArcSegments(presentation.chartPercentage || 0).forEach(segment => {
-    const segmentEl = documentRef.createElement('span');
-    segmentEl.className = 'tp3d-util-gauge__arc-segment';
-    segmentEl.style.setProperty('--util-arc-index', String(segment.index));
-    segmentEl.style.setProperty('--util-arc-fill', String(segment.fill));
-    segmentEl.style.setProperty('--util-arc-x', String((segment.x / ARC_VIEWBOX_WIDTH) * 100));
-    segmentEl.style.setProperty('--util-arc-y', String((segment.y / ARC_VIEWBOX_HEIGHT) * 100));
-    segmentEl.style.setProperty('--util-arc-rotation', String(segment.rotation));
-    // No per-segment color override: every filled segment inherits the same
-    // --util-density-current the gauge root sets from the overall
-    // percentage, so only the occupied portion is colorized and unused
-    // segments stay neutral.
-    segments.appendChild(segmentEl);
-  });
-  chart.appendChild(segments);
-
-  const indicator = arcIndicatorPoint(presentation.chartPercentage || 0);
-  const indicatorEl = documentRef.createElement('span');
-  indicatorEl.className = 'tp3d-util-gauge__arc-indicator';
-  indicatorEl.style.setProperty('--util-arc-x', String((indicator.x / ARC_VIEWBOX_WIDTH) * 100));
-  indicatorEl.style.setProperty('--util-arc-y', String((indicator.y / ARC_VIEWBOX_HEIGHT) * 100));
-  indicatorEl.style.setProperty('--util-arc-rotation', String(indicator.rotation));
-  chart.appendChild(indicatorEl);
-  return chart;
 }
 
 function appendHeadline(documentRef, parent, presentation) {
@@ -517,22 +441,18 @@ function appendStandardStats(documentRef, parent, result, lengthUnit) {
  * @param {{
  *   documentRef?: Document,
  *   result?: Record<string, any>,
- *   style?: string,
  *   detail?: string,
  *   lengthUnit?: string,
- *   onStyleChange?: (style: string) => void,
  * }} [options]
  */
 export function createSpaceUtilizationGauge({
   documentRef = document,
   result,
-  style = 'spatial',
   detail = 'standard',
   lengthUnit = 'in',
-  onStyleChange = null,
 } = {}) {
   const presentation = buildSpaceUtilizationPresentation(result);
-  const resolvedStyle = style === 'arc' ? 'arc' : 'spatial';
+  const resolvedStyle = 'spatial';
   const resolvedDetail = detail === 'standard' ? 'standard' : 'minimal';
   const gauge = documentRef.createElement('section');
   const sequence = ++gaugeSequence;
@@ -555,27 +475,6 @@ export function createSpaceUtilizationGauge({
   header.className = 'tp3d-util-gauge__header';
   const title = appendTextElement(documentRef, header, 'span', 'tp3d-util-gauge__title', 'Space Utilization');
   title.id = titleId;
-  const styleControl = documentRef.createElement('div');
-  styleControl.className = 'tp3d-util-gauge__style-control';
-  styleControl.setAttribute('role', 'group');
-  styleControl.setAttribute('aria-label', 'Space Utilization display');
-  ['arc', 'spatial'].forEach(value => {
-    const button = documentRef.createElement('button');
-    button.type = 'button';
-    // The stored preference stays 'spatial' for compatibility; only the
-    // visible label changed to "Scale" to match the capacity-scale visual.
-    button.textContent = value === 'arc' ? 'Arc' : 'Scale';
-    button.dataset.value = value;
-    button.setAttribute('aria-pressed', value === resolvedStyle ? 'true' : 'false');
-    if (value === resolvedStyle) button.classList.add('is-selected');
-    if (typeof onStyleChange === 'function') {
-      button.addEventListener('click', () => {
-        if (value !== resolvedStyle) onStyleChange(value);
-      });
-    }
-    styleControl.appendChild(button);
-  });
-  header.appendChild(styleControl);
   gauge.appendChild(header);
 
   const body = documentRef.createElement('div');
@@ -584,8 +483,7 @@ export function createSpaceUtilizationGauge({
   primary.className = 'tp3d-util-gauge__primary';
   if (presentation.chartPercentage !== null) {
     const visual = makeGaugeVisualWrap(documentRef);
-    if (resolvedStyle === 'arc') visual.appendChild(makeArcGauge(documentRef, presentation));
-    if (resolvedStyle === 'spatial') visual.appendChild(makeSpatialGauge(documentRef, presentation));
+    visual.appendChild(makeSpatialGauge(documentRef, presentation));
     primary.appendChild(visual);
   }
   appendHeadline(documentRef, primary, presentation);

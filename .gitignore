@@ -66,3 +66,4 @@ supabase/functions/.env.local
 # Local knowledge graph / Obsidian tooling
 .obsidian/
 graphify-out/
+.ai/memory-graph/

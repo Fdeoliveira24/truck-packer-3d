@@ -694,3 +694,19 @@ This repository uses OpenWiki for recurring code documentation. Start with `open
 The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
 
 <!-- OPENWIKI:END -->
+
+## 20. Project Memory Routing
+
+- History, prior decisions, previous fixes, or "why did we" questions:
+   - Use `tools/project-memory query "<question>"` first.
+   - Keep retrieval project-scoped to Truck-Packer-3D and return up to 3 short passages.
+- Code structure, dependency, ownership, or "where is" questions:
+   - Use CODE Graphify (`graphify query/path/explain`) against `graphify-out/graph.json`.
+- Current behavior questions:
+   - Verify directly in current source and active contracts/docs.
+- Generic programming questions:
+   - Do not automatically retrieve project memory or graph context unless repo-specific context is requested.
+- Conflict resolution:
+   - Current source and current authoritative contract win over historical memory.
+- Token discipline:
+   - Never inject full notes, folders, `graph.json`, or `GRAPH_REPORT.md` into context.

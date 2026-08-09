@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CONFIG_PATH="$ROOT_DIR/.ai/memory.json"
+
+if [[ ! -f "$CONFIG_PATH" ]]; then
+  echo "project-memory: missing config at $CONFIG_PATH" >&2
+  exit 1
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+  echo "project-memory: node is required" >&2
+  exit 1
+fi
+
+resolve_json_value() {
+  local expr="$1"
+  node -e "const fs=require('fs');const p=process.argv[1];const e=process.argv[2];const j=JSON.parse(fs.readFileSync(p,'utf8'));const v=e.split('.').reduce((a,k)=>a&&a[k],j);process.stdout.write(String(v??''));" "$CONFIG_PATH" "$expr"
+}
+
+PROJECT_ID="$(resolve_json_value projectId)"
+VAULT_REL="$(resolve_json_value vaultPath)"
+DEFAULT_MAX="$(resolve_json_value defaults.maxResults)"
+MAX_ALLOWED="$(resolve_json_value defaults.maxAllowedResults)"
+
+if [[ -z "$PROJECT_ID" || -z "$VAULT_REL" ]]; then
+  echo "project-memory: invalid .ai/memory.json" >&2
+  exit 1
+fi
+
+VAULT_DIR="$(cd "$ROOT_DIR/$VAULT_REL" && pwd)"
+
+cmd="${1:-}"
+if [[ -z "$cmd" ]]; then
+  echo "Usage: tools/project-memory <query|record|promote> ..." >&2
+  exit 1
+fi
+shift || true
+
+case "$cmd" in
+  query)
+    exec node "$ROOT_DIR/tools/project-memory-query.mjs" --project "$PROJECT_ID" --vault-root "$VAULT_DIR" --max "$DEFAULT_MAX" --hard-max "$MAX_ALLOWED" "$@"
+    ;;
+  record)
+    exec node "$ROOT_DIR/tools/project-memory-record.mjs" --project "$PROJECT_ID" --vault-root "$VAULT_DIR" --repo "$ROOT_DIR" "$@"
+    ;;
+  promote)
+    exec node "$ROOT_DIR/tools/project-memory-promote.mjs" --project "$PROJECT_ID" --vault-root "$VAULT_DIR" "$@"
+    ;;
+  *)
+    echo "project-memory: unknown command '$cmd'" >&2
+    echo "Usage: tools/project-memory <query|record|promote> ..." >&2
+    exit 1
+    ;;
+esac

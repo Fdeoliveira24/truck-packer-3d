@@ -1,0 +1,11 @@
+{
+  "projectId": "Truck-Packer-3D",
+  "vaultPath": "../../AI-Knowledge/Projects/Truck-Packer-3D",
+  "toolsPath": "../../AI-Knowledge/Tools",
+  "codeGraphPath": "graphify-out/graph.json",
+  "memoryGraphPath": ".ai/memory-graph/graphify-out/graph.json",
+  "defaults": {
+    "maxResults": 3,
+    "maxAllowedResults": 5
+  }
+}

@@ -23,6 +23,8 @@ const SAFE_MARGIN = 12;
 const DEFAULT_DOCK_LEFT = 88;
 const DOCK_CONTROL_GAP = 24;
 const ARC_SEGMENT_COUNT = 20;
+const ARC_VIEWBOX_WIDTH = 140;
+const ARC_VIEWBOX_HEIGHT = 58;
 const ARC_CENTER_X = 70;
 const ARC_CENTER_Y = 44;
 const ARC_RADIUS = 52;
@@ -372,6 +374,12 @@ function appendTextElement(documentRef, parent, tagName, className, text) {
   return element;
 }
 
+function makeGaugeVisualWrap(documentRef) {
+  const wrap = documentRef.createElement('div');
+  wrap.className = 'tp3d-util-gauge__visual';
+  return wrap;
+}
+
 function makeSpatialGauge(documentRef, presentation) {
   const wrap = documentRef.createElement('div');
   wrap.className = 'tp3d-util-gauge__spatial-wrap';
@@ -420,8 +428,8 @@ function makeArcGauge(documentRef, presentation) {
     segmentEl.className = 'tp3d-util-gauge__arc-segment';
     segmentEl.style.setProperty('--util-arc-index', String(segment.index));
     segmentEl.style.setProperty('--util-arc-fill', String(segment.fill));
-    segmentEl.style.setProperty('--util-arc-x', String(segment.x));
-    segmentEl.style.setProperty('--util-arc-y', String(segment.y));
+    segmentEl.style.setProperty('--util-arc-x', String((segment.x / ARC_VIEWBOX_WIDTH) * 100));
+    segmentEl.style.setProperty('--util-arc-y', String((segment.y / ARC_VIEWBOX_HEIGHT) * 100));
     segmentEl.style.setProperty('--util-arc-rotation', String(segment.rotation));
     // No per-segment color override: every filled segment inherits the same
     // --util-density-current the gauge root sets from the overall
@@ -434,8 +442,8 @@ function makeArcGauge(documentRef, presentation) {
   const indicator = arcIndicatorPoint(presentation.chartPercentage || 0);
   const indicatorEl = documentRef.createElement('span');
   indicatorEl.className = 'tp3d-util-gauge__arc-indicator';
-  indicatorEl.style.setProperty('--util-arc-x', String(indicator.x));
-  indicatorEl.style.setProperty('--util-arc-y', String(indicator.y));
+  indicatorEl.style.setProperty('--util-arc-x', String((indicator.x / ARC_VIEWBOX_WIDTH) * 100));
+  indicatorEl.style.setProperty('--util-arc-y', String((indicator.y / ARC_VIEWBOX_HEIGHT) * 100));
   indicatorEl.style.setProperty('--util-arc-rotation', String(indicator.rotation));
   chart.appendChild(indicatorEl);
   return chart;
@@ -574,8 +582,12 @@ export function createSpaceUtilizationGauge({
   body.className = 'tp3d-util-gauge__body';
   const primary = documentRef.createElement('div');
   primary.className = 'tp3d-util-gauge__primary';
-  if (resolvedStyle === 'arc' && presentation.chartPercentage !== null) primary.appendChild(makeArcGauge(documentRef, presentation));
-  if (resolvedStyle === 'spatial' && presentation.chartPercentage !== null) primary.appendChild(makeSpatialGauge(documentRef, presentation));
+  if (presentation.chartPercentage !== null) {
+    const visual = makeGaugeVisualWrap(documentRef);
+    if (resolvedStyle === 'arc') visual.appendChild(makeArcGauge(documentRef, presentation));
+    if (resolvedStyle === 'spatial') visual.appendChild(makeSpatialGauge(documentRef, presentation));
+    primary.appendChild(visual);
+  }
   appendHeadline(documentRef, primary, presentation);
   appendRemaining(documentRef, primary, presentation);
   body.appendChild(primary);

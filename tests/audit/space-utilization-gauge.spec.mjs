@@ -451,7 +451,9 @@ test('Spatial and Arc gauges remain bounded at 0, 1, 50, 99, and 100 percent', a
   assert.equal(buildSpaceUtilizationArcSegments(100).every(segment => segment.fill === 1), true);
   assert.equal(buildSpaceUtilizationArcSegments(50).reduce((sum, segment) => sum + segment.fill, 0), 10);
   assert.match(css, /\.tp3d-util-gauge--arc \.tp3d-util-gauge__primary\s*{[\s\S]*grid-template-columns:/);
-  assert.match(css, /\.tp3d-util-gauge__arc,[\s\S]*width:\s*140px;/);
+  assert.match(css, /\.tp3d-util-gauge__visual\s*{[\s\S]*width:\s*100%;/);
+  assert.match(css, /\.tp3d-util-gauge__arc,[\s\S]*width:\s*100%;/);
+  assert.match(css, /\.tp3d-util-gauge__arc\s*{[\s\S]*aspect-ratio:\s*140\s*\/\s*58;/);
   assert.doesNotMatch(css, /\.tp3d-util-gauge__headline\s*{[^}]*position:\s*absolute/);
 });
 

@@ -75,8 +75,8 @@ test('package.json pins Three.js exactly to 0.185.1', () => {
   assert.equal(packageJson.dependencies.three, '0.185.1');
 });
 
-test('package.json pins Vite exactly to 8.2.0', () => {
-  assert.equal(packageJson.devDependencies.vite, '8.2.0');
+test('package.json pins Vite exactly to 8.2.1', () => {
+  assert.equal(packageJson.devDependencies.vite, '8.2.1');
   assert.match(packageJson.devDependencies.vite, /^\d+\.\d+\.\d+$/u);
   assert.equal(packageJson.engines.node, '^20.19.0 || >=22.12.0');
 });
@@ -85,7 +85,7 @@ test('package-lock is present and eligible to be tracked', () => {
   assert.ok(existsSync(join(repoRoot, 'package-lock.json')));
   assert.notEqual(git(['check-ignore', '-q', 'package-lock.json']).status, 0);
   assert.equal(packageLock.packages[''].dependencies.three, '0.185.1');
-  assert.equal(packageLock.packages[''].devDependencies.vite, '8.2.0');
+  assert.equal(packageLock.packages[''].devDependencies.vite, '8.2.1');
 });
 
 test('Three.js core and OrbitControls originate from the same npm package', () => {
@@ -278,11 +278,11 @@ test('the r185 runtime requires WebGL 2 without changing Vite output targets', (
 test('no unrelated dependency declaration changed', () => {
   const expectedDevDependencies = {
     '@eslint/js': '^10.0.1',
-    eslint: '^10.8.0',
+    eslint: '^10.8.1',
     'eslint-plugin-html': '^8.1.4',
-    globals: '^17.8.0',
-    'html-validate': '^11.6.0',
-    pg: '^8.22.0',
+    globals: '^17.9.0',
+    'html-validate': '^11.6.2',
+    pg: '^8.23.0',
     playwright: '^1.62.1',
     prettier: '^3.9.6',
     'prettier-plugin-organize-attributes': '^1.0.0',
@@ -291,7 +291,7 @@ test('no unrelated dependency declaration changed', () => {
     'stylelint-config-html': '^1.1.0',
     'stylelint-config-standard': '^40.0.0',
     typescript: '^7.0.2',
-    vite: '8.2.0',
+    vite: '8.2.1',
   };
   assert.deepEqual(packageJson.devDependencies, expectedDevDependencies);
   assert.deepEqual(packageJson.dependencies, { three: '0.185.1' });

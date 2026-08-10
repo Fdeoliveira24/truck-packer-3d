@@ -88,8 +88,8 @@ function buildNormalHandlingPack(pack, instanceIds) {
 
 /**
  * Resolve the one visual owner for a case without mutating THREE materials.
- * Selection intentionally outranks OOG to preserve the editor's existing
- * selection-first contract; collision remains the highest visible warning.
+ * Selection intentionally outranks OOG while retaining an OOG edge cue;
+ * collision remains the highest visible warning.
  */
 export function resolveCaseVisualState({
   hidden = false,
@@ -111,22 +111,52 @@ export function resolveCaseVisualState({
   else if (dragged) owner = 'dragged';
   else if (hovered) owner = 'hovered';
 
-  const emissiveByOwner = {
-    collision: 0xff0000,
-    selected: accent,
-    oog: 0xcc3300,
-    dragged: 0x111111,
-    hovered: 0x333333,
-  };
+  const secondaryWarning = owner === 'selected' && oog ? 'oog' : null;
+  /** @type {string | number} */
+  let emissive = 0x000000;
+  let emissiveIntensity = 0;
+  let materialColor = 0xffffff;
+  /** @type {string | number} */
+  let edgeColor = baseEdgeColor;
+  let edgeOpacity = 0.78;
+  if (owner === 'collision') {
+    emissive = 0xff2438;
+    emissiveIntensity = 0.42;
+    materialColor = 0x8a8a8a;
+    edgeColor = 0xff1635;
+    edgeOpacity = 1;
+  } else if (owner === 'selected') {
+    emissive = accent;
+    emissiveIntensity = 0.14;
+    edgeColor = secondaryWarning === 'oog' ? 0xff6b35 : accent;
+    edgeOpacity = 1;
+  } else if (owner === 'oog') {
+    emissive = 0xd9482b;
+    emissiveIntensity = 0.1;
+    materialColor = 0xd0d0d0;
+    edgeColor = 0xff6b35;
+    edgeOpacity = 1;
+  } else if (owner === 'dragged') {
+    emissive = 0xffffff;
+    emissiveIntensity = 0.035;
+    edgeOpacity = 0.98;
+  } else if (owner === 'hovered') {
+    emissive = 0xffffff;
+    emissiveIntensity = 0.025;
+    edgeOpacity = 0.92;
+  }
 
   return {
     owner,
-    emissive: emissiveByOwner[owner] ?? 0x000000,
-    edgeColor: owner === 'oog' ? 0xff0000 : baseEdgeColor,
+    secondaryWarning,
+    emissive,
+    emissiveIntensity,
+    materialColor,
+    edgeColor,
     meshTransparent: hidden || dragged,
-    meshOpacity: hidden ? opacity : (dragged ? 0.72 : 1),
+    meshOpacity: hidden ? opacity : (dragged ? 0.84 : 1),
     depthWrite: !hidden,
-    edgeOpacity: hidden ? Math.max(0.25, opacity) : 0.95,
+    edgeOpacity: hidden ? Math.max(0.25, opacity) : edgeOpacity,
   };
 }
 
@@ -721,15 +751,21 @@ export function createCaseScene({
     const oogSet = new Set();
     let pendingPoseWatcher = null;
 
+    function resolveCargoSurfaceColor(caseData) {
+      const isPallet = caseData.isPallet === true;
+      if (isPallet) return '#A0522D';
+      const catColor = CategoryService.meta(caseData.category).color;
+      const color = new THREE.Color(catColor || caseData.color || '#8B4513');
+      color.lerp(new THREE.Color(0xd4d9df), 0.18);
+      return `#${color.getHexString()}`;
+    }
 
-    function generateCaseTexture(caseData, faceIndex, w, h) {
+    function generateCaseTexture(caseData, faceIndex, w, h, baseColor) {
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext('2d');
       const isPallet = caseData.isPallet === true;
-      const catColor = CategoryService.meta(caseData.category).color;
-      const baseColor = isPallet ? '#A0522D' : (catColor || caseData.color || '#8B4513');
       ctx.fillStyle = baseColor;
       ctx.fillRect(0, 0, w, h);
 
@@ -784,13 +820,14 @@ export function createCaseScene({
       const lPx = Math.min(512, Math.max(64, dims.length * 4));
       const wPx = Math.min(512, Math.max(64, dims.width * 4));
       const hPx = Math.min(512, Math.max(64, dims.height * 4));
+      const baseColor = resolveCargoSurfaceColor(caseData);
       const textures = [
-        generateCaseTexture(caseData, 0, hPx, wPx),
-        generateCaseTexture(caseData, 1, hPx, wPx),
-        generateCaseTexture(caseData, 2, lPx, wPx),
-        generateCaseTexture(caseData, 3, lPx, wPx),
-        generateCaseTexture(caseData, 4, lPx, hPx),
-        generateCaseTexture(caseData, 5, lPx, hPx),
+        generateCaseTexture(caseData, 0, hPx, wPx, baseColor),
+        generateCaseTexture(caseData, 1, hPx, wPx, baseColor),
+        generateCaseTexture(caseData, 2, lPx, wPx, baseColor),
+        generateCaseTexture(caseData, 3, lPx, wPx, baseColor),
+        generateCaseTexture(caseData, 4, lPx, hPx, baseColor),
+        generateCaseTexture(caseData, 5, lPx, hPx, baseColor),
       ];
       textureCache.set(signature, { textures, count: 1 });
       return textures;
@@ -940,11 +977,11 @@ export function createCaseScene({
       const textures = acquireTextures(signature, caseData, dims);
       const materials = textures.map(tex => new THREE.MeshStandardMaterial({
         map: tex,
-        roughness: 0.88,
-        metalness: 0.01,
+        roughness: 0.82,
+        metalness: 0,
         emissive: new THREE.Color(0x000000),
-        envMapIntensity: 0.3,
-        bumpScale: 0.02,
+        emissiveIntensity: 0,
+        envMapIntensity: 0.38,
       }));
       const mesh = new THREE.Mesh(geo, materials);
       mesh.castShadow = true;
@@ -955,11 +992,11 @@ export function createCaseScene({
 
       const edges = acquireEdgeGeometry(signature, geo);
       const edgeColor = new THREE.Color(baseColor);
-      edgeColor.multiplyScalar(0.55);
+      edgeColor.lerp(new THREE.Color(0x26313b), 0.78);
       const lineMat = new THREE.LineBasicMaterial({
         color: edgeColor,
         transparent: true,
-        opacity: 0.85,
+        opacity: 0.78,
       });
       const lines = new THREE.LineSegments(edges, lineMat);
       lines.userData.edgeKey = signature;
@@ -1053,6 +1090,10 @@ export function createCaseScene({
         }
         m.opacity = state.meshOpacity;
         m.depthWrite = state.depthWrite;
+        m.emissiveIntensity = state.emissiveIntensity;
+        if (m.color && typeof m.color.setHex === 'function') {
+          m.color.setHex(state.materialColor);
+        }
         if (m.emissive) {
           if (typeof state.emissive === 'string' && typeof m.emissive.set === 'function') {
             m.emissive.set(state.emissive);
@@ -1064,8 +1105,12 @@ export function createCaseScene({
       if (lines && lines.material) {
         lines.material.transparent = true;
         lines.material.opacity = state.edgeOpacity;
-        if (lines.material.color && typeof lines.material.color.setHex === 'function') {
-          lines.material.color.setHex(state.edgeColor);
+        if (lines.material.color) {
+          if (typeof state.edgeColor === 'string' && typeof lines.material.color.set === 'function') {
+            lines.material.color.set(state.edgeColor);
+          } else if (typeof lines.material.color.setHex === 'function') {
+            lines.material.color.setHex(state.edgeColor);
+          }
         }
       }
     }

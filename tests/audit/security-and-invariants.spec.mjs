@@ -10474,33 +10474,42 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       'acquiring after final release creates a valid new CanvasTexture');
     let recreatedDisposeCount = 0;
     recreatedTexture.addEventListener('dispose', () => { recreatedDisposeCount += 1; });
-    const recreatedLabelTexture = CaseScene.getObject(first.id).userData.labelRoot.children[0].material.map;
-    let recreatedLabelDisposeCount = 0;
-    recreatedLabelTexture.addEventListener('dispose', () => { recreatedLabelDisposeCount += 1; });
 
     caseData.name = 'Changed Label';
     CaseScene.sync({ id: 'pack', cases: [first] });
     const changedSignatureTexture = textureFor(first.id);
-    const changedLabelTexture = CaseScene.getObject(first.id).userData.labelRoot.children[0].material.map;
-    assert.strictEqual(changedSignatureTexture, recreatedTexture,
-      'changing identity content does not replace the body texture');
-    assert.equal(recreatedDisposeCount, 0,
-      'body texture ownership survives a label-only signature replacement');
-    assert.notStrictEqual(changedLabelTexture, recreatedLabelTexture,
-      'changing identity content acquires a distinct label texture');
-    assert.equal(recreatedLabelDisposeCount, 1,
-      'the replaced label texture is disposed exactly once');
-
-    caseData.color = '#1188cc';
-    CaseScene.sync({ id: 'pack', cases: [first] });
-    const changedBodyTexture = textureFor(first.id);
-    assert.notStrictEqual(changedBodyTexture, changedSignatureTexture,
-      'body pixel inputs still replace the body texture resource');
+    assert.notStrictEqual(changedSignatureTexture, recreatedTexture,
+      'changing generated label content releases the old signature and acquires a new texture');
     assert.equal(recreatedDisposeCount, 1,
-      'the prior body texture is disposed exactly once after a body-presentation change');
+      'a signature change disposes the old texture exactly once after its final release');
 
+    let activeTexture = changedSignatureTexture;
     let activeDisposeCount = 0;
-    changedBodyTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    const identityChanges = [
+      ['weight label', () => { caseData.weight = 11; }],
+      ['handling arrows', () => { caseData.canFlip = false; }],
+      ['body color', () => { caseData.color = '#1188cc'; }],
+      ['texture fallback color', () => { caseData.color = null; }],
+      ['explicit default edge color', () => { caseData.color = '#ff9f1c'; }],
+      ['category color', () => { caseData.category = 'priority'; }],
+      ['dimensions', () => { caseData.dimensions = { length: 21, width: 18, height: 16 }; }],
+      ['visual geometry shape', () => { caseData.shape = 'cylinder'; }],
+      ['pallet rendering', () => { caseData.isPallet = true; }],
+      ['pallet warning label', () => { caseData.maxPalletWeight = 50; }],
+    ];
+    for (const [label, mutate] of identityChanges) {
+      mutate();
+      CaseScene.sync({ id: 'pack', cases: [first] });
+      const nextTexture = textureFor(first.id);
+      assert.notStrictEqual(nextTexture, activeTexture,
+        `${label} changes the current visual-resource signature`);
+      assert.equal(activeDisposeCount, 1,
+        `${label} releases the prior signature exactly once`);
+      activeTexture = nextTexture;
+      activeDisposeCount = 0;
+      activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    }
 
     CaseScene.clear();
     assert.equal(activeDisposeCount, 1,

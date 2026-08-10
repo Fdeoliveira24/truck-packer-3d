@@ -403,7 +403,6 @@ export function createPacksScreen({
       btn.setAttribute('data-pack-notes', '1');
       btn.setAttribute('data-notes-entity-type', 'load-plan');
       btn.setAttribute('data-notes-entity-id', pack.id);
-      btn.setAttribute('data-tooltip', 'Load Plan Notes');
       btn.setAttribute('aria-label', hasNotes
         ? `Open load plan notes for ${title}, notes available`
         : `Open load plan notes for ${title}`);

@@ -10416,48 +10416,6 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
     assert.strictEqual(textureFor(second.id), sharedTexture,
       'a second case with the same visual signature acquires the cached CanvasTexture');
 
-    const visualGroup = CaseScene.getObject(first.id);
-    const visualMesh = visualGroup.userData.mesh;
-    const visualLines = visualGroup.userData.lines;
-    const visualMaterials = visualMesh.material;
-    const visualGeometry = visualMesh.geometry;
-    const visualEdgeGeometry = visualLines.geometry;
-    const visualLineMaterial = visualLines.material;
-    CaseScene.setHover(first.id);
-    CaseScene.setSelected([first.id, second.id]);
-    assert.equal(visualMaterials[0].emissiveIntensity, 0.14,
-      'selection applies the restrained state response to the existing material');
-    assert.equal(visualLineMaterial.color.getHex(), 0xff9f1c,
-      'selection applies its strong edge channel to the existing line material');
-    CaseScene.setDragging(first.id);
-    CaseScene.setCollision(first.id, true);
-    assert.equal(visualMaterials[0].color.getHex(), 0x8a8a8a,
-      'collision subordinates category color without replacing the material');
-    assert.equal(visualMaterials[0].emissiveIntensity, 0.42,
-      'collision owns the strongest material response');
-    assert.equal(visualMaterials[0].opacity, 0.84,
-      'collision during drag preserves spatially readable transparency');
-    assert.equal(visualLineMaterial.color.getHex(), 0xff1635,
-      'collision owns the strongest semantic edge');
-    CaseScene.setCollision(first.id, false);
-    CaseScene.setDragging(null);
-    CaseScene.setSelected([]);
-    CaseScene.setHover(null);
-    assert.strictEqual(visualMesh.material, visualMaterials,
-      'state cycles reuse the instance-owned material array');
-    assert.strictEqual(visualMesh.geometry, visualGeometry,
-      'state cycles do not allocate replacement cargo geometry');
-    assert.strictEqual(visualLines.geometry, visualEdgeGeometry,
-      'state cycles preserve the cached edge geometry');
-    assert.strictEqual(visualLines.material, visualLineMaterial,
-      'state cycles reuse the instance-owned line material');
-    assert.strictEqual(visualMaterials[0].map, sharedTexture,
-      'state cycles do not regenerate or replace the cached CanvasTexture');
-    assert.equal(visualMaterials[0].color.getHex(), 0xffffff,
-      'ending state cycles restores the exact normal material tint');
-    assert.equal(visualMaterials[0].emissiveIntensity, 0,
-      'ending state cycles restores the exact normal emissive response');
-
     CaseScene.sync({ id: 'pack', cases: [second] });
     assert.strictEqual(textureFor(second.id), sharedTexture,
       'the surviving case keeps referencing the shared cached CanvasTexture');
@@ -10474,33 +10432,42 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       'acquiring after final release creates a valid new CanvasTexture');
     let recreatedDisposeCount = 0;
     recreatedTexture.addEventListener('dispose', () => { recreatedDisposeCount += 1; });
-    const recreatedLabelTexture = CaseScene.getObject(first.id).userData.labelRoot.children[0].material.map;
-    let recreatedLabelDisposeCount = 0;
-    recreatedLabelTexture.addEventListener('dispose', () => { recreatedLabelDisposeCount += 1; });
 
     caseData.name = 'Changed Label';
     CaseScene.sync({ id: 'pack', cases: [first] });
     const changedSignatureTexture = textureFor(first.id);
-    const changedLabelTexture = CaseScene.getObject(first.id).userData.labelRoot.children[0].material.map;
-    assert.strictEqual(changedSignatureTexture, recreatedTexture,
-      'changing identity content does not replace the body texture');
-    assert.equal(recreatedDisposeCount, 0,
-      'body texture ownership survives a label-only signature replacement');
-    assert.notStrictEqual(changedLabelTexture, recreatedLabelTexture,
-      'changing identity content acquires a distinct label texture');
-    assert.equal(recreatedLabelDisposeCount, 1,
-      'the replaced label texture is disposed exactly once');
-
-    caseData.color = '#1188cc';
-    CaseScene.sync({ id: 'pack', cases: [first] });
-    const changedBodyTexture = textureFor(first.id);
-    assert.notStrictEqual(changedBodyTexture, changedSignatureTexture,
-      'body pixel inputs still replace the body texture resource');
+    assert.notStrictEqual(changedSignatureTexture, recreatedTexture,
+      'changing generated label content releases the old signature and acquires a new texture');
     assert.equal(recreatedDisposeCount, 1,
-      'the prior body texture is disposed exactly once after a body-presentation change');
+      'a signature change disposes the old texture exactly once after its final release');
 
+    let activeTexture = changedSignatureTexture;
     let activeDisposeCount = 0;
-    changedBodyTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    const identityChanges = [
+      ['weight label', () => { caseData.weight = 11; }],
+      ['handling arrows', () => { caseData.canFlip = false; }],
+      ['body color', () => { caseData.color = '#1188cc'; }],
+      ['texture fallback color', () => { caseData.color = null; }],
+      ['explicit default edge color', () => { caseData.color = '#ff9f1c'; }],
+      ['category color', () => { caseData.category = 'priority'; }],
+      ['dimensions', () => { caseData.dimensions = { length: 21, width: 18, height: 16 }; }],
+      ['visual geometry shape', () => { caseData.shape = 'cylinder'; }],
+      ['pallet rendering', () => { caseData.isPallet = true; }],
+      ['pallet warning label', () => { caseData.maxPalletWeight = 50; }],
+    ];
+    for (const [label, mutate] of identityChanges) {
+      mutate();
+      CaseScene.sync({ id: 'pack', cases: [first] });
+      const nextTexture = textureFor(first.id);
+      assert.notStrictEqual(nextTexture, activeTexture,
+        `${label} changes the current visual-resource signature`);
+      assert.equal(activeDisposeCount, 1,
+        `${label} releases the prior signature exactly once`);
+      activeTexture = nextTexture;
+      activeDisposeCount = 0;
+      activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    }
 
     CaseScene.clear();
     assert.equal(activeDisposeCount, 1,

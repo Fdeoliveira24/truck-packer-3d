@@ -151,7 +151,6 @@ export function createCasesScreen({
       btn.setAttribute('data-case-notes', '1');
       btn.setAttribute('data-notes-entity-type', 'case');
       btn.setAttribute('data-notes-entity-id', caseItem.id);
-      btn.setAttribute('data-tooltip', 'Notes');
       btn.setAttribute('aria-label', hasNotes
         ? `Open notes for ${caseName}, notes available`
         : `Open notes for ${caseName}`);

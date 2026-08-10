@@ -378,6 +378,106 @@ try {
   }
 } catch (_) { /* ignore */ }
 
+/**
+ * Coalesce automatic Pack preview requests without retaining workspace or Pack
+ * objects across the debounce window.
+ *
+ * @param {{
+ *   StateStore: { get: (key: string) => any },
+ *   PackLibrary: { getById: (packId: string) => any },
+ *   OperationLifecycle: { isBusy: () => boolean, subscribe: (fn: (state: { busy: boolean }) => void) => (() => void) },
+ *   capturePackPreview: (packId: string, options: { source: string, quiet: boolean }) => (boolean | Promise<boolean>),
+ *   getActiveWorkspaceKey: () => string,
+ *   delayMs?: number,
+ *   setTimer?: (fn: () => void, delay: number) => any,
+ *   clearTimer?: (timer: any) => void,
+ * }} dependencies
+ */
+function createPackPreviewScheduler({
+  StateStore,
+  PackLibrary,
+  OperationLifecycle,
+  capturePackPreview,
+  getActiveWorkspaceKey,
+  delayMs = 300,
+  setTimer = (fn, delay) => setTimeout(fn, delay),
+  clearTimer = timer => clearTimeout(timer),
+}) {
+  /** @type {{ packId: string, workspaceKey: string } | null} */
+  let pending = null;
+  let debounceTimer = null;
+  let captureInFlight = false;
+
+  function clearPending() {
+    if (debounceTimer !== null) clearTimer(debounceTimer);
+    debounceTimer = null;
+    pending = null;
+  }
+
+  function resolveCurrentCandidate() {
+    if (StateStore.get('currentScreen') !== 'editor') return null;
+    const packId = StateStore.get('currentPackId');
+    if (!packId) return null;
+    const pack = PackLibrary.getById(packId);
+    if (!pack) return null;
+    const lastEdited = Number.isFinite(pack.lastEdited) ? pack.lastEdited : 0;
+    const thumbnailUpdatedAt = Number.isFinite(pack.thumbnailUpdatedAt) ? pack.thumbnailUpdatedAt : 0;
+    const totalCases = Array.isArray(pack.cases) ? pack.cases.length : 0;
+    if (totalCases <= 0 || lastEdited <= thumbnailUpdatedAt) return null;
+    return { packId, workspaceKey: String(getActiveWorkspaceKey()) };
+  }
+
+  function runPending() {
+    if (!pending || captureInFlight) return false;
+    const candidate = resolveCurrentCandidate();
+    if (
+      !candidate ||
+      candidate.packId !== pending.packId ||
+      candidate.workspaceKey !== pending.workspaceKey
+    ) {
+      clearPending();
+      return false;
+    }
+    if (OperationLifecycle.isBusy()) return false;
+
+    pending = null;
+    captureInFlight = true;
+    Promise.resolve(capturePackPreview(candidate.packId, { source: 'auto', quiet: true }))
+      .catch(() => false)
+      .finally(() => {
+        captureInFlight = false;
+        if (pending && debounceTimer === null && !OperationLifecycle.isBusy()) runPending();
+      });
+    return true;
+  }
+
+  function schedule() {
+    const candidate = resolveCurrentCandidate();
+    if (!candidate) {
+      clearPending();
+      return false;
+    }
+    if (debounceTimer !== null) clearTimer(debounceTimer);
+    pending = candidate;
+    debounceTimer = setTimer(() => {
+      debounceTimer = null;
+      runPending();
+    }, delayMs);
+    return true;
+  }
+
+  const unsubscribe = OperationLifecycle.subscribe(state => {
+    if (!state.busy && pending && debounceTimer === null && !captureInFlight) runPending();
+  });
+
+  function dispose() {
+    clearPending();
+    unsubscribe();
+  }
+
+  return { schedule, dispose };
+}
+
 const TP3D_BUILD_STAMP = Object.freeze({
   gitCommitShort: '52aa4de',
   buildTimeISO: '2026-02-18T03:32:00Z',
@@ -1468,6 +1568,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: EXPORT (PNG/PDF)
     // ============================================================================
+    const getActiveWorkspaceKey = () => (
+      `${CoreStorage.getStorageScope ? CoreStorage.getStorageScope() : 'anon'}|${CoreStorage.getWorkspaceScope ? CoreStorage.getWorkspaceScope() : 'no-org'}`
+    );
+
     ExportService = (() => {
       function estimateDataUrlBytes(dataUrl) {
         const str = String(dataUrl || '');
@@ -1491,9 +1595,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const captureToken = OperationLifecycle.beginOperation('capturingPreview', { packId, source });
         if (!captureToken) return false;
         try {
-          const getActiveWorkspaceKey = () => (
-            `${CoreStorage.getStorageScope ? CoreStorage.getStorageScope() : 'anon'}|${CoreStorage.getWorkspaceScope ? CoreStorage.getWorkspaceScope() : 'no-org'}`
-          );
           const captureWorkspaceKey = getActiveWorkspaceKey();
           const pack = PackLibrary.getById(packId);
           if (!pack) throw new Error('Load plan not found');
@@ -2031,6 +2132,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       return { captureScreenshot, generatePDF, capturePackPreview, clearPackPreview };
     })();
+
+    const AutoPackPreviewScheduler = createPackPreviewScheduler({
+      StateStore,
+      PackLibrary,
+      OperationLifecycle,
+      capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
+      getActiveWorkspaceKey,
+    });
 
     // ==== UI: Packs Screen ====
     // ============================================================================
@@ -6796,6 +6905,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           SceneManager.refreshTheme();
           SettingsUI.loadForm();
           if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
+        }
+
+        if (changes.packLibrary || changes._undo || changes._redo) {
+          AutoPackPreviewScheduler.schedule();
         }
 
         if (changes.currentScreen || changes._replace) {

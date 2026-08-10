@@ -19968,6 +19968,196 @@ test('OPERATION-LIFECYCLE assertIdle, subscribe, and invalid kinds behave correc
   assert.equal(events[events.length - 1], 'idle', 'unsubscribed callback receives no further events');
 });
 
+async function createPackPreviewSchedulerHarness({
+  currentScreen = 'editor',
+  currentPackId = 'pack-a',
+  workspaceKey = 'user-a|workspace-a',
+  pack = null,
+  onCapture = null,
+} = {}) {
+  const src = await fs.readFile(appPath, 'utf8');
+  const start = src.indexOf('function createPackPreviewScheduler(');
+  const end = src.indexOf('\n\nconst TP3D_BUILD_STAMP', start);
+  assert.ok(start >= 0 && end > start, 'Pack preview scheduler is extractable from the production owner');
+
+  const context = {};
+  vm.createContext(context);
+  vm.runInContext(`
+    ${src.slice(start, end)}
+    globalThis.__createPackPreviewScheduler = createPackPreviewScheduler;
+  `, context);
+
+  const { createOperationLifecycle } = await import(
+    `${operationLifecyclePath.href}?preview-scheduler=${Date.now()}-${Math.random()}`
+  );
+  const OperationLifecycle = createOperationLifecycle();
+  const state = { currentScreen, currentPackId };
+  const packs = new Map();
+  const initialPack = pack || {
+    id: 'pack-a',
+    cases: [{ id: 'instance-a' }],
+    lastEdited: 200,
+    thumbnailUpdatedAt: 100,
+  };
+  if (initialPack) packs.set(initialPack.id, initialPack);
+
+  let activeWorkspaceKey = workspaceKey;
+  let nextTimerId = 0;
+  const timers = new Map();
+  const captures = [];
+  const setTimer = (fn, delay) => {
+    nextTimerId += 1;
+    timers.set(nextTimerId, { fn, delay });
+    return nextTimerId;
+  };
+  const clearTimer = timerId => timers.delete(timerId);
+  const capturePackPreview = (packId, options) => {
+    captures.push({ packId, options });
+    return onCapture ? onCapture({ packId, options, packs, state }) : true;
+  };
+  const scheduler = context.__createPackPreviewScheduler({
+    StateStore: { get: key => state[key] },
+    PackLibrary: { getById: packId => packs.get(packId) || null },
+    OperationLifecycle,
+    capturePackPreview,
+    getActiveWorkspaceKey: () => activeWorkspaceKey,
+    delayMs: 300,
+    setTimer,
+    clearTimer,
+  });
+
+  return {
+    OperationLifecycle,
+    captures,
+    packs,
+    scheduler,
+    state,
+    timers,
+    setWorkspaceKey(nextWorkspaceKey) {
+      activeWorkspaceKey = nextWorkspaceKey;
+    },
+    runTimers() {
+      const scheduled = [...timers.values()];
+      timers.clear();
+      scheduled.forEach(({ fn }) => fn());
+    },
+  };
+}
+
+test('PACK-PREVIEW-SCHEDULER captures a stale active Pack while the user remains in Editor', async () => {
+  const runtime = await createPackPreviewSchedulerHarness();
+  assert.equal(runtime.scheduler.schedule(), true);
+  assert.equal(runtime.captures.length, 0, 'capture waits for the coalescing window');
+  assert.equal([...runtime.timers.values()][0].delay, 300, 'the debounce remains short and responsive');
+
+  runtime.runTimers();
+  assert.equal(runtime.state.currentScreen, 'editor', 'no screen change is required');
+  assert.equal(runtime.captures.length, 1);
+  assert.equal(runtime.captures[0].packId, 'pack-a');
+  assert.equal(runtime.captures[0].options.source, 'auto');
+  assert.equal(runtime.captures[0].options.quiet, true);
+});
+
+test('PACK-PREVIEW-SCHEDULER rapid Pack edits coalesce into one capture', async () => {
+  const runtime = await createPackPreviewSchedulerHarness();
+  runtime.scheduler.schedule();
+  runtime.packs.get('pack-a').lastEdited = 250;
+  runtime.scheduler.schedule();
+  runtime.packs.get('pack-a').lastEdited = 300;
+  runtime.scheduler.schedule();
+
+  assert.equal(runtime.timers.size, 1, 'only the latest debounce remains scheduled');
+  runtime.runTimers();
+  assert.equal(runtime.captures.length, 1);
+});
+
+test('PACK-PREVIEW-SCHEDULER retains a busy request and captures once the lifecycle returns idle', async () => {
+  const runtime = await createPackPreviewSchedulerHarness();
+  const operationToken = runtime.OperationLifecycle.beginOperation('autopacking');
+  assert.ok(operationToken);
+  runtime.scheduler.schedule();
+  runtime.runTimers();
+  assert.equal(runtime.captures.length, 0, 'busy lifecycle does not discard or execute the request');
+
+  runtime.OperationLifecycle.finishOperation(operationToken);
+  assert.equal(runtime.captures.length, 1, 'idle notification executes the one pending capture');
+});
+
+test('PACK-PREVIEW-SCHEDULER rejects stale pending Pack, deletion, and workspace contexts', async t => {
+  await t.test('current Pack changed', async () => {
+    const runtime = await createPackPreviewSchedulerHarness();
+    runtime.scheduler.schedule();
+    runtime.state.currentPackId = 'pack-b';
+    runtime.packs.set('pack-b', {
+      id: 'pack-b', cases: [{ id: 'instance-b' }], lastEdited: 300, thumbnailUpdatedAt: 100,
+    });
+    runtime.runTimers();
+    assert.equal(runtime.captures.length, 0);
+  });
+
+  await t.test('Pack deleted', async () => {
+    const runtime = await createPackPreviewSchedulerHarness();
+    runtime.scheduler.schedule();
+    runtime.packs.delete('pack-a');
+    runtime.runTimers();
+    assert.equal(runtime.captures.length, 0);
+  });
+
+  await t.test('workspace changed', async () => {
+    const runtime = await createPackPreviewSchedulerHarness();
+    runtime.scheduler.schedule();
+    runtime.setWorkspaceKey('user-a|workspace-b');
+    runtime.runTimers();
+    assert.equal(runtime.captures.length, 0);
+  });
+});
+
+test('PACK-PREVIEW-SCHEDULER thumbnail writes do not recurse and fresh Packs do not schedule', async () => {
+  const runtime = await createPackPreviewSchedulerHarness({
+    onCapture: ({ packId, packs }) => {
+      const pack = packs.get(packId);
+      pack.thumbnailUpdatedAt = pack.lastEdited + 1;
+      return true;
+    },
+  });
+  runtime.scheduler.schedule();
+  runtime.runTimers();
+  assert.equal(runtime.captures.length, 1);
+
+  assert.equal(runtime.scheduler.schedule(), false, 'thumbnail-only notification sees a fresh Pack');
+  assert.equal(runtime.timers.size, 0, 'fresh thumbnail does not create a recursive timer');
+  runtime.runTimers();
+  assert.equal(runtime.captures.length, 1);
+
+  const alreadyFresh = await createPackPreviewSchedulerHarness({
+    pack: {
+      id: 'pack-a', cases: [{ id: 'instance-a' }], lastEdited: 200, thumbnailUpdatedAt: 200,
+    },
+  });
+  assert.equal(alreadyFresh.scheduler.schedule(), false);
+  assert.equal(alreadyFresh.timers.size, 0);
+});
+
+test('PACK-PREVIEW-SCHEDULER wiring preserves fresh Editor-exit fallback and manual Capture Preview', async () => {
+  const [appSrc, packsSrc] = await Promise.all([
+    fs.readFile(appPath, 'utf8'),
+    fs.readFile(packsScreenPath, 'utf8'),
+  ]);
+  assert.match(appSrc, /if \(changes\.packLibrary \|\| changes\._undo \|\| changes\._redo\) \{\s*AutoPackPreviewScheduler\.schedule\(\)/,
+    'committed Pack changes schedule automatic preview without navigation');
+
+  const exitStart = appSrc.indexOf("if (!changes._replace && prevScreen === 'editor' && nextScreen !== 'editor')");
+  const exitEnd = appSrc.indexOf('\n          }', exitStart) + '\n          }'.length;
+  const exitBlock = appSrc.slice(exitStart, exitEnd);
+  assert.match(exitBlock, /lastEdited > thumbAt/,
+    'Editor-exit fallback captures only when the thumbnail remains stale');
+  assert.match(exitBlock, /totalCases > 0/,
+    'Editor-exit fallback preserves the empty Pack rule');
+
+  const manualCaptures = packsSrc.match(/ExportService\.capturePackPreview\(pack\.id, \{ source: 'manual' \}\)/g) || [];
+  assert.equal(manualCaptures.length, 2, 'grid and list Capture Preview actions remain wired as manual captures');
+});
+
 test('OPERATION-LIFECYCLE is wired into the AutoPack engine and editor unpack/truck paths', async () => {
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');

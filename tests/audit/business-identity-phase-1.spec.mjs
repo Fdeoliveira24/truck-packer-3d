@@ -763,13 +763,14 @@ test('MANAGEMENT-NOTES Grid/List controls preserve ownership, placement, accessi
   assert.doesNotMatch(packAdapter, /CaseLibrary|instanceNotes|updateInstance/,
     'Load Plan Notes never crosses into Case or packed-instance ownership');
 
-  for (const [source, dataAttribute, tooltip, ariaPrefix] of [
-    [caseButton, 'data-case-notes', 'Notes', 'Open notes for'],
-    [packButton, 'data-pack-notes', 'Load Plan Notes', 'Open load plan notes for'],
+  for (const [source, dataAttribute, ariaPrefix, entityLabel] of [
+    [caseButton, 'data-case-notes', 'Open notes for', 'Case'],
+    [packButton, 'data-pack-notes', 'Open load plan notes for', 'Load Plan'],
   ]) {
     assert.match(source, /btn\.type = 'button'/, 'Notes is a native keyboard-operable button');
     assert.match(source, new RegExp(`btn\\.setAttribute\\('${dataAttribute}', '1'\\)`));
-    assert.match(source, new RegExp(`btn\\.setAttribute\\('data-tooltip', '${tooltip}'\\)`));
+    assert.doesNotMatch(source, /data-tooltip/,
+      `${entityLabel} Notes buttons must not show hover tooltips in Grid or List`);
     assert.match(source, new RegExp(ariaPrefix));
     assert.match(source, /notes available/,
       'the accessible name communicates populated status without relying on the dot');

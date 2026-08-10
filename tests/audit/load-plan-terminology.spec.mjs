@@ -186,7 +186,7 @@ test('CASE-NOTES-TERM active Case surfaces and PDF use Case Instructions/Notes w
     'packed-instance terminology remains Item Notes');
 });
 
-test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lint, and hydration-owner changes', async () => {
+test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lint, hydration, and preview-owner changes', async () => {
   const app = await fs.readFile(appPath, 'utf8');
   assert.match(app, /\['Case Instructions\/Notes', entry\.caseNotes\]/);
   const diff = execFileSync('git', ['diff', '--unified=0', '--', 'src/app.js'], {
@@ -201,6 +201,10 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lin
     'restoreLiveWorkspaceUiState(liveUiState)',
     'const currentWorkspaceSwitch = OrganizationService.getWorkspaceSwitchState()',
     'applyWorkspaceScopedLocalState(nextOrgIdStr, {',
+    'function createPackPreviewScheduler(',
+    'const getActiveWorkspaceKey = () => (',
+    'const AutoPackPreviewScheduler = createPackPreviewScheduler({',
+    'AutoPackPreviewScheduler.schedule()',
   ];
   const guardedDiff = diff
     .split(/(?=^@@)/m)

@@ -22487,7 +22487,15 @@ test('BUG-01-P same-user refresh and same-user workspace switch never invoke iso
   assert.match(guardLine, /lastAuthUserId !== String\(user\.id\)/, 'same user (matching IDs) never triggers isolation');
 });
 
-async function createOrgContextApplyRuntimeHarness() {
+async function createOrgContextApplyRuntimeHarness({
+  initialActiveOrgId = null,
+  localOrgId = null,
+  hasLoadedWorkspace = false,
+  storageScope = 'anon',
+  workspaceScope = 'no-org',
+  currentScreen = 'packs',
+  workspaceSwitchActive = false,
+} = {}) {
   const src = await readAppSource();
   const resolverStart = src.indexOf('function resolveOrgContextFromBundle(bundle)');
   const applyStart = src.indexOf('async function applyOrgContextFromBundle(');
@@ -22507,6 +22515,13 @@ async function createOrgContextApplyRuntimeHarness() {
     __workspaceResets: [],
     __accessGateCalls: 0,
     __legacyMigrationFinalizations: 0,
+    __initialActiveOrgId: initialActiveOrgId,
+    __localOrgId: localOrgId,
+    __hasLoadedWorkspace: hasLoadedWorkspace,
+    __storageScope: storageScope,
+    __workspaceScope: workspaceScope,
+    __currentScreen: currentScreen,
+    __workspaceSwitchActive: workspaceSwitchActive,
     console: { info() { }, warn() { }, error() { } },
     document: { hidden: false },
     window: {},
@@ -22514,12 +22529,13 @@ async function createOrgContextApplyRuntimeHarness() {
   vm.createContext(context);
   vm.runInContext(`
     let orgContext = {
-      activeOrgId: null,
+      activeOrgId: globalThis.__initialActiveOrgId,
       activeOrg: null,
       orgs: [],
       role: null,
       updatedAt: 0,
     };
+    let hasLoadedScopedState = globalThis.__hasLoadedWorkspace;
     let orgContextResolved = false;
     let orgContextQueued = false;
     let lastOrgPersistAt = 0;
@@ -22536,13 +22552,21 @@ async function createOrgContextApplyRuntimeHarness() {
     const SupabaseClient = {};
     const Storage = {
       finalizeLegacyMigration: () => { globalThis.__legacyMigrationFinalizations += 1; },
+      getStorageScope: () => globalThis.__storageScope,
+      getWorkspaceScope: () => globalThis.__workspaceScope,
     };
     const AccountSwitcher = {
       refresh: () => { globalThis.__accountSwitcherRefreshes += 1; },
     };
-    const readLocalOrgId = () => null;
+    const readLocalOrgId = () => globalThis.__localOrgId;
     const writeLocalOrgId = orgId => { globalThis.__writtenOrgIds.push(orgId); };
-    const applyWorkspaceScopedLocalState = orgId => { globalThis.__workspaceApplies.push(orgId); };
+    const getWorkspaceStorageScope = orgId => String(orgId || '').trim() || 'no-org';
+    const StateStore = {
+      get: key => key === 'currentScreen' ? globalThis.__currentScreen : null,
+    };
+    const applyWorkspaceScopedLocalState = (orgId, options) => {
+      globalThis.__workspaceApplies.push({ orgId, options: { ...(options || {}) } });
+    };
     const resetWorkspaceScopedUiState = orgId => { globalThis.__workspaceResets.push(orgId); };
     const applyOrgRequiredUi = value => { globalThis.__orgRequiredCalls.push(value); };
     const queueOrgScopedRender = reason => { globalThis.__renderCalls.push(reason); };
@@ -22562,6 +22586,7 @@ async function createOrgContextApplyRuntimeHarness() {
       getActiveOrgIdNow: () => orgContext.activeOrgId,
       // Stage 2 CP3: org-changed publication moved to OrganizationService.
       dispatchOrgContextChanged: (...a) => dispatchOrgContextChanged(...a),
+      getWorkspaceSwitchState: () => ({ active: globalThis.__workspaceSwitchActive }),
     };
     const getAuthTruthSnapshot = () => ({ status: 'signed_in', isSignedIn: true });
     const isTp3dDebugEnabled = () => false;
@@ -22649,6 +22674,72 @@ test('BUG-01-AM runtime: partial bundle stays conservative and a later full bund
     'recovery produces exactly one final switcher refresh, not a loop');
   assert.strictEqual(runtime.calls.__legacyMigrationFinalizations, 1,
     'the later full bundle finalizes a pending legacy migration exactly once');
+});
+
+test('WORKSPACE-HYDRATION-RACE authoritative same-workspace confirmation requests narrow live UI preservation', async () => {
+  const runtime = await createOrgContextApplyRuntimeHarness({
+    localOrgId: 'org-a',
+    hasLoadedWorkspace: true,
+    storageScope: 'user-a',
+    workspaceScope: 'org-a',
+    currentScreen: 'editor',
+  });
+  const org = { id: 'org-a', name: 'Workspace A', role: 'owner' };
+
+  await runtime.apply({
+    session: { access_token: 'redacted' },
+    user: { id: 'user-a' },
+    profile: { _isDefault: true, current_organization_id: org.id },
+    membership: { organization_id: org.id, role: 'owner' },
+    orgs: [org],
+    activeOrgId: org.id,
+    partial: false,
+  });
+
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(runtime.calls.__workspaceApplies)), [{
+    orgId: 'org-a',
+    options: { seedIfMissing: false, preserveLiveUi: true },
+  }]);
+  assert.deepStrictEqual(Array.from(runtime.calls.__workspaceResets), [],
+    'same-workspace hydration does not run the real-boundary UI reset');
+});
+
+test('WORKSPACE-HYDRATION-RACE no interaction and real switches retain boundary reset behavior', async () => {
+  const orgA = { id: 'org-a', name: 'Workspace A', role: 'owner' };
+  const orgB = { id: 'org-b', name: 'Workspace B', role: 'owner' };
+  const makeBundle = activeOrg => ({
+    session: { access_token: 'redacted' },
+    user: { id: 'user-a' },
+    profile: { _isDefault: true, current_organization_id: activeOrg.id },
+    membership: { organization_id: activeOrg.id, role: 'owner' },
+    orgs: [orgA, orgB],
+    activeOrgId: activeOrg.id,
+    partial: false,
+  });
+
+  const noInteraction = await createOrgContextApplyRuntimeHarness({
+    localOrgId: orgA.id,
+    hasLoadedWorkspace: true,
+    storageScope: 'user-a',
+    workspaceScope: orgA.id,
+    currentScreen: 'packs',
+  });
+  await noInteraction.apply(makeBundle(orgA));
+  assert.equal(noInteraction.calls.__workspaceApplies[0].options.preserveLiveUi, false);
+  assert.deepStrictEqual(Array.from(noInteraction.calls.__workspaceResets), [orgA.id]);
+
+  const realSwitch = await createOrgContextApplyRuntimeHarness({
+    initialActiveOrgId: orgB.id,
+    localOrgId: orgA.id,
+    hasLoadedWorkspace: true,
+    storageScope: 'user-a',
+    workspaceScope: orgB.id,
+    currentScreen: 'editor',
+    workspaceSwitchActive: true,
+  });
+  await realSwitch.apply(makeBundle(orgA));
+  assert.equal(realSwitch.calls.__workspaceApplies[0].options.preserveLiveUi, false);
+  assert.deepStrictEqual(Array.from(realSwitch.calls.__workspaceResets), [orgA.id]);
 });
 
 // ─── BUG-07: sidebar billing DOM must be cleared at the source, not CSS-hidden ─
@@ -23955,6 +24046,14 @@ test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped bou
   assert.ok(workspaceScopeFn.indexOf('flushPendingStorageSave()') < workspaceScopeFn.indexOf('Storage.setWorkspaceScope(scope)'),
     'workspace pending save flushes before the scope changes');
 
+  const applyScopeStart = src.indexOf('function applyWorkspaceScopedLocalState(');
+  const applyScopeEnd = src.indexOf('\n    applyPostLogoutLocalStateReset =', applyScopeStart);
+  const applyScopeFn = src.slice(applyScopeStart, applyScopeEnd);
+  assert.ok(applyScopeFn.indexOf('loadScopedStateOrSeed') < applyScopeFn.indexOf('restoreLiveWorkspaceUiState'),
+    'same-workspace UI reconciliation happens only after the target scoped library loads');
+  assert.ok(applyScopeFn.indexOf('restoreLiveWorkspaceUiState') < applyScopeFn.indexOf('suspendAutoSave = false'),
+    'same-workspace UI reconciliation completes before autosave resumes');
+
   const resetStart = src.indexOf('function resetAppStateToEmpty(');
   const resetEnd = src.indexOf('\n    function loadScopedStateOrSeed(', resetStart);
   const resetFn = src.slice(resetStart, resetEnd);
@@ -23974,7 +24073,206 @@ test('APP-STABILIZATION-PHASE1 app flushes and resets history only at scoped bou
     'legacy migration finalizes only after a full bundle confirms active membership');
 });
 
-async function createPhase2OrgOrderingHarness() {
+async function createLateWorkspaceHydrationRuntime({
+  liveScreen = 'editor',
+  livePackId = 'pack-a',
+  livePacks = [{ id: 'pack-a', title: 'Pack A' }],
+  storedPackId = null,
+  storedPacks = [{ id: 'pack-a', title: 'Pack A (stored)' }],
+  withPriorHistory = false,
+} = {}) {
+  const src = await fs.readFile(appPath, 'utf8');
+  const scopeStart = src.indexOf('function getWorkspaceStorageScope(');
+  const scopeEnd = src.indexOf('\n    // ============================================================================\n    // SECTION: BOOT HELPERS (RUNTIME VALIDATION)', scopeStart);
+  const uiResetStart = src.indexOf('function resetWorkspaceScopedUiState(');
+  const uiResetEnd = src.indexOf('\n    function clearOrgContext(', uiResetStart);
+  assert.ok(scopeStart >= 0 && scopeEnd > scopeStart,
+    'production workspace scoped-state helpers are extractable');
+  assert.ok(uiResetStart >= 0 && uiResetEnd > uiResetStart,
+    'production workspace UI reset is extractable');
+
+  const StateStore = await import(`${stateStorePath.href}?late-hydration=${Date.now()}-${Math.random()}`);
+  StateStore.init({
+    currentScreen: liveScreen,
+    currentPackId: livePackId,
+    selectedInstanceIds: ['instance-a'],
+    caseLibrary: [],
+    packLibrary: livePacks,
+    folderLibrary: [],
+    preferences: { theme: 'light' },
+  });
+  if (withPriorHistory) {
+    StateStore.set({ caseLibrary: [{ id: 'prior-history-entry' }] });
+  }
+
+  const context = {
+    __StateStore: StateStore,
+    __stored: {
+      currentPackId: storedPackId,
+      caseLibrary: [],
+      packLibrary: storedPacks,
+      folderLibrary: [],
+      preferences: { theme: 'light' },
+    },
+    __workspaceScope: 'org-a',
+    __flushes: 0,
+  };
+  vm.createContext(context);
+  vm.runInContext(`
+    let suspendAutoSave = false;
+    let hasLoadedScopedState = true;
+    let lastLoadedWorkspaceStorageKey = 'user-a|startup-pending';
+    let lastWorkspaceUiResetKey = '';
+    let applyPostLogoutLocalStateReset = () => {};
+    const StateStore = globalThis.__StateStore;
+    const Storage = {
+      getStorageScope: () => 'user-a',
+      getWorkspaceScope: () => globalThis.__workspaceScope,
+      setWorkspaceScope: scope => { globalThis.__workspaceScope = String(scope); },
+      flushPendingSave: () => { globalThis.__flushes += 1; },
+      load: () => JSON.parse(JSON.stringify(globalThis.__stored)),
+      saveNow: () => {},
+    };
+    const KeyboardManager = { clearClipboard: () => {} };
+    const AutoPackEngine = { bumpWorkspaceGeneration: () => {} };
+    const PacksUI = null;
+    const SessionManager = { clear: () => {} };
+    const PackLibrary = {
+      repairRestoredPackPlacements: pack => JSON.parse(JSON.stringify(pack)),
+      computeStats: () => ({}),
+    };
+    const Defaults = {
+      defaultPreferences: { theme: 'light' },
+      seedCases: () => [],
+      seedPack: () => ({ id: 'demo-pack', cases: [] }),
+    };
+    const Utils = { volumeInCubicInches: () => 0 };
+    const applyCaseDefaultColor = value => value;
+    ${src.slice(scopeStart, scopeEnd)}
+    ${src.slice(uiResetStart, uiResetEnd)}
+    globalThis.__applyWorkspaceScopedLocalState = applyWorkspaceScopedLocalState;
+    globalThis.__resetAppStateToEmpty = resetAppStateToEmpty;
+    globalThis.__resetWorkspaceScopedUiState = resetWorkspaceScopedUiState;
+  `, context);
+
+  return {
+    apply: (orgId, options) => context.__applyWorkspaceScopedLocalState(orgId, options),
+    reset: () => context.__resetAppStateToEmpty(),
+    resetWorkspaceUi: orgId => context.__resetWorkspaceScopedUiState(orgId),
+    snapshot: () => StateStore.snapshot(),
+    undo: () => StateStore.undo(),
+    counters: context,
+  };
+}
+
+test('WORKSPACE-HYDRATION-RACE same-workspace loading preserves a newer live Editor and valid Pack', async () => {
+  const runtime = await createLateWorkspaceHydrationRuntime();
+  runtime.apply('org-a', { seedIfMissing: false, preserveLiveUi: true });
+
+  const state = runtime.snapshot();
+  assert.equal(state.currentScreen, 'editor',
+    'same-workspace late hydration must not replace the newer live Editor with stored Packs');
+  assert.equal(state.currentPackId, 'pack-a',
+    'same-workspace late hydration must retain a live Pack that exists in the loaded library');
+  assert.deepEqual(state.selectedInstanceIds, [],
+    'scoped replacement keeps the existing minimal selection-reset behavior');
+});
+
+test('WORKSPACE-HYDRATION-RACE same-workspace loading preserves a newer Cases screen', async () => {
+  const runtime = await createLateWorkspaceHydrationRuntime({
+    liveScreen: 'cases',
+    livePackId: null,
+  });
+  runtime.apply('org-a', { seedIfMissing: false, preserveLiveUi: true });
+
+  const state = runtime.snapshot();
+  assert.equal(state.currentScreen, 'cases');
+  assert.equal(state.currentPackId, null);
+});
+
+test('WORKSPACE-HYDRATION-RACE no newer UI action keeps ordinary stored-state restoration', async () => {
+  const runtime = await createLateWorkspaceHydrationRuntime({
+    liveScreen: 'packs',
+    livePackId: 'pack-live',
+    livePacks: [{ id: 'pack-live' }],
+    storedPackId: 'pack-stored',
+    storedPacks: [{ id: 'pack-stored' }],
+  });
+  runtime.apply('org-a', { seedIfMissing: false, preserveLiveUi: false });
+
+  const state = runtime.snapshot();
+  assert.equal(state.currentScreen, 'packs');
+  assert.equal(state.currentPackId, 'pack-stored',
+    'without newer UI, the valid stored Pack identity remains authoritative');
+});
+
+test('WORKSPACE-HYDRATION-RACE invalid live Pack falls back without a stale Editor identity', async () => {
+  const runtime = await createLateWorkspaceHydrationRuntime({
+    liveScreen: 'editor',
+    livePackId: 'pack-a',
+    livePacks: [{ id: 'pack-a' }],
+    storedPackId: null,
+    storedPacks: [{ id: 'pack-b' }],
+  });
+  runtime.apply('org-a', { seedIfMissing: false, preserveLiveUi: true });
+
+  const state = runtime.snapshot();
+  assert.equal(state.currentScreen, 'packs');
+  assert.equal(state.currentPackId, null);
+  assert.deepEqual(state.packLibrary, [{ id: 'pack-b' }]);
+});
+
+test('WORKSPACE-HYDRATION-RACE explicit A to B loading never preserves A UI, selection, or history', async () => {
+  const runtime = await createLateWorkspaceHydrationRuntime({
+    storedPackId: 'pack-b',
+    storedPacks: [{ id: 'pack-b' }],
+    withPriorHistory: true,
+  });
+  runtime.apply('org-b', { seedIfMissing: false });
+  runtime.resetWorkspaceUi('org-b');
+
+  const state = runtime.snapshot();
+  assert.equal(state.currentScreen, 'packs');
+  assert.equal(state.currentPackId, null);
+  assert.deepEqual(state.selectedInstanceIds, []);
+  assert.deepEqual(state.packLibrary, [{ id: 'pack-b' }]);
+  assert.equal(runtime.undo(), false, 'A history is unreachable after B replacement');
+  assert.equal(runtime.counters.__workspaceScope, 'org-b');
+});
+
+test('WORKSPACE-HYDRATION-RACE auth reset clears prior Pack, libraries, selection, and history', async () => {
+  const runtime = await createLateWorkspaceHydrationRuntime({ withPriorHistory: true });
+  runtime.reset();
+
+  const state = runtime.snapshot();
+  assert.equal(state.currentScreen, 'packs');
+  assert.equal(state.currentPackId, null);
+  assert.deepEqual(state.selectedInstanceIds, []);
+  assert.deepEqual(state.caseLibrary, []);
+  assert.deepEqual(state.packLibrary, []);
+  assert.equal(runtime.undo(), false);
+});
+
+test('WORKSPACE-HYDRATION-RACE user-switch and signed-out owners retain the full reset contract', async () => {
+  const src = await fs.readFile(appPath, 'utf8');
+  const userSwitchStart = src.indexOf('function applyUserSwitchIsolation(');
+  const userSwitchEnd = src.indexOf('\n    /**\n     * @param {{ event?: string', userSwitchStart);
+  const signedOutStart = src.indexOf('function _executeSignedOutCleanup(');
+  const signedOutEnd = src.indexOf('\n    const PROFILE_CHECK_TTL_MS', signedOutStart);
+  assert.ok(userSwitchStart >= 0 && userSwitchEnd > userSwitchStart && signedOutStart >= 0 && signedOutEnd > signedOutStart,
+    'production user-switch and signed-out reset owners are extractable');
+  const userSwitchFn = src.slice(userSwitchStart, userSwitchEnd);
+  const signedOutFn = src.slice(signedOutStart, signedOutEnd);
+
+  assert.match(userSwitchFn, /flushPendingStorageSave\(\)[\s\S]*resetAppStateToEmpty\(\)/,
+    'different-user isolation flushes before resetting all prior-user app state');
+  assert.match(signedOutFn, /flushPendingStorageSave\(\)[\s\S]*resetAppStateToEmpty\(\)[\s\S]*Storage\.setStorageScope\('anon'\)/,
+    'signed-out cleanup still clears state before changing to the anonymous storage scope');
+  assert.doesNotMatch(userSwitchFn, /preserveLiveUi/);
+  assert.doesNotMatch(signedOutFn, /preserveLiveUi/);
+});
+
+async function createPhase2OrgOrderingHarness({ initialActiveOrgId = null } = {}) {
   const src = await readAppSource();
   const helperStart = src.indexOf('function parseOrgContextVersion(');
   const helperEnd = src.indexOf('\n  /**\n   * @param {{', helperStart);
@@ -23986,7 +24284,10 @@ async function createPhase2OrgOrderingHarness() {
   const context = {
     __dispatches: [],
     __appliedOrgs: [],
+    __applyOptions: [],
+    __workspaceResets: [],
     __writes: [],
+    __initialActiveOrgId: initialActiveOrgId,
     console: { info() { }, warn() { }, error() { } },
   };
   vm.createContext(context);
@@ -23994,7 +24295,7 @@ async function createPhase2OrgOrderingHarness() {
     let orgContextVersion = 0;
     let lastAppliedOrgContextVersion = 0;
     let lastAppliedOrgContextTabId = '';
-    let orgContext = { activeOrgId: null, activeOrg: null, orgs: [], role: null, updatedAt: 0 };
+    let orgContext = { activeOrgId: globalThis.__initialActiveOrgId, activeOrg: null, orgs: [], role: null, updatedAt: 0 };
     let orgContextQueued = false;
     let _orgBundleFetchInflightForOrg = null;
     const orgContextTabId = 'tab-local';
@@ -24005,8 +24306,11 @@ async function createPhase2OrgOrderingHarness() {
     const isTp3dDebugEnabled = () => false;
     const beginWorkspaceSwitch = () => {};
     const writeLocalOrgId = orgId => { globalThis.__writes.push(orgId); };
-    const applyWorkspaceScopedLocalState = orgId => { globalThis.__appliedOrgs.push(orgId); };
-    const resetWorkspaceScopedUiState = () => {};
+    const applyWorkspaceScopedLocalState = (orgId, options) => {
+      globalThis.__appliedOrgs.push(orgId);
+      globalThis.__applyOptions.push(options || null);
+    };
+    const resetWorkspaceScopedUiState = orgId => { globalThis.__workspaceResets.push(orgId); };
     const reconcileBillingStateForActiveOrg = () => {};
     const markWorkspaceSwitchReady = () => {};
     const markWorkspaceSwitchOrgReadyIfResolved = () => {};
@@ -24123,6 +24427,25 @@ test('APP-STABILIZATION-PHASE2 fresh-tab timestamps outrank old local counters w
     epoch: 101,
   }), false, 'malformed organization payload stays rejected');
   assert.equal(runtime.snapshot().activeOrgId, orgA);
+});
+
+test('WORKSPACE-HYDRATION-RACE cross-tab A to B remains a real UI reset boundary', async () => {
+  const orgA = '11111111-1111-4111-8111-111111111111';
+  const orgB = '22222222-2222-4222-8222-222222222222';
+  const runtime = await createPhase2OrgOrderingHarness({ initialActiveOrgId: orgA });
+
+  assert.equal(runtime.handle({
+    orgId: orgB,
+    userId: 'user-1',
+    tabId: 'tab-remote',
+    epoch: 100,
+    ts: 100,
+  }), true);
+  assert.deepEqual(Array.from(runtime.calls.__appliedOrgs), [orgB]);
+  assert.deepEqual(JSON.parse(JSON.stringify(runtime.calls.__applyOptions)), [{ seedIfMissing: false }],
+    'cross-tab loading never opts into same-workspace UI preservation');
+  assert.deepEqual(Array.from(runtime.calls.__workspaceResets), [orgB]);
+  assert.equal(runtime.snapshot().activeOrgId, orgB);
 });
 
 test('APP-STABILIZATION-PHASE2 equal versions converge by tab id and the next local version advances past remote state', async () => {

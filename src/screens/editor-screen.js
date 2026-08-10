@@ -12,6 +12,12 @@
 // ============================================================================
 
 import { createCaseGeometry } from '../editor/geometry-factory.js';
+import {
+  createTextTextureCache,
+  markAnnotationNoPick,
+  resolveLabelTextScale,
+  resolveTextDprBucket,
+} from '../editor/text-annotation-foundation.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
 import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
 import {
@@ -744,6 +750,9 @@ export function createCaseScene({
     const instances = new Map(); // instanceId -> THREE.Group
     const edgesCache = new Map(); // signature -> { geometry: THREE.EdgesGeometry, count: number }
     const textureCache = new Map(); // signature -> { textures: THREE.CanvasTexture[], count: number }
+    const labelTextureCache = createTextTextureCache({ THREE, documentRef: globalThis.document });
+    let labelPlaneGeometry = new THREE.PlaneGeometry(1, 1);
+    labelPlaneGeometry.userData.sharedLabelGeometry = true;
     let hoveredId = null;
     let draggedId = null;
     let selectedIds = new Set();
@@ -760,7 +769,7 @@ export function createCaseScene({
       return `#${color.getHexString()}`;
     }
 
-    function generateCaseTexture(caseData, faceIndex, w, h, baseColor) {
+    function generateCaseTexture(caseData, w, h, baseColor) {
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
@@ -785,61 +794,37 @@ export function createCaseScene({
       ctx.strokeStyle = 'rgba(0,0,0,0.25)';
       ctx.lineWidth = Math.max(2, w * 0.01);
       ctx.strokeRect(2, 2, w - 4, h - 4);
-      if (faceIndex === 4 || faceIndex === 5) {
-        const faceDims = caseData.dimensions || {};
-        if ((faceDims.length || 0) < 3 || (faceDims.height || 0) < 3) {
-          const tex = new THREE.CanvasTexture(canvas);
-          tex.colorSpace = THREE.SRGBColorSpace;
-          return tex;
-        }
-        ctx.fillStyle = '#000000';
-        ctx.font = `bold ${Math.floor(h * 0.12)}px Arial, sans-serif`;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        const name = caseData.name || (isPallet ? 'Pallet' : 'Case');
-        ctx.fillText(name.substring(0, 16), w / 2, h * 0.4);
-        ctx.font = `${Math.floor(h * 0.08)}px Arial, sans-serif`;
-        ctx.fillText(`${caseData.weight || 0} lb`, w / 2, h * 0.6);
-        if (!caseData.canFlip && !isPallet) {
-          ctx.font = `${Math.floor(h * 0.1)}px Arial`;
-          ctx.fillText('⇧⇧', w / 2, h * 0.8);
-        }
-        if (isPallet && caseData.maxPalletWeight > 0) {
-          ctx.font = `${Math.floor(h * 0.06)}px Arial, sans-serif`;
-          ctx.fillText(`Warning limit: ${caseData.maxPalletWeight} lb`, w / 2, h * 0.8);
-        }
-      }
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
       return tex;
     }
 
-    function acquireTextures(signature, caseData, dims) {
-      const cached = textureCache.get(signature);
+    function acquireTextures(bodySignature, caseData, dims) {
+      const cached = textureCache.get(bodySignature);
       if (cached) { cached.count += 1; return cached.textures; }
       const lPx = Math.min(512, Math.max(64, dims.length * 4));
       const wPx = Math.min(512, Math.max(64, dims.width * 4));
       const hPx = Math.min(512, Math.max(64, dims.height * 4));
       const baseColor = resolveCargoSurfaceColor(caseData);
       const textures = [
-        generateCaseTexture(caseData, 0, hPx, wPx, baseColor),
-        generateCaseTexture(caseData, 1, hPx, wPx, baseColor),
-        generateCaseTexture(caseData, 2, lPx, wPx, baseColor),
-        generateCaseTexture(caseData, 3, lPx, wPx, baseColor),
-        generateCaseTexture(caseData, 4, lPx, hPx, baseColor),
-        generateCaseTexture(caseData, 5, lPx, hPx, baseColor),
+        generateCaseTexture(caseData, hPx, wPx, baseColor),
+        generateCaseTexture(caseData, hPx, wPx, baseColor),
+        generateCaseTexture(caseData, lPx, wPx, baseColor),
+        generateCaseTexture(caseData, lPx, wPx, baseColor),
+        generateCaseTexture(caseData, lPx, hPx, baseColor),
+        generateCaseTexture(caseData, lPx, hPx, baseColor),
       ];
-      textureCache.set(signature, { textures, count: 1 });
+      textureCache.set(bodySignature, { textures, count: 1 });
       return textures;
     }
 
-    function releaseTextures(signature) {
-      const cached = textureCache.get(signature);
+    function releaseTextures(bodySignature) {
+      const cached = textureCache.get(bodySignature);
       if (!cached) return;
       cached.count -= 1;
       if (cached.count <= 0) {
         cached.textures.forEach(t => t.dispose());
-        textureCache.delete(signature);
+        textureCache.delete(bodySignature);
       }
     }
 
@@ -850,6 +835,10 @@ export function createCaseScene({
       instances.clear();
       edgesCache.forEach(entry => entry.geometry.dispose());
       edgesCache.clear();
+      labelTextureCache.clear();
+      labelPlaneGeometry.dispose();
+      labelPlaneGeometry = new THREE.PlaneGeometry(1, 1);
+      labelPlaneGeometry.userData.sharedLabelGeometry = true;
       hoveredId = null;
       draggedId = null;
       selectedIds = new Set();
@@ -879,8 +868,8 @@ export function createCaseScene({
         const signature = buildSignature(inst, caseData);
         const existing = instances.get(inst.id);
         if (!existing || existing.userData.signature !== signature) {
-          if (existing) disposeGroup(scene, existing);
           const group = createInstanceGroup(inst, caseData);
+          if (existing) disposeGroup(scene, existing);
           instances.set(inst.id, group);
           scene.add(group);
         }
@@ -910,8 +899,8 @@ export function createCaseScene({
       const textureColor = String(isPallet ? '#A0522D' : (catColor || caseData.color || '#8B4513'));
       const rawShape = String(caseData.shape || 'box').toLowerCase();
       const shape = rawShape === 'cylinder' || rawShape === 'drum' ? 'cylinder' : 'box';
+      const prefs = PreferencesManager.get();
       const name = caseData.name || (isPallet ? 'Pallet' : 'Case');
-      const labelName = name.substring(0, 16);
       const weightLabel = `${caseData.weight || 0} lb`;
       const showHandlingArrows = !caseData.canFlip && !isPallet;
       const palletWarning = isPallet && caseData.maxPalletWeight > 0
@@ -926,11 +915,28 @@ export function createCaseScene({
         textureColor,
         shape,
         isPallet,
-        labelName,
+        name,
         weightLabel,
         showHandlingArrows,
         palletWarning,
+        resolveLabelTextScale(prefs.labelFontSize),
+        resolveTextDprBucket(globalThis.window && globalThis.window.devicePixelRatio),
       ]);
+    }
+
+    function buildBodyTextureSignature(caseData, dims) {
+      return JSON.stringify([
+        dims.length,
+        dims.width,
+        dims.height,
+        resolveCargoSurfaceColor(caseData),
+        caseData.isPallet === true,
+      ]);
+    }
+
+    function buildEdgeSignature(caseData, dims) {
+      const shape = String(caseData.shape || 'box').toLowerCase();
+      return JSON.stringify([dims.length, dims.width, dims.height, shape]);
     }
 
     function acquireEdgeGeometry(signature, boxGeometry) {
@@ -963,6 +969,10 @@ export function createCaseScene({
       group.userData.signature = signature;
 
       const dims = caseData.dimensions || { length: 1, width: 1, height: 1 };
+      const bodyTextureSignature = buildBodyTextureSignature(caseData, dims);
+      const edgeSignature = buildEdgeSignature(caseData, dims);
+      group.userData.bodyTextureSignature = bodyTextureSignature;
+      group.userData.edgeSignature = edgeSignature;
       const lengthW = SceneManager.toWorld(dims.length);
       const widthW = SceneManager.toWorld(dims.width);
       const heightW = SceneManager.toWorld(dims.height);
@@ -974,7 +984,7 @@ export function createCaseScene({
       group.userData.baseColor = baseColor;
 
       const geo = createCaseGeometry(caseData, SceneManager.toWorld);
-      const textures = acquireTextures(signature, caseData, dims);
+      const textures = acquireTextures(bodyTextureSignature, caseData, dims);
       const materials = textures.map(tex => new THREE.MeshStandardMaterial({
         map: tex,
         roughness: 0.82,
@@ -990,7 +1000,7 @@ export function createCaseScene({
       group.userData.mesh = mesh;
       group.add(mesh);
 
-      const edges = acquireEdgeGeometry(signature, geo);
+      const edges = acquireEdgeGeometry(edgeSignature, geo);
       const edgeColor = new THREE.Color(baseColor);
       edgeColor.lerp(new THREE.Color(0x26313b), 0.78);
       const lineMat = new THREE.LineBasicMaterial({
@@ -999,25 +1009,98 @@ export function createCaseScene({
         opacity: 0.78,
       });
       const lines = new THREE.LineSegments(edges, lineMat);
-      lines.userData.edgeKey = signature;
+      lines.userData.edgeKey = edgeSignature;
       group.userData.lines = lines;
       group.userData.edgeColorOriginal = edgeColor.getHex();
       group.add(lines);
 
+      const labels = createSurfaceLabels(caseData, dims);
+      group.userData.labelRoot = labels;
+      group.add(labels);
+
       return group;
+    }
+
+    function createSurfaceLabels(caseData, dims) {
+      const root = new THREE.Group();
+      root.userData.caseLabels = true;
+      root.userData.textTextureKeys = [];
+      const isPallet = caseData.isPallet === true;
+      const rawShape = String(caseData.shape || 'box').toLowerCase();
+      const isCylinder = rawShape === 'cylinder' || rawShape === 'drum';
+      const faceWidth = Number(dims.length) || 0;
+      const faceHeight = isCylinder
+        ? Math.min(Number(dims.width) || 0, Number(dims.height) || 0)
+        : Number(dims.height) || 0;
+      if (faceWidth < 3 || faceHeight < 3) return root;
+
+      const prefs = PreferencesManager.get();
+      const aspect = Math.max(1.6, Math.min(3.2, faceWidth / Math.max(1, faceHeight)));
+      const logicalWidth = 320;
+      const logicalHeight = Math.round(logicalWidth / aspect);
+      const content = {
+        name: caseData.name || (isPallet ? 'Pallet' : 'Case'),
+        weight: `${caseData.weight || 0} lb`,
+        handling: !caseData.canFlip && !isPallet ? '⇧⇧ Keep upright' : '',
+        warning: isPallet && caseData.maxPalletWeight > 0
+          ? `Warning limit: ${caseData.maxPalletWeight} lb`
+          : '',
+      };
+      const acquired = labelTextureCache.acquire({
+        content,
+        logicalWidth,
+        logicalHeight,
+        fontScale: resolveLabelTextScale(prefs.labelFontSize),
+        maxLines: 2,
+        alignment: 'left',
+        foreground: '#20262d',
+        background: '#f5f2e8',
+        border: '#737b82',
+        accent: '#a13f21',
+        effectiveDpr: globalThis.window && globalThis.window.devicePixelRatio,
+      });
+      root.userData.textTextureKeys.push(acquired.key);
+      const material = new THREE.MeshBasicMaterial({
+        map: acquired.texture,
+        transparent: false,
+        depthTest: true,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const plateWidth = SceneManager.toWorld(Math.min(faceWidth * 0.72, faceHeight * 2.7));
+      const plateHeight = plateWidth / aspect;
+      const offset = Math.max(SceneManager.toWorld(0.02), 0.001);
+      const positions = isCylinder
+        ? [Math.min(Number(dims.width) || 0, Number(dims.height) || 0) / 2]
+        : [Number(dims.width) / 2, -Number(dims.width) / 2];
+      for (const surfaceZ of positions) {
+        const plane = markAnnotationNoPick(new THREE.Mesh(labelPlaneGeometry, material.clone()));
+        plane.userData.caseIdentityLabel = true;
+        plane.userData.sharedLabelGeometry = true;
+        plane.scale.set(plateWidth, plateHeight, 1);
+        plane.position.set(0, 0, SceneManager.toWorld(surfaceZ) + Math.sign(surfaceZ || 1) * offset);
+        if (surfaceZ < 0) plane.rotation.y = Math.PI;
+        root.add(plane);
+      }
+      material.dispose();
+      root.visible = prefs.showLabels !== false;
+      return root;
     }
 
     function disposeGroup(scene, group) {
       if (!group) return;
-      if (group.userData && group.userData.signature) {
-        releaseEdgeGeometry(group.userData.signature);
-        releaseTextures(group.userData.signature);
+      if (group.userData) {
+        releaseEdgeGeometry(group.userData.edgeSignature);
+        releaseTextures(group.userData.bodyTextureSignature);
+        const labelKeys = group.userData.labelRoot && group.userData.labelRoot.userData.textTextureKeys;
+        (labelKeys || []).forEach(key => labelTextureCache.release(key));
       }
       scene.remove(group);
       group.traverse(obj => {
         if (obj.geometry) {
           const cachedKey = obj.geometry.userData && obj.geometry.userData.edgeCacheKey;
-          if (!cachedKey) obj.geometry.dispose();
+          const sharedLabel = obj.geometry.userData && obj.geometry.userData.sharedLabelGeometry;
+          if (!cachedKey && !sharedLabel) obj.geometry.dispose();
         }
         if (obj.material) {
           const mats = Array.isArray(obj.material) ? obj.material : [obj.material];
@@ -1113,6 +1196,14 @@ export function createCaseScene({
           }
         }
       }
+      if (group.userData.labelRoot) {
+        group.userData.labelRoot.visible = prefs.showLabels !== false;
+        group.userData.labelRoot.traverse(obj => {
+          if (!obj.userData || obj.userData.caseIdentityLabel !== true || !obj.material) return;
+          obj.material.transparent = state.meshTransparent;
+          obj.material.opacity = state.meshOpacity;
+        });
+      }
     }
 
     function recomputeVisualStates() {
@@ -1165,6 +1256,10 @@ export function createCaseScene({
         if (group.userData.mesh) meshes.push(group.userData.mesh);
       });
       return meshes;
+    }
+
+    function applyLabelPreferences() {
+      recomputeVisualStates();
     }
 
     // ── V3A vertical placement gizmo ─────────────────────────────────────
@@ -1870,6 +1965,7 @@ export function createCaseScene({
       getGizmoTargetId,
       getGizmoTargetMode,
       setPendingPoseWatcher,
+      applyLabelPreferences,
     };
   })();
 

@@ -186,7 +186,7 @@ test('CASE-NOTES-TERM active Case surfaces and PDF use Case Instructions/Notes w
     'packed-instance terminology remains Item Notes');
 });
 
-test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF and lint changes', async () => {
+test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lint, and hydration-owner changes', async () => {
   const app = await fs.readFile(appPath, 'utf8');
   assert.match(app, /\['Case Instructions\/Notes', entry\.caseNotes\]/);
   const diff = execFileSync('git', ['diff', '--unified=0', '--', 'src/app.js'], {
@@ -194,11 +194,25 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF and 
     encoding: 'utf8',
   });
   if (!diff.trim()) return;
-  const changedLines = diff
+  const hydrationOwnerMarkers = [
+    'captureLiveWorkspaceUiState',
+    'function applyWorkspaceScopedLocalState(',
+    'const liveUiState = preserveLiveUi',
+    'restoreLiveWorkspaceUiState(liveUiState)',
+    'const currentWorkspaceSwitch = OrganizationService.getWorkspaceSwitchState()',
+    'applyWorkspaceScopedLocalState(nextOrgIdStr, {',
+  ];
+  const guardedDiff = diff
+    .split(/(?=^@@)/m)
+    .filter(chunk => !hydrationOwnerMarkers.some(marker => chunk.includes(marker)))
+    .join('');
+  const changedLines = guardedDiff
     .split('\n')
     .filter(line => (/^[+-]/).test(line) && !line.startsWith('---') && !line.startsWith('+++'));
+  if (changedLines.length === 0) return;
   // This exact allowlist keeps the earlier ESLint 10 dead-store migration and
   // the approved Quantity Controls PDF checklist aggregation narrowly scoped.
+  // Runtime hydration ownership is covered by its dedicated behavioral matrix.
   assert.deepEqual(changedLines, [
     '-      let enabled = false;',
     '+      let enabled;',

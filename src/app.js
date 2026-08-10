@@ -2314,6 +2314,33 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return `${userScope}|${getWorkspaceStorageScope(targetOrgId)}`;
     }
 
+    function captureLiveWorkspaceUiState() {
+      const currentScreen = StateStore.get('currentScreen');
+      if (!['editor', 'cases', 'updates', 'roadmap', 'settings'].includes(currentScreen)) return null;
+      return {
+        currentScreen,
+        currentPackId: StateStore.get('currentPackId') || null,
+      };
+    }
+
+    function restoreLiveWorkspaceUiState(liveUiState) {
+      if (!liveUiState) return false;
+      if (liveUiState.currentScreen === 'editor') {
+        const loadedPacks = StateStore.get('packLibrary') || [];
+        const currentPackId = liveUiState.currentPackId;
+        if (!currentPackId || !loadedPacks.some(pack => pack && pack.id === currentPackId)) {
+          return false;
+        }
+        StateStore.set({
+          currentScreen: 'editor',
+          currentPackId,
+        }, { skipHistory: true });
+        return true;
+      }
+      StateStore.set({ currentScreen: liveUiState.currentScreen }, { skipHistory: true });
+      return true;
+    }
+
     function flushPendingStorageSave() {
       if (Storage && typeof Storage.flushPendingSave === 'function') {
         Storage.flushPendingSave();
@@ -2332,11 +2359,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
       return scope;
     }
 
-    function applyWorkspaceScopedLocalState(targetOrgId, { seedIfMissing = true, force = false } = {}) {
+    function applyWorkspaceScopedLocalState(
+      targetOrgId,
+      { seedIfMissing = true, force = false, preserveLiveUi = false } = {}
+    ) {
       const nextStorageKey = getWorkspaceStorageKey(targetOrgId);
       const workspaceChanged = lastLoadedWorkspaceStorageKey !== nextStorageKey;
       if (!force && !workspaceChanged) return false;
       if (force && !workspaceChanged) flushPendingStorageSave();
+      const liveUiState = preserveLiveUi ? captureLiveWorkspaceUiState() : null;
       setWorkspaceStorageScope(targetOrgId);
       if (workspaceChanged) {
         try {
@@ -2362,6 +2393,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         } else {
           resetAppStateToEmpty();
         }
+        restoreLiveWorkspaceUiState(liveUiState);
       } finally {
         suspendAutoSave = false;
       }
@@ -3960,6 +3992,28 @@ const TP3D_BUILD_STAMP = Object.freeze({
       const prevOrgId = orgContext.activeOrgId ? String(orgContext.activeOrgId) : null;
       const nextOrgIdStr = String(nextOrgId);
       const changed = !prevOrgId || prevOrgId !== nextOrgIdStr;
+      const currentWorkspaceSwitch = OrganizationService.getWorkspaceSwitchState();
+      const currentStorageScope =
+        Storage && typeof Storage.getStorageScope === 'function'
+          ? String(Storage.getStorageScope() || '')
+          : '';
+      const currentWorkspaceScope =
+        Storage && typeof Storage.getWorkspaceScope === 'function'
+          ? String(Storage.getWorkspaceScope() || '')
+          : '';
+      const localOrgIdBeforeApply = OrganizationService.readLocalOrgId();
+      const preserveLiveUi = Boolean(
+        changed &&
+        !prevOrgId &&
+        hasLoadedScopedState &&
+        currentStorageScope &&
+        currentStorageScope !== 'anon' &&
+        currentWorkspaceScope === getWorkspaceStorageScope(nextOrgIdStr) &&
+        localOrgIdBeforeApply &&
+        String(localOrgIdBeforeApply) === nextOrgIdStr &&
+        !(currentWorkspaceSwitch && currentWorkspaceSwitch.active) &&
+        StateStore.get('currentScreen') !== 'packs'
+      );
 
       // Never let a partial bundle override a newer full bundle or a user-selected org.
       if (bundle && bundle.partial === true && changed && prevOrgId) {
@@ -3986,8 +4040,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
       try { window.__TP3D_LAST_ACCOUNT_BUNDLE = bundle; } catch (_) { /* ignore */ }
       OrganizationService.writeLocalOrgId(nextOrgIdStr);
       if (changed) {
-        applyWorkspaceScopedLocalState(nextOrgIdStr, { seedIfMissing: false });
-        resetWorkspaceScopedUiState(nextOrgIdStr);
+        applyWorkspaceScopedLocalState(nextOrgIdStr, {
+          seedIfMissing: false,
+          preserveLiveUi,
+        });
+        if (!preserveLiveUi) resetWorkspaceScopedUiState(nextOrgIdStr);
       }
       if (
         bundle.partial !== true &&

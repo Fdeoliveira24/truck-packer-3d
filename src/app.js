@@ -6903,6 +6903,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const prefs = StateStore.get('preferences');
           if (prefs && prefs.theme) PreferencesManager.applyTheme(prefs.theme);
           SceneManager.refreshTheme();
+          CaseScene.applyLabelPreferences();
           SettingsUI.loadForm();
           if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
         }

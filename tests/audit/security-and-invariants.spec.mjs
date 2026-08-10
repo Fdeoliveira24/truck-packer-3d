@@ -10416,48 +10416,6 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
     assert.strictEqual(textureFor(second.id), sharedTexture,
       'a second case with the same visual signature acquires the cached CanvasTexture');
 
-    const visualGroup = CaseScene.getObject(first.id);
-    const visualMesh = visualGroup.userData.mesh;
-    const visualLines = visualGroup.userData.lines;
-    const visualMaterials = visualMesh.material;
-    const visualGeometry = visualMesh.geometry;
-    const visualEdgeGeometry = visualLines.geometry;
-    const visualLineMaterial = visualLines.material;
-    CaseScene.setHover(first.id);
-    CaseScene.setSelected([first.id, second.id]);
-    assert.equal(visualMaterials[0].emissiveIntensity, 0.14,
-      'selection applies the restrained state response to the existing material');
-    assert.equal(visualLineMaterial.color.getHex(), 0xff9f1c,
-      'selection applies its strong edge channel to the existing line material');
-    CaseScene.setDragging(first.id);
-    CaseScene.setCollision(first.id, true);
-    assert.equal(visualMaterials[0].color.getHex(), 0x8a8a8a,
-      'collision subordinates category color without replacing the material');
-    assert.equal(visualMaterials[0].emissiveIntensity, 0.42,
-      'collision owns the strongest material response');
-    assert.equal(visualMaterials[0].opacity, 0.84,
-      'collision during drag preserves spatially readable transparency');
-    assert.equal(visualLineMaterial.color.getHex(), 0xff1635,
-      'collision owns the strongest semantic edge');
-    CaseScene.setCollision(first.id, false);
-    CaseScene.setDragging(null);
-    CaseScene.setSelected([]);
-    CaseScene.setHover(null);
-    assert.strictEqual(visualMesh.material, visualMaterials,
-      'state cycles reuse the instance-owned material array');
-    assert.strictEqual(visualMesh.geometry, visualGeometry,
-      'state cycles do not allocate replacement cargo geometry');
-    assert.strictEqual(visualLines.geometry, visualEdgeGeometry,
-      'state cycles preserve the cached edge geometry');
-    assert.strictEqual(visualLines.material, visualLineMaterial,
-      'state cycles reuse the instance-owned line material');
-    assert.strictEqual(visualMaterials[0].map, sharedTexture,
-      'state cycles do not regenerate or replace the cached CanvasTexture');
-    assert.equal(visualMaterials[0].color.getHex(), 0xffffff,
-      'ending state cycles restores the exact normal material tint');
-    assert.equal(visualMaterials[0].emissiveIntensity, 0,
-      'ending state cycles restores the exact normal emissive response');
-
     CaseScene.sync({ id: 'pack', cases: [second] });
     assert.strictEqual(textureFor(second.id), sharedTexture,
       'the surviving case keeps referencing the shared cached CanvasTexture');

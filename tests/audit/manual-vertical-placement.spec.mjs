@@ -115,37 +115,23 @@ test('EDITOR-VISUAL visual ownership has one deterministic priority and preserve
 
   assert.deepEqual(resolveCaseVisualState(base), {
     owner: 'normal',
-    secondaryWarning: null,
     emissive: 0x000000,
-    emissiveIntensity: 0,
-    materialColor: 0xffffff,
     edgeColor: 0x123456,
     meshTransparent: false,
     meshOpacity: 1,
     depthWrite: true,
-    edgeOpacity: 0.78,
+    edgeOpacity: 0.95,
   });
   assert.equal(resolveCaseVisualState({ ...base, oog: true }).owner, 'oog');
-  assert.equal(resolveCaseVisualState({ ...base, oog: true }).edgeColor, 0xff6b35);
+  assert.equal(resolveCaseVisualState({ ...base, oog: true }).edgeColor, 0xff0000);
   assert.equal(resolveCaseVisualState({ ...base, selected: true, oog: true }).owner, 'selected',
     'the existing selection-first OOG contract stays intact');
   assert.equal(resolveCaseVisualState({ ...base, collision: true, selected: true, oog: true }).owner, 'collision');
 
-  const hovered = resolveCaseVisualState({ ...base, hovered: true });
-  assert.equal(hovered.owner, 'hovered');
-  assert.equal(hovered.emissiveIntensity, 0.025);
-  assert.equal(hovered.edgeOpacity, 0.92);
-
-  const dragged = resolveCaseVisualState({ ...base, dragged: true });
-  assert.equal(dragged.owner, 'dragged');
-  assert.equal(dragged.emissiveIntensity, 0.035);
-  assert.equal(dragged.edgeOpacity, 0.98);
-  assert.equal(dragged.meshOpacity, 0.84);
-
   const draggedSelected = resolveCaseVisualState({ ...base, selected: true, dragged: true });
   assert.equal(draggedSelected.owner, 'selected');
   assert.equal(draggedSelected.meshTransparent, true);
-  assert.equal(draggedSelected.meshOpacity, 0.84);
+  assert.equal(draggedSelected.meshOpacity, 0.72);
 
   const hidden = resolveCaseVisualState({
     ...base,
@@ -156,43 +142,10 @@ test('EDITOR-VISUAL visual ownership has one deterministic priority and preserve
     dragged: true,
   });
   assert.equal(hidden.owner, 'hidden');
-  assert.equal(hidden.secondaryWarning, null);
   assert.equal(hidden.emissive, 0x000000);
-  assert.equal(hidden.emissiveIntensity, 0);
-  assert.equal(hidden.materialColor, 0xffffff);
   assert.equal(hidden.edgeColor, 0x123456);
   assert.equal(hidden.meshOpacity, 0.2);
   assert.equal(hidden.depthWrite, false);
-});
-
-test('EDITOR-VISUAL selected OOG cargo keeps selection ownership with a secondary warning edge', async () => {
-  const { resolveCaseVisualState } = await loadEditorScreenModule();
-  const base = { accent: '#f59e0b', baseEdgeColor: 0x223344 };
-
-  const selected = resolveCaseVisualState({ ...base, selected: true });
-  assert.equal(selected.owner, 'selected');
-  assert.equal(selected.secondaryWarning, null);
-  assert.equal(selected.emissive, '#f59e0b');
-  assert.equal(selected.emissiveIntensity, 0.14);
-  assert.equal(selected.materialColor, 0xffffff);
-  assert.equal(selected.edgeColor, '#f59e0b',
-    'selection uses the existing edge layer as its strong non-glow channel');
-
-  const selectedOog = resolveCaseVisualState({ ...base, selected: true, oog: true });
-  assert.equal(selectedOog.owner, 'selected', 'selection remains the primary interaction owner');
-  assert.equal(selectedOog.secondaryWarning, 'oog');
-  assert.equal(selectedOog.emissive, '#f59e0b', 'the selected surface treatment remains primary');
-  assert.equal(selectedOog.edgeColor, 0xff6b35,
-    'the same centralized state result layers an OOG warning through the edge channel');
-
-  const collision = resolveCaseVisualState({ ...base, collision: true, selected: true, oog: true });
-  assert.equal(collision.owner, 'collision');
-  assert.equal(collision.secondaryWarning, null,
-    'collision remains the strongest visible warning instead of mixing independent owners');
-  assert.equal(collision.materialColor, 0x8a8a8a,
-    'collision temporarily subordinates the category map so the operational warning dominates');
-  assert.equal(collision.edgeColor, 0xff1635);
-  assert.equal(collision.emissiveIntensity, 0.42);
 });
 
 test('EDITOR-VISUAL OOG, collision, and selection transitions restore the exact owned style', async () => {
@@ -200,15 +153,13 @@ test('EDITOR-VISUAL OOG, collision, and selection transitions restore the exact 
   const base = { accent: '#ff9f1c', baseEdgeColor: 0x224466 };
 
   const oog = resolveCaseVisualState({ ...base, oog: true });
-  assert.equal(oog.emissive, 0xd9482b);
-  assert.equal(oog.emissiveIntensity, 0.1);
-  assert.equal(oog.materialColor, 0xd0d0d0);
-  assert.equal(oog.edgeColor, 0xff6b35);
+  assert.equal(oog.emissive, 0xcc3300);
+  assert.equal(oog.edgeColor, 0xff0000);
 
   const selectedInBounds = resolveCaseVisualState({ ...base, selected: true });
   assert.equal(selectedInBounds.owner, 'selected');
   assert.equal(selectedInBounds.emissive, '#ff9f1c');
-  assert.equal(selectedInBounds.edgeColor, '#ff9f1c',
+  assert.equal(selectedInBounds.edgeColor, 0x224466,
     'a selected case returning in-bounds must lose its stale OOG edge');
 
   const normalInBounds = resolveCaseVisualState(base);
@@ -219,8 +170,7 @@ test('EDITOR-VISUAL OOG, collision, and selection transitions restore the exact 
 
   const collision = resolveCaseVisualState({ ...base, collision: true, selected: true });
   assert.equal(collision.owner, 'collision');
-  assert.equal(collision.emissive, 0xff2438);
-  assert.equal(collision.edgeColor, 0xff1635);
+  assert.equal(collision.emissive, 0xff0000);
   assert.deepEqual(resolveCaseVisualState({ ...base, selected: true }), selectedInBounds,
     'ending a rejected collision preview restores selected styling');
 

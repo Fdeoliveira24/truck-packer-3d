@@ -51,6 +51,8 @@ export const defaultPreferences = {
   units: { length: 'in', weight: 'lb' },
   theme: 'light',
   renderQuality: 'high',
+  cargoBodyStyle: 'cad',
+  cargoCategoryMarking: 'edge',
   showLabels: true,
   showShadows: true,
   showBevels: true,

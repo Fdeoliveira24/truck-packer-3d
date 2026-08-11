@@ -174,6 +174,17 @@ export function normalizePreferences(prefs) {
   next.theme = next.theme === 'dark' ? 'dark' : 'light';
   const quality = safeString(next.renderQuality, base.renderQuality).toLowerCase();
   next.renderQuality = ['low', 'medium', 'high', 'auto'].includes(quality) ? quality : base.renderQuality;
+  const cargoBodyStyle = safeString(next.cargoBodyStyle, base.cargoBodyStyle).toLowerCase();
+  next.cargoBodyStyle = ['cad', 'carton', 'ops', 'hifi'].includes(cargoBodyStyle)
+    ? cargoBodyStyle
+    : base.cargoBodyStyle;
+  const cargoCategoryMarking = safeString(
+    next.cargoCategoryMarking,
+    base.cargoCategoryMarking
+  ).toLowerCase();
+  next.cargoCategoryMarking = ['minimal', 'edge', 'panel', 'operational', 'fullcolor'].includes(cargoCategoryMarking)
+    ? cargoCategoryMarking
+    : base.cargoCategoryMarking;
   next.showLabels = next.showLabels !== false;
   next.showShadows = next.showShadows !== false;
   next.showBevels = next.showBevels !== false;

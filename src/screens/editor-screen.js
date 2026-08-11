@@ -12,6 +12,13 @@
 // ============================================================================
 
 import { createCaseGeometry } from '../editor/geometry-factory.js';
+import {
+  getCargoEdgeColor,
+  getCargoLabelInk,
+  getCargoMaterialOptions,
+  paintCargoFaceTexture,
+  resolveCargoVisualPreferences,
+} from '../editor/cargo-visual-style.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
 import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
 import {
@@ -722,7 +729,7 @@ export function createCaseScene({
     let pendingPoseWatcher = null;
 
 
-    function generateCaseTexture(caseData, faceIndex, w, h) {
+    function generateCaseTexture(caseData, faceIndex, w, h, visualStyle) {
       const canvas = document.createElement('canvas');
       canvas.width = w;
       canvas.height = h;
@@ -730,10 +737,9 @@ export function createCaseScene({
       const isPallet = caseData.isPallet === true;
       const catColor = CategoryService.meta(caseData.category).color;
       const baseColor = isPallet ? '#A0522D' : (catColor || caseData.color || '#8B4513');
-      ctx.fillStyle = baseColor;
-      ctx.fillRect(0, 0, w, h);
-
       if (isPallet) {
+        ctx.fillStyle = baseColor;
+        ctx.fillRect(0, 0, w, h);
         // Draw wood slat pattern for pallets
         ctx.strokeStyle = 'rgba(0,0,0,0.3)';
         ctx.lineWidth = Math.max(1, w * 0.005);
@@ -744,6 +750,16 @@ export function createCaseScene({
           ctx.lineTo(w, y);
         }
         ctx.stroke();
+      } else {
+        paintCargoFaceTexture(ctx, {
+          width: w,
+          height: h,
+          faceIndex,
+          bodyStyle: visualStyle.bodyStyle,
+          categoryMarking: visualStyle.categoryMarking,
+          categoryColor: baseColor,
+          seed: caseData.id,
+        });
       }
 
       ctx.strokeStyle = 'rgba(0,0,0,0.25)';
@@ -756,7 +772,10 @@ export function createCaseScene({
           tex.colorSpace = THREE.SRGBColorSpace;
           return tex;
         }
-        ctx.fillStyle = '#000000';
+        const labelInk = isPallet
+          ? '#000000'
+          : getCargoLabelInk(visualStyle.bodyStyle, visualStyle.categoryMarking, baseColor);
+        ctx.fillStyle = labelInk;
         ctx.font = `bold ${Math.floor(h * 0.12)}px Arial, sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
@@ -778,20 +797,32 @@ export function createCaseScene({
       return tex;
     }
 
-    function acquireTextures(signature, caseData, dims) {
+    function acquireTextures(signature, caseData, dims, visualStyle) {
       const cached = textureCache.get(signature);
       if (cached) { cached.count += 1; return cached.textures; }
       const lPx = Math.min(512, Math.max(64, dims.length * 4));
       const wPx = Math.min(512, Math.max(64, dims.width * 4));
       const hPx = Math.min(512, Math.max(64, dims.height * 4));
-      const textures = [
-        generateCaseTexture(caseData, 0, hPx, wPx),
-        generateCaseTexture(caseData, 1, hPx, wPx),
-        generateCaseTexture(caseData, 2, lPx, wPx),
-        generateCaseTexture(caseData, 3, lPx, wPx),
-        generateCaseTexture(caseData, 4, lPx, hPx),
-        generateCaseTexture(caseData, 5, lPx, hPx),
-      ];
+      const rawShape = String(caseData.shape || 'box').toLowerCase();
+      const isCylinder = rawShape === 'cylinder' || rawShape === 'drum';
+      const textures = isCylinder
+        ? (() => {
+          const diameterPx = Math.min(512, Math.max(64, Math.min(dims.width, dims.height) * 4));
+          const circumferencePx = Math.min(512, Math.max(64, Math.PI * Math.min(dims.width, dims.height) * 4));
+          return [
+            generateCaseTexture(caseData, 0, circumferencePx, lPx, visualStyle),
+            generateCaseTexture(caseData, 1, diameterPx, diameterPx, visualStyle),
+            generateCaseTexture(caseData, 2, diameterPx, diameterPx, visualStyle),
+          ];
+        })()
+        : [
+          generateCaseTexture(caseData, 0, wPx, hPx, visualStyle),
+          generateCaseTexture(caseData, 1, wPx, hPx, visualStyle),
+          generateCaseTexture(caseData, 2, lPx, wPx, visualStyle),
+          generateCaseTexture(caseData, 3, lPx, wPx, visualStyle),
+          generateCaseTexture(caseData, 4, lPx, hPx, visualStyle),
+          generateCaseTexture(caseData, 5, lPx, hPx, visualStyle),
+        ];
       textureCache.set(signature, { textures, count: 1 });
       return textures;
     }
@@ -834,12 +865,13 @@ export function createCaseScene({
       collisionIds.clear();
 
       const keep = new Set();
+      const visualStyle = resolveCargoVisualPreferences(PreferencesManager.get());
       (pack.cases || []).forEach(inst => {
         const caseData = CaseLibrary.getById(inst.caseId);
         if (!caseData) return;
         keep.add(inst.id);
 
-        const signature = buildSignature(inst, caseData);
+        const signature = buildSignature(inst, caseData, visualStyle);
         const existing = instances.get(inst.id);
         if (!existing || existing.userData.signature !== signature) {
           if (existing) disposeGroup(scene, existing);
@@ -865,7 +897,7 @@ export function createCaseScene({
       if (pendingPoseWatcher) pendingPoseWatcher();
     }
 
-    function buildSignature(inst, caseData) {
+    function buildSignature(inst, caseData, visualStyle = resolveCargoVisualPreferences(PreferencesManager.get())) {
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
       const catColor = CategoryService.meta(caseData.category).color;
       const color = String(catColor || caseData.color || '#ff9f1c');
@@ -880,6 +912,8 @@ export function createCaseScene({
       const palletWarning = isPallet && caseData.maxPalletWeight > 0
         ? `Warning limit: ${caseData.maxPalletWeight} lb`
         : '';
+      const bodyStyle = isPallet ? 'pallet' : visualStyle.bodyStyle;
+      const categoryMarking = isPallet ? 'pallet' : visualStyle.categoryMarking;
       return JSON.stringify([
         caseData.id,
         d.length,
@@ -893,6 +927,8 @@ export function createCaseScene({
         weightLabel,
         showHandlingArrows,
         palletWarning,
+        bodyStyle,
+        categoryMarking,
       ]);
     }
 
@@ -922,7 +958,8 @@ export function createCaseScene({
       const group = new THREE.Group();
       group.userData.instanceId = inst.id;
       group.userData.caseId = inst.caseId;
-      const signature = buildSignature(inst, caseData);
+      const visualStyle = resolveCargoVisualPreferences(PreferencesManager.get());
+      const signature = buildSignature(inst, caseData, visualStyle);
       group.userData.signature = signature;
 
       const dims = caseData.dimensions || { length: 1, width: 1, height: 1 };
@@ -935,17 +972,25 @@ export function createCaseScene({
       const catColor = CategoryService.meta(caseData.category).color;
       const baseColor = String(catColor || caseData.color || '#ff9f1c');
       group.userData.baseColor = baseColor;
+      group.userData.cargoBodyStyle = visualStyle.bodyStyle;
+      group.userData.cargoCategoryMarking = visualStyle.categoryMarking;
 
       const geo = createCaseGeometry(caseData, SceneManager.toWorld);
-      const textures = acquireTextures(signature, caseData, dims);
-      const materials = textures.map(tex => new THREE.MeshStandardMaterial({
-        map: tex,
-        roughness: 0.88,
-        metalness: 0.01,
-        emissive: new THREE.Color(0x000000),
-        envMapIntensity: 0.3,
-        bumpScale: 0.02,
-      }));
+      const textures = acquireTextures(signature, caseData, dims, visualStyle);
+      const materialOptions = caseData.isPallet === true
+        ? { materialType: 'standard', roughness: 0.88, metalness: 0.01, envMapIntensity: 0.3 }
+        : getCargoMaterialOptions(visualStyle.bodyStyle);
+      const materials = textures.map(tex => {
+        const { materialType, ...surfaceOptions } = materialOptions;
+        const params = {
+          map: tex,
+          ...surfaceOptions,
+          emissive: new THREE.Color(0x000000),
+        };
+        return materialType === 'physical'
+          ? new THREE.MeshPhysicalMaterial(params)
+          : new THREE.MeshStandardMaterial(params);
+      });
       const mesh = new THREE.Mesh(geo, materials);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
@@ -954,8 +999,13 @@ export function createCaseScene({
       group.add(mesh);
 
       const edges = acquireEdgeGeometry(signature, geo);
-      const edgeColor = new THREE.Color(baseColor);
-      edgeColor.multiplyScalar(0.55);
+      const edgeColor = caseData.isPallet === true
+        ? new THREE.Color(baseColor).multiplyScalar(0.55)
+        : new THREE.Color(getCargoEdgeColor(
+          visualStyle.bodyStyle,
+          visualStyle.categoryMarking,
+          baseColor
+        ));
       const lineMat = new THREE.LineBasicMaterial({
         color: edgeColor,
         transparent: true,

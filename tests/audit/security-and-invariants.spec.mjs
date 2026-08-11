@@ -10289,6 +10289,16 @@ test('RECON Standard, Wheel Wells, Front Overhang, and C2 use one ephemeral prev
   assert.equal(pack.cases[0].placement, 'packed', 'C2 preview does not mutate the source pack');
 });
 
+function makeCargoCanvasContextStub() {
+  return {
+    fillRect() {}, strokeRect() {}, beginPath() {}, closePath() {}, moveTo() {}, lineTo() {},
+    stroke() {}, fill() {}, fillText() {}, arc() {}, save() {}, restore() {},
+    createLinearGradient() {
+      return { addColorStop() {} };
+    },
+  };
+}
+
 test('RECON CaseScene sync removes an existing mesh when its case definition becomes unresolved', async () => {
   const previousThree = globalThis.THREE;
   const previousDocument = globalThis.document;
@@ -10299,9 +10309,7 @@ test('RECON CaseScene sync removes an existing mesh when its case definition bec
       return {
         width: 0,
         height: 0,
-        getContext: () => ({
-          fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {},
-        }),
+        getContext: () => makeCargoCanvasContextStub(),
       };
     },
   };
@@ -10320,7 +10328,7 @@ test('RECON CaseScene sync removes an existing mesh when its case definition bec
       },
       CaseLibrary: { getById: id => (caseData && caseData.id === id ? caseData : null) },
       CategoryService: { meta: () => ({ color: '#8844aa' }) },
-      PackLibrary: {}, StateStore: {}, TrailerGeometry: {},
+      PackLibrary: {}, StateStore: { get: () => null }, TrailerGeometry: {},
       Utils: {
         clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
         getCssVar: () => '#ff9f1c',
@@ -10358,9 +10366,7 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       return {
         width: 0,
         height: 0,
-        getContext: () => ({
-          fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {},
-        }),
+        getContext: () => makeCargoCanvasContextStub(),
       };
     },
   };
@@ -10379,6 +10385,11 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       shape: 'box',
     };
     const categoryColors = { priority: '#2255aa' };
+    let preferences = {
+      hiddenCaseOpacity: 0.3,
+      cargoBodyStyle: 'cad',
+      cargoCategoryMarking: 'edge',
+    };
     const CaseScene = Editor.createCaseScene({
       SceneManager: {
         getScene: () => scene,
@@ -10387,12 +10398,12 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       },
       CaseLibrary: { getById: id => (id === caseData.id ? caseData : null) },
       CategoryService: { meta: category => ({ color: categoryColors[category] || null }) },
-      PackLibrary: {}, StateStore: {}, TrailerGeometry: {},
+      PackLibrary: {}, StateStore: { get: () => null }, TrailerGeometry: {},
       Utils: {
         clamp: (value, min, max) => Math.max(min, Math.min(max, value)),
         getCssVar: () => '#ff9f1c',
       },
-      PreferencesManager: { get: () => ({ hiddenCaseOpacity: 0.3 }) },
+      PreferencesManager: { get: () => ({ ...preferences }) },
     });
     const makeInstance = (id, x = 10) => ({
       id,
@@ -10468,6 +10479,69 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       activeDisposeCount = 0;
       activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
     }
+
+    caseData.isPallet = false;
+    caseData.maxPalletWeight = 0;
+    CaseScene.sync({ id: 'pack', cases: [first] });
+    assert.equal(activeDisposeCount, 1, 'leaving pallet rendering releases its final cached texture once');
+    activeTexture = textureFor(first.id);
+    activeDisposeCount = 0;
+    activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    const cylinderMaterials = CaseScene.getObject(first.id).userData.mesh.material;
+    assert.equal(cylinderMaterials.length, 3,
+      'existing cylinder geometry receives one wrap and two cap materials without new geometry');
+    assert.ok(cylinderMaterials[0].map.image.width > cylinderMaterials[0].map.image.height,
+      'the cylinder side texture follows circumference by axis length instead of stretching a box face');
+
+    const baselineSize = new THREE.Box3()
+      .setFromObject(CaseScene.getObject(first.id).userData.mesh)
+      .getSize(new THREE.Vector3());
+    const styleChanges = [
+      ['carton', 'edge'],
+      ['carton', 'operational'],
+      ['ops', 'panel'],
+      ['hifi', 'edge'],
+      ['cad', 'fullcolor'],
+    ];
+    for (const [cargoBodyStyle, cargoCategoryMarking] of styleChanges) {
+      preferences = { ...preferences, cargoBodyStyle, cargoCategoryMarking };
+      CaseScene.sync({ id: 'pack', cases: [first] });
+      const nextTexture = textureFor(first.id);
+      const nextGroup = CaseScene.getObject(first.id);
+      const nextSize = new THREE.Box3().setFromObject(nextGroup.userData.mesh).getSize(new THREE.Vector3());
+      assert.notStrictEqual(nextTexture, activeTexture,
+        `${cargoBodyStyle} + ${cargoCategoryMarking} receives its own cache identity`);
+      assert.equal(activeDisposeCount, 1,
+        `${cargoBodyStyle} + ${cargoCategoryMarking} releases the prior cache owner exactly once`);
+      assert.deepEqual(nextSize.toArray(), baselineSize.toArray(),
+        `${cargoBodyStyle} + ${cargoCategoryMarking} does not change rendered cargo bounds`);
+      assert.equal(nextGroup.userData.cargoBodyStyle, cargoBodyStyle);
+      assert.equal(nextGroup.userData.cargoCategoryMarking, cargoCategoryMarking);
+      activeTexture = nextTexture;
+      activeDisposeCount = 0;
+      activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
+    }
+
+    const finalGroup = CaseScene.getObject(first.id);
+    const finalMesh = finalGroup.userData.mesh;
+    const finalMaterials = finalMesh.material;
+    const finalTexture = textureFor(first.id);
+    for (let cycle = 0; cycle < 50; cycle += 1) {
+      CaseScene.setSelected([first.id]);
+      CaseScene.setHover(first.id);
+      CaseScene.setDragging(first.id);
+      CaseScene.setCollision(first.id, true);
+      CaseScene.setCollision(first.id, false);
+      CaseScene.setDragging(null);
+      CaseScene.setHover(null);
+      CaseScene.setSelected([]);
+    }
+    assert.strictEqual(CaseScene.getObject(first.id).userData.mesh, finalMesh,
+      'interaction-state changes reuse the existing cargo mesh');
+    assert.strictEqual(CaseScene.getObject(first.id).userData.mesh.material, finalMaterials,
+      'interaction-state changes reuse existing materials');
+    assert.strictEqual(textureFor(first.id), finalTexture,
+      'interaction-state changes do not allocate replacement textures');
 
     CaseScene.clear();
     assert.equal(activeDisposeCount, 1,

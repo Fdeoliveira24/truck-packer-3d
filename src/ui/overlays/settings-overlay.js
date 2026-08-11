@@ -31,6 +31,10 @@
 // ============================================================================
 
 import { getUserAvatarView } from '../../core/utils/index.js';
+import {
+  CARGO_BODY_STYLE_OPTIONS,
+  CARGO_CATEGORY_MARKING_OPTIONS,
+} from '../../editor/cargo-visual-style.js';
 import * as ImportExport from '../../services/import-export.js';
 import * as StateStore from '../../core/state-store.js';
 import * as CoreStorage from '../../core/storage.js';
@@ -3031,7 +3035,15 @@ export function createSettingsOverlay({
     render({ source: 'setResourcesSubView' });
   }
 
-  function savePrefsFromForm({ length, weight, theme, labelSize, hiddenOpacity }) {
+  function savePrefsFromForm({
+    length,
+    weight,
+    theme,
+    labelSize,
+    hiddenOpacity,
+    cargoBodyStyle,
+    cargoCategoryMarking,
+  }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
     next.units.length = length;
@@ -3039,6 +3051,8 @@ export function createSettingsOverlay({
     next.theme = theme;
     next.labelFontSize = Utils.clamp(Number(labelSize) || 12, 8, 24);
     next.hiddenCaseOpacity = Utils.clamp(Number(hiddenOpacity) || 0.3, 0, 1);
+    next.cargoBodyStyle = cargoBodyStyle;
+    next.cargoCategoryMarking = cargoCategoryMarking;
     PreferencesManager.set(next);
     PreferencesManager.applyTheme(next.theme);
     UIComponents.showToast('Preferences saved', 'success');
@@ -4736,6 +4750,26 @@ export function createSettingsOverlay({
       labelSize.step = '1';
       labelSize.value = String(prefs.labelFontSize);
 
+      const cargoBodyStyle = doc.createElement('select');
+      cargoBodyStyle.className = 'select';
+      CARGO_BODY_STYLE_OPTIONS.forEach(option => {
+        const optionEl = doc.createElement('option');
+        optionEl.value = option.value;
+        optionEl.textContent = option.label;
+        cargoBodyStyle.appendChild(optionEl);
+      });
+      cargoBodyStyle.value = prefs.cargoBodyStyle;
+
+      const cargoCategoryMarking = doc.createElement('select');
+      cargoCategoryMarking.className = 'select';
+      CARGO_CATEGORY_MARKING_OPTIONS.forEach(option => {
+        const optionEl = doc.createElement('option');
+        optionEl.value = option.value;
+        optionEl.textContent = option.label;
+        cargoCategoryMarking.appendChild(optionEl);
+      });
+      cargoCategoryMarking.value = prefs.cargoCategoryMarking;
+
       const theme = doc.createElement('select');
       theme.className = 'select';
       theme.innerHTML = `
@@ -4763,6 +4797,13 @@ export function createSettingsOverlay({
 
       labelSize.classList.add('tp3d-prefs-number-input');
       prefsCard.appendChild(row('Label Font Size', labelSize));
+
+      const cargoVisualHeading = doc.createElement('div');
+      cargoVisualHeading.className = 'tp3d-prefs-heading';
+      cargoVisualHeading.textContent = 'Cargo Visual Trial 1';
+      prefsCard.appendChild(cargoVisualHeading);
+      prefsCard.appendChild(row('Body Style', cargoBodyStyle));
+      prefsCard.appendChild(row('Category Marking', cargoCategoryMarking));
 
 
       const appearanceHeading = doc.createElement('div');
@@ -4829,6 +4870,8 @@ export function createSettingsOverlay({
           theme: theme.value,
           labelSize: labelSize.value,
           hiddenOpacity: hiddenOpacity.value,
+          cargoBodyStyle: cargoBodyStyle.value,
+          cargoCategoryMarking: cargoCategoryMarking.value,
         })
       );
       actions.appendChild(saveBtn);

@@ -143,18 +143,6 @@ Update: `graphify update .` after significant code changes (AST-only, no API cos
 Do not read `graph.json` or `GRAPH_REPORT.md` wholesale.
 Do not hardcode graph node/edge counts into permanent instructions — they are diagnostic snapshots.
 
----
-
-<!-- OPENWIKI:START -->
-
-## OpenWiki
-
-This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
-
-The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
-
-<!-- OPENWIKI:END -->
-
 ## Project Memory Routing (canonical)
 
 - History / prior decision / "why did we" → `bash tools/project-memory query "<question>"`

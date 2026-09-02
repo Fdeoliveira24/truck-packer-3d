@@ -98,18 +98,6 @@ Explicit `tools/project-memory` retrieval works without a semantic memory graph.
 `graphify update .` after significant code changes.
 Do not read `graph.json` wholesale. Do not hardcode node/edge counts.
 
----
-
-<!-- OPENWIKI:START -->
-
-## OpenWiki
-
-This repository uses OpenWiki for recurring code documentation. Start with `openwiki/quickstart.md`, then follow its links to architecture, workflows, domain concepts, operations, integrations, testing guidance, and source maps.
-
-The scheduled OpenWiki GitHub Actions workflow refreshes the repository wiki. Do not hand-edit generated OpenWiki pages unless explicitly asked; prefer updating source code/docs and letting OpenWiki regenerate.
-
-<!-- OPENWIKI:END -->
-
 ## Security Follow-Up
 
 `.claude/settings.local.json` is git-ignored and was previously flagged as potentially containing credential-bearing commands. Do not print or modify it during normal coding sessions. A dedicated credential/security cleanup is tracked in the V6 technical debt section.

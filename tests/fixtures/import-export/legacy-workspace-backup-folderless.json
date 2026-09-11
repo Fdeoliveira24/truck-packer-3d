@@ -1,0 +1,41 @@
+{
+  "app": "Truck Packer 3D",
+  "exportType": "workspace",
+  "schemaVersion": "workspace-export-v1",
+  "appVersion": "1.0.0",
+  "exportedAt": 1700000000000,
+  "workspaceName": "Legacy Folderless Workspace",
+  "data": {
+    "caseLibrary": [
+      {
+        "id": "case-ws-legacy-1",
+        "name": "Workspace Backup Case",
+        "category": "default",
+        "dimensions": { "length": 24, "width": 24, "height": 24 },
+        "weight": 40
+      }
+    ],
+    "packLibrary": [
+      {
+        "id": "pack-ws-legacy-1",
+        "title": "Workspace Backup Pack",
+        "loadPlanNumber": "LP-WSLEGACY1",
+        "folderId": null,
+        "truck": { "length": 200, "width": 90, "height": 90 },
+        "cases": [
+          {
+            "id": "instance-ws-legacy-1",
+            "caseId": "case-ws-legacy-1",
+            "transform": {
+              "position": { "x": 0, "y": 12, "z": 0 },
+              "rotation": { "x": 0, "y": 0, "z": 0 },
+              "scale": { "x": 1, "y": 1, "z": 1 }
+            }
+          }
+        ],
+        "thumbnail": null,
+        "thumbnailUpdatedAt": null
+      }
+    ]
+  }
+}

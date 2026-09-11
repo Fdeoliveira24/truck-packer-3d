@@ -24,6 +24,13 @@ import {
   normalizeBusinessIdentityLibraries,
 } from './business-identity.js';
 import { emit } from './events.js';
+import {
+  IMPORT_KIND,
+  isPlainRecord,
+  isCargoPlannerEnvelope,
+  parseCargoPlannerEnvelope,
+  validateWorkspaceGraph,
+} from './import-schema.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
 export const IMPORT_SCOPE_CHANGED_MESSAGE =
@@ -867,16 +874,31 @@ export function exportWorkspaceJSON(workspaceName) {
   return JSON.stringify(payload, null, 2);
 }
 
+/**
+ * Accepts either the new versioned Cargo Planner envelope
+ * (kind: active-workspace-backup) or the legacy bare/`{data}` App backup
+ * shape. Format/kind/schemaVersion/units are rejected before any graph
+ * validation or normalization runs (see core/import-schema.js), and the
+ * legacy path is byte-for-byte the pre-existing behavior.
+ */
 export function importAppJSON(jsonText) {
   try {
     const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
     if (!isPlainRecord(parsed)) throw new Error('Invalid JSON: expected an object');
-    const hasEnvelope = Object.prototype.hasOwnProperty.call(parsed, 'data');
-    if (hasEnvelope && !isPlainRecord(parsed.data)) {
-      throw new Error('Invalid App backup envelope: data must be an object');
+    let data;
+    if (isCargoPlannerEnvelope(parsed)) {
+      const envelope = parseCargoPlannerEnvelope(parsed, {
+        expectedKinds: [IMPORT_KIND.ACTIVE_WORKSPACE_BACKUP],
+      });
+      data = envelope.data;
+    } else {
+      const hasEnvelope = Object.prototype.hasOwnProperty.call(parsed, 'data');
+      if (hasEnvelope && !isPlainRecord(parsed.data)) {
+        throw new Error('Invalid App backup envelope: data must be an object');
+      }
+      data = hasEnvelope ? parsed.data : parsed;
     }
-    const data = hasEnvelope ? parsed.data : parsed;
-    const { cases, packs, folders } = validateAppRestoreGraph(data);
+    const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: true });
     return normalizeAppData({
       caseLibrary: cases,
       packLibrary: packs,
@@ -891,93 +913,4 @@ export function importAppJSON(jsonText) {
     });
     throw err;
   }
-}
-
-function isPlainRecord(value) {
-  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
-}
-
-function requireRestoreArray(data, key, { optional = false } = {}) {
-  if (!Object.prototype.hasOwnProperty.call(data, key)) {
-    if (optional) return [];
-    throw new Error(`Missing required ${key} array`);
-  }
-  if (!Array.isArray(data[key])) throw new Error(`Invalid ${key}: expected an array`);
-  return data[key];
-}
-
-function requireUniqueRestoreId(value, label, seen) {
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new Error(`Invalid ${label}: blank or missing id`);
-  }
-  const id = value.trim();
-  if (seen.has(id)) throw new Error(`Invalid ${label}: duplicate id "${id}"`);
-  seen.add(id);
-  return id;
-}
-
-function validateAppRestoreGraph(data) {
-  if (!isPlainRecord(data.preferences)) {
-    throw new Error('Invalid preferences: expected an object');
-  }
-  const cases = requireRestoreArray(data, 'caseLibrary');
-  const packs = requireRestoreArray(data, 'packLibrary');
-  const folders = requireRestoreArray(data, 'folderLibrary', { optional: true });
-  const caseIds = new Set();
-  const packIds = new Set();
-  const folderIds = new Set();
-  const instanceIds = new Set();
-
-  cases.forEach((caseData, index) => {
-    if (!isPlainRecord(caseData)) throw new Error(`Invalid caseLibrary[${index}]: expected an object`);
-    requireUniqueRestoreId(caseData.id, `caseLibrary[${index}]`, caseIds);
-  });
-  folders.forEach((folder, index) => {
-    if (!isPlainRecord(folder)) throw new Error(`Invalid folderLibrary[${index}]: expected an object`);
-    requireUniqueRestoreId(folder.id, `folderLibrary[${index}]`, folderIds);
-    if (folder.parentFolderId != null && String(folder.parentFolderId).trim()) {
-      throw new Error(`Invalid folderLibrary[${index}]: nested folder references are not supported`);
-    }
-  });
-  packs.forEach((pack, packIndex) => {
-    if (!isPlainRecord(pack)) throw new Error(`Invalid packLibrary[${packIndex}]: expected an object`);
-    requireUniqueRestoreId(pack.id, `packLibrary[${packIndex}]`, packIds);
-    if (pack.folderId != null && String(pack.folderId).trim()) {
-      if (typeof pack.folderId !== 'string' || !folderIds.has(pack.folderId.trim())) {
-        throw new Error(`Invalid packLibrary[${packIndex}].folderId: referenced folder does not exist`);
-      }
-    }
-    if (pack.cases != null && !Array.isArray(pack.cases)) {
-      throw new Error(`Invalid packLibrary[${packIndex}].cases: expected an array`);
-    }
-    const instances = Array.isArray(pack.cases) ? pack.cases : [];
-    instances.forEach((instance, instanceIndex) => {
-      if (!isPlainRecord(instance)) {
-        throw new Error(`Invalid packLibrary[${packIndex}].cases[${instanceIndex}]: expected an object`);
-      }
-      requireUniqueRestoreId(
-        instance.id,
-        `packLibrary[${packIndex}].cases[${instanceIndex}]`,
-        instanceIds
-      );
-      if (typeof instance.caseId !== 'string' || !instance.caseId.trim()) {
-        throw new Error(
-          `Invalid packLibrary[${packIndex}].cases[${instanceIndex}].caseId: blank or missing reference`
-        );
-      }
-      if (!caseIds.has(instance.caseId.trim())) {
-        throw new Error(
-          `Invalid packLibrary[${packIndex}].cases[${instanceIndex}].caseId: referenced case does not exist`
-        );
-      }
-    });
-  });
-
-  if (data.currentPackId != null && String(data.currentPackId).trim()) {
-    if (typeof data.currentPackId !== 'string' || !packIds.has(data.currentPackId.trim())) {
-      throw new Error('Invalid currentPackId: referenced load plan does not exist');
-    }
-  }
-
-  return { cases, packs, folders };
 }

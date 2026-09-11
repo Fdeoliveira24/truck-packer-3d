@@ -19,6 +19,13 @@ import * as CaseLibrary from './case-library.js';
 import { APP_VERSION } from '../core/version.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 import {
+  IMPORT_KIND,
+  isPlainRecord,
+  isCargoPlannerEnvelope,
+  parseCargoPlannerEnvelope,
+  validateWorkspaceGraph,
+} from '../core/import-schema.js';
+import {
   parseCargoBoolean,
   parseCargoLane,
   parseCargoCount,
@@ -536,9 +543,25 @@ export function buildPackExportJSON(pack) {
   return JSON.stringify(payload, null, 2);
 }
 
+/**
+ * Accepts either the new versioned Cargo Planner envelope (kind: load-plan)
+ * or the legacy bare/`{pack, bundledCases}` shape. A new envelope with the
+ * wrong kind, a malformed/unsupported schemaVersion, or unsupported units is
+ * rejected before any pack data is touched (see core/import-schema.js).
+ */
 export function parsePackImportJSON(jsonText) {
   const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
   if (!parsed) throw new Error('Invalid JSON');
+  if (isCargoPlannerEnvelope(parsed)) {
+    const envelope = parseCargoPlannerEnvelope(parsed, { expectedKinds: [IMPORT_KIND.LOAD_PLAN] });
+    if (!isPlainRecord(envelope.data) || !isPlainRecord(envelope.data.pack)) {
+      throw new Error('Invalid load plan envelope: missing pack.');
+    }
+    return {
+      ...envelope.data,
+      pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(envelope.data.pack),
+    };
+  }
   const payload = parsed.pack ? parsed : { pack: parsed };
   return {
     ...payload,
@@ -546,10 +569,31 @@ export function parsePackImportJSON(jsonText) {
   };
 }
 
+/**
+ * Accepts either the new versioned Cargo Planner envelope
+ * (kind: load-plan-batch) or the legacy `{exportType: 'pack-batch', packs}`
+ * shape. Dispatch and validation happen before any entry is normalized.
+ */
 export function parsePackBatchImportJSON(jsonText) {
   const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Invalid JSON');
+  }
+  const normalizeBatchEntries = packs => packs.map(entry => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
+    const payload = entry.pack ? entry : { pack: entry };
+    return {
+      ...payload,
+      pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(payload.pack),
+    };
+  });
+  if (isCargoPlannerEnvelope(parsed)) {
+    const envelope = parseCargoPlannerEnvelope(parsed, { expectedKinds: [IMPORT_KIND.LOAD_PLAN_BATCH] });
+    const packs = isPlainRecord(envelope.data) ? envelope.data.packs : null;
+    if (!Array.isArray(packs) || packs.length === 0) {
+      throw new Error('Load plan batch file must contain a non-empty packs array.');
+    }
+    return normalizeBatchEntries(packs);
   }
   // Guard: reject App JSON mistakenly used here.
   if (Array.isArray(parsed.packLibrary) || Array.isArray(parsed.caseLibrary) || parsed.preferences) {
@@ -567,14 +611,7 @@ export function parsePackBatchImportJSON(jsonText) {
     throw new Error('Load plan batch file must contain a non-empty packs array.');
   }
   // Normalize each entry to { pack, bundledCases } — same shape importPackPayload expects.
-  return parsed.packs.map(entry => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
-    const payload = entry.pack ? entry : { pack: entry };
-    return {
-      ...payload,
-      pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(payload.pack),
-    };
-  });
+  return normalizeBatchEntries(parsed.packs);
 }
 
 export function buildAppExportJSON() {
@@ -702,9 +739,30 @@ export function buildWorkspaceExportJSON(workspaceName) {
   return CoreStorage.exportWorkspaceJSON(workspaceName);
 }
 
+/**
+ * Accepts either the new versioned Cargo Planner envelope (kind:
+ * workspace-backup) or the legacy `{exportType: 'workspace', data}` shape.
+ * The new-envelope path reuses the same graph-integrity checks as Active
+ * Workspace Backup (unique ids, no dangling folderId/caseId) — this is
+ * groundwork only: nothing currently wires this parser's result into a
+ * restore action (see Milestone C: Workspace Restore UI).
+ */
 export function parseWorkspaceImportJSON(jsonText) {
   const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
   if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
+  if (isCargoPlannerEnvelope(parsed)) {
+    const envelope = parseCargoPlannerEnvelope(parsed, { expectedKinds: [IMPORT_KIND.WORKSPACE_BACKUP] });
+    const { cases, packs, folders } = validateWorkspaceGraph(envelope.data, { requirePreferences: false });
+    const sanitizedPacks = CoreNormalizer.sanitizeLegacyPackQuantityLibrary(packs).packLibrary;
+    const scope = envelope.scope || {};
+    return {
+      caseLibrary: cases,
+      packLibrary: sanitizedPacks,
+      folderLibrary: folders,
+      workspaceName: scope.sourceWorkspaceName ? String(scope.sourceWorkspaceName) : '',
+      categories: Array.isArray(envelope.data.categories) ? envelope.data.categories : [],
+    };
+  }
   if (parsed.exportType !== 'workspace') {
     throw new Error('Not a workspace export file. Please use a file exported with "Export Workspace Data".');
   }

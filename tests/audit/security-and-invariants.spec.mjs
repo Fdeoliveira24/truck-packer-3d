@@ -13074,7 +13074,7 @@ test('AUTO-PACK-A0B app and pack import paths do not strip orientation locks', a
         {
           id: 'pack-app-import-lock',
           title: 'App Import Lock Pack',
-          folderId: 'missing-folder',
+          folderId: null,
           truck: { length: 100, width: 100, height: 100 },
           cases: [lockedInstance],
         },
@@ -13091,7 +13091,7 @@ test('AUTO-PACK-A0B app and pack import paths do not strip orientation locks', a
   assert.deepEqual(appInst.orientedDims, { length: 24, width: 48, height: 30 },
     'App Import must keep safe orientedDims through normalizeAppData');
   assert.equal(importedApp.packLibrary[0].folderId, null,
-    'App Import must keep existing stale-folder normalization behavior');
+    'App Import must preserve an explicit unfiled load plan');
 
   StateStore.init({
     caseLibrary: [lockedCase],
@@ -17575,15 +17575,18 @@ test('phase 0.7B-1B app export includes and imports normalized folderLibrary as 
     app: 'Truck Packer 3D',
     data: {
       caseLibrary: [],
-      packLibrary: exported.data.packLibrary,
+      packLibrary: [exported.data.packLibrary[0]],
       folderLibrary: exported.data.folderLibrary,
       preferences: {},
     },
   }));
   assert.equal(imported.packLibrary[0].folderId, 'folder-1',
     'App Import must preserve valid folderId references');
-  assert.equal(imported.packLibrary[1].folderId, null,
-    'App Import must normalize stale folderId references to null');
+  assert.throws(() => Storage.importAppJSON(JSON.stringify({
+    app: 'Truck Packer 3D',
+    data: exported.data,
+  })), /folderId.*does not exist/i,
+  'destructive App Import must reject stale folder references before lossy normalization');
 });
 
 test('phase 0.7B-1B single pack export does not carry folder assignments', async () => {

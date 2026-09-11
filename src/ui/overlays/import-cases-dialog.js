@@ -16,6 +16,7 @@
 // helper does not support.
 
 import * as Defaults from '../../core/defaults.js';
+import * as CoreStorage from '../../core/storage.js';
 import { getCaseHandlingSummary } from '../../services/case-rule-summary.js';
 
 /**
@@ -24,6 +25,7 @@ import { getCaseHandlingSummary } from '../../services/case-rule-summary.js';
  *  UIComponents?: any,
  *  ImportExport?: any,
  *  StateStore?: any,
+ *  Storage?: any,
  *  Utils?: any,
  *  OperationLifecycle?: any,
  *  beforeMutate?: () => boolean|void
@@ -34,6 +36,7 @@ export function createImportCasesDialog({
   UIComponents,
   ImportExport,
   StateStore,
+  Storage = CoreStorage,
   Utils,
   OperationLifecycle = null,
   beforeMutate = null,
@@ -47,9 +50,23 @@ export function createImportCasesDialog({
   function open({ beforeMutate: openBeforeMutate = null } = {}) {
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedResult = null;
+    let parsedScope = null;
     let activeFilter = 'all'; // 'all' | 'valid' | 'duplicate' | 'invalid'
 
     function mutationAllowed() {
+      if (
+        parsedScope &&
+        Storage &&
+        typeof Storage.isScopeContextCurrent === 'function' &&
+        !Storage.isScopeContextCurrent(parsedScope)
+      ) {
+        UIComponents.showToast(
+          Storage.IMPORT_SCOPE_CHANGED_MESSAGE ||
+            'Import stopped because the signed-in user or active workspace changed. Select the file again.',
+          'warning'
+        );
+        return false;
+      }
       const guard = typeof openBeforeMutate === 'function' ? openBeforeMutate : beforeMutate;
       if (typeof guard === 'function' && guard() === false) return false;
       if (OperationLifecycle && OperationLifecycle.isBusy()) {
@@ -608,6 +625,10 @@ export function createImportCasesDialog({
     // ── File handler ──────────────────────────────────────────────────────
     async function handleFile(file) {
       if (!file) return;
+      parsedScope =
+        Storage && typeof Storage.captureScopeContext === 'function'
+          ? Storage.captureScopeContext()
+          : null;
 
       parsingName.textContent = 'Reading ' + file.name + '…';
       showState('parsing');
@@ -667,6 +688,7 @@ export function createImportCasesDialog({
     // ── Import ────────────────────────────────────────────────────────────
     function doImport() {
       if (!parsedResult || parsedResult.valid.length === 0) return;
+      if (!mutationAllowed()) return;
       const result = ImportExport.importCaseRows(parsedResult.valid);
       if (!mutationAllowed()) return;
       StateStore.set({ caseLibrary: result.nextCaseLibrary });

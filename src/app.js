@@ -898,6 +898,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       onExportApp: openExportAppModal,
       onExportWorkspace: openExportWorkspaceModal,
       onImportApp: openImportAppDialog,
+      pauseAutoSaveForAppRestore,
       onHelp: openHelpModal,
       onUpdates: openUpdatesScreen,
       onRoadmap: openRoadmapScreen,
@@ -1097,6 +1098,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       ImportExport,
       StateStore,
       Storage,
+      pauseAutoSaveForAppRestore,
       PreferencesManager,
       applyCaseDefaultColor,
       Utils,
@@ -2454,6 +2456,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (Storage && typeof Storage.flushPendingSave === 'function') {
         Storage.flushPendingSave();
       }
+    }
+
+    function pauseAutoSaveForAppRestore() {
+      const previousSuspendAutoSave = suspendAutoSave;
+      suspendAutoSave = true;
+      try {
+        if (Storage && typeof Storage.cancelPendingSave === 'function') {
+          Storage.cancelPendingSave();
+        }
+      } catch (error) {
+        suspendAutoSave = previousSuspendAutoSave;
+        throw error;
+      }
+
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        suspendAutoSave = previousSuspendAutoSave;
+      };
     }
 
     function setWorkspaceStorageScope(targetOrgId) {

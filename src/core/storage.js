@@ -26,17 +26,27 @@ import {
 import { emit } from './events.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
+export const IMPORT_SCOPE_CHANGED_MESSAGE =
+  'Import stopped because the signed-in user or active workspace changed. Select the file again.';
+export const APP_RESTORE_RECOVERY_REQUIRED = 'APP_RESTORE_RECOVERY_REQUIRED';
+
+const APP_RESTORE_RECOVERY_VERSION = 1;
+const APP_RESTORE_RECOVERY_SUFFIX = ':app-restore-recovery';
 
 // Storage is scoped first by user, then by active workspace. Preferences stay
 // user-scoped while packs/cases/currentPackId live under the active workspace.
 let STORAGE_SCOPE = 'anon';
 let WORKSPACE_SCOPE = 'no-org';
+let SCOPE_GENERATION = 0;
 let pendingLegacyMigration = null;
 
 /** Set the current storage scope (typically the signed-in user id). */
 export function setStorageScope(scope) {
   const nextScope = String(scope || 'anon').trim() || 'anon';
-  if (nextScope !== STORAGE_SCOPE) pendingLegacyMigration = null;
+  if (nextScope !== STORAGE_SCOPE) {
+    pendingLegacyMigration = null;
+    SCOPE_GENERATION += 1;
+  }
   STORAGE_SCOPE = nextScope;
 }
 
@@ -48,13 +58,44 @@ export function getStorageScope() {
 /** Set the current workspace scope (typically the active org id). */
 export function setWorkspaceScope(scope) {
   const nextScope = String(scope || 'no-org').trim() || 'no-org';
-  if (nextScope !== WORKSPACE_SCOPE) pendingLegacyMigration = null;
+  if (nextScope !== WORKSPACE_SCOPE) {
+    pendingLegacyMigration = null;
+    SCOPE_GENERATION += 1;
+  }
   WORKSPACE_SCOPE = nextScope;
 }
 
 /** Return the current workspace scope value. */
 export function getWorkspaceScope() {
   return WORKSPACE_SCOPE;
+}
+
+/** Capture the user/workspace identity that owns an import operation. */
+export function captureScopeContext() {
+  return Object.freeze({
+    storageScope: STORAGE_SCOPE,
+    workspaceScope: WORKSPACE_SCOPE,
+    generation: SCOPE_GENERATION,
+  });
+}
+
+/** Return whether a captured import identity is still the active identity. */
+export function isScopeContextCurrent(context) {
+  return Boolean(
+    context &&
+      context.storageScope === STORAGE_SCOPE &&
+      context.workspaceScope === WORKSPACE_SCOPE &&
+      context.generation === SCOPE_GENERATION
+  );
+}
+
+/** Fail closed when an asynchronous import outlives its user/workspace. */
+export function assertScopeContextCurrent(context) {
+  if (isScopeContextCurrent(context)) return;
+  const error = Object.assign(new Error(IMPORT_SCOPE_CHANGED_MESSAGE), {
+    code: 'IMPORT_SCOPE_CHANGED',
+  });
+  throw error;
 }
 
 /** Build the localStorage key for the active user scope. */
@@ -65,6 +106,186 @@ function getScopedKey() {
 /** Build the localStorage key for the active workspace scope. */
 function getWorkspaceScopedKey() {
   return `${getScopedKey()}:workspace:${WORKSPACE_SCOPE}`;
+}
+
+function getAppRestoreRecoveryKey(workspaceKey) {
+  return `${workspaceKey}${APP_RESTORE_RECOVERY_SUFFIX}`;
+}
+
+function fingerprintRaw(raw) {
+  const value = raw == null ? '<null>' : String(raw);
+  let hash = 2166136261;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `${value.length}:${(hash >>> 0).toString(16)}`;
+}
+
+function canonicalJSONStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map(item => canonicalJSONStringify(item)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map(key => `${JSON.stringify(key)}:${canonicalJSONStringify(value[key])}`)
+      .join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * Recovery identity deliberately excludes only the top-level save timestamp.
+ * Object keys are canonicalized, while all meaningful values and array order
+ * remain part of the fingerprint.
+ */
+function fingerprintPersistedPayload(raw) {
+  if (raw == null) return `raw:${fingerprintRaw(raw)}`;
+  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(String(raw), null));
+  if (!isPlainRecord(parsed)) return `raw:${fingerprintRaw(raw)}`;
+  const meaningfulPayload = {};
+  Object.keys(parsed).forEach(key => {
+    if (key !== 'savedAt') meaningfulPayload[key] = parsed[key];
+  });
+  return `payload:${fingerprintRaw(canonicalJSONStringify(meaningfulPayload))}`;
+}
+
+function createAppRestoreRecoveryError(cause, {
+  scopedKey = null,
+  workspaceKey = null,
+  recoveryKey = null,
+  recoverable = true,
+} = {}) {
+  if (cause && cause.code === APP_RESTORE_RECOVERY_REQUIRED) return cause;
+  const detail = cause && cause.message ? ` ${cause.message}` : '';
+  return Object.assign(
+    new Error(`App restore recovery requires attention before this workspace can be loaded.${detail}`),
+    {
+      code: APP_RESTORE_RECOVERY_REQUIRED,
+      cause,
+      recoverable: Boolean(recoverable),
+      scopedKey,
+      workspaceKey,
+      recoveryKey,
+    }
+  );
+}
+
+function getAppRestoreSaveBlock(scopedKey, workspaceKey) {
+  const recoveryKey = getAppRestoreRecoveryKey(workspaceKey);
+  const recoveryRaw = window.localStorage.getItem(recoveryKey);
+  if (recoveryRaw == null) return null;
+  return createAppRestoreRecoveryError(
+    new Error('Normal autosave is suspended while an App restore recovery record is unresolved.'),
+    { scopedKey, workspaceKey, recoveryKey, recoverable: true }
+  );
+}
+
+function restoreRawValue(key, raw) {
+  if (raw == null) window.localStorage.removeItem(key);
+  else window.localStorage.setItem(key, raw);
+  if (window.localStorage.getItem(key) !== raw) {
+    throw new Error(`Recovery verification failed for ${key}`);
+  }
+}
+
+function isRestoreRecoveryRecord(record, scopedKey, workspaceKey) {
+  return Boolean(
+    record &&
+      typeof record === 'object' &&
+      !Array.isArray(record) &&
+      record.version === APP_RESTORE_RECOVERY_VERSION &&
+      typeof record.transactionId === 'string' &&
+      record.scopedKey === scopedKey &&
+      record.workspaceKey === workspaceKey &&
+      (record.priorUserRaw == null || typeof record.priorUserRaw === 'string') &&
+      (record.priorWorkspaceRaw == null || typeof record.priorWorkspaceRaw === 'string') &&
+      typeof record.candidateUserFingerprint === 'string' &&
+      typeof record.candidateWorkspaceFingerprint === 'string'
+  );
+}
+
+function rollbackRestoreRecord(record, recoveryKey, recoveryRaw) {
+  try {
+    if (window.localStorage.getItem(recoveryKey) !== recoveryRaw) {
+      throw new Error('App restore recovery record changed');
+    }
+    const currentUserRaw = window.localStorage.getItem(record.scopedKey);
+    const currentWorkspaceRaw = window.localStorage.getItem(record.workspaceKey);
+    const userIsKnown =
+      currentUserRaw === record.priorUserRaw ||
+      fingerprintPersistedPayload(currentUserRaw) === record.candidateUserFingerprint;
+    const workspaceIsKnown =
+      currentWorkspaceRaw === record.priorWorkspaceRaw ||
+      fingerprintPersistedPayload(currentWorkspaceRaw) === record.candidateWorkspaceFingerprint;
+    if (!userIsKnown || !workspaceIsKnown) {
+      throw new Error('App restore destination changed during recovery');
+    }
+
+    restoreRawValue(record.scopedKey, record.priorUserRaw);
+    restoreRawValue(record.workspaceKey, record.priorWorkspaceRaw);
+    window.localStorage.removeItem(recoveryKey);
+    if (window.localStorage.getItem(recoveryKey) !== null) {
+      throw new Error('App restore recovery cleanup failed');
+    }
+    return { ok: true, rolledBack: true, recoverable: false };
+  } catch (error) {
+    const recoverable = window.localStorage.getItem(recoveryKey) === recoveryRaw;
+    return {
+      ok: false,
+      rolledBack: false,
+      recoverable,
+      error: createAppRestoreRecoveryError(error, {
+        scopedKey: record.scopedKey,
+        workspaceKey: record.workspaceKey,
+        recoveryKey,
+        recoverable,
+      }),
+    };
+  }
+}
+
+function recoverInterruptedAppRestore(scopedKey, workspaceKey) {
+  const recoveryKey = getAppRestoreRecoveryKey(workspaceKey);
+  const recoveryRaw = window.localStorage.getItem(recoveryKey);
+  if (!recoveryRaw) return { ok: true, recovered: false };
+
+  const record = Utils.sanitizeJSON(Utils.safeJsonParse(recoveryRaw, null));
+  if (!isRestoreRecoveryRecord(record, scopedKey, workspaceKey)) {
+    return {
+      ok: false,
+      error: createAppRestoreRecoveryError(
+        new Error('Invalid App restore recovery record'),
+        { scopedKey, workspaceKey, recoveryKey, recoverable: true }
+      ),
+    };
+  }
+
+  const candidateIsDurable =
+    fingerprintPersistedPayload(window.localStorage.getItem(scopedKey)) === record.candidateUserFingerprint &&
+    fingerprintPersistedPayload(window.localStorage.getItem(workspaceKey)) === record.candidateWorkspaceFingerprint;
+  if (candidateIsDurable) {
+    try {
+      window.localStorage.removeItem(recoveryKey);
+      if (window.localStorage.getItem(recoveryKey) !== null) {
+        throw new Error('App restore recovery cleanup failed');
+      }
+      return { ok: true, recovered: true, finalized: true };
+    } catch (error) {
+      return {
+        ok: false,
+        error: createAppRestoreRecoveryError(error, {
+          scopedKey,
+          workspaceKey,
+          recoveryKey,
+          recoverable: window.localStorage.getItem(recoveryKey) === recoveryRaw,
+        }),
+      };
+    }
+  }
+
+  return rollbackRestoreRecord(record, recoveryKey, recoveryRaw);
 }
 
 function readUserScopedRaw(scopedKey) {
@@ -160,6 +381,9 @@ export function load() {
   const workspaceKey = getWorkspaceScopedKey();
   pendingLegacyMigration = null;
   try {
+    const interruptedRestore = recoverInterruptedAppRestore(scopedKey, workspaceKey);
+    if (!interruptedRestore.ok) throw interruptedRestore.error;
+
     const userRead = readUserScopedRaw(scopedKey);
     const userPayload = parseStoredPayload(userRead.raw, userRead.sourceKey || scopedKey);
 
@@ -260,12 +484,36 @@ export function load() {
       message: err && err.message ? err.message : 'Load failed',
       error: err,
     });
+    if (err && err.code === APP_RESTORE_RECOVERY_REQUIRED) throw err;
     return null;
   }
 }
 
 export function saveSoon() {
+  const scopedKey = getScopedKey();
+  const workspaceKey = getWorkspaceScopedKey();
+  try {
+    const blocked = getAppRestoreSaveBlock(scopedKey, workspaceKey);
+    if (blocked) {
+      emit('storage:save_error', {
+        key: workspaceKey,
+        message: blocked.message,
+        error: blocked,
+        blocked: true,
+      });
+      return false;
+    }
+  } catch (error) {
+    emit('storage:save_error', {
+      key: workspaceKey,
+      message: error && error.message ? error.message : 'Autosave safety check failed',
+      error,
+      blocked: true,
+    });
+    return false;
+  }
   saveDebounced();
+  return true;
 }
 
 export function flushPendingSave() {
@@ -341,10 +589,193 @@ export function finalizeLegacyMigration() {
   }
 }
 
+function serializeAppStateForScope(state, savedAt) {
+  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
+  return {
+    userRaw: JSON.stringify({
+      version: APP_VERSION,
+      savedAt,
+      preferences: state.preferences,
+    }),
+    workspaceRaw: JSON.stringify({
+      version: APP_VERSION,
+      savedAt,
+      caseLibrary: state.caseLibrary,
+      packLibrary: sanitizedPacks,
+      folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
+      currentPackId: state.currentPackId,
+    }),
+  };
+}
+
+/**
+ * Persist and read back an App Restore candidate while retaining the exact prior
+ * scoped payloads in a durable recovery record. StateStore is not mutated here.
+ * @param {Record<string, any>} candidateState
+ * @param {{ expectedScope?: any }} [options]
+ */
+export function beginAppRestore(candidateState, { expectedScope } = {}) {
+  let workspaceKey = null;
+  let recoveryKey = null;
+  let recoveryRaw = null;
+  let recoveryRecord = null;
+  let recoveryWritten = false;
+  try {
+    assertScopeContextCurrent(expectedScope);
+    const scopedKey = getScopedKey();
+    workspaceKey = getWorkspaceScopedKey();
+    recoveryKey = getAppRestoreRecoveryKey(workspaceKey);
+
+    const interruptedRestore = recoverInterruptedAppRestore(scopedKey, workspaceKey);
+    if (!interruptedRestore.ok) throw interruptedRestore.error;
+    assertScopeContextCurrent(expectedScope);
+
+    const savedAt = Date.now();
+    const { userRaw, workspaceRaw } = serializeAppStateForScope(candidateState, savedAt);
+    recoveryRecord = {
+      version: APP_RESTORE_RECOVERY_VERSION,
+      transactionId: Utils.uuid(),
+      scopedKey,
+      workspaceKey,
+      storageScope: expectedScope.storageScope,
+      workspaceScope: expectedScope.workspaceScope,
+      scopeGeneration: expectedScope.generation,
+      priorUserRaw: window.localStorage.getItem(scopedKey),
+      priorWorkspaceRaw: window.localStorage.getItem(workspaceKey),
+      candidateUserFingerprint: fingerprintPersistedPayload(userRaw),
+      candidateWorkspaceFingerprint: fingerprintPersistedPayload(workspaceRaw),
+    };
+    recoveryRaw = JSON.stringify(recoveryRecord);
+
+    window.localStorage.setItem(recoveryKey, recoveryRaw);
+    recoveryWritten = true;
+    if (window.localStorage.getItem(recoveryKey) !== recoveryRaw) {
+      throw new Error('App restore recovery snapshot verification failed');
+    }
+    assertScopeContextCurrent(expectedScope);
+
+    window.localStorage.setItem(scopedKey, userRaw);
+    if (window.localStorage.getItem(scopedKey) !== userRaw) {
+      throw new Error('App restore preferences read-back verification failed');
+    }
+    assertScopeContextCurrent(expectedScope);
+
+    window.localStorage.setItem(workspaceKey, workspaceRaw);
+    if (window.localStorage.getItem(workspaceKey) !== workspaceRaw) {
+      throw new Error('App restore workspace read-back verification failed');
+    }
+    assertScopeContextCurrent(expectedScope);
+
+    if (
+      window.localStorage.getItem(scopedKey) !== userRaw ||
+      window.localStorage.getItem(workspaceKey) !== workspaceRaw
+    ) {
+      throw new Error('App restore durable verification failed');
+    }
+
+    return {
+      ok: true,
+      transactionId: recoveryRecord.transactionId,
+      expectedScope,
+      scopedKey,
+      workspaceKey,
+      recoveryKey,
+      recoveryRaw,
+      recoveryRecord,
+      userRaw,
+      workspaceRaw,
+      savedAt,
+    };
+  } catch (error) {
+    let rollback = { ok: true, rolledBack: true, recoverable: false };
+    if (recoveryWritten && recoveryRecord && recoveryRaw && recoveryKey) {
+      rollback = rollbackRestoreRecord(recoveryRecord, recoveryKey, recoveryRaw);
+    } else if (recoveryKey && window.localStorage.getItem(recoveryKey) != null) {
+      rollback = {
+        ok: false,
+        rolledBack: false,
+        recoverable: true,
+        error: createAppRestoreRecoveryError(error, {
+          workspaceKey,
+          recoveryKey,
+          recoverable: true,
+        }),
+      };
+    }
+    emit('storage:restore_error', {
+      key: workspaceKey,
+      message: error && error.message ? error.message : 'App restore persistence failed',
+      error,
+      recoverable: Boolean(rollback.recoverable),
+    });
+    return {
+      ok: false,
+      error,
+      rolledBack: rollback.rolledBack,
+      recoverable: rollback.recoverable,
+      rollbackError: rollback.ok ? null : rollback.error,
+    };
+  }
+}
+
+/** Complete an App Restore only after both scoped payloads still match. */
+export function finalizeAppRestore(receipt) {
+  try {
+    if (!receipt || !receipt.ok) throw new Error('Invalid App restore receipt');
+    assertScopeContextCurrent(receipt.expectedScope);
+    if (window.localStorage.getItem(receipt.recoveryKey) !== receipt.recoveryRaw) {
+      throw new Error('App restore recovery record changed before finalization');
+    }
+    if (
+      window.localStorage.getItem(receipt.scopedKey) !== receipt.userRaw ||
+      window.localStorage.getItem(receipt.workspaceKey) !== receipt.workspaceRaw
+    ) {
+      throw new Error('App restore durable state changed before finalization');
+    }
+    window.localStorage.removeItem(receipt.recoveryKey);
+    if (window.localStorage.getItem(receipt.recoveryKey) !== null) {
+      throw new Error('App restore finalization cleanup failed');
+    }
+    emit('storage:saved', { key: receipt.workspaceKey, savedAt: receipt.savedAt });
+    return { ok: true, savedAt: receipt.savedAt };
+  } catch (error) {
+    emit('storage:restore_error', {
+      key: receipt && receipt.workspaceKey,
+      message: error && error.message ? error.message : 'App restore finalization failed',
+      error,
+      recoverable: Boolean(receipt && receipt.recoveryRaw),
+    });
+    return { ok: false, error };
+  }
+}
+
+/** Roll back a prepared App Restore using its scoped durable recovery record. */
+export function rollbackAppRestore(receipt) {
+  if (!receipt || !receipt.recoveryRecord || !receipt.recoveryKey || !receipt.recoveryRaw) {
+    return {
+      ok: false,
+      rolledBack: false,
+      recoverable: false,
+      error: new Error('Invalid App restore receipt'),
+    };
+  }
+  return rollbackRestoreRecord(receipt.recoveryRecord, receipt.recoveryKey, receipt.recoveryRaw);
+}
+
 export function saveNow() {
   const scopedKey = getScopedKey();
   const workspaceKey = getWorkspaceScopedKey();
   try {
+    const blocked = getAppRestoreSaveBlock(scopedKey, workspaceKey);
+    if (blocked) {
+      emit('storage:save_error', {
+        key: workspaceKey,
+        message: blocked.message,
+        error: blocked,
+        blocked: true,
+      });
+      return;
+    }
     const state = StateStore.get();
     const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
     const userPayload = {
@@ -439,13 +870,17 @@ export function exportWorkspaceJSON(workspaceName) {
 export function importAppJSON(jsonText) {
   try {
     const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
-    if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
-    const data = parsed.data || parsed;
-    if (!data.caseLibrary || !data.packLibrary || !data.preferences) throw new Error('Missing required keys');
+    if (!isPlainRecord(parsed)) throw new Error('Invalid JSON: expected an object');
+    const hasEnvelope = Object.prototype.hasOwnProperty.call(parsed, 'data');
+    if (hasEnvelope && !isPlainRecord(parsed.data)) {
+      throw new Error('Invalid App backup envelope: data must be an object');
+    }
+    const data = hasEnvelope ? parsed.data : parsed;
+    const { cases, packs, folders } = validateAppRestoreGraph(data);
     return normalizeAppData({
-      caseLibrary: data.caseLibrary,
-      packLibrary: data.packLibrary,
-      folderLibrary: Array.isArray(data.folderLibrary) ? data.folderLibrary : [],
+      caseLibrary: cases,
+      packLibrary: packs,
+      folderLibrary: folders,
       preferences: data.preferences,
       currentPackId: data.currentPackId || null,
     });
@@ -456,4 +891,93 @@ export function importAppJSON(jsonText) {
     });
     throw err;
   }
+}
+
+function isPlainRecord(value) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function requireRestoreArray(data, key, { optional = false } = {}) {
+  if (!Object.prototype.hasOwnProperty.call(data, key)) {
+    if (optional) return [];
+    throw new Error(`Missing required ${key} array`);
+  }
+  if (!Array.isArray(data[key])) throw new Error(`Invalid ${key}: expected an array`);
+  return data[key];
+}
+
+function requireUniqueRestoreId(value, label, seen) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`Invalid ${label}: blank or missing id`);
+  }
+  const id = value.trim();
+  if (seen.has(id)) throw new Error(`Invalid ${label}: duplicate id "${id}"`);
+  seen.add(id);
+  return id;
+}
+
+function validateAppRestoreGraph(data) {
+  if (!isPlainRecord(data.preferences)) {
+    throw new Error('Invalid preferences: expected an object');
+  }
+  const cases = requireRestoreArray(data, 'caseLibrary');
+  const packs = requireRestoreArray(data, 'packLibrary');
+  const folders = requireRestoreArray(data, 'folderLibrary', { optional: true });
+  const caseIds = new Set();
+  const packIds = new Set();
+  const folderIds = new Set();
+  const instanceIds = new Set();
+
+  cases.forEach((caseData, index) => {
+    if (!isPlainRecord(caseData)) throw new Error(`Invalid caseLibrary[${index}]: expected an object`);
+    requireUniqueRestoreId(caseData.id, `caseLibrary[${index}]`, caseIds);
+  });
+  folders.forEach((folder, index) => {
+    if (!isPlainRecord(folder)) throw new Error(`Invalid folderLibrary[${index}]: expected an object`);
+    requireUniqueRestoreId(folder.id, `folderLibrary[${index}]`, folderIds);
+    if (folder.parentFolderId != null && String(folder.parentFolderId).trim()) {
+      throw new Error(`Invalid folderLibrary[${index}]: nested folder references are not supported`);
+    }
+  });
+  packs.forEach((pack, packIndex) => {
+    if (!isPlainRecord(pack)) throw new Error(`Invalid packLibrary[${packIndex}]: expected an object`);
+    requireUniqueRestoreId(pack.id, `packLibrary[${packIndex}]`, packIds);
+    if (pack.folderId != null && String(pack.folderId).trim()) {
+      if (typeof pack.folderId !== 'string' || !folderIds.has(pack.folderId.trim())) {
+        throw new Error(`Invalid packLibrary[${packIndex}].folderId: referenced folder does not exist`);
+      }
+    }
+    if (pack.cases != null && !Array.isArray(pack.cases)) {
+      throw new Error(`Invalid packLibrary[${packIndex}].cases: expected an array`);
+    }
+    const instances = Array.isArray(pack.cases) ? pack.cases : [];
+    instances.forEach((instance, instanceIndex) => {
+      if (!isPlainRecord(instance)) {
+        throw new Error(`Invalid packLibrary[${packIndex}].cases[${instanceIndex}]: expected an object`);
+      }
+      requireUniqueRestoreId(
+        instance.id,
+        `packLibrary[${packIndex}].cases[${instanceIndex}]`,
+        instanceIds
+      );
+      if (typeof instance.caseId !== 'string' || !instance.caseId.trim()) {
+        throw new Error(
+          `Invalid packLibrary[${packIndex}].cases[${instanceIndex}].caseId: blank or missing reference`
+        );
+      }
+      if (!caseIds.has(instance.caseId.trim())) {
+        throw new Error(
+          `Invalid packLibrary[${packIndex}].cases[${instanceIndex}].caseId: referenced case does not exist`
+        );
+      }
+    });
+  });
+
+  if (data.currentPackId != null && String(data.currentPackId).trim()) {
+    if (typeof data.currentPackId !== 'string' || !packIds.has(data.currentPackId.trim())) {
+      throw new Error('Invalid currentPackId: referenced load plan does not exist');
+    }
+  }
+
+  return { cases, packs, folders };
 }

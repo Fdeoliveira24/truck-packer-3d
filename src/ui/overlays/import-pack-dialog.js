@@ -15,12 +15,15 @@
 // four distinct visual states (dropzone → parsing → parsed → error) that the
 // shared helper does not support.
 
+import * as CoreStorage from '../../core/storage.js';
+
 /**
  * @param {{
  *  documentRef?: Document,
  *  UIComponents?: any,
  *  ImportExport?: any,
  *  PackLibrary?: any,
+ *  Storage?: any,
  *  Utils?: any,
  *  OperationLifecycle?: any,
  *  beforeMutate?: () => boolean|void
@@ -31,6 +34,7 @@ export function createImportPackDialog({
   UIComponents,
   ImportExport,
   PackLibrary,
+  Storage = CoreStorage,
   Utils,
   OperationLifecycle = null,
   beforeMutate = null,
@@ -44,9 +48,23 @@ export function createImportPackDialog({
   function open({ beforeMutate: openBeforeMutate = null } = {}) {
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedPayload = null; // { type: 'single'|'batch', payload, file }
+    let parsedScope = null;
     let activeCaseFilter = 'all'; // all | ready | duplicates | invalid
 
     function mutationAllowed() {
+      if (
+        parsedScope &&
+        Storage &&
+        typeof Storage.isScopeContextCurrent === 'function' &&
+        !Storage.isScopeContextCurrent(parsedScope)
+      ) {
+        UIComponents.showToast(
+          Storage.IMPORT_SCOPE_CHANGED_MESSAGE ||
+            'Import stopped because the signed-in user or active workspace changed. Select the file again.',
+          'warning'
+        );
+        return false;
+      }
       const guard = typeof openBeforeMutate === 'function' ? openBeforeMutate : beforeMutate;
       if (typeof guard === 'function' && guard() === false) return false;
       if (OperationLifecycle && OperationLifecycle.isBusy()) {
@@ -957,6 +975,10 @@ export function createImportPackDialog({
     // ── File handler ──────────────────────────────────────────────────────
     async function handleFile(file) {
       if (!file) return;
+      parsedScope =
+        Storage && typeof Storage.captureScopeContext === 'function'
+          ? Storage.captureScopeContext()
+          : null;
       activeCaseFilter = 'all';
 
       // Show file chip immediately with filename

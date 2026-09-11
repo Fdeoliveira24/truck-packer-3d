@@ -58,6 +58,7 @@ export function createSettingsOverlay({
   onExportApp: _onExportApp,
   onExportWorkspace: _onExportWorkspace,
   onImportApp: _onImportApp,
+  pauseAutoSaveForAppRestore,
   onHelp: _onHelp,
   onUpdates: _onUpdates,
   onRoadmap: _onRoadmap,
@@ -3129,20 +3130,6 @@ export function createSettingsOverlay({
     container.appendChild(wrap);
   }
 
-  function applyCaseDefaultColor(caseObj) {
-    const next = { ...(caseObj || {}) };
-    const existing = String(next.color || '').trim();
-    if (existing) return next;
-    const key =
-      String(next.category || 'default')
-        .trim()
-        .toLowerCase() || 'default';
-    const cats = (_Defaults && _Defaults.categories) || [];
-    const found = cats.find(c => c.key === key) || cats.find(c => c.key === 'default');
-    next.color = (found && found.color) || '#9ca3af';
-    return next;
-  }
-
   async function handleImportAppFile(file, resultsEl) {
     resultsEl.classList.add('is-visible');
     resultsEl.innerHTML = '';
@@ -3151,6 +3138,7 @@ export function createSettingsOverlay({
       UIComponents.showToast('No file selected', 'warning');
       return;
     }
+    const originScope = CoreStorage.captureScopeContext();
 
     const name = String(file.name || '');
     const lower = name.toLowerCase();
@@ -3197,19 +3185,12 @@ export function createSettingsOverlay({
     if (!ok) return;
 
     try {
-      const prev = StateStore.get();
-      const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
-      const nextState = {
-        ...prev,
-        caseLibrary: importedCases,
-        packLibrary: imported.packLibrary,
-        preferences: imported.preferences,
-        currentPackId: null,
-        currentScreen: 'packs',
-        selectedInstanceIds: [],
-      };
-      StateStore.replace(nextState, { skipHistory: false });
-      CoreStorage.saveNow();
+      const { nextState } = ImportExport.restoreAppImport(imported, {
+        StateStore,
+        Storage: CoreStorage,
+        originScope,
+        pauseAutoSave: pauseAutoSaveForAppRestore,
+      });
       if (PreferencesManager && typeof PreferencesManager.applyTheme === 'function') {
         PreferencesManager.applyTheme(nextState.preferences.theme);
       }
@@ -3239,8 +3220,13 @@ export function createSettingsOverlay({
       casesBadge.className = 'badge tp3d-import-badge-info';
       casesBadge.textContent = 'Cases: ' + String((imported.caseLibrary || []).length);
 
+      const foldersBadge = doc.createElement('div');
+      foldersBadge.className = 'badge';
+      foldersBadge.textContent = 'Folders: ' + String((imported.folderLibrary || []).length);
+
       badges.appendChild(packsBadge);
       badges.appendChild(casesBadge);
+      badges.appendChild(foldersBadge);
 
       summary.appendChild(summaryTitle);
       summary.appendChild(summaryMeta);

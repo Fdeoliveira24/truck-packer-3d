@@ -186,7 +186,7 @@ test('CASE-NOTES-TERM active Case surfaces and PDF use Case Instructions/Notes w
     'packed-instance terminology remains Item Notes');
 });
 
-test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lint, hydration, and preview-owner changes', async () => {
+test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lint, hydration, preview, and recovery-owner changes', async () => {
   const app = await fs.readFile(appPath, 'utf8');
   assert.match(app, /\['Case Instructions\/Notes', entry\.caseNotes\]/);
   const diff = execFileSync('git', ['diff', '--unified=0', '--', 'src/app.js'], {
@@ -205,6 +205,7 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lin
     'const getActiveWorkspaceKey = () => (',
     'const AutoPackPreviewScheduler = createPackPreviewScheduler({',
     'AutoPackPreviewScheduler.schedule()',
+    'pauseAutoSaveForAppRestore',
   ];
   const guardedDiff = diff
     .split(/(?=^@@)/m)
@@ -216,7 +217,8 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lin
   if (changedLines.length === 0) return;
   // This exact allowlist keeps the earlier ESLint 10 dead-store migration and
   // the approved Quantity Controls PDF checklist aggregation narrowly scoped.
-  // Runtime hydration ownership is covered by its dedicated behavioral matrix.
+  // Runtime hydration and restore-autosave ownership are covered by their
+  // dedicated behavioral matrices.
   assert.deepEqual(changedLines, [
     '-      let enabled = false;',
     '+      let enabled;',

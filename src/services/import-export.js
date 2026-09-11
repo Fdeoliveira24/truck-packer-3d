@@ -585,6 +585,119 @@ export function parseAppImportJSON(jsonText) {
   return CoreStorage.importAppJSON(jsonText);
 }
 
+/**
+ * Commit a parsed App Restore through the scoped, recoverable persistence boundary.
+ * The visible store is replaced only after durable read-back succeeds, and the
+ * prior store is restored if finalization fails while the same scope is active.
+ * @param {Record<string, any>} imported
+ * @param {{ StateStore?: any, Storage?: any, originScope?: any, pauseAutoSave?: Function }} [options]
+ */
+export function restoreAppImport(imported, {
+  StateStore,
+  Storage = CoreStorage,
+  originScope,
+  pauseAutoSave,
+} = {}) {
+  if (
+    !StateStore ||
+    typeof StateStore.snapshot !== 'function' ||
+    typeof StateStore.replace !== 'function' ||
+    typeof StateStore.resetHistory !== 'function'
+  ) {
+    throw new Error('App restore requires StateStore');
+  }
+  if (!Storage || typeof Storage.beginAppRestore !== 'function') {
+    throw new Error('App restore requires acknowledged storage');
+  }
+  if (typeof pauseAutoSave !== 'function') {
+    throw new Error('App restore requires autosave ownership');
+  }
+
+  Storage.assertScopeContextCurrent(originScope);
+  const previousState = StateStore.snapshot();
+  const nextState = {
+    ...previousState,
+    caseLibrary: imported.caseLibrary.map(applyCaseDefaultColor),
+    packLibrary: imported.packLibrary,
+    folderLibrary: imported.folderLibrary,
+    preferences: imported.preferences,
+    currentPackId: null,
+    currentScreen: 'packs',
+    selectedInstanceIds: [],
+  };
+  Storage.assertScopeContextCurrent(originScope);
+
+  const resumeAutoSave = pauseAutoSave();
+  if (typeof resumeAutoSave !== 'function') {
+    throw new Error('App restore autosave owner did not provide a resume function');
+  }
+  let receipt = null;
+  let stateActivated = false;
+  let durableFinalized = false;
+  let resumeAllowed = false;
+  const recoveryRequired = (error, rollback = null) => {
+    const recoveryMessage = rollback && rollback.recoverable
+      ? 'Prior data remains in the recovery snapshot.'
+      : 'Restore state could not be reconciled safely; reload before making changes.';
+    return Object.assign(
+      new Error(`${error && error.message ? error.message : 'App restore failed'}. ${recoveryMessage}`),
+      {
+        code: Storage.APP_RESTORE_RECOVERY_REQUIRED || 'APP_RESTORE_RECOVERY_REQUIRED',
+        cause: error,
+        recoverable: Boolean(rollback && rollback.recoverable),
+      }
+    );
+  };
+
+  try {
+    receipt = Storage.beginAppRestore(nextState, { expectedScope: originScope });
+    if (!receipt.ok) {
+      if (receipt.rolledBack) resumeAllowed = true;
+      const beginError = receipt.error || new Error('App restore persistence failed');
+      if (!receipt.rolledBack) throw recoveryRequired(beginError, receipt);
+      throw beginError;
+    }
+
+    Storage.assertScopeContextCurrent(originScope);
+    // Keep the prior history intact until persistence is finalized. A failed
+    // restore can then return to previousState without erasing existing Undo.
+    StateStore.replace(nextState, { skipHistory: true });
+    stateActivated = true;
+
+    const finalized = Storage.finalizeAppRestore(receipt);
+    if (!finalized.ok) throw finalized.error || new Error('App restore finalization failed');
+    durableFinalized = true;
+    StateStore.resetHistory();
+    resumeAllowed = true;
+    return { nextState, savedAt: finalized.savedAt };
+  } catch (error) {
+    if (!receipt || !receipt.ok) throw error;
+    if (durableFinalized) {
+      resumeAllowed = true;
+      throw error;
+    }
+
+    const rollback = Storage.rollbackAppRestore(receipt);
+    let priorStateRestored = !stateActivated;
+    if (stateActivated && rollback.ok && Storage.isScopeContextCurrent(originScope)) {
+      try {
+        StateStore.replace(previousState, { skipHistory: true });
+        priorStateRestored = true;
+      } catch (stateRollbackError) {
+        throw recoveryRequired(stateRollbackError, rollback);
+      }
+    }
+    if (!rollback.ok) {
+      throw recoveryRequired(error, rollback);
+    }
+    if (!priorStateRestored) throw recoveryRequired(error, rollback);
+    resumeAllowed = true;
+    throw error;
+  } finally {
+    if (resumeAllowed) resumeAutoSave();
+  }
+}
+
 export function buildWorkspaceExportJSON(workspaceName) {
   return CoreStorage.exportWorkspaceJSON(workspaceName);
 }

@@ -15,6 +15,7 @@ import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CaseLibrary from './case-library.js';
+import * as CategoryService from './category-service.js';
 import { TrailerPresets } from '../data/trailer-presets.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 import {
@@ -22,7 +23,7 @@ import {
   normalizeRightAngleRotation,
   getOrientedDimsForRotation,
 } from '../core/oriented-dims.js';
-import { cargoComparisonKey, cargoFieldsEqual } from '../core/cargo-canonical.js';
+import { caseSafeReuseKey, caseSafeReuseEqual } from '../core/cargo-canonical.js';
 // Hard-rule predicates and tolerances come from the single validation authority
 // shared with the AutoPack solver (packing-core/validation.js), so manual
 // revalidation and AutoPack can never silently diverge on a rule or epsilon.
@@ -2617,12 +2618,17 @@ export function getWorkspaceCaseQuantities() {
 // representation (core/cargo-canonical.js): the SAME raw value yields the SAME
 // canonical result in every path, "false" is never truthy, malformed numbers are
 // never silently 0, and an invalid value never equals a valid default. The
-// comparison is PHYSICAL only — manufacturer/category (display taxonomy) are
-// excluded so casing/taxonomy differences never fork a separate physical case.
-// The fingerprint is stamped onto a conflict-imported case as `importSourceKey`
-// so re-importing the same conflicting pack reuses the existing copy (idempotence).
-const cargoRulesEquivalent = cargoFieldsEqual;
-const cargoFingerprint = cargoComparisonKey;
+// comparison is SAFE SEMANTIC REUSE — physical identity (manufacturer/category
+// display taxonomy excluded so casing/taxonomy differences never fork a
+// separate physical case) PLUS operational/handling identity (mustLoadLast,
+// mustUnloadFirst, hazmatClass, stopGroup, keepTogetherGroup). Two physically
+// identical cases with different operational rules are NOT safe to silently
+// reuse — see core/cargo-canonical.js caseSafeReuseKey/Equal for the full
+// rationale (Milestone C Case semantic conflict fix). The fingerprint is
+// stamped onto a conflict-imported case as `importSourceKey` so re-importing
+// the same conflicting pack reuses the existing copy (idempotence).
+const cargoRulesEquivalent = caseSafeReuseEqual;
+const cargoFingerprint = caseSafeReuseKey;
 
 // A bundled case definition is "complete" (storable) only if it is an object
 // with a non-blank id and finite positive dimensions. Anything else is malformed
@@ -2830,12 +2836,101 @@ export function planPackImport(payload) {
   const rawTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
   pack.truck = CoreNormalizer.normalizeTruck(rawTruck);
   // Repair placements and compute stats against the PLANNED final case set, not
-  // the live store (which is not mutated until the commit below).
+  // the live store (which is not mutated until the commit below). Snapshot the
+  // pre-repair placement/position of every instance (same order/length as the
+  // repaired result — repairPackInstancePlacements maps 1:1) purely to REPORT
+  // what repair changed; this never feeds back into the repair decision itself.
+  const prePlacementSnapshot = pack.cases.map(inst => ({
+    placement: inst && inst.placement,
+    position: inst && inst.transform && inst.transform.position,
+  }));
   const repairedPack = repairPackInstancePlacements(pack, finalCases);
   pack.cases = repairedPack.cases;
   pack.stats = computeStats(pack, finalCases);
 
-  return { currentCases, currentPacks, newCases, finalCases, pack, caseConflicts };
+  let placementsPreserved = 0;
+  let placementsRepaired = 0;
+  let placementsStaged = 0;
+  pack.cases.forEach((inst, index) => {
+    const before = prePlacementSnapshot[index] || {};
+    const beforePos = before.position;
+    const afterPos = inst && inst.transform && inst.transform.position;
+    const positionChanged = !beforePos || !afterPos ||
+      Math.abs(Number(beforePos.x) - Number(afterPos.x)) > PLACEMENT_EPS ||
+      Math.abs(Number(beforePos.y) - Number(afterPos.y)) > PLACEMENT_EPS ||
+      Math.abs(Number(beforePos.z) - Number(afterPos.z)) > PLACEMENT_EPS;
+    // An imported file is not required to state `placement` up front (repair
+    // always derives it fresh); only treat a placement CHANGE as meaningful
+    // when the incoming file actually claimed one, so gaining a freshly
+    // derived label is never mistaken for a repair.
+    const beforePlacementStated = before.placement === 'packed' || before.placement === 'staged';
+    if (inst.placement === 'staged' && (!beforePlacementStated || before.placement !== 'staged')) {
+      placementsStaged += 1;
+    } else if (positionChanged || (beforePlacementStated && before.placement !== inst.placement)) {
+      placementsRepaired += 1;
+    } else {
+      placementsPreserved += 1;
+    }
+  });
+
+  // Portable category metadata (Milestone C): additive only — a category key
+  // the LOCAL WORKSPACE HAS EXPLICITLY CUSTOMIZED is never overwritten (the
+  // existing local name/color remains authoritative), and a mismatch is
+  // reported rather than silently applied. Deliberately reads the RAW
+  // preferences.categories array (not CategoryService.all(), which seeds in
+  // built-in default names/colors for uncustomized keys) — otherwise every
+  // built-in-keyed category (audio, lighting, rigging, ...) would look
+  // "already customized" the moment ANY workspace opens, permanently
+  // blocking a legitimate import even into a workspace with zero
+  // customizations of its own. See core/import-schema.js
+  // projectPortableCategories for the export-side projection (same
+  // built-in-vs-customized distinction, mirrored here for the import side).
+  const incomingCategories = Array.isArray(payload.categories) ? payload.categories : [];
+  const rawPreferences = StateStore.get('preferences') || {};
+  const localCategories = new Map(
+    (Array.isArray(rawPreferences.categories) ? rawPreferences.categories : [])
+      .filter(c => c && c.key)
+      .map(c => [String(c.key).trim().toLowerCase(), c])
+  );
+  const categoriesToAdd = [];
+  const categoryConflicts = [];
+  const seenCategoryKeys = new Set();
+  incomingCategories.forEach(cat => {
+    const key = String((cat && cat.key) || '').trim().toLowerCase();
+    if (!key || seenCategoryKeys.has(key)) return;
+    seenCategoryKeys.add(key);
+    const local = localCategories.get(key);
+    if (!local) {
+      categoriesToAdd.push({ key, name: cat.name || null, color: cat.color || null });
+      return;
+    }
+    const nameDiffers = cat.name && String(cat.name).trim() !== String(local.name || '').trim();
+    const colorDiffers = cat.color && String(cat.color).trim().toLowerCase() !== String(local.color || '').trim().toLowerCase();
+    if (nameDiffers || colorDiffers) {
+      categoryConflicts.push({
+        key,
+        localName: local.name,
+        localColor: local.color,
+        importedName: cat.name || null,
+        importedColor: cat.color || null,
+      });
+    }
+  });
+
+  return {
+    currentCases,
+    currentPacks,
+    newCases,
+    finalCases,
+    pack,
+    caseConflicts,
+    reusedCaseCount: Math.max(0, bundled.length - newCases.length),
+    placementsPreserved,
+    placementsRepaired,
+    placementsStaged,
+    categoriesToAdd,
+    categoryConflicts,
+  };
 }
 
 export function importPackPayload(payload) {
@@ -2852,10 +2947,32 @@ export function importPackPayload(payload) {
     { skipHistory: false }
   );
 
-  // Surface case conflicts to the import UI without persisting them on the pack
-  // (non-enumerable so JSON serialization to storage ignores it).
+  // Additive-only category merge: never overwrites an existing local category
+  // (see planPackImport's categoryConflicts computation for the disclosed
+  // mismatch case) and is a separate preferences-slice write from the pack/case
+  // commit above, so it can never partially apply the pack/case import itself.
+  plan.categoriesToAdd.forEach(cat => CategoryService.upsert(cat));
+
+  // Surface import-preflight results to the caller without persisting them on
+  // the pack (non-enumerable so JSON serialization to storage ignores them).
   Object.defineProperty(plan.pack, 'caseConflicts', {
     value: plan.caseConflicts,
+    enumerable: false,
+    configurable: true,
+  });
+  Object.defineProperty(plan.pack, 'categoryConflicts', {
+    value: plan.categoryConflicts,
+    enumerable: false,
+    configurable: true,
+  });
+  Object.defineProperty(plan.pack, 'importStats', {
+    value: {
+      reusedCaseCount: plan.reusedCaseCount,
+      createdCaseCount: plan.newCases.length,
+      placementsPreserved: plan.placementsPreserved,
+      placementsRepaired: plan.placementsRepaired,
+      placementsStaged: plan.placementsStaged,
+    },
     enumerable: false,
     configurable: true,
   });

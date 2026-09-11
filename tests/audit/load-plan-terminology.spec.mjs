@@ -434,7 +434,9 @@ test('LOAD-PLAN-TERM-8 persisted and exchanged schema keys are unchanged', async
   // Export payload keys survive a real round trip.
   const json = IE.buildPackExportJSON(pack);
   const parsed = JSON.parse(json);
-  const payloadPack = parsed.pack || parsed;
+  // New exports use the versioned Cargo Planner envelope (data.pack); legacy
+  // exports and a raw pack object are still accepted for this key-name check.
+  const payloadPack = (parsed.data && parsed.data.pack) || parsed.pack || parsed;
   assert.ok(payloadPack, 'the export payload must still expose a pack object');
   assert.equal(payloadPack.id, 'lp-schema-1', 'exported pack.id must be unchanged');
   assert.equal(payloadPack.notes, 'pack level note', 'exported pack.notes must be unchanged');

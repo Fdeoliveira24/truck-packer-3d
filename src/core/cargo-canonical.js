@@ -195,6 +195,49 @@ export function cargoFieldsEqual(a, b) {
 }
 
 // ---------------------------------------------------------------------------
+// SAFE SEMANTIC REUSE (Milestone C) — physical similarity is necessary but not
+// sufficient to silently reuse a local Case for an imported one. Two cases can
+// be physically identical (same dimensions/weight/shape/stack rules) yet carry
+// materially different OPERATIONAL/handling metadata — e.g. one is stamped
+// mustLoadLast and the other is not, or one is hazmat-classified and the other
+// isn't. Reusing the local copy in that situation would silently discard the
+// imported operational rule, which is a safety/compliance regression, not a
+// cosmetic difference like manufacturer/category casing.
+//
+// caseOperationalKey() is intentionally SEPARATE from cargoComparisonKey()
+// (physical identity only, unchanged) so callers that only care about physical
+// equivalence keep their existing behavior. caseSafeReuseKey()/Equal() combine
+// both and are the only comparison a reuse/dedupe DECISION should use.
+//
+// Standard Instructions (`notes`) are deliberately excluded here, the same way
+// manufacturer/category are excluded from physical identity: free-text
+// handling notes commonly differ in wording without describing a different
+// operational rule, so including them would fork otherwise-identical cases on
+// every trivial rewording. This is a deliberate, documented product choice,
+// not an oversight.
+// ---------------------------------------------------------------------------
+export function caseOperationalKey(raw) {
+  const c = raw && typeof raw === 'object' ? raw : {};
+  const s = x => String(x == null ? '' : x).trim().toLowerCase();
+  return JSON.stringify([
+    sentinel(parseCargoBoolean(c.mustLoadLast, false), c.mustLoadLast),
+    sentinel(parseCargoBoolean(c.mustUnloadFirst, false), c.mustUnloadFirst),
+    s(c.hazmatClass),
+    s(c.stopGroup),
+    s(c.keepTogetherGroup),
+  ]);
+}
+
+export function caseSafeReuseKey(raw) {
+  return JSON.stringify([cargoComparisonKey(raw), caseOperationalKey(raw)]);
+}
+
+export function caseSafeReuseEqual(a, b) {
+  if (!a || !b) return false;
+  return caseSafeReuseKey(a) === caseSafeReuseKey(b);
+}
+
+// ---------------------------------------------------------------------------
 // Safe extension-field policy.
 //   Known fields are canonicalized above. Approved unknown metadata survives
 //   upsert/autosave/App-Backup/Workspace/Pack round-trips, but prototype keys,

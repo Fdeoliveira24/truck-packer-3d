@@ -24,6 +24,7 @@ import { getCaseHandlingSummary } from '../../services/case-rule-summary.js';
  *  documentRef?: Document,
  *  UIComponents?: any,
  *  ImportExport?: any,
+ *  CaseLibrary?: any,
  *  StateStore?: any,
  *  Storage?: any,
  *  Utils?: any,
@@ -35,6 +36,7 @@ export function createImportCasesDialog({
   documentRef = document,
   UIComponents,
   ImportExport,
+  CaseLibrary,
   StateStore,
   Storage = CoreStorage,
   Utils,
@@ -42,6 +44,49 @@ export function createImportCasesDialog({
   beforeMutate = null,
 } = {}) {
   const doc = documentRef;
+
+  // Flatten a canonical Case (nested `dimensions`) into the same flat-record
+  // shape the CSV/XLSX preview table and getCaseHandlingSummary already expect,
+  // so the JSON Case Catalog path can reuse every render function unchanged.
+  function flattenCaseForPreview(c) {
+    const src = c && typeof c === 'object' ? c : {};
+    const d = src.dimensions || {};
+    return {
+      ...src,
+      length: Number(d.length) || 0,
+      width: Number(d.width) || 0,
+      height: Number(d.height) || 0,
+      warnings: [],
+    };
+  }
+
+  // Adapt a planCaseCatalogImport() result into the same { valid, errors,
+  // warnings, duplicates, invalidRows, duplicateRows } shape parseAndValidate
+  // Spreadsheet() produces, so the stat cards / preview table / footer /
+  // import button need no JSON-specific rendering branch.
+  function buildParsedResultFromCaseCatalogPlan(plan) {
+    const valid = plan.newCases.map(flattenCaseForPreview);
+    const duplicateRows = plan.reused.map((r, i) => ({
+      rowNum: i + 1,
+      record: flattenCaseForPreview(r.raw || { name: r.name }),
+    }));
+    const invalidRows = plan.rejected.map((r, i) => ({
+      rowNum: i + 1,
+      record: flattenCaseForPreview(r.raw || { name: r.name }),
+      reasons: [r.reason],
+    }));
+    const duplicates = plan.reused.map(r => `"${r.name || r.id}" skipped — ${r.reason}`);
+    const errors = plan.rejected.map(r => `"${r.name || r.id || 'unknown'}" rejected — ${r.reason}`);
+    const warnings = [
+      ...plan.conflicts.map(
+        c => `"${c.importedName}" renamed to "${c.newName}" (${c.kind === 'id-conflict' ? 'id' : 'name'} conflict with different cargo — imported as a new case)`
+      ),
+      ...(plan.categoryConflicts || []).map(
+        c => `Category "${c.key}" differs from this workspace — the existing local name/color will be kept`
+      ),
+    ];
+    return { valid, errors, warnings, duplicates, invalidRows, duplicateRows };
+  }
 
   // ---------------------------------------------------------------------------
   // SECTION: open()
@@ -51,6 +96,8 @@ export function createImportCasesDialog({
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedResult = null;
     let parsedScope = null;
+    let activeImportKind = 'spreadsheet'; // 'spreadsheet' | 'json'
+    let pendingCatalogPlan = null; // set only for the JSON Case Catalog path
     let activeFilter = 'all'; // 'all' | 'valid' | 'duplicate' | 'invalid'
 
     function mutationAllowed() {
@@ -80,7 +127,7 @@ export function createImportCasesDialog({
     const fileInput = doc.createElement('input');
     fileInput.type = 'file';
     fileInput.accept =
-      '.csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv';
+      '.csv,.xlsx,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,application/json';
 
     // ── Body container ─────────────────────────────────────────────────────
     const content = doc.createElement('div');
@@ -90,7 +137,7 @@ export function createImportCasesDialog({
     const subtitleEl = doc.createElement('p');
     subtitleEl.className = 'tp3d-ic-subtitle muted';
     subtitleEl.textContent =
-      'Add inventory from a .csv or .xlsx — validated before anything is saved';
+      'Add inventory from a .csv, .xlsx, or Case Catalog .json — validated before anything is saved';
     content.appendChild(subtitleEl);
 
     // ── DROPZONE AREA ───────────────────────────────────────────────────────
@@ -111,7 +158,7 @@ export function createImportCasesDialog({
 
     const dropSub = doc.createElement('div');
     dropSub.className = 'tp3d-import-drop-sub';
-    dropSub.textContent = 'CSV or XLSX — we\'ll validate it before anything is added';
+    dropSub.textContent = 'CSV, XLSX, or Case Catalog JSON — we\'ll validate it before anything is added';
 
     const browseBtn = doc.createElement('button');
     browseBtn.className = 'btn';
@@ -235,6 +282,8 @@ export function createImportCasesDialog({
     fileChipClear.addEventListener('click', ev => {
       ev.stopPropagation(); // must not bubble to modal-overlay close
       parsedResult = null;
+      pendingCatalogPlan = null;
+      activeImportKind = 'spreadsheet';
       activeFilter = 'all';
       fileInput.value = '';
       showState('dropzone');
@@ -349,7 +398,7 @@ export function createImportCasesDialog({
           label: 'Import cases',
           variant: 'primary',
           onClick: () => {
-            if (!parsedResult || parsedResult.valid.length === 0) return false;
+            if (!hasImportableChanges()) return false;
             doImport();
             return false; // doImport calls modalObj.close()
           },
@@ -422,10 +471,26 @@ export function createImportCasesDialog({
     }
 
     // ── Dynamic updates ───────────────────────────────────────────────────
+    function hasImportableChanges() {
+      if (!parsedResult) return false;
+      if (parsedResult.valid.length > 0) return true;
+      return Boolean(
+        activeImportKind === 'json' &&
+        pendingCatalogPlan &&
+        pendingCatalogPlan.categoriesToAdd.length > 0
+      );
+    }
+
     function updateImportBtn() {
       const count = parsedResult ? parsedResult.valid.length : 0;
-      importBtn.disabled = count === 0;
-      importBtn.textContent = count > 0 ? `Import ${count} cases` : 'Import cases';
+      const categoryCount =
+        activeImportKind === 'json' && pendingCatalogPlan
+          ? pendingCatalogPlan.categoriesToAdd.length
+          : 0;
+      importBtn.disabled = !hasImportableChanges();
+      importBtn.textContent = count > 0
+        ? `Import ${count} cases`
+        : (categoryCount > 0 ? 'Import category metadata' : 'Import cases');
     }
 
     function updateFooterLeft() {
@@ -630,6 +695,14 @@ export function createImportCasesDialog({
           ? Storage.captureScopeContext()
           : null;
 
+      const ext = String((file && file.name) || '').split('.').pop().toLowerCase().trim();
+      if (ext === 'json') {
+        await handleCaseCatalogJsonFile(file);
+        return;
+      }
+
+      activeImportKind = 'spreadsheet';
+      pendingCatalogPlan = null;
       parsingName.textContent = 'Reading ' + file.name + '…';
       showState('parsing');
 
@@ -650,6 +723,42 @@ export function createImportCasesDialog({
         const kb = Math.round((file.size / 1024) * 10) / 10;
         fileChipMeta.textContent =
           rowCount + ' row' + (rowCount !== 1 ? 's' : '') +
+          ' · ' + kb + ' KB · parsed just now';
+
+        updateStatCards();
+        renderPreviewRows();
+        updateImportBtn();
+        updateFooterLeft();
+        showState('parsed');
+      } catch (err) {
+        showState('dropzone');
+        UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
+      }
+    }
+
+    // ── Case Catalog JSON file handler ────────────────────────────────────
+    // Validates before any mutation (parseCaseCatalogImportPayloadJSON), then plans
+    // the reuse/conflict/reject decision purely (planCaseCatalogImport) so the
+    // preview and the eventual commit in doImport() are the same deterministic
+    // result — nothing is written to the Case Library until Import is clicked.
+    async function handleCaseCatalogJsonFile(file) {
+      activeFilter = 'all';
+      parsingName.textContent = 'Reading ' + file.name + '…';
+      showState('parsing');
+
+      try {
+        const text = await file.text();
+        const payload = ImportExport.parseCaseCatalogImportPayloadJSON(text);
+        const cases = payload.cases;
+        const plan = CaseLibrary.planCaseCatalogImport(cases, payload.categories);
+        activeImportKind = 'json';
+        pendingCatalogPlan = plan;
+        parsedResult = buildParsedResultFromCaseCatalogPlan(plan);
+
+        fileChipName.textContent = file.name;
+        const kb = Math.round((file.size / 1024) * 10) / 10;
+        fileChipMeta.textContent =
+          cases.length + ' case' + (cases.length !== 1 ? 's' : '') +
           ' · ' + kb + ' KB · parsed just now';
 
         updateStatCards();
@@ -687,8 +796,28 @@ export function createImportCasesDialog({
 
     // ── Import ────────────────────────────────────────────────────────────
     function doImport() {
-      if (!parsedResult || parsedResult.valid.length === 0) return;
+      if (!hasImportableChanges()) return;
       if (!mutationAllowed()) return;
+
+      if (activeImportKind === 'json' && pendingCatalogPlan) {
+        const plan = pendingCatalogPlan;
+        CaseLibrary.commitCaseCatalogImportPlan(plan);
+        const skipCount = plan.reused.length + plan.rejected.length;
+        const added = plan.newCases.length;
+        const categoryAdded = plan.categoriesToAdd.length;
+        const renamed = plan.conflicts.length;
+        let msg = skipCount > 0
+          ? added + ' case' + (added !== 1 ? 's' : '') + ' imported · ' + skipCount + ' skipped'
+          : added + ' case' + (added !== 1 ? 's' : '') + ' imported';
+        if (renamed > 0) msg += ' · ' + renamed + ' renamed to keep different local cargo';
+        if (categoryAdded > 0) {
+          msg += ' · ' + categoryAdded + ' ' + (categoryAdded === 1 ? 'category' : 'categories') + ' added';
+        }
+        UIComponents.showToast(msg, added > 0 || categoryAdded > 0 ? 'success' : 'warning');
+        modalObj.close();
+        return;
+      }
+
       const result = ImportExport.importCaseRows(parsedResult.valid);
       if (!mutationAllowed()) return;
       StateStore.set({ caseLibrary: result.nextCaseLibrary });

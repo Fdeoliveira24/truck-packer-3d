@@ -240,6 +240,14 @@ export function createImportPackDialog({
     packSummary.className = 'card tp3d-ip-summary';
     singleDetail.appendChild(packSummary);
 
+    // Preflight plan summary (Milestone C) — reused/created/conflict/repair
+    // counts from the SAME deterministic PackLibrary.planPackImport() the
+    // final commit uses, so the preview can never promise something the
+    // commit does not (or vice versa).
+    const preflightSummary = doc.createElement('div');
+    preflightSummary.className = 'card tp3d-ip-preflight';
+    singleDetail.appendChild(preflightSummary);
+
     // Cases section header + table
     const casesSection = doc.createElement('div');
     casesSection.className = 'tp3d-ic-preview';
@@ -637,6 +645,56 @@ export function createImportPackDialog({
       packSummary.appendChild(fillSection);
     }
 
+    // ── Render preflight plan summary (Milestone C) ───────────────────────
+    // Every count here comes directly from the PackLibrary.planPackImport()
+    // plan already computed for this file — never a separate hand-rolled
+    // estimate — so what the user sees here is exactly what commit will do.
+    function renderPreflightStats(plan) {
+      preflightSummary.textContent = '';
+      if (!plan) return;
+
+      const items = [
+        { label: 'Cases reused', value: plan.reusedCaseCount },
+        { label: 'Cases created', value: plan.newCases.length },
+        { label: 'Case conflicts (renamed)', value: plan.caseConflicts.length, warn: plan.caseConflicts.length > 0 },
+        { label: 'Placements preserved', value: plan.placementsPreserved },
+        { label: 'Placements repaired', value: plan.placementsRepaired, warn: plan.placementsRepaired > 0 },
+        { label: 'Moved to staging', value: plan.placementsStaged, warn: plan.placementsStaged > 0 },
+      ];
+
+      const title = doc.createElement('div');
+      title.className = 'tp3d-ip-preflight-title';
+      title.textContent = 'Import preflight';
+      preflightSummary.appendChild(title);
+
+      const grid = doc.createElement('div');
+      grid.className = 'tp3d-ip-preflight-grid';
+      items.forEach(({ label, value, warn }) => {
+        const cell = doc.createElement('div');
+        cell.className = 'tp3d-ip-preflight-cell' + (warn ? ' tp3d-ip-preflight-cell--warn' : '');
+        const vEl = doc.createElement('div');
+        vEl.className = 'tp3d-ip-preflight-value';
+        vEl.textContent = String(value);
+        const lEl = doc.createElement('div');
+        lEl.className = 'tp3d-ip-preflight-label muted';
+        lEl.textContent = label;
+        cell.appendChild(vEl);
+        cell.appendChild(lEl);
+        grid.appendChild(cell);
+      });
+      preflightSummary.appendChild(grid);
+
+      if (plan.categoryConflicts && plan.categoryConflicts.length) {
+        const catNote = doc.createElement('div');
+        catNote.className = 'tp3d-ip-preflight-note';
+        const names = plan.categoryConflicts.map(c => `"${c.key}"`).join(', ');
+        catNote.textContent =
+          `${plan.categoryConflicts.length} category color/name conflict(s) (${names}) — ` +
+          'the existing local category will be kept.';
+        preflightSummary.appendChild(catNote);
+      }
+    }
+
     // ── Render cases table ────────────────────────────────────────────────
     function renderCasesTable(pack, bundledCases) {
       tbody.textContent = '';
@@ -847,8 +905,13 @@ export function createImportPackDialog({
           if (!Number.isFinite(tL) || tL <= 0 || !Number.isFinite(tW) || tW <= 0 || !Number.isFinite(tH) || tH <= 0) {
             return { valid: false, payload, reason: 'Invalid truck dimensions' };
           }
+          // Real per-Load-Plan preflight (Milestone C): run the SAME pure
+          // planner the eventual commit uses, so a case-resolution, Item Code,
+          // or Load Plan Number conflict is identified by Load Plan HERE,
+          // before Import is even clicked — not just a structural sanity check.
+          const plan = PackLibrary.planPackImport(payload);
           validCount++;
-          return { valid: true, payload };
+          return { valid: true, payload, plan };
         } catch (err) {
           skippedCount++;
           return { valid: false, payload, reason: (err && err.message) || 'Invalid' };
@@ -972,6 +1035,96 @@ export function createImportPackDialog({
       errorArea.appendChild(card);
     }
 
+    // Load Plan Number uniqueness is enforced by core/business-identity.js;
+    // planPackImport() throws this specific, distinguishable error rather than
+    // silently generating or overwriting the requested number (business-
+    // identity-contract-v1.md §8 rules 5/6). This predicate lets the dialog
+    // offer a bounded, user-driven resolution instead of just failing closed.
+    function isLoadPlanNumberConflict(err) {
+      return Boolean(err && err.name === 'BusinessIdentityError' && err.field === 'loadPlanNumber' && err.code === 'not_unique');
+    }
+
+    // ── Load Plan Number conflict card ────────────────────────────────────
+    // Never silently changes the Load Plan Number — the user must explicitly
+    // click to request a new one, which re-runs the SAME preflight/render
+    // path used for a normal file (renderSinglePackPreview), so the retried
+    // preview is held to the same deterministic planning logic as the first.
+    function renderLoadPlanNumberConflictCard(payload, file, kb) {
+      errorArea.textContent = '';
+      const card = doc.createElement('div');
+      card.className = 'tp3d-ip-error-card';
+
+      const iconEl = doc.createElement('span');
+      iconEl.className = 'tp3d-ip-error-icon';
+      iconEl.innerHTML = '<i class="fa-solid fa-triangle-exclamation"></i>';
+
+      const body = doc.createElement('div');
+      body.className = 'tp3d-ip-error-body';
+
+      const heading = doc.createElement('div');
+      heading.className = 'tp3d-ip-error-heading';
+      heading.textContent = 'Load Plan Number already in use';
+
+      const text = doc.createElement('div');
+      text.className = 'tp3d-ip-error-text';
+      text.textContent =
+        `This file's Load Plan Number ("${payload.pack.loadPlanNumber}") is already used by a load plan ` +
+        'in this workspace. Assign a new Load Plan Number to continue, or cancel and resolve it manually.';
+
+      const actionRow = doc.createElement('div');
+      actionRow.className = 'tp3d-ip-error-actions';
+      const regenBtn = doc.createElement('button');
+      regenBtn.className = 'btn btn-primary';
+      regenBtn.type = 'button';
+      regenBtn.textContent = 'Assign New Load Plan Number';
+      regenBtn.addEventListener('click', () => {
+        payload.pack.loadPlanNumber = null;
+        renderSinglePackPreview(payload, file, kb);
+      });
+      actionRow.appendChild(regenBtn);
+
+      body.appendChild(heading);
+      body.appendChild(text);
+      body.appendChild(actionRow);
+      card.appendChild(iconEl);
+      card.appendChild(body);
+      errorArea.appendChild(card);
+    }
+
+    // ── Single Load Plan preview (Milestone C) ────────────────────────────
+    // The ONE place that plans (PackLibrary.planPackImport) and renders a
+    // single-pack preview, so a fresh file and a Load-Plan-Number-conflict
+    // retry are held to identical logic — never two diverging preview paths.
+    function renderSinglePackPreview(payload, file, kb) {
+      const pack = payload.pack;
+      const bundledCases = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
+
+      let plan;
+      try {
+        plan = PackLibrary.planPackImport(payload);
+      } catch (planErr) {
+        fileChipMeta.textContent = kb + ' KB · parsed just now';
+        if (isLoadPlanNumberConflict(planErr)) {
+          renderLoadPlanNumberConflictCard(payload, file, kb);
+        } else {
+          const normalized = normalizeImportError(planErr, 'Could not parse this load plan file.');
+          renderError(normalized.message, normalized.heading);
+        }
+        parsedPayload = null;
+        showState('error');
+        updateFooter();
+        return;
+      }
+
+      parsedPayload = { type: 'single', payload, file, plan };
+
+      renderPackSummary(pack, bundledCases);
+      renderCasesTable(pack, bundledCases);
+      renderPreflightStats(plan);
+      showState('single');
+      updateFooter();
+    }
+
     // ── File handler ──────────────────────────────────────────────────────
     async function handleFile(file) {
       if (!file) return;
@@ -1021,8 +1174,11 @@ export function createImportPackDialog({
           return;
         }
 
-        // Batch detection
-        if (peek && typeof peek === 'object' && peek.exportType === 'pack-batch') {
+        // Batch detection — the legacy exportType discriminator or the new
+        // versioned envelope's kind: 'pack-batch' (see IMPORT_KIND.LOAD_PLAN_BATCH).
+        const isBatchFile = peek && typeof peek === 'object' &&
+          (peek.exportType === 'pack-batch' || (peek.format === 'cargo-planner' && peek.kind === 'pack-batch'));
+        if (isBatchFile) {
           let payloads;
           try {
             payloads = ImportExport.parsePackBatchImportJSON(text);
@@ -1114,6 +1270,11 @@ export function createImportPackDialog({
       let skipped = 0;
       let renamedTotal = 0;
       let blocked = false;
+      // Milestone C: each Load Plan still commits independently (unchanged
+      // partial-not-atomic batch policy — see planPackImport/importPackPayload,
+      // one call per entry) but a failure must never be silently hidden behind
+      // an anonymous count, so it is identified by its own title/reason here.
+      const failures = [];
       for (const payload of parsedPayload.payloads || []) {
         if (!mutationAllowed()) {
           blocked = true;
@@ -1123,8 +1284,10 @@ export function createImportPackDialog({
           const result = PackLibrary.importPackPayload(payload);
           if (result && Array.isArray(result.caseConflicts)) renamedTotal += result.caseConflicts.length;
           imported++;
-        } catch {
+        } catch (err) {
           skipped++;
+          const title = (payload && payload.pack && payload.pack.title) || '(untitled)';
+          failures.push({ title, reason: (err && err.message) || 'Import failed' });
         }
       }
       if (blocked) {
@@ -1142,6 +1305,11 @@ export function createImportPackDialog({
         : 'Imported ' + imported + ' load plan' + (imported !== 1 ? 's' : '');
       if (renamedTotal > 0) {
         msg += ' · ' + renamedTotal + ' case' + (renamedTotal !== 1 ? 's' : '') + ' renamed';
+      }
+      if (failures.length) {
+        const shown = failures.slice(0, 3).map(f => `"${f.title}": ${f.reason}`).join('; ');
+        const more = failures.length > 3 ? ` (+${failures.length - 3} more)` : '';
+        msg += ' — ' + shown + more;
       }
       UIComponents.showToast(msg, imported > 0 ? 'success' : 'warning');
       if (imported > 0) {

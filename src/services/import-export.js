@@ -15,6 +15,7 @@ import * as Utils from '../core/utils/index.js';
 import * as Defaults from '../core/defaults.js';
 import * as CoreStorage from '../core/storage.js';
 import * as CoreNormalizer from '../core/normalizer.js';
+import * as AppStateStore from '../core/state-store.js';
 import * as CaseLibrary from './case-library.js';
 import { APP_VERSION } from '../core/version.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
@@ -24,12 +25,19 @@ import {
   isCargoPlannerEnvelope,
   parseCargoPlannerEnvelope,
   validateWorkspaceGraph,
+  validateCaseCatalogGraph,
+  buildEnvelopeJSON,
+  projectPortableCategories,
+  projectPortableCase,
+  projectPortablePack,
 } from '../core/import-schema.js';
 import {
   parseCargoBoolean,
   parseCargoLane,
   parseCargoCount,
   parseCargoNonNegNumber,
+  parseCargoDimension,
+  parseCargoShape,
   applyCanonicalCargoFields,
   PALLET_WEIGHT_MAX_LBS,
   DIMENSION_MAX_INCHES,
@@ -76,6 +84,42 @@ function normalizeHeader(s) {
     .replace(/[^a-z0-9]+/g, '');
 }
 
+// Single source of truth for recognized spreadsheet column names, shared by
+// indexMap() (first-match lookup) and findDuplicateMappedHeaders() (collision
+// detection) so the two can never silently drift apart. Item Code intentionally
+// recognizes ONLY the aliases approved by business-identity-contract-v1.md §8
+// rule 3 ("itemCode", "item_code", "item code" — all normalize to "itemcode")
+// — SKU/Product Code/barcode/etc. must never silently map to Item Code (rule 4).
+const FIELD_CANDIDATES = {
+  name: ['name', 'casename', 'item', 'title'],
+  itemCode: ['itemcode'],
+  manufacturer: ['manufacturer', 'mfg', 'brand'],
+  category: ['category', 'cat', 'type'],
+  length: ['length', 'l'],
+  width: ['width', 'w'],
+  height: ['height', 'h'],
+  lengthUnit: ['lengthunit', 'dimunit', 'dimensionunit'],
+  weight: ['weight', 'wt'],
+  weightUnit: ['weightunit', 'massunit'],
+  canFlip: ['canflip', 'flippable', 'canrotate', 'flip'],
+  orientationLock: ['orientationlock', 'orientation', 'orient'],
+  noStackOnTop: ['nostackontop', 'notopload', 'notop', 'donotstackontop'],
+  maxStackCount: ['maxstackcount', 'maxontop', 'maxstack'],
+  isPallet: ['ispallet', 'pallet', 'loadbase', 'base'],
+  maxPalletWeight: ['maxpalletweight', 'maxload', 'palletmaxweight', 'loadwarning'],
+  laneItem: ['laneitem', 'lane', 'longitemlane'],
+  loadPriority: ['loadpriority', 'priority', 'packingpriority'],
+  shape: ['shape'],
+  stackable: ['stackable'],
+  hazmatClass: ['hazmatclass', 'hazmat'],
+  mustLoadLast: ['mustloadlast'],
+  mustUnloadFirst: ['mustunloadfirst'],
+  stopGroup: ['stopgroup'],
+  keepTogetherGroup: ['keeptogethergroup', 'keeptogether'],
+  notes: ['notes', 'note', 'description', 'desc'],
+  color: ['color', 'hex', 'casecolor'],
+};
+
 export function indexMap(headers) {
   const find = candidates => {
     for (const c of candidates) {
@@ -84,25 +128,27 @@ export function indexMap(headers) {
     }
     return null;
   };
-  return {
-    name: find(['name', 'casename', 'item', 'title']),
-    manufacturer: find(['manufacturer', 'mfg', 'brand']),
-    category: find(['category', 'cat', 'type']),
-    length: find(['length', 'l']),
-    width: find(['width', 'w']),
-    height: find(['height', 'h']),
-    weight: find(['weight', 'wt']),
-    canFlip: find(['canflip', 'flippable', 'canrotate', 'flip']),
-    orientationLock: find(['orientationlock', 'orientation', 'orient']),
-    noStackOnTop: find(['nostackontop', 'notopload', 'notop', 'donotstackontop']),
-    maxStackCount: find(['maxstackcount', 'maxontop', 'maxstack']),
-    isPallet: find(['ispallet', 'pallet', 'loadbase', 'base']),
-    maxPalletWeight: find(['maxpalletweight', 'maxload', 'palletmaxweight', 'loadwarning']),
-    laneItem: find(['laneitem', 'lane', 'longitemlane']),
-    loadPriority: find(['loadpriority', 'priority', 'packingpriority']),
-    notes: find(['notes', 'note', 'description', 'desc']),
-    color: find(['color', 'hex', 'casecolor']),
-  };
+  const map = {};
+  for (const field of Object.keys(FIELD_CANDIDATES)) {
+    map[field] = find(FIELD_CANDIDATES[field]);
+  }
+  return map;
+}
+
+// Detect header cells that collide on the SAME recognized field (e.g. two
+// columns that both normalize to "name"). An arbitrary duplicate among
+// UNRECOGNIZED extra columns is harmless and intentionally not reported here —
+// only ambiguity in a column the importer would actually READ blocks the file.
+export function findDuplicateMappedHeaders(headers) {
+  const duplicates = [];
+  for (const field of Object.keys(FIELD_CANDIDATES)) {
+    const indices = [];
+    headers.forEach((h, i) => {
+      if (FIELD_CANDIDATES[field].includes(h)) indices.push(i);
+    });
+    if (indices.length > 1) duplicates.push({ field, indices });
+  }
+  return duplicates;
 }
 
 function getField(row, idx) {
@@ -117,6 +163,21 @@ function getField(row, idx) {
 export function parseBoolCell(raw, label) {
   const { value, valid } = parseCargoBoolean(raw, false);
   return { value, warning: valid ? null : `invalid ${label} "${raw}" (used No)` };
+}
+
+// Same contract as parseBoolCell but with a configurable fallback — needed for
+// `stackable`, whose canonical default is TRUE (core/cargo-canonical.js), not
+// the false default every other handling-rule boolean uses.
+export function parseBoolCellDefault(raw, label, fallback) {
+  const { value, valid } = parseCargoBoolean(raw, fallback);
+  return { value, warning: valid ? null : `invalid ${label} "${raw}" (used ${fallback ? 'Yes' : 'No'})` };
+}
+
+export function parseShapeCell(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return { value: 'box', warning: null };
+  const { value, valid } = parseCargoShape(s);
+  return { value, warning: valid ? null : `invalid shape "${raw}" (used Box)` };
 }
 
 export function parseLaneCellWarned(raw) {
@@ -171,11 +232,27 @@ export function parseLoadPriorityCell(raw) {
 
 export function buildCasesTemplateCSV() {
   return [
-    'name,manufacturer,category,length,width,height,weight,canFlip,orientationLock,noStackOnTop,maxStackCount,isPallet,maxPalletWeight,laneItem,loadPriority,notes',
-    'Line Array Case,L-Acoustics,audio,48,24,32,125,false,upright,true,0,false,0,auto,normal,',
-    'Truss Section,Global Truss,lighting,120,12,12,45,true,any,false,0,false,0,always,normal,',
-    'Equipment Pallet,Generic,default,48,40,6,60,false,any,false,0,true,2000,never,low,',
+    'name,itemCode,manufacturer,category,length,width,height,lengthUnit,weight,weightUnit,canFlip,orientationLock,noStackOnTop,maxStackCount,isPallet,maxPalletWeight,laneItem,loadPriority,notes',
+    'Line Array Case,,L-Acoustics,audio,48,24,32,in,125,lb,false,upright,true,0,false,0,auto,normal,',
+    'Truss Section,,Global Truss,lighting,120,12,12,in,45,lb,true,any,false,0,false,0,always,normal,',
+    'Equipment Pallet,,Generic,default,48,40,6,in,60,lb,false,any,false,0,true,2000,never,low,',
   ].join('\n');
+}
+
+// Explicit spreadsheet unit contract (Milestone C): lengthUnit/weightUnit are
+// OPTIONAL dedicated columns. A blank cell preserves the historical in/lb
+// assumption (legacy files with no unit columns keep importing exactly as
+// before); a present-but-unrecognized token is never silently reinterpreted
+// as in/lb — it fails the row so a wrong unit can never be misread as inches.
+function resolveLengthUnitCell(raw) {
+  const s = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (!s) return { unit: 'in', valid: true };
+  return Utils.lengthUnits.includes(s) ? { unit: s, valid: true } : { unit: 'in', valid: false };
+}
+function resolveWeightUnitCell(raw) {
+  const s = String(raw == null ? '' : raw).trim().toLowerCase();
+  if (!s) return { unit: 'lb', valid: true };
+  return Utils.weightUnits.includes(s) ? { unit: s, valid: true } : { unit: 'lb', valid: false };
 }
 
 export function downloadCasesTemplate() {
@@ -219,6 +296,13 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
 
   const headerRow = rows[0].map(h => String(h || '').trim());
   const header = headerRow.map(normalizeHeader);
+  const duplicateHeaders = findDuplicateMappedHeaders(header);
+  if (duplicateHeaders.length) {
+    const shown = duplicateHeaders
+      .map(d => `"${headerRow[d.indices[0]] || d.field}"`)
+      .join(', ');
+    throw new Error(`Duplicate column detected for ${shown}. Remove the duplicate column and re-upload.`);
+  }
   const idx = indexMap(header);
 
   const required = ['name', 'length', 'width', 'height'];
@@ -233,6 +317,12 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     )
   );
   const seenNames = new Set(existingNames);
+  const existingItemCodes = new Set(
+    (existingCases || [])
+      .map(c => String(c.itemCode || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const seenItemCodes = new Set(existingItemCodes);
   const errors = [];
   const warnings = []; // additive: non-blocking handling-rule cell warnings
   const duplicates = [];
@@ -251,15 +341,31 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     const canFlipParsed = parseBoolCell(getField(row, idx.canFlip), 'allow flipping');
     const noTopParsed = parseBoolCell(getField(row, idx.noStackOnTop), 'no top load');
     const palletParsed = parseBoolCell(getField(row, idx.isPallet), 'pallet');
+    const shapeParsed = parseShapeCell(getField(row, idx.shape));
+    const stackableParsed = parseBoolCellDefault(getField(row, idx.stackable), 'stackable', true);
+    const mustLoadLastParsed = parseBoolCell(getField(row, idx.mustLoadLast), 'must load last');
+    const mustUnloadFirstParsed = parseBoolCell(getField(row, idx.mustUnloadFirst), 'must unload first');
     const laneParsed = parseLaneCellWarned(getField(row, idx.laneItem));
+    // Explicit units (Milestone C): a blank unit cell preserves the historical
+    // in/lb assumption; a present-but-unrecognized token is rejected below
+    // rather than silently reinterpreted as inches/pounds.
+    const lengthUnitRaw = getField(row, idx.lengthUnit);
+    const weightUnitRaw = getField(row, idx.weightUnit);
+    const lengthUnitParsed = resolveLengthUnitCell(lengthUnitRaw);
+    const weightUnitParsed = resolveWeightUnitCell(weightUnitRaw);
+    const rawLength = Number(getField(row, idx.length));
+    const rawWidth = Number(getField(row, idx.width));
+    const rawHeight = Number(getField(row, idx.height));
+    const rawWeight = Number(getField(row, idx.weight));
     const record = {
       name: String(getField(row, idx.name)).trim(),
+      itemCode: String(getField(row, idx.itemCode)).trim(),
       manufacturer: String(getField(row, idx.manufacturer)).trim(),
       category: String(getField(row, idx.category)).trim().toLowerCase() || 'default',
-      length: Number(getField(row, idx.length)),
-      width: Number(getField(row, idx.width)),
-      height: Number(getField(row, idx.height)),
-      weight: Number(getField(row, idx.weight)),
+      length: lengthUnitParsed.valid ? Utils.unitToInches(rawLength, lengthUnitParsed.unit) : rawLength,
+      width: lengthUnitParsed.valid ? Utils.unitToInches(rawWidth, lengthUnitParsed.unit) : rawWidth,
+      height: lengthUnitParsed.valid ? Utils.unitToInches(rawHeight, lengthUnitParsed.unit) : rawHeight,
+      weight: weightUnitParsed.valid ? Utils.unitToPounds(rawWeight, weightUnitParsed.unit) : rawWeight,
       // Handling rules (Cargo-Rule V1). canFlip only meaningful when policy is 'any'.
       canFlip: orientationParsed.value === 'any' && canFlipParsed.value,
       orientationLock: orientationParsed.value,
@@ -269,6 +375,13 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       maxPalletWeight: palletWeightParsed.value,
       laneItem: laneParsed.value,
       loadPriority: priorityParsed.value,
+      shape: shapeParsed.value,
+      stackable: stackableParsed.value,
+      hazmatClass: String(getField(row, idx.hazmatClass)).trim() || null,
+      mustLoadLast: mustLoadLastParsed.value,
+      mustUnloadFirst: mustUnloadFirstParsed.value,
+      stopGroup: String(getField(row, idx.stopGroup)).trim(),
+      keepTogetherGroup: String(getField(row, idx.keepTogetherGroup)).trim(),
       notes: String(getField(row, idx.notes)).trim(),
       color: String(getField(row, idx.color)).trim(),
     };
@@ -285,34 +398,60 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       { field: 'noStackOnTop', parsed: noTopParsed, raw: getField(row, idx.noStackOnTop), fallback: boolLabel(noTopParsed.value) },
       { field: 'isPallet', parsed: palletParsed, raw: getField(row, idx.isPallet), fallback: boolLabel(palletParsed.value) },
       { field: 'laneItem', parsed: laneParsed, raw: getField(row, idx.laneItem), fallback: laneLabel(laneParsed.value) },
+      { field: 'shape', parsed: shapeParsed, raw: getField(row, idx.shape), fallback: 'Box' },
+      { field: 'stackable', parsed: stackableParsed, raw: getField(row, idx.stackable), fallback: boolLabel(stackableParsed.value) },
+      { field: 'mustLoadLast', parsed: mustLoadLastParsed, raw: getField(row, idx.mustLoadLast), fallback: boolLabel(mustLoadLastParsed.value) },
+      { field: 'mustUnloadFirst', parsed: mustUnloadFirstParsed, raw: getField(row, idx.mustUnloadFirst), fallback: boolLabel(mustUnloadFirstParsed.value) },
     ];
     const rowWarnings = [];
     for (const spec of rowWarningSpecs) {
       if (!spec.parsed.warning) continue;
       rowWarnings.push(buildRowWarning(rowNum, spec.field, spec.raw, spec.fallback));
     }
-    // Data-sanity limits (Phase 3): warn on extreme dimensions/weight that would be
-    // clamped at storage so the user sees the value will be capped.
-    const sanityChecks = [
-      { field: 'length', value: record.length, max: DIMENSION_MAX_INCHES },
-      { field: 'width', value: record.width, max: DIMENSION_MAX_INCHES },
-      { field: 'height', value: record.height, max: DIMENSION_MAX_INCHES },
-      { field: 'weight', value: record.weight, max: WEIGHT_MAX_LBS },
+    // Data-sanity limits (Phase 3): warn on extreme dimensions/weight that would
+    // be clamped at storage. Driven by the SAME typed parsers CaseLibrary.
+    // buildStorableCase uses at commit time (core/cargo-canonical.js), so the
+    // warning text can never drift from what is actually stored. Only the
+    // "exceeds the maximum" case is surfaced here — a non-positive value is
+    // already a blocking error below, not a silent-clamp warning.
+    const dimSanityChecks = [
+      { field: 'length', raw: record.length },
+      { field: 'width', raw: record.width },
+      { field: 'height', raw: record.height },
     ];
-    for (const sc of sanityChecks) {
-      if (Number.isFinite(sc.value) && sc.value > sc.max) {
+    for (const sc of dimSanityChecks) {
+      const parsed = parseCargoDimension(sc.raw);
+      if (!parsed.valid && Number.isFinite(sc.raw) && sc.raw > DIMENSION_MAX_INCHES) {
         rowWarnings.push({
-          rowNum, field: sc.field, value: String(sc.value), fallback: String(sc.max),
-          reason: `exceeds the maximum; using ${sc.max}`,
-          message: `${sc.field}: "${sc.value}" exceeds the maximum; using ${sc.max}`,
+          rowNum, field: sc.field, value: String(sc.raw), fallback: String(parsed.value),
+          reason: `exceeds the maximum; using ${parsed.value}`,
+          message: `${sc.field}: "${sc.raw}" exceeds the maximum; using ${parsed.value}`,
         });
       }
+    }
+    const weightSanity = parseCargoNonNegNumber(record.weight, { max: WEIGHT_MAX_LBS });
+    if (!weightSanity.valid && Number.isFinite(record.weight) && record.weight > WEIGHT_MAX_LBS) {
+      rowWarnings.push({
+        rowNum, field: 'weight', value: String(record.weight), fallback: String(weightSanity.value),
+        reason: `exceeds the maximum; using ${weightSanity.value}`,
+        message: `weight: "${record.weight}" exceeds the maximum; using ${weightSanity.value}`,
+      });
     }
     record.warnings = rowWarnings;
     rowWarnings.forEach(w => warnings.push(`Row ${rowNum}: ${w.message}`));
 
     const rowErrors = [];
     if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
+    if (!lengthUnitParsed.valid) {
+      rowErrors.push(
+        `Row ${rowNum}: Unknown length unit "${lengthUnitRaw}" (expected ${Utils.lengthUnits.join(', ')})`
+      );
+    }
+    if (!weightUnitParsed.valid) {
+      rowErrors.push(
+        `Row ${rowNum}: Unknown weight unit "${weightUnitRaw}" (expected ${Utils.weightUnits.join(', ')})`
+      );
+    }
     if (!Number.isFinite(record.length) || record.length <= 0) {
       rowErrors.push(`Row ${rowNum}: Invalid number for 'length'`);
     }
@@ -329,6 +468,12 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       duplicateRows.push({ rowNum, record });
       continue;
     }
+    const itemCodeKey = record.itemCode.toLowerCase();
+    if (itemCodeKey && seenItemCodes.has(itemCodeKey)) {
+      duplicates.push(`Row ${rowNum}: Duplicate Item Code "${record.itemCode}" (skipped)`);
+      duplicateRows.push({ rowNum, record });
+      continue;
+    }
 
     if (rowErrors.length) {
       errors.push(...rowErrors);
@@ -336,6 +481,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       continue;
     }
     seenNames.add(nameKey);
+    if (itemCodeKey) seenItemCodes.add(itemCodeKey);
     valid.push(record);
   }
 
@@ -351,6 +497,14 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
         .toLowerCase()
     )
   );
+  // Defense in depth: itemCode uniqueness is re-checked here independent of
+  // parseAndValidateSpreadsheet's preview-time check, so a caller that bypasses
+  // the parse stage still cannot create a duplicate Item Code.
+  const existingItemCodes = new Set(
+    (existingCases || [])
+      .map(c => String(c.itemCode || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
   const next = [...(existingCases || [])];
   let added = 0;
   rows.forEach(r => {
@@ -358,21 +512,32 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
       .trim()
       .toLowerCase();
     if (!nameKey || existingNames.has(nameKey)) return;
-    const length = Number(r.length);
-    const width = Number(r.width);
-    const height = Number(r.height);
-    if (!Number.isFinite(length) || length <= 0) return;
-    if (!Number.isFinite(width) || width <= 0) return;
-    if (!Number.isFinite(height) || height <= 0) return;
-    const weightRaw = Number(r.weight);
-    const safeWeight = Number.isFinite(weightRaw) && weightRaw > 0 ? weightRaw : 0;
+    const itemCode = String(r.itemCode || '').trim() || null;
+    const itemCodeKey = itemCode ? itemCode.toLowerCase() : null;
+    if (itemCodeKey && existingItemCodes.has(itemCodeKey)) return;
+    const rawLength = Number(r.length);
+    const rawWidth = Number(r.width);
+    const rawHeight = Number(r.height);
+    if (!Number.isFinite(rawLength) || rawLength <= 0) return;
+    if (!Number.isFinite(rawWidth) || rawWidth <= 0) return;
+    if (!Number.isFinite(rawHeight) || rawHeight <= 0) return;
+    // Clamp through the same domain validator buildStorableCase/upsert use, so
+    // an extreme value parsed upstream (parseAndValidateSpreadsheet) is stored
+    // at the SAME clamped value its preview warning already stated — never a
+    // second, divergent coercion here.
+    const length = parseCargoDimension(rawLength).value;
+    const width = parseCargoDimension(rawWidth).value;
+    const height = parseCargoDimension(rawHeight).value;
+    const safeWeight = parseCargoNonNegNumber(Number(r.weight), { max: WEIGHT_MAX_LBS }).value;
     existingNames.add(nameKey);
+    if (itemCodeKey) existingItemCodes.add(itemCodeKey);
     // Route the handling-rule fields through the single typed canonical
     // representation rather than re-coercing inline (no duplicated parsing rules).
     const record = applyCanonicalCargoFields(
       applyCaseDefaultColor({
         id: Utils.uuid(),
         name: String(r.name || '').trim(),
+        itemCode,
         manufacturer: String(r.manufacturer || '').trim(),
         category:
           String(r.category || 'default')
@@ -393,6 +558,13 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
         maxPalletWeight: r.maxPalletWeight,
         laneItem: r.laneItem,
         loadPriority: r.loadPriority,
+        shape: r.shape || 'box',
+        stackable: r.stackable !== false,
+        hazmatClass: String(r.hazmatClass || '').trim() || null,
+        mustLoadLast: Boolean(r.mustLoadLast),
+        mustUnloadFirst: Boolean(r.mustUnloadFirst),
+        stopGroup: String(r.stopGroup || '').trim(),
+        keepTogetherGroup: String(r.keepTogetherGroup || '').trim(),
         notes: String(r.notes || '').trim(),
         color: String(r.color || '').trim() || null,
         createdAt: now,
@@ -403,6 +575,162 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
     added++;
   });
   return { nextCaseLibrary: next, added };
+}
+
+// ============================================================================
+// SECTION: CASE CATALOG EXCHANGE (Milestone C)
+// ============================================================================
+
+function pad2(n) {
+  return String(n).padStart(2, '0');
+}
+function todayDateStamp() {
+  const d = new Date();
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+}
+
+/** Versioned, workspace-agnostic Case Catalog export (kind: case-catalog). */
+export function buildCaseCatalogExportJSON(cases = CaseLibrary.getCases()) {
+  const portableCases = (cases || []).map(projectPortableCase);
+  const referencedCategoryKeys = new Set(
+    portableCases.map(c => String((c && c.category) || 'default').trim().toLowerCase())
+  );
+  const categories = projectPortableCategories(AppStateStore.get('preferences') || {}).filter(c =>
+    referencedCategoryKeys.has(c.key)
+  );
+  const data = { caseLibrary: portableCases };
+  if (categories.length) data.categories = categories;
+  return buildEnvelopeJSON({
+    kind: IMPORT_KIND.CASE_CATALOG,
+    data,
+    appVersion: APP_VERSION,
+  });
+}
+
+export function downloadCaseCatalogExportJSON(cases = CaseLibrary.getCases()) {
+  Utils.downloadText(`cases-${todayDateStamp()}.json`, buildCaseCatalogExportJSON(cases), 'application/json');
+}
+
+/**
+ * Validate a Case Catalog JSON file before any mutation. Only the new
+ * versioned envelope is recognized — a case-catalog export is a new
+ * Milestone C format with no legacy predecessor to stay compatible with.
+ */
+export function parseCaseCatalogImportPayloadJSON(jsonText) {
+  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
+  if (!parsed) throw new Error('Invalid JSON');
+  if (!isCargoPlannerEnvelope(parsed)) {
+    throw new Error('Not a Case Catalog file. Expected a Cargo Planner case-catalog export.');
+  }
+  const envelope = parseCargoPlannerEnvelope(parsed, { expectedKinds: [IMPORT_KIND.CASE_CATALOG] });
+  const { cases } = validateCaseCatalogGraph(envelope.data);
+  return {
+    cases,
+    categories: Array.isArray(envelope.data.categories) ? envelope.data.categories : [],
+  };
+}
+
+/** Backward-compatible cases-only view for callers that do not apply metadata. */
+export function parseCaseCatalogImportJSON(jsonText) {
+  return parseCaseCatalogImportPayloadJSON(jsonText).cases;
+}
+
+// Tabular Case export field order. Deliberate, documented encoding choices:
+//   - `id` is a JSON-only portable-graph identity concern; a spreadsheet user
+//     works from Name/Item Code, not a UUID, and CSV round-trip re-matches by
+//     those (see planCaseCatalogImport reuse rules) rather than by id.
+//   - `createdAt`/`updatedAt` are provenance metadata, not case data — an
+//     import always stamps fresh timestamps, same as manual case creation.
+//   - `volume` is derived and is recomputed from dimensions on every path.
+// Every other current canonical Case field is a flat scalar and gets a
+// column. Explicit lengthUnit/weightUnit columns are always written as
+// "in"/"lb" on export (storage is already canonical) so a round-tripped file
+// states its units exactly like a freshly authored one.
+const CASE_SPREADSHEET_COLUMNS = [
+  'name', 'itemCode', 'manufacturer', 'category',
+  'length', 'width', 'height', 'lengthUnit', 'weight', 'weightUnit',
+  'shape', 'canFlip', 'orientationLock', 'stackable', 'noStackOnTop', 'maxStackCount',
+  'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority',
+  'hazmatClass', 'mustLoadLast', 'mustUnloadFirst', 'stopGroup', 'keepTogetherGroup',
+  'color', 'notes',
+];
+
+// OWASP CSV-injection guard: a cell whose text begins with a formula-trigger
+// character opens as a formula the moment the file is opened in Excel/Sheets,
+// not only when typed interactively. Prefixing a single quote neutralizes it
+// the same way Excel's own "force text" convention does. This is export-only
+// and intentionally lossy for a value that legitimately starts with one of
+// these characters (it re-imports with a leading apostrophe) — a deliberate,
+// documented safety trade-off, not an oversight.
+const SPREADSHEET_FORMULA_TRIGGER = /^[=+\-@\t\r]/;
+function sanitizeSpreadsheetText(value) {
+  const s = String(value == null ? '' : value);
+  return SPREADSHEET_FORMULA_TRIGGER.test(s) ? `'${s}` : s;
+}
+
+function caseToSpreadsheetRow(c) {
+  const d = (c && c.dimensions) || {};
+  return {
+    name: sanitizeSpreadsheetText(c.name),
+    itemCode: sanitizeSpreadsheetText(c.itemCode || ''),
+    manufacturer: sanitizeSpreadsheetText(c.manufacturer || ''),
+    category: sanitizeSpreadsheetText(c.category || 'default'),
+    length: Number(d.length) || 0,
+    width: Number(d.width) || 0,
+    height: Number(d.height) || 0,
+    lengthUnit: 'in',
+    weight: Number(c.weight) || 0,
+    weightUnit: 'lb',
+    shape: sanitizeSpreadsheetText(c.shape || 'box'),
+    canFlip: Boolean(c.canFlip),
+    orientationLock: sanitizeSpreadsheetText(c.orientationLock || 'any'),
+    stackable: c.stackable !== false,
+    noStackOnTop: Boolean(c.noStackOnTop),
+    maxStackCount: Number(c.maxStackCount) || 0,
+    isPallet: Boolean(c.isPallet),
+    maxPalletWeight: Number(c.maxPalletWeight) || 0,
+    laneItem: c.laneItem === true ? 'always' : c.laneItem === false ? 'never' : 'auto',
+    loadPriority: Number(c.loadPriority) || 0,
+    hazmatClass: sanitizeSpreadsheetText(c.hazmatClass || ''),
+    mustLoadLast: Boolean(c.mustLoadLast),
+    mustUnloadFirst: Boolean(c.mustUnloadFirst),
+    stopGroup: sanitizeSpreadsheetText(c.stopGroup || ''),
+    keepTogetherGroup: sanitizeSpreadsheetText(c.keepTogetherGroup || ''),
+    color: sanitizeSpreadsheetText(c.color || ''),
+    notes: sanitizeSpreadsheetText(c.notes || ''),
+  };
+}
+
+export function buildCaseSpreadsheetRows(cases = CaseLibrary.getCases()) {
+  return (cases || []).map(caseToSpreadsheetRow);
+}
+
+/**
+ * Build a Case Catalog spreadsheet export. `format` is 'csv' (default) or
+ * 'xlsx'. Uses the SheetJS runtime already vendored for import (window.XLSX)
+ * for correct RFC 4180 CSV quoting — no hand-rolled CSV writer, no new
+ * dependency.
+ */
+export function buildCaseSpreadsheetExport(cases = CaseLibrary.getCases(), { format = 'csv' } = {}) {
+  if (!window.XLSX) throw new Error('XLSX library not available');
+  const rows = buildCaseSpreadsheetRows(cases);
+  const sheet = window.XLSX.utils.json_to_sheet(rows, { header: CASE_SPREADSHEET_COLUMNS });
+  if (format === 'xlsx') {
+    const wb = window.XLSX.utils.book_new();
+    window.XLSX.utils.book_append_sheet(wb, sheet, 'Cases');
+    const content = window.XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+    return { content, mime: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+  }
+  return { content: window.XLSX.utils.sheet_to_csv(sheet), mime: 'text/csv' };
+}
+
+export function downloadCaseSpreadsheetExport(cases = CaseLibrary.getCases(), { format = 'csv' } = {}) {
+  const { content, mime } = buildCaseSpreadsheetExport(cases, { format });
+  const filename = `cases-${todayDateStamp()}.${format === 'xlsx' ? 'xlsx' : 'csv'}`;
+  // Blob accepts binary (ArrayBuffer) chunks the same as a string, so the
+  // shared downloadText helper works for both text and xlsx content.
+  Utils.downloadText(filename, content, mime);
+  return filename;
 }
 
 export function buildCargoInstructionsManifest(pack, getCaseById = CaseLibrary.getById) {
@@ -501,8 +829,12 @@ export function buildPackExportPayload(pack) {
   const unresolvedCaseRefs = [];
   const seenCaseIds = new Set();
   const seenUnresolvedRefs = new Set();
+  // Bundle every distinct Case referenced by ANY instance regardless of
+  // hidden/packed/staged state — a hidden instance's Case definition must
+  // still round-trip, or a self-contained export can fail on re-import merely
+  // because its only instance of that Case was hidden at export time.
   packCases.forEach(instance => {
-    if (!instance || instance.hidden) return;
+    if (!instance) return;
     const caseId = String(instance.caseId || '').trim();
     if (!caseId) {
       if (!seenUnresolvedRefs.has('unknown')) {
@@ -521,6 +853,16 @@ export function buildPackExportPayload(pack) {
       unresolvedCaseRefs.push(caseId);
     }
   });
+  // Portable category metadata (Milestone C): only the categories actually
+  // referenced by a bundled Case are carried, never the whole Preferences
+  // object — enough to reproduce the user-visible chip identity for the Cases
+  // this Load Plan depends on, nothing about unrelated workspace settings.
+  const referencedCategoryKeys = new Set(
+    bundledCases.map(c => String((c && c.category) || 'default').trim().toLowerCase())
+  );
+  const categories = projectPortableCategories(AppStateStore.get('preferences') || {}).filter(c =>
+    referencedCategoryKeys.has(c.key)
+  );
   const payload = {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
@@ -528,6 +870,7 @@ export function buildPackExportPayload(pack) {
     pack: exportedPack,
     bundledCases,
   };
+  if (categories.length) payload.categories = categories;
   if (unresolvedCaseRefs.length) {
     payload.unresolvedCaseRefs = unresolvedCaseRefs;
     payload.unresolvedNote =
@@ -538,9 +881,30 @@ export function buildPackExportPayload(pack) {
   return payload;
 }
 
+/**
+ * New exports use the versioned Cargo Planner v1 envelope (kind: "pack" — the
+ * wire vocabulary intentionally stays "pack", see IMPORT_KIND). Legacy files
+ * produced before this migration remain readable through parsePackImportJSON's
+ * bare/{pack, bundledCases} fallback path — this function only changes what
+ * NEW exports look like, never what old exports can still import.
+ */
 export function buildPackExportJSON(pack) {
   const payload = buildPackExportPayload(pack);
-  return JSON.stringify(payload, null, 2);
+  const data = {
+    pack: projectPortablePack(payload.pack),
+    bundledCases: (payload.bundledCases || []).map(projectPortableCase),
+  };
+  if (payload.categories) data.categories = payload.categories;
+  if (payload.unresolvedCaseRefs) {
+    data.unresolvedCaseRefs = payload.unresolvedCaseRefs;
+    data.unresolvedNote = payload.unresolvedNote;
+  }
+  return buildEnvelopeJSON({
+    kind: IMPORT_KIND.LOAD_PLAN,
+    data,
+    appVersion: APP_VERSION,
+    createdAt: new Date(payload.exportedAt).toISOString(),
+  });
 }
 
 /**
@@ -567,6 +931,41 @@ export function parsePackImportJSON(jsonText) {
     ...payload,
     pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(payload.pack),
   };
+}
+
+/**
+ * Batch export of multiple Load Plans (kind: pack-batch). Reuses the exact
+ * same per-pack portable projection as buildPackExportJSON (buildPackExportPayload
+ * + projectPortablePack/projectPortableCase) — no separate/divergent batch
+ * serialization logic. Each Load Plan bundles/dedupes its own Case and
+ * category definitions independently; a simple robust structure, not a
+ * globally deduplicated one (batches are expected to be human-sized).
+ */
+export function buildPackBatchExportJSON(packs) {
+  const list = Array.isArray(packs) ? packs.filter(Boolean) : [];
+  if (!list.length) throw new Error('Select at least one load plan to export.');
+  const entries = list.map(pack => {
+    const payload = buildPackExportPayload(pack);
+    const entry = {
+      pack: projectPortablePack(payload.pack),
+      bundledCases: (payload.bundledCases || []).map(projectPortableCase),
+    };
+    if (payload.categories) entry.categories = payload.categories;
+    if (payload.unresolvedCaseRefs) {
+      entry.unresolvedCaseRefs = payload.unresolvedCaseRefs;
+      entry.unresolvedNote = payload.unresolvedNote;
+    }
+    return entry;
+  });
+  return buildEnvelopeJSON({
+    kind: IMPORT_KIND.LOAD_PLAN_BATCH,
+    data: { packs: entries },
+    appVersion: APP_VERSION,
+  });
+}
+
+export function downloadPackBatchExportJSON(packs) {
+  Utils.downloadText(`load-plans-${todayDateStamp()}.json`, buildPackBatchExportJSON(packs), 'application/json');
 }
 
 /**

@@ -14,7 +14,16 @@
 import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreDefaults from '../core/defaults.js';
-import { applyCanonicalCargoFields, pickSafeExtensions, CANONICAL_CASE_KEYS } from '../core/cargo-canonical.js';
+import * as CategoryService from './category-service.js';
+import {
+  applyCanonicalCargoFields,
+  pickSafeExtensions,
+  CANONICAL_CASE_KEYS,
+  parseCargoDimension,
+  parseCargoNonNegNumber,
+  WEIGHT_MAX_LBS,
+  caseSafeReuseEqual,
+} from '../core/cargo-canonical.js';
 import {
   assertBusinessIdentityValue,
   assertItemCodeAvailable,
@@ -72,13 +81,19 @@ export function buildStorableCase(caseData) {
   });
   next.updatedAt = now;
   if (!next.createdAt) next.createdAt = now;
+  // Route dimensions/weight through the same typed canonical parsers used for
+  // every other cargo field (cargo-canonical.js) rather than a bare Number()
+  // coercion: negative/non-finite input becomes a safe 0 instead of silently
+  // storing a negative dimension, and absurd input is clamped to the same
+  // data-sanity limit used everywhere else (single source of truth for what
+  // "storable" means, so a spreadsheet/JSON import can never bypass it).
   const dims = next.dimensions && typeof next.dimensions === 'object' ? next.dimensions : {};
   next.dimensions = {
-    length: Number(dims.length) || 0,
-    width: Number(dims.width) || 0,
-    height: Number(dims.height) || 0,
+    length: parseCargoDimension(dims.length).value,
+    width: parseCargoDimension(dims.width).value,
+    height: parseCargoDimension(dims.height).value,
   };
-  next.weight = Number(next.weight) || 0;
+  next.weight = parseCargoNonNegNumber(next.weight, { max: WEIGHT_MAX_LBS }).value;
   next.volume = Utils.volumeInCubicInches(next.dimensions);
   // Sanitize unknown extension fields at the storage boundary: keep approved safe
   // metadata, but drop functions, prototype keys, symbols and non-finite values so
@@ -156,4 +171,189 @@ export function countsByCategory() {
     counts[key] = (counts[key] || 0) + 1;
   });
   return counts;
+}
+
+// ============================================================================
+// SECTION: CASE CATALOG IMPORT (Milestone C — portable Case Catalog exchange)
+// ============================================================================
+
+// An incoming case definition is only considered for import when it has a
+// non-blank id and finite positive dimensions. Unlike the manual-entry
+// case-modal path (which invents a plausible default box for a blank form),
+// an imported record with missing/invalid geometry must never be silently
+// given fabricated dimensions — it is rejected as its own record instead.
+function hasValidCaseGeometry(c) {
+  if (!c || typeof c !== 'object') return false;
+  const d = c.dimensions;
+  if (!d || typeof d !== 'object') return false;
+  const ok = v => Number.isFinite(Number(v)) && Number(v) > 0;
+  return ok(d.length) && ok(d.width) && ok(d.height);
+}
+
+// Mirrors planPackImport's accepted category policy: only explicitly stored
+// destination customizations count as local ownership; missing keys may be
+// added, while same-key name/color differences are disclosed and kept local.
+function planPortableCategoryImport(incomingCategories) {
+  const rawPreferences = StateStore.get('preferences') || {};
+  const localCategories = new Map(
+    (Array.isArray(rawPreferences.categories) ? rawPreferences.categories : [])
+      .filter(c => c && c.key)
+      .map(c => [String(c.key).trim().toLowerCase(), c])
+  );
+  const categoriesToAdd = [];
+  const categoryConflicts = [];
+  const seenCategoryKeys = new Set();
+  (Array.isArray(incomingCategories) ? incomingCategories : []).forEach(cat => {
+    const key = String((cat && cat.key) || '').trim().toLowerCase();
+    if (!key || seenCategoryKeys.has(key)) return;
+    seenCategoryKeys.add(key);
+    const local = localCategories.get(key);
+    if (!local) {
+      categoriesToAdd.push({ key, name: cat.name || null, color: cat.color || null });
+      return;
+    }
+    const nameDiffers = cat.name && String(cat.name).trim() !== String(local.name || '').trim();
+    const colorDiffers =
+      cat.color && String(cat.color).trim().toLowerCase() !== String(local.color || '').trim().toLowerCase();
+    if (nameDiffers || colorDiffers) {
+      categoryConflicts.push({
+        key,
+        localName: local.name,
+        localColor: local.color,
+        importedName: cat.name || null,
+        importedColor: cat.color || null,
+      });
+    }
+  });
+  return { categoriesToAdd, categoryConflicts };
+}
+
+/**
+ * PURE preflight: plan a Case Catalog import against the current Case Library
+ * without mutating state. Cases are independent records — unlike a Load Plan
+ * import there is no single-transaction atomicity requirement, so each
+ * incoming case is evaluated on its own: an unresolvable conflict rejects
+ * only that record while every other record still imports (matches
+ * business-identity-contract-v1.md §8 rules 9/11 — unaffected records
+ * continue within the same import).
+ *
+ * Reuse/conflict semantics mirror planPackImport's bundled-case handling
+ * (pack-library.js) so the two import paths never silently diverge: same id
+ * with safe-reuse-equal cargo -> reuse; same name (different id) with
+ * safe-reuse-equal cargo -> reuse; otherwise a brand-new case is created, or
+ * — on an id/name collision with materially different cargo — a renamed copy
+ * is created and reported as a conflict. A local Case is never silently
+ * overwritten, and Item Code uniqueness is enforced exactly like any other
+ * case creation (see core/business-identity.js); a case whose Item Code
+ * cannot be safely resolved is rejected rather than silently renumbered.
+ * @param {Record<string, any>[]} incomingCases
+ * @param {{ key?: string, name?: string|null, color?: string|null }[]} [incomingCategories]
+ */
+export function planCaseCatalogImport(incomingCases, incomingCategories = []) {
+  const list = Array.isArray(incomingCases) ? incomingCases : [];
+  const currentCases = getCases();
+  const caseById = new Map(currentCases.map(c => [c.id, c]));
+  const caseByName = new Map(currentCases.map(c => [String(c.name || '').trim().toLowerCase(), c]));
+  const newCases = [];
+  const reused = [];
+  const conflicts = [];
+  const rejected = [];
+  const { categoriesToAdd, categoryConflicts } = planPortableCategoryImport(incomingCategories);
+
+  const makeUniqueImportedName = name => {
+    const base = String(name || 'Imported Case').trim() || 'Imported Case';
+    let candidate = `${base} (Imported)`;
+    let n = 2;
+    while (caseByName.has(candidate.trim().toLowerCase())) {
+      candidate = `${base} (Imported ${n})`;
+      n += 1;
+    }
+    return candidate;
+  };
+
+  list.forEach((raw, index) => {
+    if (!raw || typeof raw !== 'object' || !String(raw.id || '').trim()) {
+      rejected.push({ index, id: raw && raw.id, name: raw && raw.name, reason: 'missing or invalid id', raw });
+      return;
+    }
+    if (!hasValidCaseGeometry(raw)) {
+      rejected.push({ index, id: raw.id, name: raw.name, reason: 'missing or invalid dimensions', raw });
+      return;
+    }
+
+    const nameKey = String(raw.name || '').trim().toLowerCase();
+    const localById = caseById.get(raw.id);
+    const localByName = nameKey ? caseByName.get(nameKey) : null;
+
+    if (localById && caseSafeReuseEqual(localById, raw)) {
+      reused.push({ id: raw.id, name: raw.name, matchedId: localById.id, reason: 'already present (identical)', raw });
+      return;
+    }
+    if (!localById && localByName && caseSafeReuseEqual(localByName, raw)) {
+      reused.push({ id: raw.id, name: raw.name, matchedId: localByName.id, reason: 'matches existing case by name', raw });
+      return;
+    }
+
+    const conflictKind = localById ? 'id-conflict' : (localByName ? 'name-conflict' : null);
+    const copy = Utils.deepClone(raw);
+    if (conflictKind) {
+      copy.id = Utils.uuid();
+      copy.name = makeUniqueImportedName(raw.name);
+    }
+
+    let storable;
+    try {
+      storable = buildStorableCase(copy);
+      storable.itemCode = assertItemCodeAvailable(storable.itemCode, [...currentCases, ...newCases]);
+    } catch (err) {
+      rejected.push({ index, id: raw.id, name: raw.name, reason: (err && err.message) || 'could not be imported', raw });
+      return;
+    }
+
+    newCases.push(storable);
+    caseById.set(storable.id, storable);
+    const newNameKey = String(storable.name || '').trim().toLowerCase();
+    if (newNameKey) caseByName.set(newNameKey, storable);
+    if (conflictKind) {
+      conflicts.push({
+        kind: conflictKind,
+        importedId: raw.id,
+        importedName: String(raw.name || ''),
+        newId: storable.id,
+        newName: storable.name,
+      });
+    }
+  });
+
+  return {
+    currentCases,
+    newCases,
+    finalCases: [...currentCases, ...newCases],
+    reused,
+    conflicts,
+    rejected,
+    categoriesToAdd,
+    categoryConflicts,
+    incomingCategories: Array.isArray(incomingCategories) ? incomingCategories : [],
+  };
+}
+
+/** Commit an already-previewed Case Catalog plan without recomputing Case decisions. */
+export function commitCaseCatalogImportPlan(plan) {
+  if (plan.newCases.length) {
+    StateStore.set({ caseLibrary: plan.finalCases });
+  }
+  // Additive-only metadata merge. CategoryService preserves every unrelated
+  // preference field. Re-check the current preferences at commit time so a
+  // same-workspace customization made after preview is never overwritten.
+  const categoryPlan = planPortableCategoryImport(plan.incomingCategories);
+  plan.categoriesToAdd = categoryPlan.categoriesToAdd;
+  plan.categoryConflicts = categoryPlan.categoryConflicts;
+  plan.categoriesToAdd.forEach(cat => CategoryService.upsert(cat));
+  return plan;
+}
+
+/** Plan + commit a Case Catalog import using the same category policy as Load Plans. */
+export function importCaseCatalogPayload(incomingCases, incomingCategories = []) {
+  return commitCaseCatalogImportPlan(planCaseCatalogImport(incomingCases, incomingCategories));
 }

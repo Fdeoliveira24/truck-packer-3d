@@ -782,7 +782,11 @@ test('new Load Plan, App Backup, and Workspace exports never emit obsolete targe
   exports.forEach(json => {
     assert.doesNotMatch(json, /caseRequirements|requiredQuantity|caseQtyDrafts/);
     const parsed = JSON.parse(json);
-    const packs = parsed.pack ? [parsed.pack] : parsed.data.packLibrary;
+    // New Load Plan exports use the versioned envelope (data.pack); App/Workspace
+    // exports still carry a packLibrary array either bare or under data.
+    const packs = parsed.pack
+      ? [parsed.pack]
+      : (parsed.data && parsed.data.pack ? [parsed.data.pack] : parsed.data.packLibrary);
     assert.equal(packs[0].cases.length, legacy.cases.length);
   });
   assert.deepEqual(StateStore.get('caseLibrary'), [caseA]);

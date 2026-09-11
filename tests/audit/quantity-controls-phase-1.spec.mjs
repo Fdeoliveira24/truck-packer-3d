@@ -751,7 +751,7 @@ test('legacy App Backup imports successfully and discards obsolete targets', asy
   assert.deepEqual(restored.caseLibrary[0].dimensions, caseA.dimensions);
 });
 
-test('legacy Workspace import discards obsolete targets without changing libraries', async () => {
+test('legacy Workspace import discards obsolete targets while preserving the portable graph', async () => {
   const { ImportExport } = await loadModules();
   const caseA = baseCase();
   const legacy = legacyQuantityPack();
@@ -765,7 +765,7 @@ test('legacy Workspace import discards obsolete targets without changing librari
 
   assert.equal(restored.packLibrary[0].caseRequirements, undefined);
   assert.equal(restored.packLibrary[0].cases.length, legacy.cases.length);
-  assert.deepEqual(restored.caseLibrary, [caseA]);
+  assert.deepEqual(restored.caseLibrary, [{ ...caseA, itemCode: null }]);
 });
 
 test('new Load Plan, App Backup, and Workspace exports never emit obsolete targets or temporary Qty state', async () => {

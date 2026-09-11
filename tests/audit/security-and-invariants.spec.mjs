@@ -5217,17 +5217,17 @@ test('CARGO-RULE-V1 export/download action chains reach the right builder and sa
   assert.match(packsSrc, /Utils\.downloadText\(`\$\{\(pack\.title \|\| 'load-plan'\)\.replace\(\/\[\^a-z0-9\]\+\/gi, '-'\)\}\.json`/, 'pack export filename is sanitized');
 });
 
-test('CARGO-RULE-V1 workspace import is not exposed; pack-batch guard wording is truthful', async () => {
+test('CARGO-RULE-V1 workspace restore is exposed only in Settings; pack-batch guard points to it', async () => {
   const ieSrc = await fs.readFile(importExportPath, 'utf8');
-  // parseWorkspaceImportJSON exists as groundwork but must have no production caller.
   const callers = [];
   for (const p of ['../../src/app.js', '../../src/ui/overlays/import-pack-dialog.js', '../../src/ui/overlays/import-app-dialog.js', '../../src/ui/overlays/settings-overlay.js']) {
     const s = await fs.readFile(new URL(p, import.meta.url), 'utf8');
     if (/parseWorkspaceImportJSON/.test(s)) callers.push(p);
   }
-  assert.equal(callers.length, 0, 'workspace import parser must not be wired to any UI yet');
-  assert.ok(!/Use Import Workspace Backup instead/.test(ieSrc), 'must not point users at a missing Import Workspace Backup action');
-  assert.match(ieSrc, /Workspace import is not available yet/, 'guard wording must be truthful about missing workspace import');
+  assert.deepEqual(callers, ['../../src/ui/overlays/settings-overlay.js'],
+    'workspace restore must be wired only through the Settings permission/preflight flow');
+  assert.match(ieSrc, /Use Restore Workspace Backup in Settings instead/,
+    'the legacy pack-batch guard must point to the dedicated Workspace Restore action');
 });
 
 test('CARGO-RULE-V1 spreadsheet handling-cell parsers normalize and warn correctly', async () => {
@@ -17131,15 +17131,15 @@ test('phase 0.7A-1 baseline app export does not include exportType', async () =>
 
 // ── Phase 0.7A-2: Workspace JSON export MVP ────────────────────────────────
 
-test('phase 0.7A-2 exportWorkspaceJSON exists and returns JSON.stringify output', async () => {
+test('phase 0.7A-2 exportWorkspaceJSON exists and returns the shared pretty v1 envelope', async () => {
   const src = await fs.readFile(storagePath, 'utf8');
   const start = src.indexOf('export function exportWorkspaceJSON(');
   const end = src.indexOf('\nexport function', start + 1);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'exportWorkspaceJSON must be extractable');
-  assert.match(fn, /return JSON\.stringify\(payload,\s*null,\s*2\)/,
-    'exportWorkspaceJSON must return pretty JSON.stringify output');
+  assert.match(fn, /return buildEnvelopeJSON\(\{/,
+    'exportWorkspaceJSON must return the shared pretty envelope JSON');
 });
 
 test('phase 0.7A-2 exportWorkspaceJSON marks workspace export schema', async () => {
@@ -17149,18 +17149,18 @@ test('phase 0.7A-2 exportWorkspaceJSON marks workspace export schema', async () 
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'exportWorkspaceJSON must be extractable');
-  assert.match(fn, /app:\s*'Truck Packer 3D'/,
-    'workspace export must include app name');
-  assert.match(fn, /exportType:\s*'workspace'/,
-    'workspace export must set exportType to workspace');
-  assert.match(fn, /schemaVersion:\s*'workspace-export-v1'/,
-    'workspace export must set schemaVersion to workspace-export-v1');
+  assert.match(fn, /kind:\s*IMPORT_KIND\.WORKSPACE_BACKUP/,
+    'workspace export must use the workspace-backup wire kind');
+  assert.match(fn, /buildEnvelopeJSON\(\{/,
+    'workspace export must use the shared cargo-planner v1 envelope');
   assert.match(fn, /appVersion:\s*APP_VERSION/,
     'workspace export must include appVersion from APP_VERSION');
-  assert.match(fn, /exportedAt:\s*Date\.now\(\)/,
-    'workspace export must include exportedAt');
-  assert.match(fn, /workspaceName:/,
-    'workspace export must include display-only workspaceName');
+  assert.match(fn, /sourceWorkspaceName/,
+    'workspace export must include display-only source workspace name metadata');
+  assert.match(fn, /sourceWorkspaceId/,
+    'workspace export must include informational source workspace id metadata');
+  assert.doesNotMatch(fn, /exportType:\s*'workspace'/,
+    'new workspace exports must not continue emitting the legacy discriminator');
 });
 
 test('phase 0.7A-2 exportWorkspaceJSON reads from StateStore and not raw storage keys', async () => {
@@ -17183,27 +17183,25 @@ test('phase 0.7A-2 exportWorkspaceJSON data is limited to workspace libraries', 
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'exportWorkspaceJSON must be extractable');
-  assert.match(fn, /caseLibrary:/,
+  assert.match(fn, /\bcaseLibrary,/,
     'workspace export must include caseLibrary');
-  assert.match(fn, /packLibrary:\s*strippedPacks/,
-    'workspace export must include stripped packLibrary');
-  assert.match(fn, /folderLibrary:\s*Array\.isArray\(state\.folderLibrary\)/,
-    'workspace export must include folderLibrary');
+  assert.match(fn, /packLibrary:\s*portablePacks\.map\(projectPortableWorkspacePack\)/,
+    'workspace export must include the portable packLibrary projection');
+  assert.match(fn, /folderLibrary:[\s\S]*?\.map\(projectPortableFolder\)/,
+    'workspace export must include the portable folderLibrary projection');
   assert.doesNotMatch(fn, /preferences:\s*state\.preferences|currentPackId/,
     'workspace export must not include preferences or currentPackId');
 });
 
-test('phase 0.7A-2 exportWorkspaceJSON strips pack thumbnails', async () => {
+test('phase 0.7A-2 exportWorkspaceJSON routes packs through the transient-field projection', async () => {
   const src = await fs.readFile(storagePath, 'utf8');
   const start = src.indexOf('export function exportWorkspaceJSON(');
   const end = src.indexOf('\nexport function', start + 1);
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'exportWorkspaceJSON must be extractable');
-  assert.match(fn, /thumbnail:\s*null/,
-    'workspace export must set pack thumbnail to null');
-  assert.match(fn, /thumbnailUpdatedAt:\s*null/,
-    'workspace export must set thumbnailUpdatedAt to null');
+  assert.match(fn, /portablePacks\.map\(projectPortableWorkspacePack\)/,
+    'workspace export must route packs through the projection that omits thumbnails and stats');
 });
 
 test('phase 0.7A-2 exportWorkspaceJSON does not expose auth billing or server identity fields', async () => {
@@ -17228,7 +17226,7 @@ test('phase 0.7A-2 buildWorkspaceExportJSON delegates to CoreStorage.exportWorks
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'buildWorkspaceExportJSON must be extractable');
-  assert.match(fn, /CoreStorage\.exportWorkspaceJSON\(workspaceName\)/,
+  assert.match(fn, /CoreStorage\.exportWorkspaceJSON\(workspaceName, workspaceId\)/,
     'buildWorkspaceExportJSON must delegate to CoreStorage.exportWorkspaceJSON');
   assert.doesNotMatch(fn, /organization_id|owner_id|user_id|stripe|billing|token|apikey|apiKey|localStorage/i,
     'buildWorkspaceExportJSON wrapper must not inject unsafe fields');
@@ -17247,17 +17245,23 @@ test('phase 0.7A-2 parseWorkspaceImportJSON validates workspace export type', as
 });
 
 test('phase 0.7A-2 parseWorkspaceImportJSON validates case and pack arrays', async () => {
-  const src = await fs.readFile(importExportPath, 'utf8');
-  const start = src.indexOf('export function parseWorkspaceImportJSON(');
-  const fn = start >= 0 ? src.slice(start) : '';
-
-  assert.ok(fn, 'parseWorkspaceImportJSON must be extractable');
-  assert.match(fn, /Array\.isArray\(data\.caseLibrary\)/,
-    'workspace import parser must validate caseLibrary array');
-  assert.match(fn, /Array\.isArray\(data\.packLibrary\)/,
-    'workspace import parser must validate packLibrary array');
-  assert.match(fn, /workspaceName:\s*parsed\.workspaceName \? String\(parsed\.workspaceName\) : ''/,
-    'workspace import parser must return a safe workspaceName string');
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  for (const [field, malformed] of [['caseLibrary', {}], ['packLibrary', {}]]) {
+    const data = { caseLibrary: [], packLibrary: [], folderLibrary: [] };
+    data[field] = malformed;
+    assert.throws(
+      () => ImportExport.parseWorkspaceImportJSON(JSON.stringify({ exportType: 'workspace', data })),
+      new RegExp(`${field}.*array`, 'i'),
+      `workspace import parser must reject a non-array ${field}`
+    );
+  }
+  const parsed = ImportExport.parseWorkspaceImportJSON(JSON.stringify({
+    exportType: 'workspace',
+    workspaceName: 'Workspace A',
+    data: { caseLibrary: [], packLibrary: [], folderLibrary: [] },
+  }));
+  assert.equal(parsed.workspaceName, 'Workspace A',
+    'workspace import parser must return the legacy display name safely');
 });
 
 test('phase 0.7A-2 app exposes workspace export modal using existing download path', async () => {
@@ -17267,7 +17271,7 @@ test('phase 0.7A-2 app exposes workspace export modal using existing download pa
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'openExportWorkspaceModal must be extractable');
-  assert.match(fn, /ImportExport\.buildWorkspaceExportJSON\(safeName\)/,
+  assert.match(fn, /ImportExport\.buildWorkspaceExportJSON\(safeName, workspaceId\)/,
     'workspace export modal must build workspace JSON through ImportExport');
   assert.match(fn, /Utils\.downloadText\(filename, json\)/,
     'workspace export modal must use existing downloadText path');
@@ -17284,12 +17288,12 @@ test('phase 0.7A-2 Settings General has Owner Admin gated Workspace Backup actio
 
   assert.match(src, /onExportWorkspace:\s*_onExportWorkspace/,
     'settings overlay must accept onExportWorkspace callback');
-  assert.match(src, /if \(isOwnerOrAdmin && typeof _onExportWorkspace === 'function'\)/,
-    'workspace export action must fail closed unless owner/admin role and callback are available');
+  assert.match(src, /exportWsBtn\.disabled = !isOwnerOrAdmin/,
+    'workspace export action must remain disabled unless the current role is owner/admin');
   assert.match(src, /Export Workspace Backup/,
     'settings general must include Export Workspace Backup action label');
-  assert.match(src, /_onExportWorkspace\(wsName\)/,
-    'settings general export button must call onExportWorkspace with workspace display name');
+  assert.match(src, /_onExportWorkspace\(wsName, leaveOrgId\)/,
+    'settings general export button must pass informational workspace name and id');
 });
 
 test('phase 0.7A-2 Settings includes archive export reminder without forcing archive export', async () => {
@@ -17318,7 +17322,10 @@ test('phase 0.7A-2 workspace export code avoids backend and lifecycle scope', as
 
   const importExportSrc = await fs.readFile(importExportPath, 'utf8');
   const buildStart = importExportSrc.indexOf('export function buildWorkspaceExportJSON(');
-  const exportFns = buildStart >= 0 ? importExportSrc.slice(buildStart) : '';
+  const buildEnd = importExportSrc.indexOf('\nfunction ', buildStart + 1);
+  const exportFns = buildStart >= 0 && buildEnd > buildStart
+    ? importExportSrc.slice(buildStart, buildEnd)
+    : '';
   const combined = `${storageFn}\n${exportFns}`;
 
   assert.doesNotMatch(combined, /supabase\/functions|functions\.invoke|createClient|serviceClient|EdgeFunction|migration/i,
@@ -17498,24 +17505,34 @@ test('phase 0.7B-1B exportWorkspaceJSON includes folderLibrary and preserves pac
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'exportWorkspaceJSON must be extractable');
-  assert.match(fn, /folderLibrary:\s*Array\.isArray\(state\.folderLibrary\)/,
+  assert.match(fn, /folderLibrary:[\s\S]*?\.map\(projectPortableFolder\)/,
     'workspace export must include folderLibrary');
   assert.doesNotMatch(fn, /folderId:\s*null/,
     'workspace export must not strip pack folderId');
-  assert.match(fn, /thumbnail:\s*null/,
-    'workspace export must keep thumbnail stripping');
+  assert.match(fn, /portablePacks\.map\(projectPortableWorkspacePack\)/,
+    'workspace export must keep thumbnail stripping through the portable Pack projection');
 });
 
-test('phase 0.7B-1B parseWorkspaceImportJSON accepts optional folderLibrary arrays', async () => {
-  const src = await fs.readFile(importExportPath, 'utf8');
-  const start = src.indexOf('export function parseWorkspaceImportJSON(');
-  const fn = start >= 0 ? src.slice(start) : '';
+test('phase 0.7B-1B parseWorkspaceImportJSON keeps legacy folderless support but requires folders in v1', async () => {
+  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
+  assert.throws(() => ImportExport.parseWorkspaceImportJSON(JSON.stringify({
+    format: 'cargo-planner',
+    kind: 'workspace-backup',
+    schemaVersion: 1,
+    createdAt: '2026-09-11T12:00:00.000Z',
+    appVersion: 'test',
+    units: { length: 'in', weight: 'lb' },
+    data: { caseLibrary: [], packLibrary: [] },
+  })), /folderLibrary.*array/i,
+  'new v1 workspace backups must contain an explicit folderLibrary array');
 
-  assert.ok(fn, 'parseWorkspaceImportJSON must be extractable');
-  assert.match(fn, /data\.folderLibrary != null && !Array\.isArray\(data\.folderLibrary\)/,
-    'workspace import parser must reject non-array folderLibrary');
-  assert.match(fn, /folderLibrary:\s*Array\.isArray\(data\.folderLibrary\) \? data\.folderLibrary : \[\]/,
-    'workspace import parser must default missing folderLibrary to []');
+  const legacy = ImportExport.parseWorkspaceImportJSON(JSON.stringify({
+    exportType: 'workspace',
+    data: { caseLibrary: [], packLibrary: [] },
+  }));
+  assert.deepEqual(legacy.folderLibrary, []);
+  assert.match(legacy.warnings.join(' '), /Legacy backup had no folder library/,
+    'legacy folderless workspace backups must retain their compatibility warning');
 });
 
 test('phase 0.7B-1B workspace import parser accepts old exports and rejects malformed folderLibrary at runtime', async () => {
@@ -17810,8 +17827,8 @@ test('phase 0.7B-1B workspace export runtime payload includes folderLibrary', as
     'workspace export must include folderLibrary');
   assert.equal(payload.data.packLibrary[0].folderId, 'folder-1',
     'workspace export must preserve pack folderId');
-  assert.equal(payload.data.packLibrary[0].thumbnail, null,
-    'workspace export must keep thumbnail stripping');
+  assert.equal(Object.prototype.hasOwnProperty.call(payload.data.packLibrary[0], 'thumbnail'), false,
+    'workspace export must omit thumbnail data entirely');
 });
 
 test('production readiness settings billing fallback requires isPro and isActive when entitlementStatus is absent', async () => {

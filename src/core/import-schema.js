@@ -260,6 +260,33 @@ export function projectPortablePack(pack) {
   return portable;
 }
 
+/** Workspace Backup adds transient solver-result exclusions to the shared Pack DTO. */
+export function projectPortableWorkspacePack(pack) {
+  const portablePack = projectPortablePack(pack);
+  const {
+    autoPackAlternatives: _autoPackAlternatives,
+    autopackAlternatives: _autopackAlternatives,
+    packingSolutions: _packingSolutions,
+    solutions: _solutions,
+    ...portable
+  } = portablePack;
+  return portable;
+}
+
+/** Workspace folder DTO limited to the durable flat-folder contract. */
+export function projectPortableFolder(folder) {
+  const f = folder && typeof folder === 'object' ? folder : {};
+  return {
+    id: f.id,
+    name: f.name,
+    scope: f.scope,
+    parentFolderId: f.parentFolderId == null ? null : f.parentFolderId,
+    sortOrder: f.sortOrder,
+    createdAt: f.createdAt,
+    updatedAt: f.updatedAt,
+  };
+}
+
 // ============================================================================
 // SECTION: STRUCTURAL VALIDATION (shared graph-integrity primitives)
 // ============================================================================

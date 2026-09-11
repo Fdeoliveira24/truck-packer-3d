@@ -206,6 +206,11 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lin
     'const AutoPackPreviewScheduler = createPackPreviewScheduler({',
     'AutoPackPreviewScheduler.schedule()',
     'pauseAutoSaveForAppRestore',
+    "Download the active workspace\\'s local load plans",
+    "function openExportWorkspaceModal(workspaceName, workspaceId = '')",
+    'const filename = `${slugName}-backup-',
+    'ImportExport.buildWorkspaceExportJSON(safeName, workspaceId)',
+    "UIComponents.showToast('Workspace Backup download started'",
   ];
   const guardedDiff = diff
     .split(/(?=^@@)/m)
@@ -449,7 +454,11 @@ test('LOAD-PLAN-TERM-8 persisted and exchanged schema keys are unchanged', async
   const ieSrc = await fs.readFile(importExportPath, 'utf8');
   assert.match(ieSrc, /exportType !== 'pack-batch'/, 'the pack-batch exportType discriminator must be unchanged');
   assert.match(ieSrc, /Array\.isArray\(parsed\.packs\)/, 'the packs array key must be unchanged');
-  assert.match(ieSrc, /Missing packLibrary in workspace export/, 'the packLibrary key must be unchanged');
+  const workspacePayload = IE.parseWorkspaceImportJSON(JSON.stringify({
+    exportType: 'workspace',
+    data: { caseLibrary: [], packLibrary: [], folderLibrary: [] },
+  }));
+  assert.ok(Array.isArray(workspacePayload.packLibrary), 'the packLibrary key must be unchanged');
 });
 
 test('LOAD-PLAN-TERM-9 only the approved loadPlanNumber field exists; no parallel LoadPlan architecture was introduced', async () => {

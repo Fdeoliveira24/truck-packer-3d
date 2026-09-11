@@ -17,8 +17,13 @@ import * as CoreStorage from '../core/storage.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as AppStateStore from '../core/state-store.js';
 import * as CaseLibrary from './case-library.js';
+import * as PackLibrary from './pack-library.js';
 import { APP_VERSION } from '../core/version.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
+import {
+  migrateLoadPlanNumbers,
+  normalizeBusinessIdentityLibraries,
+} from '../core/business-identity.js';
 import {
   IMPORT_KIND,
   isPlainRecord,
@@ -37,6 +42,7 @@ import {
   parseCargoCount,
   parseCargoNonNegNumber,
   parseCargoDimension,
+  parseCargoLoadPriority,
   parseCargoShape,
   applyCanonicalCargoFields,
   PALLET_WEIGHT_MAX_LBS,
@@ -63,6 +69,21 @@ function buildRowWarning(rowNum, field, rawValue, fallbackLabel) {
 const MAX_IMPORT_ROWS = 5000;
 const MAX_IMPORT_FILE_BYTES = 10 * 1024 * 1024;
 const SUPPORTED_IMPORT_EXTENSIONS = new Set(['csv', 'xlsx']);
+
+export const WORKSPACE_BACKUP_LIMITS = Object.freeze({
+  maxBytes: 25 * 1024 * 1024,
+  maxDepth: 32,
+  maxJsonNodes: 500000,
+  maxStringChars: 1000000,
+  maxCases: 5000,
+  maxPacks: 1000,
+  maxFolders: 2000,
+  maxCategories: 1000,
+  maxInstances: 100000,
+});
+
+export const WORKSPACE_RESTORE_FORBIDDEN = 'WORKSPACE_RESTORE_FORBIDDEN';
+const WORKSPACE_RESTORE_PLAN = Symbol('workspace-restore-plan');
 
 function applyCaseDefaultColor(caseObj) {
   const next = { ...(caseObj || {}) };
@@ -998,10 +1019,10 @@ export function parsePackBatchImportJSON(jsonText) {
   if (Array.isArray(parsed.packLibrary) || Array.isArray(parsed.caseLibrary) || parsed.preferences) {
     throw new Error('This looks like App JSON. Use Import App Backup instead.');
   }
-  // Guard: reject Workspace JSON. Workspace import is not available yet — only
-  // workspace export exists today, so do not point users at a missing action.
+  // Guard: reject legacy Workspace JSON from the Load Plan Batch entry point
+  // and direct the user to the dedicated destructive restore flow.
   if (parsed.exportType === 'workspace') {
-    throw new Error('This is a Workspace export. Workspace import is not available yet — use a Load Plan or App Backup file.');
+    throw new Error('This is a Workspace Backup. Use Restore Workspace Backup in Settings instead.');
   }
   if (parsed.exportType !== 'pack-batch') {
     throw new Error('Not a load plan batch export. Expected exportType "pack-batch".');
@@ -1134,48 +1155,751 @@ export function restoreAppImport(imported, {
   }
 }
 
-export function buildWorkspaceExportJSON(workspaceName) {
-  return CoreStorage.exportWorkspaceJSON(workspaceName);
+export function buildWorkspaceExportJSON(workspaceName, workspaceId = '') {
+  return CoreStorage.exportWorkspaceJSON(workspaceName, workspaceId);
+}
+
+function workspaceBackupError(message, code = 'WORKSPACE_BACKUP_INVALID') {
+  return Object.assign(new Error(message), { code });
+}
+
+function utf8ByteLength(value) {
+  let bytes = 0;
+  for (const char of String(value || '')) {
+    const point = char.codePointAt(0) || 0;
+    if (point <= 0x7f) bytes += 1;
+    else if (point <= 0x7ff) bytes += 2;
+    else if (point <= 0xffff) bytes += 3;
+    else bytes += 4;
+  }
+  return bytes;
+}
+
+export function assertWorkspaceBackupFileSize(size) {
+  const bytes = Number(size);
+  if (!Number.isFinite(bytes) || bytes < 0) {
+    throw workspaceBackupError('Workspace Backup size is invalid.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+  }
+  if (bytes > WORKSPACE_BACKUP_LIMITS.maxBytes) {
+    throw workspaceBackupError(
+      `Workspace Backup is too large (${bytes} bytes; maximum ${WORKSPACE_BACKUP_LIMITS.maxBytes}).`,
+      'WORKSPACE_BACKUP_LIMIT_EXCEEDED'
+    );
+  }
+  return bytes;
+}
+
+function validateWorkspaceJsonComplexity(value) {
+  const stack = [{ value, depth: 0 }];
+  let nodes = 0;
+  while (stack.length) {
+    const entry = stack.pop();
+    if (!entry) continue;
+    nodes += 1;
+    if (nodes > WORKSPACE_BACKUP_LIMITS.maxJsonNodes) {
+      throw workspaceBackupError('Workspace Backup contains too many JSON values.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+    }
+    if (entry.depth > WORKSPACE_BACKUP_LIMITS.maxDepth) {
+      throw workspaceBackupError('Workspace Backup nesting is too deep.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+    }
+    const current = entry.value;
+    if (typeof current === 'string') {
+      if (current.length > WORKSPACE_BACKUP_LIMITS.maxStringChars) {
+        throw workspaceBackupError('Workspace Backup contains an oversized text value.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+      }
+      continue;
+    }
+    if (typeof current === 'number' && !Number.isFinite(current)) {
+      throw workspaceBackupError('Workspace Backup contains a non-finite number.');
+    }
+    if (!current || typeof current !== 'object') continue;
+    const keys = Object.keys(current);
+    keys.forEach(key => {
+      if (key === '__proto__' || key === 'prototype' || key === 'constructor') {
+        throw workspaceBackupError(`Workspace Backup contains a prohibited key "${key}".`);
+      }
+      if (key.length > WORKSPACE_BACKUP_LIMITS.maxStringChars) {
+        throw workspaceBackupError('Workspace Backup contains an oversized property name.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+      }
+      stack.push({ value: current[key], depth: entry.depth + 1 });
+    });
+  }
+}
+
+function parseWorkspaceJsonWithLimits(jsonText) {
+  const text = typeof jsonText === 'string' ? jsonText : String(jsonText || '');
+  assertWorkspaceBackupFileSize(utf8ByteLength(text));
+  let raw;
+  try {
+    raw = JSON.parse(text);
+  } catch (error) {
+    throw workspaceBackupError(`Invalid JSON: ${error && error.message ? error.message : 'parse failed'}`);
+  }
+  validateWorkspaceJsonComplexity(raw);
+  return Utils.sanitizeJSON(raw);
+}
+
+function requireWorkspaceRecord(value, label) {
+  if (!isPlainRecord(value)) throw workspaceBackupError(`Invalid ${label}: expected an object.`);
+  return value;
+}
+
+function requireWorkspaceText(value, label, { optional = false, nonBlank = false } = {}) {
+  if (value == null && optional) return;
+  if (typeof value !== 'string') throw workspaceBackupError(`Invalid ${label}: expected text.`);
+  if (nonBlank && !value.trim()) throw workspaceBackupError(`Invalid ${label}: value is blank.`);
+}
+
+function requireFiniteNumber(value, label, {
+  positive = false,
+  max = Infinity,
+  strictNumber = true,
+} = {}) {
+  if (strictNumber && typeof value !== 'number') {
+    throw workspaceBackupError(`Invalid ${label}: expected a number.`);
+  }
+  const number = typeof value === 'number' ? value : Number(String(value == null ? '' : value).trim());
+  if (!Number.isFinite(number) || (positive ? number <= 0 : false) || number > max) {
+    throw workspaceBackupError(`Invalid ${label}: malformed physical value.`);
+  }
+  return number;
+}
+
+function validateWorkspaceCase(caseData, index, { legacy }) {
+  const label = `caseLibrary[${index}]`;
+  if (!legacy && Object.prototype.hasOwnProperty.call(caseData, 'volume')) {
+    throw workspaceBackupError(`Invalid ${label}.volume: derived values are not portable.`);
+  }
+  requireWorkspaceText(caseData.name, `${label}.name`, { nonBlank: true });
+  const dimensions = requireWorkspaceRecord(caseData.dimensions, `${label}.dimensions`);
+  ['length', 'width', 'height'].forEach(axis => {
+    const parsed = parseCargoDimension(dimensions[axis]);
+    if (!parsed.valid || (!legacy && typeof dimensions[axis] !== 'number')) {
+      throw workspaceBackupError(`Invalid ${label}.dimensions.${axis}: expected a positive canonical dimension.`);
+    }
+  });
+  if (!legacy || caseData.weight != null) {
+    const parsedWeight = parseCargoNonNegNumber(caseData.weight, { max: WEIGHT_MAX_LBS });
+    if (!parsedWeight.valid || (!legacy && typeof caseData.weight !== 'number')) {
+      throw workspaceBackupError(`Invalid ${label}.weight: expected a canonical non-negative weight.`);
+    }
+  }
+  if (caseData.maxPalletWeight != null) {
+    const parsed = parseCargoNonNegNumber(caseData.maxPalletWeight, { max: PALLET_WEIGHT_MAX_LBS });
+    if (!parsed.valid || (!legacy && typeof caseData.maxPalletWeight !== 'number')) {
+      throw workspaceBackupError(`Invalid ${label}.maxPalletWeight.`);
+    }
+  }
+  if (caseData.maxStackCount != null) {
+    if (
+      !parseCargoCount(caseData.maxStackCount).valid ||
+      (!legacy && typeof caseData.maxStackCount !== 'number')
+    ) {
+      throw workspaceBackupError(`Invalid ${label}.maxStackCount.`);
+    }
+  }
+  if (caseData.loadPriority != null) {
+    if (
+      !parseCargoLoadPriority(caseData.loadPriority).valid ||
+      (!legacy && typeof caseData.loadPriority !== 'number')
+    ) {
+      throw workspaceBackupError(`Invalid ${label}.loadPriority.`);
+    }
+  }
+  ['canFlip', 'noStackOnTop', 'isPallet', 'stackable', 'mustLoadLast', 'mustUnloadFirst'].forEach(field => {
+    if (caseData[field] != null) {
+      if (
+        !parseCargoBoolean(caseData[field], field === 'stackable').valid ||
+        (!legacy && typeof caseData[field] !== 'boolean')
+      ) {
+        throw workspaceBackupError(`Invalid ${label}.${field}.`);
+      }
+    }
+  });
+  if (caseData.laneItem != null) {
+    if (!parseCargoLane(caseData.laneItem).valid || (!legacy && typeof caseData.laneItem !== 'boolean')) {
+      throw workspaceBackupError(`Invalid ${label}.laneItem.`);
+    }
+  }
+  if (caseData.shape != null) {
+    if (!parseCargoShape(caseData.shape).valid || (!legacy && typeof caseData.shape !== 'string')) {
+      throw workspaceBackupError(`Invalid ${label}.shape.`);
+    }
+  }
+  if (
+    !legacy &&
+    caseData.orientationLock != null &&
+    (typeof caseData.orientationLock !== 'string' || !['any', 'upright', 'onSide'].includes(caseData.orientationLock))
+  ) {
+    throw workspaceBackupError(`Invalid ${label}.orientationLock.`);
+  }
+  ['createdAt', 'updatedAt'].forEach(field => {
+    if (caseData[field] != null) {
+      requireFiniteNumber(caseData[field], `${label}.${field}`, { strictNumber: !legacy });
+    }
+  });
+  requireWorkspaceText(caseData.notes, `${label}.notes`, { optional: true });
+  requireWorkspaceText(caseData.itemCode, `${label}.itemCode`, { optional: true });
+  requireWorkspaceText(caseData.color, `${label}.color`, { optional: true });
+}
+
+function validateWorkspaceInstance(instance, packIndex, instanceIndex, { legacy }) {
+  const label = `packLibrary[${packIndex}].cases[${instanceIndex}]`;
+  const transform = requireWorkspaceRecord(instance.transform, `${label}.transform`);
+  const position = requireWorkspaceRecord(transform.position, `${label}.transform.position`);
+  const rotation = requireWorkspaceRecord(transform.rotation, `${label}.transform.rotation`);
+  const scale = requireWorkspaceRecord(transform.scale, `${label}.transform.scale`);
+  ['x', 'y', 'z'].forEach(axis => {
+    requireFiniteNumber(position[axis], `${label}.transform.position.${axis}`, { strictNumber: !legacy });
+    requireFiniteNumber(rotation[axis], `${label}.transform.rotation.${axis}`, { strictNumber: !legacy });
+    requireFiniteNumber(scale[axis], `${label}.transform.scale.${axis}`, {
+      positive: true,
+      max: 1000,
+      strictNumber: !legacy,
+    });
+  });
+  if (instance.orientedDims != null) {
+    const oriented = requireWorkspaceRecord(instance.orientedDims, `${label}.orientedDims`);
+    ['length', 'width', 'height'].forEach(axis => {
+      requireFiniteNumber(oriented[axis], `${label}.orientedDims.${axis}`, {
+        positive: true,
+        max: DIMENSION_MAX_INCHES,
+        strictNumber: !legacy,
+      });
+    });
+  }
+  if (instance.deliverySequence != null) {
+    requireFiniteNumber(instance.deliverySequence, `${label}.deliverySequence`, { strictNumber: !legacy });
+  }
+  if (instance.placement != null && instance.placement !== 'packed' && instance.placement !== 'staged') {
+    throw workspaceBackupError(`Invalid ${label}.placement.`);
+  }
+  if (instance.hidden != null && typeof instance.hidden !== 'boolean') {
+    throw workspaceBackupError(`Invalid ${label}.hidden.`);
+  }
+  if (instance.orientationLocked != null && typeof instance.orientationLocked !== 'boolean') {
+    throw workspaceBackupError(`Invalid ${label}.orientationLocked.`);
+  }
+  if (instance.lockedRotation != null) {
+    const lockedRotation = requireWorkspaceRecord(instance.lockedRotation, `${label}.lockedRotation`);
+    ['x', 'y', 'z'].forEach(axis => {
+      requireFiniteNumber(lockedRotation[axis], `${label}.lockedRotation.${axis}`, { strictNumber: !legacy });
+    });
+  }
+  if (instance.packedProfile != null && instance.packedProfile !== 'max-capacity') {
+    throw workspaceBackupError(`Invalid ${label}.packedProfile.`);
+  }
+  if (instance.packedProfile === 'max-capacity' && instance.placement !== 'packed') {
+    throw workspaceBackupError(`Invalid ${label}.packedProfile: only packed instances may carry it.`);
+  }
+  requireWorkspaceText(instance.instanceNotes, `${label}.instanceNotes`, { optional: true });
+}
+
+function validateWorkspacePack(pack, packIndex, { legacy }) {
+  const label = `packLibrary[${packIndex}]`;
+  if (!legacy) {
+    ['stats', 'thumbnail', 'thumbnailUpdatedAt', 'thumbnailSource', 'autoPackAlternatives',
+      'autopackAlternatives', 'packingSolutions', 'solutions'].forEach(field => {
+      if (Object.prototype.hasOwnProperty.call(pack, field)) {
+        throw workspaceBackupError(`Invalid ${label}.${field}: transient values are not portable.`);
+      }
+    });
+  }
+  requireWorkspaceText(pack.title, `${label}.title`, { nonBlank: true });
+  requireWorkspaceText(pack.notes, `${label}.notes`, { optional: true });
+  requireWorkspaceText(pack.loadPlanNumber, `${label}.loadPlanNumber`, { optional: legacy });
+  requireWorkspaceText(pack.customerReference, `${label}.customerReference`, { optional: true });
+  const truck = requireWorkspaceRecord(pack.truck, `${label}.truck`);
+  ['length', 'width', 'height'].forEach(axis => {
+    const parsed = parseCargoDimension(truck[axis]);
+    if (!parsed.valid || (!legacy && typeof truck[axis] !== 'number')) {
+      throw workspaceBackupError(`Invalid ${label}.truck.${axis}: expected a positive canonical dimension.`);
+    }
+  });
+  if (
+    truck.shapeMode != null &&
+    truck.shapeMode !== 'rect' &&
+    truck.shapeMode !== 'wheelWells' &&
+    truck.shapeMode !== 'frontBonus'
+  ) {
+    throw workspaceBackupError(`Invalid ${label}.truck.shapeMode.`);
+  }
+  if (truck.shapeConfig != null) {
+    const shapeConfig = requireWorkspaceRecord(truck.shapeConfig, `${label}.truck.shapeConfig`);
+    const configLimits = {
+      wellHeight: Number(truck.height),
+      wellWidth: Number(truck.width) / 2,
+      wellLength: Number(truck.length),
+      wellOffsetFromRear: Number(truck.length),
+      bonusLength: Number(truck.length),
+      bonusHeight: Number(truck.height),
+      bonusWidth: Number(truck.width),
+    };
+    Object.entries(configLimits).forEach(([field, max]) => {
+      if (!Object.prototype.hasOwnProperty.call(shapeConfig, field)) return;
+      const value = requireFiniteNumber(shapeConfig[field], `${label}.truck.shapeConfig.${field}`, {
+        max,
+        strictNumber: !legacy,
+      });
+      if (value < 0) {
+        throw workspaceBackupError(`Invalid ${label}.truck.shapeConfig.${field}: value must not be negative.`);
+      }
+    });
+    const wellLength = Number(shapeConfig.wellLength);
+    const wellOffset = Number(shapeConfig.wellOffsetFromRear);
+    if (
+      Number.isFinite(wellLength) &&
+      Number.isFinite(wellOffset) &&
+      wellLength + wellOffset > Number(truck.length)
+    ) {
+      throw workspaceBackupError(
+        `Invalid ${label}.truck.shapeConfig: wheel-well length extends beyond the truck.`
+      );
+    }
+  }
+  if (!Array.isArray(pack.cases)) throw workspaceBackupError(`Invalid ${label}.cases: expected an array.`);
+  pack.cases.forEach((instance, instanceIndex) => {
+    validateWorkspaceInstance(instance, packIndex, instanceIndex, { legacy });
+  });
+  ['createdAt', 'lastEdited'].forEach(field => {
+    if (pack[field] != null) {
+      requireFiniteNumber(pack[field], `${label}.${field}`, { strictNumber: !legacy });
+    }
+  });
+}
+
+function validateWorkspaceFolder(folder, index) {
+  const label = `folderLibrary[${index}]`;
+  requireWorkspaceText(folder.name, `${label}.name`, { nonBlank: true });
+  if (folder.scope != null && folder.scope !== 'pack') {
+    throw workspaceBackupError(`Invalid ${label}.scope.`);
+  }
+  if (folder.sortOrder != null) {
+    const sortOrder = requireFiniteNumber(folder.sortOrder, `${label}.sortOrder`, { max: Number.MAX_SAFE_INTEGER });
+    if (sortOrder < 0 || !Number.isInteger(sortOrder)) {
+      throw workspaceBackupError(`Invalid ${label}.sortOrder.`);
+    }
+  }
+  ['createdAt', 'updatedAt'].forEach(field => {
+    if (folder[field] != null) requireFiniteNumber(folder[field], `${label}.${field}`);
+  });
+}
+
+function categoryFallbackName(key) {
+  return key
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ') || 'Imported Category';
+}
+
+function validateWorkspaceCategories(data, cases, { legacy }) {
+  if (Object.prototype.hasOwnProperty.call(data, 'categories') && !Array.isArray(data.categories)) {
+    throw workspaceBackupError('Invalid categories: expected an array.');
+  }
+  const rawCategories = Array.isArray(data.categories) ? data.categories : [];
+  if (rawCategories.length > WORKSPACE_BACKUP_LIMITS.maxCategories) {
+    throw workspaceBackupError('Workspace Backup contains too many categories.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+  }
+  const referencedKeys = new Set();
+  cases.forEach((caseData, index) => {
+    if (caseData.category == null && legacy) {
+      referencedKeys.add('default');
+      return;
+    }
+    if (typeof caseData.category !== 'string' || !caseData.category.trim()) {
+      throw workspaceBackupError(`Invalid caseLibrary[${index}].category: blank or missing reference.`);
+    }
+    referencedKeys.add(caseData.category.trim().toLowerCase());
+  });
+
+  const categoryByKey = new Map();
+  rawCategories.forEach((category, index) => {
+    if (!isPlainRecord(category)) {
+      throw workspaceBackupError(`Invalid categories[${index}]: expected an object.`);
+    }
+    const key = typeof category.key === 'string' ? category.key.trim().toLowerCase() : '';
+    if (!key) throw workspaceBackupError(`Invalid categories[${index}].key: blank or missing id.`);
+    if (categoryByKey.has(key)) throw workspaceBackupError(`Invalid categories: duplicate key "${key}".`);
+    requireWorkspaceText(category.name, `categories[${index}].name`, { nonBlank: !legacy });
+    requireWorkspaceText(category.color, `categories[${index}].color`, { nonBlank: !legacy });
+    const color = category.color == null ? null : String(category.color).trim().toLowerCase();
+    if (color && !/^#[0-9a-f]{6}$/.test(color)) {
+      throw workspaceBackupError(`Invalid categories[${index}].color.`);
+    }
+    if (!legacy && !referencedKeys.has(key)) {
+      throw workspaceBackupError(`Invalid categories[${index}]: category "${key}" is not referenced by any Case.`);
+    }
+    categoryByKey.set(key, {
+      key,
+      name: category.name == null ? null : String(category.name).trim(),
+      color,
+    });
+  });
+
+  const builtInKeys = new Set(
+    (Defaults.categories || [])
+      .map(category => String((category && category.key) || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const warnings = [];
+  referencedKeys.forEach(key => {
+    if (builtInKeys.has(key) || categoryByKey.has(key)) return;
+    if (!legacy) {
+      throw workspaceBackupError(`Invalid category reference "${key}": portable metadata is missing.`);
+    }
+    const sourceCase = cases.find(caseData =>
+      String((caseData && caseData.category) || 'default').trim().toLowerCase() === key
+    );
+    const sourceColor = String((sourceCase && sourceCase.color) || '').trim().toLowerCase();
+    categoryByKey.set(key, {
+      key,
+      name: categoryFallbackName(key),
+      color: /^#[0-9a-f]{6}$/.test(sourceColor) ? sourceColor : '#9ca3af',
+    });
+    warnings.push(`Legacy category "${key}" had no portable metadata; display metadata was reconstructed.`);
+  });
+
+  return {
+    categories: Array.from(categoryByKey.values()).filter(category => referencedKeys.has(category.key)),
+    warnings,
+  };
+}
+
+function validateWorkspaceRestoreData(data, { legacy }) {
+  if (!legacy && (Object.prototype.hasOwnProperty.call(data, 'preferences') ||
+      Object.prototype.hasOwnProperty.call(data, 'currentPackId'))) {
+    throw workspaceBackupError('Workspace Backup contains non-portable preference or navigation state.');
+  }
+  if (!legacy && !Array.isArray(data.folderLibrary)) {
+    throw workspaceBackupError('Invalid folderLibrary: expected an array.');
+  }
+  const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: false });
+  if (cases.length > WORKSPACE_BACKUP_LIMITS.maxCases) {
+    throw workspaceBackupError('Workspace Backup contains too many Cases.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+  }
+  if (packs.length > WORKSPACE_BACKUP_LIMITS.maxPacks) {
+    throw workspaceBackupError('Workspace Backup contains too many Load Plans.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+  }
+  if (folders.length > WORKSPACE_BACKUP_LIMITS.maxFolders) {
+    throw workspaceBackupError('Workspace Backup contains too many folders.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+  }
+  const instanceCount = packs.reduce((total, pack) =>
+    total + (pack && Array.isArray(pack.cases) ? pack.cases.length : 0), 0);
+  if (instanceCount > WORKSPACE_BACKUP_LIMITS.maxInstances) {
+    throw workspaceBackupError('Workspace Backup contains too many instances.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
+  }
+
+  cases.forEach((caseData, index) => validateWorkspaceCase(caseData, index, { legacy }));
+  packs.forEach((pack, index) => validateWorkspacePack(pack, index, { legacy }));
+  folders.forEach(validateWorkspaceFolder);
+
+  const warnings = [];
+  let identityPacks = packs;
+  if (legacy) {
+    const missingLoadPlanNumbers = packs.filter(pack =>
+      !pack || typeof pack.loadPlanNumber !== 'string' || !pack.loadPlanNumber.trim()
+    ).length;
+    if (missingLoadPlanNumbers) {
+      identityPacks = migrateLoadPlanNumbers(packs).packLibrary;
+      warnings.push(`${missingLoadPlanNumbers} legacy Load Plan Number(s) were generated during preflight.`);
+    }
+  }
+  const identities = normalizeBusinessIdentityLibraries(cases, identityPacks);
+  const categoryValidation = validateWorkspaceCategories(data, identities.caseLibrary, { legacy });
+  warnings.push(...categoryValidation.warnings);
+  const sanitizedPacks = CoreNormalizer.sanitizeLegacyPackQuantityLibrary(identities.packLibrary).packLibrary;
+  if (sanitizedPacks.some((pack, index) => pack !== identities.packLibrary[index])) {
+    warnings.push('Obsolete legacy quantity targets were removed; physical instances were preserved.');
+  }
+
+  return {
+    caseLibrary: identities.caseLibrary,
+    packLibrary: sanitizedPacks,
+    folderLibrary: folders,
+    categories: categoryValidation.categories,
+    instanceCount,
+    warnings,
+  };
+}
+
+function requireValidWorkspaceCreatedAt(value) {
+  if (typeof value !== 'string' || !value.trim() || !Number.isFinite(Date.parse(value))) {
+    throw workspaceBackupError('Workspace Backup createdAt is missing or invalid.');
+  }
+  return value;
 }
 
 /**
- * Accepts either the new versioned Cargo Planner envelope (kind:
- * workspace-backup) or the legacy `{exportType: 'workspace', data}` shape.
- * The new-envelope path reuses the same graph-integrity checks as Active
- * Workspace Backup (unique ids, no dangling folderId/caseId) — this is
- * groundwork only: nothing currently wires this parser's result into a
- * restore action (see Milestone C: Workspace Restore UI).
+ * Parse and fully validate a Workspace Backup before normalization or mutation.
+ * New v1 files are strict. Legacy `exportType: workspace` files adapt into the
+ * same DTO with explicit migration warnings and keep folderless compatibility.
  */
 export function parseWorkspaceImportJSON(jsonText) {
-  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
-  if (!parsed || typeof parsed !== 'object') throw new Error('Invalid JSON');
+  const parsed = parseWorkspaceJsonWithLimits(jsonText);
+  if (!isPlainRecord(parsed)) throw workspaceBackupError('Invalid JSON: expected an object.');
+
   if (isCargoPlannerEnvelope(parsed)) {
     const envelope = parseCargoPlannerEnvelope(parsed, { expectedKinds: [IMPORT_KIND.WORKSPACE_BACKUP] });
-    const { cases, packs, folders } = validateWorkspaceGraph(envelope.data, { requirePreferences: false });
-    const sanitizedPacks = CoreNormalizer.sanitizeLegacyPackQuantityLibrary(packs).packLibrary;
+    const validated = validateWorkspaceRestoreData(envelope.data, { legacy: false });
     const scope = envelope.scope || {};
     return {
-      caseLibrary: cases,
-      packLibrary: sanitizedPacks,
-      folderLibrary: folders,
-      workspaceName: scope.sourceWorkspaceName ? String(scope.sourceWorkspaceName) : '',
-      categories: Array.isArray(envelope.data.categories) ? envelope.data.categories : [],
+      ...validated,
+      workspaceName: typeof scope.sourceWorkspaceName === 'string' ? scope.sourceWorkspaceName : '',
+      sourceWorkspaceId: typeof scope.sourceWorkspaceId === 'string' ? scope.sourceWorkspaceId : '',
+      schemaVersion: envelope.schemaVersion,
+      createdAt: requireValidWorkspaceCreatedAt(envelope.createdAt),
+      appVersion: envelope.appVersion,
+      legacy: false,
+      warnings: validated.warnings,
     };
   }
+
   if (parsed.exportType !== 'workspace') {
-    throw new Error('Not a workspace export file. Please use a file exported with "Export Workspace Data".');
+    throw workspaceBackupError(
+      'Not a workspace export file. Please use a file exported with "Export Workspace Backup".'
+    );
   }
-  const data = parsed.data && typeof parsed.data === 'object' ? parsed.data : {};
-  if (!Array.isArray(data.caseLibrary)) throw new Error('Missing caseLibrary in workspace export');
-  if (!Array.isArray(data.packLibrary)) throw new Error('Missing packLibrary in workspace export');
-  if (data.folderLibrary != null && !Array.isArray(data.folderLibrary)) {
-    throw new Error('Invalid folderLibrary in workspace export');
-  }
-  const sanitizedPacks = CoreNormalizer.sanitizeLegacyPackQuantityLibrary(data.packLibrary).packLibrary;
+  const data = requireWorkspaceRecord(parsed.data, 'workspace export data');
+  const hadFolderLibrary = Object.prototype.hasOwnProperty.call(data, 'folderLibrary');
+  const validated = validateWorkspaceRestoreData(data, { legacy: true });
+  const warnings = ['Legacy Workspace Backup adapted to the current Replace restore contract.'];
+  if (!hadFolderLibrary) warnings.push('Legacy backup had no folder library; an empty folder list will be restored.');
+  warnings.push(...validated.warnings);
+  const exportedAt = Number(parsed.exportedAt);
+  const createdAt = Number.isFinite(exportedAt) && exportedAt > 0
+    ? new Date(exportedAt).toISOString()
+    : null;
   return {
-    caseLibrary: data.caseLibrary,
-    packLibrary: sanitizedPacks,
-    folderLibrary: Array.isArray(data.folderLibrary) ? data.folderLibrary : [],
+    ...validated,
     workspaceName: parsed.workspaceName ? String(parsed.workspaceName) : '',
+    sourceWorkspaceId: '',
+    schemaVersion: 'legacy',
+    createdAt,
+    appVersion: parsed.appVersion ? String(parsed.appVersion) : null,
+    legacy: true,
+    warnings,
   };
+}
+
+function buildWorkspaceRestoreCategorySlice(cases, categories) {
+  const referenced = [];
+  const seen = new Set();
+  (cases || []).forEach(caseData => {
+    const key = String((caseData && caseData.category) || 'default').trim().toLowerCase() || 'default';
+    if (!seen.has(key)) {
+      seen.add(key);
+      referenced.push(key);
+    }
+  });
+  const importedByKey = new Map(
+    (categories || []).map(category => [String(category.key || '').trim().toLowerCase(), category])
+  );
+  const builtInByKey = new Map(
+    (Defaults.categories || [])
+      .filter(category => category && category.key && category.key !== 'all')
+      .map(category => [String(category.key).trim().toLowerCase(), category])
+  );
+  if (!importedByKey.size) return [];
+  return referenced
+    .map(key => importedByKey.get(key) || builtInByKey.get(key) || null)
+    .filter(Boolean)
+    .map(category => ({
+      key: String(category.key).trim().toLowerCase(),
+      name: category.name ? String(category.name) : null,
+      color: category.color ? String(category.color).toLowerCase() : null,
+    }));
+}
+
+function positionsDiffer(before, after) {
+  if (!before || !after) return true;
+  return ['x', 'y', 'z'].some(axis =>
+    Math.abs(Number(before[axis]) - Number(after[axis])) > PackLibrary.PLACEMENT_EPS
+  );
+}
+
+/** Pure Workspace Replace preflight. No StateStore or storage writes occur. */
+export function planWorkspaceRestore(imported, {
+  currentState = AppStateStore.snapshot(),
+  destinationWorkspaceId = '',
+  destinationWorkspaceName = '',
+} = {}) {
+  if (
+    !imported ||
+    !Array.isArray(imported.caseLibrary) ||
+    !Array.isArray(imported.packLibrary) ||
+    !Array.isArray(imported.folderLibrary) ||
+    !Array.isArray(imported.categories)
+  ) {
+    throw workspaceBackupError('Workspace Restore requires a validated Workspace Backup DTO.');
+  }
+  const previous = currentState && typeof currentState === 'object' ? currentState : {};
+  const normalized = CoreNormalizer.normalizeAppData({
+    caseLibrary: imported.caseLibrary,
+    packLibrary: imported.packLibrary,
+    folderLibrary: imported.folderLibrary,
+    preferences: previous.preferences || {},
+    currentPackId: null,
+  });
+  if (
+    normalized.caseLibrary.length !== imported.caseLibrary.length ||
+    normalized.packLibrary.length !== imported.packLibrary.length ||
+    normalized.folderLibrary.length !== imported.folderLibrary.length
+  ) {
+    throw workspaceBackupError('Workspace Restore normalization changed graph cardinality.');
+  }
+
+  let placementsPreserved = 0;
+  let placementsRepaired = 0;
+  let placementsStaged = 0;
+  const repairedPacks = normalized.packLibrary.map(pack => {
+    const beforeInstances = Array.isArray(pack.cases) ? pack.cases : [];
+    const repaired = PackLibrary.repairRestoredPackPlacements(pack, normalized.caseLibrary);
+    const afterInstances = Array.isArray(repaired.cases) ? repaired.cases : [];
+    if (afterInstances.length !== beforeInstances.length) {
+      throw workspaceBackupError('Workspace Restore placement repair changed instance cardinality.');
+    }
+    afterInstances.forEach((instance, index) => {
+      const before = beforeInstances[index] || {};
+      const beforePosition = before.transform && before.transform.position;
+      const afterPosition = instance && instance.transform && instance.transform.position;
+      const placementChanged = before.placement !== instance.placement;
+      const positionChanged = positionsDiffer(beforePosition, afterPosition);
+      if (instance.placement === 'staged' && before.placement !== 'staged') placementsStaged += 1;
+      else if (placementChanged || positionChanged) placementsRepaired += 1;
+      else placementsPreserved += 1;
+    });
+    return {
+      ...repaired,
+      stats: PackLibrary.computeStats(repaired, normalized.caseLibrary),
+      thumbnail: null,
+      thumbnailUpdatedAt: null,
+      thumbnailSource: null,
+    };
+  });
+
+  const expectedInstances = imported.packLibrary.reduce((total, pack) =>
+    total + (pack && Array.isArray(pack.cases) ? pack.cases.length : 0), 0);
+  const actualInstances = repairedPacks.reduce((total, pack) => total + pack.cases.length, 0);
+  if (actualInstances !== expectedInstances) {
+    throw workspaceBackupError('Workspace Restore normalization changed instance cardinality.');
+  }
+
+  const categorySlice = buildWorkspaceRestoreCategorySlice(normalized.caseLibrary, imported.categories);
+  const plan = {
+    mode: 'replace',
+    sourceWorkspaceName: imported.workspaceName || '',
+    sourceWorkspaceId: imported.sourceWorkspaceId || '',
+    destinationWorkspaceId: String(destinationWorkspaceId || '').trim(),
+    destinationWorkspaceName: String(destinationWorkspaceName || '').trim(),
+    schemaVersion: imported.schemaVersion,
+    createdAt: imported.createdAt || null,
+    appVersion: imported.appVersion || null,
+    legacy: Boolean(imported.legacy),
+    warnings: Array.isArray(imported.warnings) ? [...imported.warnings] : [],
+    integrityErrors: [],
+    counts: {
+      cases: normalized.caseLibrary.length,
+      packs: repairedPacks.length,
+      folders: normalized.folderLibrary.length,
+      categories: imported.categories.length,
+      instances: actualInstances,
+    },
+    placementsPreserved,
+    placementsRepaired,
+    placementsStaged,
+    caseLibrary: normalized.caseLibrary,
+    packLibrary: repairedPacks,
+    folderLibrary: normalized.folderLibrary,
+    categorySlice,
+  };
+  Object.defineProperty(plan, WORKSPACE_RESTORE_PLAN, { value: true });
+  return plan;
+}
+
+export function canRestoreWorkspace(role) {
+  const normalized = String(role || '').trim().toLowerCase();
+  return normalized === 'owner' || normalized === 'admin';
+}
+
+/**
+ * @param {{ role?: string, destinationWorkspaceId?: string,
+ *   plannedDestinationWorkspaceId?: string, originScope?: any }} [options]
+ */
+export function assertWorkspaceRestoreAuthorized({
+  role,
+  destinationWorkspaceId,
+  plannedDestinationWorkspaceId,
+  originScope,
+} = {}) {
+  if (!canRestoreWorkspace(role)) {
+    throw workspaceBackupError(
+      'Workspace Restore requires an Owner or Admin role in the active destination workspace.',
+      WORKSPACE_RESTORE_FORBIDDEN
+    );
+  }
+  const destinationId = String(destinationWorkspaceId || '').trim();
+  const plannedId = String(plannedDestinationWorkspaceId || '').trim();
+  if (
+    !destinationId ||
+    !originScope ||
+    originScope.workspaceScope !== destinationId ||
+    (plannedId && plannedId !== destinationId)
+  ) {
+    throw Object.assign(new Error(CoreStorage.IMPORT_SCOPE_CHANGED_MESSAGE), {
+      code: 'IMPORT_SCOPE_CHANGED',
+    });
+  }
+  return true;
+}
+
+/**
+ * Commit a validated Workspace Replace plan through the exact Milestone A
+ * scoped recovery transaction. Source-file workspace metadata is never used
+ * for authorization or destination selection.
+ * @param {Record<string, any>} plan
+ * @param {{ StateStore?: any, Storage?: any, originScope?: any,
+ *   pauseAutoSave?: Function, authorization?: { role?: string,
+ *   destinationWorkspaceId?: string } }} [options]
+ */
+export function restoreWorkspaceImport(plan, {
+  StateStore,
+  Storage = CoreStorage,
+  originScope,
+  pauseAutoSave,
+  authorization,
+} = {}) {
+  if (!plan || /** @type {any} */ (plan)[WORKSPACE_RESTORE_PLAN] !== true) {
+    throw workspaceBackupError('Workspace Restore requires a completed preflight plan.');
+  }
+  if (!StateStore || typeof StateStore.snapshot !== 'function') {
+    throw new Error('Workspace restore requires StateStore');
+  }
+  Storage.assertScopeContextCurrent(originScope);
+  assertWorkspaceRestoreAuthorized({
+    ...(authorization || {}),
+    plannedDestinationWorkspaceId: plan.destinationWorkspaceId,
+    originScope,
+  });
+  Storage.assertScopeContextCurrent(originScope);
+  const currentState = StateStore.snapshot();
+  const currentPreferences = currentState && currentState.preferences && typeof currentState.preferences === 'object'
+    ? currentState.preferences
+    : {};
+  const imported = {
+    caseLibrary: plan.caseLibrary,
+    packLibrary: plan.packLibrary,
+    folderLibrary: plan.folderLibrary,
+    preferences: {
+      ...currentPreferences,
+      categories: plan.categorySlice,
+    },
+  };
+  const result = restoreAppImport(imported, {
+    StateStore,
+    Storage,
+    originScope,
+    pauseAutoSave,
+  });
+  return { ...result, plan };
 }

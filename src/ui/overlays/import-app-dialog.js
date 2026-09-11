@@ -86,7 +86,7 @@ export function createImportAppDialog({
     const ok = await UIComponents.confirm({
       title: 'Import App Backup?',
       message:
-        'This replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
+        'This replaces the active workspace\'s local load plans, cases, and folders plus your local user preferences in this browser. Other account workspaces, login, membership, billing, and payment data are kept. This cannot be undone.',
       danger: true,
       okLabel: 'Replace Local App Data',
     });
@@ -152,7 +152,7 @@ export function createImportAppDialog({
         <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
         <div>
           <span class="tp3d-import-warning-label">Warning:</span>
-          <span class="tp3d-import-warning-text"> Importing an app backup replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. Export an app backup first.</span>
+          <span class="tp3d-import-warning-text"> Importing an app backup replaces the active workspace's local load plans, cases, and folders plus your local user preferences. Other account workspaces, login, membership, billing, and payment data are kept. Export an app backup first.</span>
         </div>
       </div>
     `;

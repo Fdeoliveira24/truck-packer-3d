@@ -13,6 +13,7 @@
 
 import { APP_VERSION } from './version.js';
 import * as Utils from './utils/index.js';
+import * as Defaults from './defaults.js';
 import { debounce } from './browser.js';
 import * as StateStore from './state-store.js';
 import {
@@ -30,6 +31,11 @@ import {
   isCargoPlannerEnvelope,
   parseCargoPlannerEnvelope,
   validateWorkspaceGraph,
+  buildEnvelopeJSON,
+  projectPortableCategories,
+  projectPortableCase,
+  projectPortableWorkspacePack,
+  projectPortableFolder,
 } from './import-schema.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
@@ -850,28 +856,78 @@ export function exportAppJSON() {
   return JSON.stringify(payload, null, 2);
 }
 
-export function exportWorkspaceJSON(workspaceName) {
+export function exportWorkspaceJSON(workspaceName, workspaceId = '') {
   const state = StateStore.get();
   const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
-  const strippedPacks = sanitizedPacks.map(pack => ({
-    ...(pack || {}),
-    thumbnail: null,
-    thumbnailUpdatedAt: null,
-  }));
-  const payload = {
-    app: 'Truck Packer 3D',
-    exportType: 'workspace',
-    schemaVersion: 'workspace-export-v1',
-    appVersion: APP_VERSION,
-    exportedAt: Date.now(),
-    workspaceName: workspaceName ? String(workspaceName).trim() : '',
-    data: {
-      caseLibrary: Array.isArray(state.caseLibrary) ? state.caseLibrary : [],
-      packLibrary: strippedPacks,
-      folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
-    },
+  const portablePacks = migrateLoadPlanNumbers(sanitizedPacks).packLibrary;
+  const caseLibrary = (Array.isArray(state.caseLibrary) ? state.caseLibrary : []).map(caseData =>
+    projectPortableCase({
+      ...(caseData || {}),
+      category: String((caseData && caseData.category) || 'default').trim().toLowerCase() || 'default',
+    })
+  );
+  const referencedCategoryKeys = new Set(
+    caseLibrary.map(caseData =>
+      String((caseData && caseData.category) || 'default').trim().toLowerCase() || 'default'
+    )
+  );
+  const categoryKeys = new Set();
+  const categories = projectPortableCategories(state.preferences || {})
+    .filter(category =>
+      referencedCategoryKeys.has(String(category && category.key || '').trim().toLowerCase())
+    )
+    .map(category => ({
+      key: String((category && category.key) || '').trim().toLowerCase(),
+      name: String((category && category.name) || '').trim(),
+      color: String((category && category.color) || '').trim().toLowerCase(),
+    }));
+  categories.forEach(category => {
+    if (!category.key || !category.name || !/^#[0-9a-f]{6}$/.test(category.color)) {
+      throw new Error(
+        `Workspace Backup cannot be created because category metadata is invalid for: ` +
+        (category.key || '(blank category key)')
+      );
+    }
+    if (categoryKeys.has(category.key)) {
+      throw new Error(
+        `Workspace Backup cannot be created because category metadata is duplicated for: ${category.key}`
+      );
+    }
+    categoryKeys.add(category.key);
+  });
+  const builtInCategoryKeys = new Set(
+    (Defaults.categories || [])
+      .map(category => String((category && category.key) || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  const portableCategoryKeys = new Set(categories.map(category => category.key));
+  const missingCustomCategoryKeys = Array.from(referencedCategoryKeys).filter(
+    key => !builtInCategoryKeys.has(key) && !portableCategoryKeys.has(key)
+  );
+  if (missingCustomCategoryKeys.length) {
+    throw new Error(
+      `Workspace Backup cannot be created because category metadata is missing for: ` +
+      missingCustomCategoryKeys.join(', ')
+    );
+  }
+  const data = {
+    caseLibrary,
+    packLibrary: portablePacks.map(projectPortableWorkspacePack),
+    folderLibrary: (Array.isArray(state.folderLibrary) ? state.folderLibrary : []).map(projectPortableFolder),
   };
-  return JSON.stringify(payload, null, 2);
+  if (categories.length) data.categories = categories;
+
+  const sourceWorkspaceName = workspaceName ? String(workspaceName).trim() : '';
+  const sourceWorkspaceId = workspaceId ? String(workspaceId).trim() : '';
+  return buildEnvelopeJSON({
+    kind: IMPORT_KIND.WORKSPACE_BACKUP,
+    data,
+    appVersion: APP_VERSION,
+    scope: {
+      ...(sourceWorkspaceId ? { sourceWorkspaceId } : {}),
+      ...(sourceWorkspaceName ? { sourceWorkspaceName } : {}),
+    },
+  });
 }
 
 /**

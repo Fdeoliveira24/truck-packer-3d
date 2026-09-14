@@ -20,6 +20,7 @@ import { openImportDialogWithFilePicker } from '../helpers/import-dialog-utils.j
  *  ImportExport?: any,
  *  StateStore?: any,
  *  Storage?: any,
+ *  pauseAutoSaveForAppRestore?: Function,
  *  PreferencesManager?: any,
  *  applyCaseDefaultColor?: Function,
  *  Utils?: any
@@ -31,8 +32,8 @@ export function createImportAppDialog({
   ImportExport,
   StateStore,
   Storage,
+  pauseAutoSaveForAppRestore,
   PreferencesManager,
-  applyCaseDefaultColor,
   Utils,
 } = {}) {
   const doc = documentRef;
@@ -45,6 +46,7 @@ export function createImportAppDialog({
       UIComponents.showToast('No file selected', 'warning');
       return;
     }
+    const originScope = Storage.captureScopeContext();
 
     const name = String(file.name || '');
     const lower = name.toLowerCase();
@@ -84,26 +86,19 @@ export function createImportAppDialog({
     const ok = await UIComponents.confirm({
       title: 'Import App Backup?',
       message:
-        'This replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
+        'This replaces the active workspace\'s local load plans, cases, and folders plus your local user preferences in this browser. Other account workspaces, login, membership, billing, and payment data are kept. This cannot be undone.',
       danger: true,
       okLabel: 'Replace Local App Data',
     });
     if (!ok) return;
 
     try {
-      const prev = StateStore.get();
-      const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
-      const nextState = {
-        ...prev,
-        caseLibrary: importedCases,
-        packLibrary: imported.packLibrary,
-        preferences: imported.preferences,
-        currentPackId: null,
-        currentScreen: 'packs',
-        selectedInstanceIds: [],
-      };
-      StateStore.replace(nextState, { skipHistory: false });
-      Storage.saveNow();
+      const { nextState } = ImportExport.restoreAppImport(imported, {
+        StateStore,
+        Storage,
+        originScope,
+        pauseAutoSave: pauseAutoSaveForAppRestore,
+      });
       if (PreferencesManager && typeof PreferencesManager.applyTheme === 'function') {
         PreferencesManager.applyTheme(nextState.preferences.theme);
       }
@@ -119,6 +114,7 @@ export function createImportAppDialog({
         <div class="tp3d-import-badges">
           <div class="badge tp3d-import-badge-success">Load Plans: ${(imported.packLibrary || []).length}</div>
           <div class="badge tp3d-import-badge-info">Cases: ${(imported.caseLibrary || []).length}</div>
+          <div class="badge">Folders: ${(imported.folderLibrary || []).length}</div>
         </div>
       `;
       resultsEl.appendChild(summary);
@@ -156,7 +152,7 @@ export function createImportAppDialog({
         <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
         <div>
           <span class="tp3d-import-warning-label">Warning:</span>
-          <span class="tp3d-import-warning-text"> Importing an app backup replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. Export an app backup first.</span>
+          <span class="tp3d-import-warning-text"> Importing an app backup replaces the active workspace's local load plans, cases, and folders plus your local user preferences. Other account workspaces, login, membership, billing, and payment data are kept. Export an app backup first.</span>
         </div>
       </div>
     `;

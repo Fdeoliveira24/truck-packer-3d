@@ -72,6 +72,11 @@ function snapshot() {
   return deepClone(state);
 }
 
+function resetHistory() {
+  history = [historySlice(state)];
+  historyPointer = 0;
+}
+
 function pushHistory(entry) {
   history = history.slice(0, historyPointer + 1);
   history.push(deepClone(entry));
@@ -119,4 +124,4 @@ function isSignificantChange(patch) {
   return keys.some(k => significant.includes(k));
 }
 
-export { init, get, set, replace, snapshot, undo, redo, subscribe };
+export { init, get, set, replace, snapshot, resetHistory, undo, redo, subscribe };

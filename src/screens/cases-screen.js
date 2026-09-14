@@ -44,6 +44,7 @@ export function createCasesScreen({
     const btnNew = document.getElementById('btn-new-case');
     const btnTemplate = document.getElementById('btn-cases-template');
     const btnImport = document.getElementById('btn-cases-import');
+    const btnExport = document.getElementById('btn-cases-export');
     const btnManageCats = document.getElementById('btn-manage-categories');
     const btnViewGrid = document.getElementById('cases-view-grid');
     const btnViewList = document.getElementById('cases-view-list');
@@ -199,6 +200,41 @@ export function createCasesScreen({
           ImportCasesDialog.open({ beforeMutate });
         }
       });
+      btnExport &&
+        btnExport.addEventListener('click', ev => {
+          ev.stopPropagation();
+          const cases = CaseLibrary.getCases();
+          if (!cases.length) {
+            UIComponents.showToast('No cases to export', 'info');
+            return;
+          }
+          UIComponents.openDropdown(btnExport, [
+            {
+              label: 'Case Catalog (JSON)',
+              icon: 'fa-solid fa-file-code',
+              onClick: () => {
+                ImportExport.downloadCaseCatalogExportJSON(cases);
+                UIComponents.showToast('Download started', 'success');
+              },
+            },
+            {
+              label: 'Spreadsheet (CSV)',
+              icon: 'fa-solid fa-file-csv',
+              onClick: () => {
+                ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'csv' });
+                UIComponents.showToast('Download started', 'success');
+              },
+            },
+            {
+              label: 'Spreadsheet (XLSX)',
+              icon: 'fa-solid fa-file-excel',
+              onClick: () => {
+                ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'xlsx' });
+                UIComponents.showToast('Download started', 'success');
+              },
+            },
+          ]);
+        });
       btnManageCats &&
         btnManageCats.addEventListener('click', ev => {
           ev.stopPropagation();

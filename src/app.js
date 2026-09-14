@@ -898,6 +898,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       onExportApp: openExportAppModal,
       onExportWorkspace: openExportWorkspaceModal,
       onImportApp: openImportAppDialog,
+      pauseAutoSaveForAppRestore,
       onHelp: openHelpModal,
       onUpdates: openUpdatesScreen,
       onRoadmap: openRoadmapScreen,
@@ -1097,6 +1098,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       ImportExport,
       StateStore,
       Storage,
+      pauseAutoSaveForAppRestore,
       PreferencesManager,
       applyCaseDefaultColor,
       Utils,
@@ -2157,6 +2159,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       documentRef: document,
       UIComponents,
       ImportExport,
+      CaseLibrary,
       StateStore,
       OperationLifecycle,
       Utils,
@@ -2283,7 +2286,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       blurb.className = 'muted';
       blurb.style.fontSize = 'var(--text-sm)';
       blurb.innerHTML =
-        '<div>Download local load plans, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.</div>';
+        '<div>Download the active workspace\'s local load plans, cases, and folders together with local user preferences. Other account workspaces, login, membership, billing, and payment data are not included.</div>';
 
       const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
       const meta = document.createElement('div');
@@ -2318,13 +2321,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
       });
     }
 
-    function openExportWorkspaceModal(workspaceName) {
+    function openExportWorkspaceModal(workspaceName, workspaceId = '') {
       const safeName = workspaceName ? String(workspaceName).trim() : 'workspace';
       const slugName = safeName
         .replace(/[^a-zA-Z0-9_-]/g, '-')
         .replace(/-{2,}/g, '-')
         .replace(/^-|-$/g, '') || 'workspace';
-      const filename = `${slugName}-workspace-${new Date().toISOString().slice(0, 10)}.json`;
+      const filename = `${slugName}-backup-${new Date().toISOString().slice(0, 10)}.json`;
       const content = document.createElement('div');
       content.style.display = 'grid';
       content.style.gap = '12px';
@@ -2355,9 +2358,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
             variant: 'primary',
             onClick: () => {
               try {
-                const json = ImportExport.buildWorkspaceExportJSON(safeName);
+                const json = ImportExport.buildWorkspaceExportJSON(safeName, workspaceId);
                 Utils.downloadText(filename, json);
-                UIComponents.showToast('Workspace JSON exported', 'success');
+                UIComponents.showToast('Workspace Backup download started', 'success');
               } catch (err) {
                 UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
               }
@@ -2454,6 +2457,26 @@ const TP3D_BUILD_STAMP = Object.freeze({
       if (Storage && typeof Storage.flushPendingSave === 'function') {
         Storage.flushPendingSave();
       }
+    }
+
+    function pauseAutoSaveForAppRestore() {
+      const previousSuspendAutoSave = suspendAutoSave;
+      suspendAutoSave = true;
+      try {
+        if (Storage && typeof Storage.cancelPendingSave === 'function') {
+          Storage.cancelPendingSave();
+        }
+      } catch (error) {
+        suspendAutoSave = previousSuspendAutoSave;
+        throw error;
+      }
+
+      let active = true;
+      return () => {
+        if (!active) return;
+        active = false;
+        suspendAutoSave = previousSuspendAutoSave;
+      };
     }
 
     function setWorkspaceStorageScope(targetOrgId) {

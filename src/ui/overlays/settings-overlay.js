@@ -58,6 +58,7 @@ export function createSettingsOverlay({
   onExportApp: _onExportApp,
   onExportWorkspace: _onExportWorkspace,
   onImportApp: _onImportApp,
+  pauseAutoSaveForAppRestore,
   onHelp: _onHelp,
   onUpdates: _onUpdates,
   onRoadmap: _onRoadmap,
@@ -3082,6 +3083,184 @@ export function createSettingsOverlay({
     container.appendChild(empty);
   }
 
+  function buildWorkspaceRestorePreflightContent(plan, file) {
+    const content = doc.createElement('div');
+    content.className = 'tp3d-resources-view';
+
+    const intro = doc.createElement('div');
+    intro.className = 'tp3d-import-warning';
+    const introIcon = doc.createElement('i');
+    introIcon.className = 'fa-solid fa-triangle-exclamation';
+    introIcon.setAttribute('aria-hidden', 'true');
+    const introText = doc.createElement('div');
+    introText.textContent =
+      `Replace the active workspace "${plan.destinationWorkspaceName || 'Current Workspace'}" ` +
+      'with this validated backup. Existing Cases, Load Plans, folders, and workspace category metadata will be replaced.';
+    intro.appendChild(introIcon);
+    intro.appendChild(introText);
+
+    const details = doc.createElement('div');
+    details.className = 'card tp3d-resources-card';
+    const detailsTitle = doc.createElement('div');
+    detailsTitle.className = 'tp3d-resources-card-title';
+    detailsTitle.textContent = 'Restore preflight';
+    details.appendChild(detailsTitle);
+
+    const rows = [
+      ['File', String((file && file.name) || 'Workspace Backup')],
+      ['Source workspace', plan.sourceWorkspaceName || 'Not provided'],
+      ['Destination workspace', plan.destinationWorkspaceName || 'Current Workspace'],
+      ['Schema', String(plan.schemaVersion)],
+      ['Created', plan.createdAt || 'Not provided (legacy backup)'],
+      ['Integrity errors', String(plan.integrityErrors.length)],
+    ];
+    rows.forEach(([label, value]) => {
+      const row = doc.createElement('div');
+      row.className = 'tp3d-settings-row';
+      const labelEl = doc.createElement('div');
+      labelEl.className = 'tp3d-settings-row-label';
+      labelEl.textContent = label;
+      const valueEl = doc.createElement('div');
+      valueEl.textContent = value;
+      row.appendChild(labelEl);
+      row.appendChild(valueEl);
+      details.appendChild(row);
+    });
+
+    const badges = doc.createElement('div');
+    badges.className = 'tp3d-import-badges';
+    [
+      ['Cases', plan.counts.cases],
+      ['Load Plans', plan.counts.packs],
+      ['Folders', plan.counts.folders],
+      ['Categories', plan.counts.categories],
+      ['Instances', plan.counts.instances],
+    ].forEach(([label, value]) => {
+      const badge = doc.createElement('div');
+      badge.className = 'badge';
+      badge.textContent = `${label}: ${value}`;
+      badges.appendChild(badge);
+    });
+
+    const placement = doc.createElement('div');
+    placement.className = 'card tp3d-resources-card';
+    const placementTitle = doc.createElement('div');
+    placementTitle.className = 'tp3d-resources-card-title';
+    placementTitle.textContent = 'Placement validation';
+    const placementText = doc.createElement('div');
+    placementText.className = 'muted tp3d-resources-card-sub';
+    placementText.textContent =
+      `${plan.placementsPreserved} preserved · ${plan.placementsRepaired} repaired · ` +
+      `${plan.placementsStaged} moved to staging`;
+    placement.appendChild(placementTitle);
+    placement.appendChild(placementText);
+
+    content.appendChild(intro);
+    content.appendChild(details);
+    content.appendChild(badges);
+    content.appendChild(placement);
+
+    if (plan.warnings.length) {
+      const warnings = doc.createElement('div');
+      warnings.className = 'card tp3d-resources-card';
+      const warningsTitle = doc.createElement('div');
+      warningsTitle.className = 'tp3d-resources-card-title';
+      warningsTitle.textContent = 'Migration warnings';
+      const list = doc.createElement('ul');
+      plan.warnings.forEach(warning => {
+        const item = doc.createElement('li');
+        item.textContent = warning;
+        list.appendChild(item);
+      });
+      warnings.appendChild(warningsTitle);
+      warnings.appendChild(list);
+      content.appendChild(warnings);
+    }
+    return content;
+  }
+
+  function showWorkspaceRestorePreflight(plan, file, originScope) {
+    UIComponents.showModal({
+      title: 'Replace Workspace from Backup?',
+      content: buildWorkspaceRestorePreflightContent(plan, file),
+      dismissible: false,
+      actions: [
+        { label: 'Cancel' },
+        {
+          label: 'Replace Active Workspace',
+          variant: 'danger',
+          onClick: () => {
+            try {
+              const currentRole = getRoleForOrg(plan.destinationWorkspaceId);
+              ImportExport.restoreWorkspaceImport(plan, {
+                StateStore,
+                Storage: CoreStorage,
+                originScope,
+                pauseAutoSave: pauseAutoSaveForAppRestore,
+                authorization: {
+                  role: currentRole,
+                  destinationWorkspaceId: plan.destinationWorkspaceId,
+                },
+              });
+              close();
+              UIComponents.showToast(
+                `Workspace restored: ${plan.counts.cases} Cases and ${plan.counts.packs} Load Plans.`,
+                'success'
+              );
+              return true;
+            } catch (error) {
+              UIComponents.showToast(
+                `Workspace restore failed: ${error && error.message ? error.message : error}`,
+                'error',
+                { duration: 7000 }
+              );
+              return false;
+            }
+          },
+        },
+      ],
+    });
+  }
+
+  async function handleWorkspaceRestoreFile(file, {
+    destinationWorkspaceId,
+    destinationWorkspaceName,
+    role,
+  }) {
+    if (!file) return;
+    const originScope = CoreStorage.captureScopeContext();
+    try {
+      ImportExport.assertWorkspaceRestoreAuthorized({
+        role,
+        destinationWorkspaceId,
+        originScope,
+      });
+      const name = String(file.name || '').toLowerCase();
+      if (!name.endsWith('.json') && !String(file.type || '').includes('json')) {
+        throw new Error('Choose a .json Workspace Backup file.');
+      }
+      if (Number.isFinite(Number(file.size))) {
+        ImportExport.assertWorkspaceBackupFileSize(Number(file.size));
+      }
+      const text = await file.text();
+      CoreStorage.assertScopeContextCurrent(originScope);
+      const imported = ImportExport.parseWorkspaceImportJSON(text);
+      const plan = ImportExport.planWorkspaceRestore(imported, {
+        currentState: StateStore.snapshot(),
+        destinationWorkspaceId,
+        destinationWorkspaceName,
+      });
+      CoreStorage.assertScopeContextCurrent(originScope);
+      showWorkspaceRestorePreflight(plan, file, originScope);
+    } catch (error) {
+      UIComponents.showToast(
+        `Workspace restore preflight failed: ${error && error.message ? error.message : error}`,
+        'error',
+        { duration: 7000 }
+      );
+    }
+  }
+
   function renderExportContent(container) {
     const wrap = doc.createElement('div');
     wrap.className = 'tp3d-resources-view';
@@ -3089,7 +3268,7 @@ export function createSettingsOverlay({
     const blurb = doc.createElement('div');
     blurb.className = 'muted tp3d-resources-text';
     blurb.textContent =
-      'Download local load plans, cases, folders, and preferences. Account login, workspace membership, billing, and payment data are not included.';
+      'Download the active workspace\'s local load plans, cases, and folders together with your local user preferences. Other account workspaces, login, membership, billing, and payment data are not included.';
 
     const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
     const meta = doc.createElement('div');
@@ -3129,20 +3308,6 @@ export function createSettingsOverlay({
     container.appendChild(wrap);
   }
 
-  function applyCaseDefaultColor(caseObj) {
-    const next = { ...(caseObj || {}) };
-    const existing = String(next.color || '').trim();
-    if (existing) return next;
-    const key =
-      String(next.category || 'default')
-        .trim()
-        .toLowerCase() || 'default';
-    const cats = (_Defaults && _Defaults.categories) || [];
-    const found = cats.find(c => c.key === key) || cats.find(c => c.key === 'default');
-    next.color = (found && found.color) || '#9ca3af';
-    return next;
-  }
-
   async function handleImportAppFile(file, resultsEl) {
     resultsEl.classList.add('is-visible');
     resultsEl.innerHTML = '';
@@ -3151,6 +3316,7 @@ export function createSettingsOverlay({
       UIComponents.showToast('No file selected', 'warning');
       return;
     }
+    const originScope = CoreStorage.captureScopeContext();
 
     const name = String(file.name || '');
     const lower = name.toLowerCase();
@@ -3190,26 +3356,19 @@ export function createSettingsOverlay({
     const ok = await UIComponents.confirm({
       title: 'Import App Backup?',
       message:
-        'This replaces local load plans, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. This cannot be undone.',
+        'This replaces the active workspace\'s local load plans, cases, and folders plus your local user preferences in this browser. Other account workspaces, login, membership, billing, and payment data are kept. This cannot be undone.',
       danger: true,
       okLabel: 'Replace Local App Data',
     });
     if (!ok) return;
 
     try {
-      const prev = StateStore.get();
-      const importedCases = (imported.caseLibrary || []).map(applyCaseDefaultColor);
-      const nextState = {
-        ...prev,
-        caseLibrary: importedCases,
-        packLibrary: imported.packLibrary,
-        preferences: imported.preferences,
-        currentPackId: null,
-        currentScreen: 'packs',
-        selectedInstanceIds: [],
-      };
-      StateStore.replace(nextState, { skipHistory: false });
-      CoreStorage.saveNow();
+      const { nextState } = ImportExport.restoreAppImport(imported, {
+        StateStore,
+        Storage: CoreStorage,
+        originScope,
+        pauseAutoSave: pauseAutoSaveForAppRestore,
+      });
       if (PreferencesManager && typeof PreferencesManager.applyTheme === 'function') {
         PreferencesManager.applyTheme(nextState.preferences.theme);
       }
@@ -3239,8 +3398,13 @@ export function createSettingsOverlay({
       casesBadge.className = 'badge tp3d-import-badge-info';
       casesBadge.textContent = 'Cases: ' + String((imported.caseLibrary || []).length);
 
+      const foldersBadge = doc.createElement('div');
+      foldersBadge.className = 'badge';
+      foldersBadge.textContent = 'Folders: ' + String((imported.folderLibrary || []).length);
+
       badges.appendChild(packsBadge);
       badges.appendChild(casesBadge);
+      badges.appendChild(foldersBadge);
 
       summary.appendChild(summaryTitle);
       summary.appendChild(summaryMeta);
@@ -3279,7 +3443,7 @@ export function createSettingsOverlay({
         <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
         <div>
           <span class="tp3d-import-warning-label">Warning:</span>
-          <span class="tp3d-import-warning-text"> Importing an app backup replaces local packs, cases, folders, and preferences in this browser. Your account login, workspace membership, billing, and payment data are kept. Export an app backup first.</span>
+          <span class="tp3d-import-warning-text"> Importing an app backup replaces the active workspace's local load plans, cases, and folders plus your local user preferences. Other account workspaces, login, membership, billing, and payment data are kept. Export an app backup first.</span>
         </div>
       </div>
     `;
@@ -3325,11 +3489,11 @@ export function createSettingsOverlay({
     const helpItems = [
       {
         heading: 'App Backup',
-        body: 'Exporting app backup downloads a JSON file with all load plans, cases, folders, and preferences. Importing an app backup replaces all local app data. Export an app backup before importing.',
+        body: 'App Backup carries the active workspace\'s local load plans, cases, and folders plus local user preferences. It does not include other account workspaces. Import replaces those local slices.',
       },
       {
         heading: 'Workspace Backup',
-        body: 'Exporting workspace backup downloads packs, cases, and folders for this workspace only. Workspace backup does not support import at this time.',
+        body: 'Workspace Backup carries one portable workspace business graph: Cases, Load Plans, folders, and referenced category display metadata. Owners and Admins can replace the active workspace from a validated backup.',
       },
       {
         heading: 'Load Plan JSON',
@@ -5958,8 +6122,9 @@ export function createSettingsOverlay({
             advancedCard.appendChild(advancedToggle);
             advancedCard.appendChild(advancedBody);
 
-            // A. Workspace Backup (owner/admin only)
-            if (isOwnerOrAdmin && typeof _onExportWorkspace === 'function') {
+            // A. Workspace Backup / Replace Restore (owner/admin only; members
+            // see the permission boundary rather than a missing capability).
+            if (typeof _onExportWorkspace === 'function') {
               const exportSection = doc.createElement('div');
               exportSection.className = 'tp3d-settings-advanced-section';
 
@@ -5987,14 +6152,44 @@ export function createSettingsOverlay({
               exportWsBtn.type = 'button';
               exportWsBtn.className = 'btn';
               exportWsBtn.textContent = 'Export Workspace Backup';
+              exportWsBtn.disabled = !isOwnerOrAdmin;
               exportWsBtn.addEventListener('click', () => {
                 const wsName = orgData && orgData.name ? String(orgData.name) : '';
-                _onExportWorkspace(wsName);
+                _onExportWorkspace(wsName, leaveOrgId);
+              });
+
+              const restoreWsBtn = doc.createElement('button');
+              restoreWsBtn.type = 'button';
+              restoreWsBtn.className = 'btn btn-danger';
+              restoreWsBtn.textContent = 'Restore Workspace Backup';
+              restoreWsBtn.disabled = !isOwnerOrAdmin;
+              const restoreInput = doc.createElement('input');
+              restoreInput.type = 'file';
+              restoreInput.accept = '.json,application/json';
+              restoreInput.hidden = true;
+              restoreWsBtn.addEventListener('click', () => restoreInput.click());
+              restoreInput.addEventListener('change', () => {
+                const file = restoreInput.files && restoreInput.files[0];
+                restoreInput.value = '';
+                if (!file) return;
+                handleWorkspaceRestoreFile(file, {
+                  destinationWorkspaceId: leaveOrgId,
+                  destinationWorkspaceName: orgData && orgData.name ? String(orgData.name) : '',
+                  role: orgRole,
+                });
               });
 
               exportRow.appendChild(exportCopy);
               exportRow.appendChild(exportWsBtn);
+              exportRow.appendChild(restoreWsBtn);
+              exportRow.appendChild(restoreInput);
               exportSection.appendChild(exportRow);
+              if (!isOwnerOrAdmin) {
+                const permissionNote = doc.createElement('div');
+                permissionNote.className = 'muted tp3d-settings-meta tp3d-settings-mt-sm';
+                permissionNote.textContent = 'Only workspace Owners and Admins can export or replace Workspace Backup data.';
+                exportSection.appendChild(permissionNote);
+              }
               advancedBody.appendChild(exportSection);
             }
 

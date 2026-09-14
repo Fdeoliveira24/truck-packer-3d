@@ -99,6 +99,7 @@ export function createPacksScreen({
     const bulkActionsEl = /** @type {HTMLElement} */ (document.getElementById('packs-actions-bulk'));
     const bulkCountEl = /** @type {HTMLElement} */ (document.getElementById('packs-selected-count'));
     const btnBulkDelete = document.getElementById('btn-packs-bulk-delete');
+    const btnBulkExport = document.getElementById('btn-packs-bulk-export');
 
     const UNFILED_FOLDER_ID = '__unfiled__';
     const FOLDERS_DROPDOWN_ROLE = 'packs-folders';
@@ -472,6 +473,7 @@ export function createPacksScreen({
         });
       selectAllEl.addEventListener('change', handleSelectAll);
       btnBulkDelete.addEventListener('click', handleBulkDelete);
+      btnBulkExport && btnBulkExport.addEventListener('click', handleBulkExport);
       initToolbarDropdownCoordinator();
       initListHeaderSort();
       updateViewButtons();
@@ -1315,6 +1317,20 @@ export function createPacksScreen({
         bulkActionsEl.style.display = 'none';
         selectAllEl.checked = false;
         selectAllEl.indeterminate = false;
+      }
+    }
+
+    function handleBulkExport() {
+      const count = selectedIds.size;
+      if (count === 0) return;
+      const idsToExport = Array.from(selectedIds);
+      const packsToExport = idsToExport.map(id => PackLibrary.getById(id)).filter(Boolean);
+      if (!packsToExport.length) return;
+      try {
+        ImportExport.downloadPackBatchExportJSON(packsToExport);
+        UIComponents.showToast('Download started', 'success');
+      } catch (err) {
+        UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
       }
     }
 

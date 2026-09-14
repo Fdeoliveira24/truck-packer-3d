@@ -186,7 +186,7 @@ test('CASE-NOTES-TERM active Case surfaces and PDF use Case Instructions/Notes w
     'packed-instance terminology remains Item Notes');
 });
 
-test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lint, hydration, and preview-owner changes', async () => {
+test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lint, hydration, preview, and recovery-owner changes', async () => {
   const app = await fs.readFile(appPath, 'utf8');
   assert.match(app, /\['Case Instructions\/Notes', entry\.caseNotes\]/);
   const diff = execFileSync('git', ['diff', '--unified=0', '--', 'src/app.js'], {
@@ -205,6 +205,12 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lin
     'const getActiveWorkspaceKey = () => (',
     'const AutoPackPreviewScheduler = createPackPreviewScheduler({',
     'AutoPackPreviewScheduler.schedule()',
+    'pauseAutoSaveForAppRestore',
+    "Download the active workspace\\'s local load plans",
+    "function openExportWorkspaceModal(workspaceName, workspaceId = '')",
+    'const filename = `${slugName}-backup-',
+    'ImportExport.buildWorkspaceExportJSON(safeName, workspaceId)',
+    "UIComponents.showToast('Workspace Backup download started'",
   ];
   const guardedDiff = diff
     .split(/(?=^@@)/m)
@@ -216,7 +222,8 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lin
   if (changedLines.length === 0) return;
   // This exact allowlist keeps the earlier ESLint 10 dead-store migration and
   // the approved Quantity Controls PDF checklist aggregation narrowly scoped.
-  // Runtime hydration ownership is covered by its dedicated behavioral matrix.
+  // Runtime hydration and restore-autosave ownership are covered by their
+  // dedicated behavioral matrices.
   assert.deepEqual(changedLines, [
     '-      let enabled = false;',
     '+      let enabled;',
@@ -432,7 +439,9 @@ test('LOAD-PLAN-TERM-8 persisted and exchanged schema keys are unchanged', async
   // Export payload keys survive a real round trip.
   const json = IE.buildPackExportJSON(pack);
   const parsed = JSON.parse(json);
-  const payloadPack = parsed.pack || parsed;
+  // New exports use the versioned Cargo Planner envelope (data.pack); legacy
+  // exports and a raw pack object are still accepted for this key-name check.
+  const payloadPack = (parsed.data && parsed.data.pack) || parsed.pack || parsed;
   assert.ok(payloadPack, 'the export payload must still expose a pack object');
   assert.equal(payloadPack.id, 'lp-schema-1', 'exported pack.id must be unchanged');
   assert.equal(payloadPack.notes, 'pack level note', 'exported pack.notes must be unchanged');
@@ -445,7 +454,11 @@ test('LOAD-PLAN-TERM-8 persisted and exchanged schema keys are unchanged', async
   const ieSrc = await fs.readFile(importExportPath, 'utf8');
   assert.match(ieSrc, /exportType !== 'pack-batch'/, 'the pack-batch exportType discriminator must be unchanged');
   assert.match(ieSrc, /Array\.isArray\(parsed\.packs\)/, 'the packs array key must be unchanged');
-  assert.match(ieSrc, /Missing packLibrary in workspace export/, 'the packLibrary key must be unchanged');
+  const workspacePayload = IE.parseWorkspaceImportJSON(JSON.stringify({
+    exportType: 'workspace',
+    data: { caseLibrary: [], packLibrary: [], folderLibrary: [] },
+  }));
+  assert.ok(Array.isArray(workspacePayload.packLibrary), 'the packLibrary key must be unchanged');
 });
 
 test('LOAD-PLAN-TERM-9 only the approved loadPlanNumber field exists; no parallel LoadPlan architecture was introduced', async () => {

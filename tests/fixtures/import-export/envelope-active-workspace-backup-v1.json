@@ -1,0 +1,84 @@
+{
+  "format": "cargo-planner",
+  "kind": "active-workspace-backup",
+  "schemaVersion": 1,
+  "createdAt": "2026-01-15T18:30:00.000Z",
+  "appVersion": "1.0.0",
+  "units": { "length": "in", "weight": "lb" },
+  "scope": { "sourceWorkspaceId": "org-fixture-1", "sourceWorkspaceName": "Fixture Workspace" },
+  "data": {
+    "caseLibrary": [
+      {
+        "id": "case-envelope-1",
+        "name": "Line Array Case",
+        "itemCode": "LA-001",
+        "manufacturer": "L-Acoustics",
+        "category": "audio",
+        "dimensions": { "length": 48, "width": 24, "height": 32 },
+        "weight": 125,
+        "shape": "box",
+        "stackable": true,
+        "maxStackCount": 0,
+        "orientationLock": "upright",
+        "noStackOnTop": false,
+        "isPallet": false,
+        "maxPalletWeight": 0,
+        "hazmatClass": null,
+        "laneItem": null,
+        "loadPriority": 0,
+        "mustLoadLast": false,
+        "mustUnloadFirst": false,
+        "stopGroup": "",
+        "keepTogetherGroup": "",
+        "canFlip": false,
+        "notes": "Handle with care; standard rigging instructions apply.",
+        "color": "#f59e0b",
+        "createdAt": 1700000000000,
+        "updatedAt": 1700000000000
+      }
+    ],
+    "packLibrary": [
+      {
+        "id": "pack-envelope-1",
+        "title": "Main Stage Load Plan",
+        "loadPlanNumber": "LP-ENVELOPE1",
+        "customerReference": "PO-4471",
+        "client": "Acme Touring",
+        "projectName": "Summer Run",
+        "drawnBy": "J. Rivera",
+        "notes": "Load rear-to-front; keep audio together.",
+        "folderId": null,
+        "truck": { "length": 636, "width": 102, "height": 98, "shapeMode": "rect", "shapeConfig": {} },
+        "cases": [
+          {
+            "id": "instance-envelope-1",
+            "caseId": "case-envelope-1",
+            "transform": {
+              "position": { "x": 10, "y": 16, "z": 0 },
+              "rotation": { "x": 0, "y": 0, "z": 0 },
+              "scale": { "x": 1, "y": 1, "z": 1 }
+            },
+            "hidden": false,
+            "groupId": null,
+            "orientationLocked": false,
+            "lockedRotation": null,
+            "deliverySequence": null,
+            "placement": "staged",
+            "instanceNotes": "Load last for quick offload at venue B."
+          }
+        ],
+        "groups": [],
+        "createdAt": 1700000000000,
+        "lastEdited": 1700000000000
+      }
+    ],
+    "folderLibrary": [],
+    "preferences": {
+      "theme": "light",
+      "categories": [
+        { "key": "audio", "name": "Audio Gear", "color": "#f59e0b" }
+      ]
+    },
+    "currentPackId": "pack-envelope-1"
+  }
+}

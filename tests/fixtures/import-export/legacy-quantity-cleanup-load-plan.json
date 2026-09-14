@@ -1,0 +1,31 @@
+{
+  "pack": {
+    "id": "pack-quantity-legacy-1",
+    "title": "Legacy Quantity Load Plan",
+    "loadPlanNumber": "LP-QTYLEGACY1",
+    "truck": { "length": 240, "width": 96, "height": 96 },
+    "cases": [
+      {
+        "id": "instance-quantity-legacy-1",
+        "caseId": "case-quantity-legacy-1",
+        "transform": {
+          "position": { "x": 0, "y": 5, "z": 0 },
+          "rotation": { "x": 0, "y": 0, "z": 0 },
+          "scale": { "x": 1, "y": 1, "z": 1 }
+        }
+      }
+    ],
+    "caseRequirements": {
+      "case-quantity-legacy-1": { "target": 5, "missing": 4 }
+    }
+  },
+  "bundledCases": [
+    {
+      "id": "case-quantity-legacy-1",
+      "name": "Quantity-Era Case",
+      "category": "default",
+      "dimensions": { "length": 18, "width": 18, "height": 18 },
+      "weight": 22
+    }
+  ]
+}

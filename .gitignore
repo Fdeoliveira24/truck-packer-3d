@@ -63,6 +63,7 @@ build/
 *.env.local
 supabase/functions/.env.local
 .claude/
+.mcp.json
 
 # Local knowledge graph / Obsidian tooling
 .obsidian/

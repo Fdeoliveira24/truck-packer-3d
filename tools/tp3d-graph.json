@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-03-05T04:24:49.071Z",
+  "generatedAt": "2026-09-14T05:52:54.665Z",
   "root": ".",
-  "nodeCount": 68,
-  "edgeCount": 109,
+  "nodeCount": 107,
+  "edgeCount": 221,
   "indexHtml": {
     "scripts": [
       {
@@ -24,17 +24,12 @@
         "order": 3,
         "src": "https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.48.1/dist/umd/supabase.min.js",
         "type": "classic"
-      },
-      {
-        "order": 4,
-        "src": "src/app.js",
-        "type": "module"
       }
     ],
     "stylesheets": [
       "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css",
       "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
-      "styles/main.css"
+      "styles/main.css?v=20260808-editor-inspector-refinement"
     ],
     "vendors": [
       {
@@ -63,23 +58,24 @@
       }
     ],
     "globals": {
-      "__TP3D_SUPABASE": "(set inline)",
-      "__TP3D_STRIPE_PRICE_MONTHLY": "price_1Sz4prG4h8YnGsk4KLgYPRKD",
-      "__TP3D_STRIPE_PRICE_YEARLY": "price_1Sz5GfG4h8YnGsk4sqWGQtAs"
+      "__TP3D_SUPABASE": "(set inline)"
     }
   },
   "hot": {
     "billing": [
       "src/app.js",
       "src/data/services/billing.service.js",
+      "src/services/autopack-engine.js",
+      "src/services/billing-service.js",
+      "src/services/organization-service.js",
       "src/ui/overlays/settings-overlay.js"
     ],
     "auth": [
       "src/app.js",
       "src/core/supabase-client.js",
       "src/data/services/billing.service.js",
-      "src/debugger-old.js",
       "src/debugger.js",
+      "src/services/auth-service.js",
       "src/ui/overlays/account-overlay.js",
       "src/ui/overlays/auth-overlay.js",
       "src/ui/overlays/settings-overlay.js"
@@ -94,16 +90,18 @@
       "src/app.js",
       "src/core/supabase-client.js",
       "src/data/services/billing.service.js",
-      "src/debugger-old.js",
       "src/debugger.js",
+      "src/services/autopack-engine.js",
+      "src/services/billing-service.js",
+      "src/services/organization-service.js",
       "src/types/global.d.ts",
       "src/ui/overlays/settings-overlay.js"
     ],
     "hiddenTabGuard": [
       "src/app.js",
       "src/core/supabase-client.js",
-      "src/debugger-old.js",
       "src/debugger.js",
+      "src/services/billing-service.js",
       "src/ui/overlays/settings-overlay.js"
     ],
     "storage": [
@@ -114,23 +112,28 @@
       "src/core/supabase-client.js",
       "src/core/utils/index.js",
       "src/data/services/billing.service.js",
-      "src/debugger-old.js",
       "src/debugger.js",
       "src/screens/editor-screen.js",
+      "src/services/billing-service.js",
+      "src/services/organization-service.js",
       "src/ui/overlays/settings-overlay.js"
     ],
     "churnRisk": [
       {
         "id": "src/app.js",
-        "score": 98
+        "score": 78
       },
       {
         "id": "src/core/supabase-client.js",
         "score": 53
       },
       {
+        "id": "src/services/billing-service.js",
+        "score": 46
+      },
+      {
         "id": "src/ui/overlays/settings-overlay.js",
-        "score": 51
+        "score": 45
       },
       {
         "id": "src/data/services/billing.service.js",
@@ -141,32 +144,60 @@
         "score": 17
       },
       {
-        "id": "src/debugger-old.js",
-        "score": 14
+        "id": "src/services/auth-service.js",
+        "score": 12
+      },
+      {
+        "id": "src/services/organization-service.js",
+        "score": 12
+      },
+      {
+        "id": "src/services/autopack-engine.js",
+        "score": 7
       },
       {
         "id": "src/ui/overlays/auth-overlay.js",
         "score": 6
-      },
-      {
-        "id": "src/ui/overlays/account-overlay.js",
-        "score": 5
-      },
-      {
-        "id": "src/core/session.js",
-        "score": 3
-      },
-      {
-        "id": "src/core/storage.js",
-        "score": 3
       }
     ]
   },
   "nodes": {
+    "src/account-switcher.js": {
+      "id": "src/account-switcher.js",
+      "path": "src/account-switcher.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "click"
+        ]
+      },
+      "factory": {
+        "name": "createAccountSwitcher",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
     "src/app.js": {
       "id": "src/app.js",
       "path": "src/app.js",
-      "churnRisk": 98,
+      "churnRisk": 78,
       "signals": {
         "auth": [
           "onAuthStateChange",
@@ -185,14 +216,9 @@
         ],
         "billing": [
           "refreshBilling()",
-          "fetchBillingStatus()",
           "clearBillingState()",
           "getBillingState()",
-          "createCheckoutSession()",
-          "createPortalSession()",
           "applyAccessGateFromBilling()",
-          "_billingRefreshQueued",
-          "BILLING_THROTTLE_MS",
           "billingDebugLog()"
         ],
         "bundle": [
@@ -203,21 +229,19 @@
         "orgChange": [
           "tp3d:org-changed",
           "applyOrgContextFromBundle()",
-          "getActiveOrgId()",
           "getActiveOrgIdForBilling()",
           "OrgContext",
           "normalizeOrgId()"
         ],
         "hiddenTabGuard": [
           "document.hidden",
-          "_billingRefreshQueued",
           "visibilitychange",
           "requestAuthRefresh()",
           "rehydrateAuthState()"
         ],
         "tp3dEvents": {
           "emit": [
-            "tp3d:org-changed",
+            "tp3d:org-access-lost",
             "tp3d:workspace-ready"
           ],
           "listen": [
@@ -226,9 +250,10 @@
             "tp3d:org-changed"
           ],
           "referenced": [
-            "tp3d:billing:lock:",
-            "tp3d:billing:fresh:",
             "tp3d:active-org-id",
+            "tp3d:org-context-sync",
+            "tp3d:workspace-switch-state-sync",
+            "tp3d:org-context-tab-id",
             "tp3d:auth-user-switch-reload",
             "tp3d:pending_invite_token",
             "tp3d:billing:status:"
@@ -237,10 +262,8 @@
         "storage": [
           "localStorage.setItem()",
           "localStorage.getItem()",
-          "localStorage.removeItem()",
           "sessionStorage",
-          "window.storage-listener",
-          "key:tp3d:active-org-id"
+          "window.storage-listener"
         ],
         "singleFlight": [
           "SingleFlight",
@@ -248,17 +271,19 @@
           "clearTimeout()"
         ],
         "listeners": [
+          "focus",
+          "visibilitychange",
+          "error",
+          "unhandledrejection",
           "tp3d:auth-signed-out",
           "online",
           "offline",
-          "click",
-          "resize",
+          "input",
           "keydown",
+          "click",
           "tp3d:workspace-ready",
-          "visibilitychange",
           "storage",
           "tp3d:org-changed",
-          "focus",
           "DOMContentLoaded"
         ]
       },
@@ -266,13 +291,24 @@
       "imports": [
         "src/debugger.js",
         "src/ui/system-overlay.js",
+        "src/ui/error-overlay.js",
+        "src/router.js",
         "src/ui/ui-components.js",
+        "src/ui/truck-change-controller.js",
+        "src/ui/keyboard-manager.js",
+        "src/ui/app-shell.js",
+        "src/ui/recoverable-error-overlay.js",
+        "src/core/operation-lifecycle.js",
         "src/ui/table-footer.js",
         "src/data/trailer-presets.js",
         "src/editor/scene-runtime.js",
+        "src/editor/trailer-geometry.js",
         "src/screens/editor-screen.js",
         "src/screens/packs-screen.js",
         "src/screens/cases-screen.js",
+        "src/screens/settings-screen.js",
+        "src/screens/updates-screen.js",
+        "src/screens/roadmap-screen.js",
         "src/core/utils/index.js",
         "src/core/browser.js",
         "src/core/defaults.js",
@@ -283,6 +319,7 @@
         "src/services/case-library.js",
         "src/services/pack-library.js",
         "src/services/import-export.js",
+        "src/services/autopack-engine.js",
         "src/services/preferences-manager.js",
         "src/ui/overlays/settings-overlay.js",
         "src/ui/overlays/account-overlay.js",
@@ -297,7 +334,11 @@
         "src/ui/overlays/auth-overlay.js",
         "src/core/events.js",
         "src/core/version.js",
-        "src/data/services/billing.service.js"
+        "src/data/services/billing.service.js",
+        "src/services/billing-service.js",
+        "src/services/organization-service.js",
+        "src/services/auth-service.js",
+        "src/account-switcher.js"
       ],
       "externalImports": [
         "));\n    const xlsx = document.createElement("
@@ -364,11 +405,37 @@
       "externalImports": [],
       "importedBy": [
         "src/data/services/analytics.service.js",
-        "src/data/services/billing.service.js",
         "src/data/services/cases.service.js",
         "src/data/services/packs.service.js",
         "src/data/services/users.service.js"
       ]
+    },
+    "src/bootstrap/three-runtime.js": {
+      "id": "src/bootstrap/three-runtime.js",
+      "path": "src/bootstrap/three-runtime.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [
+        "three",
+        "three/addons/controls/OrbitControls.js"
+      ],
+      "importedBy": []
     },
     "src/config/features.js": {
       "id": "src/config/features.js",
@@ -515,6 +582,79 @@
         "src/core/utils/index.js"
       ]
     },
+    "src/core/business-identity.js": {
+      "id": "src/core/business-identity.js",
+      "path": "src/core/business-identity.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/core/defaults.js",
+        "src/core/normalizer.js",
+        "src/core/storage.js",
+        "src/data/models/case.model.js",
+        "src/data/models/pack.model.js",
+        "src/data/services/cases.service.js",
+        "src/data/services/packs.service.js",
+        "src/screens/cases-screen.js",
+        "src/screens/packs-screen.js",
+        "src/services/case-library.js",
+        "src/services/import-export.js",
+        "src/services/pack-library.js",
+        "src/ui/overlays/case-modal.js"
+      ]
+    },
+    "src/core/cargo-canonical.js": {
+      "id": "src/core/cargo-canonical.js",
+      "path": "src/core/cargo-canonical.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/core/orientation.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/core/normalizer.js",
+        "src/data/models/case.model.js",
+        "src/services/autopack-engine.js",
+        "src/services/autopack-item-builder.js",
+        "src/services/autopack-solver.js",
+        "src/services/case-library.js",
+        "src/services/import-export.js",
+        "src/services/pack-library.js"
+      ]
+    },
     "src/core/constants.js": {
       "id": "src/core/constants.js",
       "path": "src/core/constants.js",
@@ -564,15 +704,20 @@
       },
       "factory": null,
       "imports": [
-        "src/core/browser.js"
+        "src/core/browser.js",
+        "src/core/business-identity.js"
       ],
-      "externalImports": [],
+      "externalImports": [
+        "dimensions"
+      ],
       "importedBy": [
         "src/app.js",
         "src/core/normalizer.js",
+        "src/core/storage.js",
         "src/services/case-library.js",
         "src/services/category-service.js",
-        "src/services/import-export.js"
+        "src/services/import-export.js",
+        "src/ui/overlays/import-cases-dialog.js"
       ]
     },
     "src/core/dev/dev-helpers.js": {
@@ -660,6 +805,33 @@
         "src/services/preferences-manager.js"
       ]
     },
+    "src/core/import-schema.js": {
+      "id": "src/core/import-schema.js",
+      "path": "src/core/import-schema.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/core/storage.js",
+        "src/services/import-export.js"
+      ]
+    },
     "src/core/normalizer.js": {
       "id": "src/core/normalizer.js",
       "path": "src/core/normalizer.js",
@@ -683,12 +855,110 @@
       "imports": [
         "src/core/utils/index.js",
         "src/core/defaults.js",
-        "src/core/browser.js"
+        "src/core/browser.js",
+        "src/core/oriented-dims.js",
+        "src/core/cargo-canonical.js",
+        "src/core/business-identity.js"
       ],
       "externalImports": [],
       "importedBy": [
+        "src/core/storage.js",
+        "src/services/import-export.js",
         "src/services/pack-library.js",
         "src/services/preferences-manager.js"
+      ]
+    },
+    "src/core/operation-lifecycle.js": {
+      "id": "src/core/operation-lifecycle.js",
+      "path": "src/core/operation-lifecycle.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createOperationLifecycle",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/core/orientation.js": {
+      "id": "src/core/orientation.js",
+      "path": "src/core/orientation.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/core/cargo-canonical.js",
+        "src/packing-core/orientation.js",
+        "src/services/autopack-item-builder.js",
+        "src/services/autopack-solver.js",
+        "src/services/case-rule-summary.js",
+        "src/services/import-export.js",
+        "src/services/pack-library.js",
+        "src/ui/overlays/case-modal.js"
+      ]
+    },
+    "src/core/oriented-dims.js": {
+      "id": "src/core/oriented-dims.js",
+      "path": "src/core/oriented-dims.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/core/normalizer.js",
+        "src/packing-core/orientation.js",
+        "src/services/autopack-engine.js",
+        "src/services/autopack-solver.js",
+        "src/services/pack-library.js"
       ]
     },
     "src/core/session.js": {
@@ -753,6 +1023,8 @@
         "src/core/storage.js",
         "src/services/case-library.js",
         "src/services/category-service.js",
+        "src/services/folder-library.js",
+        "src/services/import-export.js",
         "src/services/pack-library.js",
         "src/services/preferences-manager.js",
         "src/ui/overlays/settings-overlay.js"
@@ -817,16 +1089,25 @@
       "imports": [
         "src/core/version.js",
         "src/core/utils/index.js",
+        "src/core/defaults.js",
         "src/core/browser.js",
         "src/core/state-store.js",
-        "src/core/events.js"
+        "src/core/normalizer.js",
+        "src/core/business-identity.js",
+        "src/core/events.js",
+        "src/core/import-schema.js"
       ],
       "externalImports": [],
       "importedBy": [
         "src/app.js",
         "src/auth/session.js",
         "src/data/repositories/local.repository.js",
+        "src/screens/cases-screen.js",
+        "src/screens/editor-screen.js",
+        "src/screens/packs-screen.js",
         "src/services/import-export.js",
+        "src/ui/overlays/import-cases-dialog.js",
+        "src/ui/overlays/import-pack-dialog.js",
         "src/ui/overlays/settings-overlay.js"
       ]
     },
@@ -938,9 +1219,11 @@
         "src/core/storage.js",
         "src/data/models/pack.model.js",
         "src/services/case-library.js",
+        "src/services/folder-library.js",
         "src/services/import-export.js",
         "src/services/pack-library.js",
         "src/ui/overlays/account-overlay.js",
+        "src/ui/overlays/notes-overlay.js",
         "src/ui/overlays/settings-overlay.js"
       ]
     },
@@ -969,7 +1252,8 @@
       ],
       "externalImports": [],
       "importedBy": [
-        "src/data/models/case.model.js"
+        "src/data/models/case.model.js",
+        "src/packing-core/space-utilization-engine.js"
       ]
     },
     "src/core/version.js": {
@@ -1022,7 +1306,9 @@
       "factory": null,
       "imports": [
         "src/utils/uuid.js",
-        "src/core/utils.js"
+        "src/core/utils.js",
+        "src/core/cargo-canonical.js",
+        "src/core/business-identity.js"
       ],
       "externalImports": [],
       "importedBy": [
@@ -1076,7 +1362,8 @@
       "imports": [
         "src/utils/uuid.js",
         "src/core/constants.js",
-        "src/core/utils/index.js"
+        "src/core/utils/index.js",
+        "src/core/business-identity.js"
       ],
       "externalImports": [],
       "importedBy": [
@@ -1236,7 +1523,6 @@
         "returns": []
       },
       "imports": [
-        "src/auth/session.js",
         "src/core/supabase-client.js"
       ],
       "externalImports": [],
@@ -1268,7 +1554,8 @@
       "imports": [
         "src/auth/session.js",
         "src/data/repositories/local.repository.js",
-        "src/data/models/case.model.js"
+        "src/data/models/case.model.js",
+        "src/core/business-identity.js"
       ],
       "externalImports": [],
       "importedBy": []
@@ -1344,7 +1631,8 @@
       "imports": [
         "src/auth/session.js",
         "src/data/repositories/local.repository.js",
-        "src/data/models/pack.model.js"
+        "src/data/models/pack.model.js",
+        "src/core/business-identity.js"
       ],
       "externalImports": [],
       "importedBy": []
@@ -1398,64 +1686,9 @@
       "imports": [],
       "externalImports": [],
       "importedBy": [
-        "src/app.js"
+        "src/app.js",
+        "src/services/pack-library.js"
       ]
-    },
-    "src/debugger-old.js": {
-      "id": "src/debugger-old.js",
-      "path": "src/debugger-old.js",
-      "churnRisk": 14,
-      "signals": {
-        "auth": [
-          "onAuthStateChange",
-          "getSessionSingleFlight"
-        ],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [
-          "tp3d:org-changed"
-        ],
-        "hiddenTabGuard": [
-          "document.hidden",
-          "visibilitychange"
-        ],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [
-            "tp3d:auth-signed-out",
-            "tp3d:org-changed",
-            "tp3d:auth-error"
-          ],
-          "referenced": []
-        },
-        "storage": [
-          "localStorage.setItem()",
-          "localStorage.getItem()",
-          "localStorage.removeItem()",
-          "window.storage-listener"
-        ],
-        "singleFlight": [
-          "SingleFlight",
-          "setTimeout()"
-        ],
-        "listeners": [
-          "error",
-          "unhandledrejection",
-          "tp3d:auth-signed-out",
-          "tp3d:org-changed",
-          "tp3d:auth-error",
-          "click",
-          "visibilitychange",
-          "focus",
-          "blur",
-          "storage",
-          "hashchange"
-        ]
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": []
     },
     "src/debugger.js": {
       "id": "src/debugger.js",
@@ -1580,6 +1813,36 @@
         "src/app.js"
       ]
     },
+    "src/editor/trailer-geometry.js": {
+      "id": "src/editor/trailer-geometry.js",
+      "path": "src/editor/trailer-geometry.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createTrailerGeometry",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
     "src/features/editor/model-loader.js": {
       "id": "src/features/editor/model-loader.js",
       "path": "src/features/editor/model-loader.js",
@@ -1603,6 +1866,367 @@
       "imports": [],
       "externalImports": [],
       "importedBy": []
+    },
+    "src/packing-core/budget.js": {
+      "id": "src/packing-core/budget.js",
+      "path": "src/packing-core/budget.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createSolveBudget",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/services/autopack-engine.js",
+        "src/services/autopack-solver.js"
+      ]
+    },
+    "src/packing-core/domain.js": {
+      "id": "src/packing-core/domain.js",
+      "path": "src/packing-core/domain.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/packing-core/space-model.js"
+      ]
+    },
+    "src/packing-core/explain.js": {
+      "id": "src/packing-core/explain.js",
+      "path": "src/packing-core/explain.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/packing-core/solution.js",
+        "src/services/autopack-solver.js"
+      ]
+    },
+    "src/packing-core/index.js": {
+      "id": "src/packing-core/index.js",
+      "path": "src/packing-core/index.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/packing-core/domain.js",
+        "src/packing-core/space-model.js",
+        "src/packing-core/validation.js",
+        "src/packing-core/wheel-well-model.js",
+        "src/packing-core/repair.js",
+        "src/packing-core/budget.js",
+        "src/packing-core/retention-model.js",
+        "src/packing-core/explain.js",
+        "src/packing-core/solution.js",
+        "src/packing-core/orientation.js"
+      ],
+      "externalImports": [],
+      "importedBy": []
+    },
+    "src/packing-core/orientation.js": {
+      "id": "src/packing-core/orientation.js",
+      "path": "src/packing-core/orientation.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/core/orientation.js",
+        "src/core/oriented-dims.js",
+        "src/services/autopack-solver.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js"
+      ]
+    },
+    "src/packing-core/repair.js": {
+      "id": "src/packing-core/repair.js",
+      "path": "src/packing-core/repair.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/services/pack-library.js"
+      ]
+    },
+    "src/packing-core/retention-model.js": {
+      "id": "src/packing-core/retention-model.js",
+      "path": "src/packing-core/retention-model.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/packing-core/validation.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/services/autopack-solver.js"
+      ]
+    },
+    "src/packing-core/solution.js": {
+      "id": "src/packing-core/solution.js",
+      "path": "src/packing-core/solution.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/services/autopack-solver.js",
+        "src/packing-core/wheel-well-model.js",
+        "src/packing-core/explain.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/services/autopack-engine.js"
+      ]
+    },
+    "src/packing-core/space-model.js": {
+      "id": "src/packing-core/space-model.js",
+      "path": "src/packing-core/space-model.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/services/pack-library.js",
+        "src/packing-core/wheel-well-model.js",
+        "src/packing-core/domain.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js"
+      ]
+    },
+    "src/packing-core/space-utilization-engine.js": {
+      "id": "src/packing-core/space-utilization-engine.js",
+      "path": "src/packing-core/space-utilization-engine.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/core/utils.js",
+        "src/packing-core/wheel-well-model.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/services/pack-library.js"
+      ]
+    },
+    "src/packing-core/validation.js": {
+      "id": "src/packing-core/validation.js",
+      "path": "src/packing-core/validation.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/packing-core/retention-model.js",
+        "src/packing-core/wheel-well-model.js",
+        "src/services/autopack-solver.js",
+        "src/services/pack-library.js"
+      ]
+    },
+    "src/packing-core/wheel-well-model.js": {
+      "id": "src/packing-core/wheel-well-model.js",
+      "path": "src/packing-core/wheel-well-model.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/packing-core/validation.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/index.js",
+        "src/packing-core/solution.js",
+        "src/packing-core/space-model.js",
+        "src/packing-core/space-utilization-engine.js",
+        "src/services/autopack-solver.js",
+        "src/services/pack-library.js"
+      ]
     },
     "src/router.js": {
       "id": "src/router.js",
@@ -1628,7 +2252,9 @@
       "factory": null,
       "imports": [],
       "externalImports": [],
-      "importedBy": []
+      "importedBy": [
+        "src/app.js"
+      ]
     },
     "src/screens/cases-screen.js": {
       "id": "src/screens/cases-screen.js",
@@ -1647,13 +2273,14 @@
         },
         "storage": [],
         "singleFlight": [
-          "debounce()"
+          "debounce()",
+          "setTimeout()"
         ],
         "listeners": [
-          "input",
+          "keydown",
           "click",
-          "change",
-          "keydown"
+          "input",
+          "change"
         ]
       },
       "factory": {
@@ -1661,7 +2288,13 @@
         "params": [],
         "returns": []
       },
-      "imports": [],
+      "imports": [
+        "src/ui/overlays/case-modal.js",
+        "src/ui/overlays/notes-overlay.js",
+        "src/services/case-rule-summary.js",
+        "src/core/business-identity.js",
+        "src/core/storage.js"
+      ],
       "externalImports": [],
       "importedBy": [
         "src/app.js"
@@ -1691,17 +2324,18 @@
           "setTimeout()"
         ],
         "listeners": [
+          "change",
           "pointermove",
           "pointerdown",
           "pointerup",
           "dblclick",
           "keydown",
-          "input",
           "click",
+          "input",
           "resize",
           "orientationchange",
           "dragstart",
-          "change",
+          "blur",
           "dragover",
           "drop"
         ]
@@ -1712,7 +2346,14 @@
         "returns": []
       },
       "imports": [
-        "src/editor/geometry-factory.js"
+        "src/editor/geometry-factory.js",
+        "src/ui/overlays/case-modal.js",
+        "src/ui/overlays/notes-overlay.js",
+        "src/ui/space-utilization-gauge.js",
+        "src/core/storage.js",
+        "src/services/autopack-engine.js",
+        "src/services/pack-library.js",
+        "src/services/case-rule-summary.js"
       ],
       "externalImports": [],
       "importedBy": [
@@ -1736,17 +2377,332 @@
         },
         "storage": [],
         "singleFlight": [
-          "debounce()"
+          "debounce()",
+          "setTimeout()"
         ],
         "listeners": [
-          "input",
           "keydown",
           "click",
+          "input",
           "change"
         ]
       },
       "factory": {
         "name": "createPacksScreen",
+        "params": [],
+        "returns": []
+      },
+      "imports": [
+        "src/services/folder-library.js",
+        "src/ui/overlays/notes-overlay.js",
+        "src/core/storage.js",
+        "src/core/business-identity.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/screens/roadmap-screen.js": {
+      "id": "src/screens/roadmap-screen.js",
+      "path": "src/screens/roadmap-screen.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "click"
+        ]
+      },
+      "factory": {
+        "name": "createRoadmapScreen",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/screens/settings-screen.js": {
+      "id": "src/screens/settings-screen.js",
+      "path": "src/screens/settings-screen.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "click",
+          "input"
+        ]
+      },
+      "factory": {
+        "name": "createSettingsScreen",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/screens/updates-screen.js": {
+      "id": "src/screens/updates-screen.js",
+      "path": "src/screens/updates-screen.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createUpdatesScreen",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/services/auth-service.js": {
+      "id": "src/services/auth-service.js",
+      "path": "src/services/auth-service.js",
+      "churnRisk": 12,
+      "signals": {
+        "auth": [
+          "SIGNED_IN",
+          "SIGNED_OUT",
+          "INITIAL_SESSION",
+          "FALLBACK_AUTH_TTL"
+        ],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [
+          "setTimeout()",
+          "clearTimeout()"
+        ],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createAuthService",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/services/autopack-engine.js": {
+      "id": "src/services/autopack-engine.js",
+      "path": "src/services/autopack-engine.js",
+      "churnRisk": 7,
+      "signals": {
+        "auth": [],
+        "billing": [
+          "getBillingState()"
+        ],
+        "bundle": [],
+        "orgChange": [
+          "getActiveOrgIdForBilling()",
+          "OrgContext"
+        ],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [
+          "setTimeout()",
+          "clearTimeout()"
+        ],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createAutoPackEngine",
+        "params": [],
+        "returns": []
+      },
+      "imports": [
+        "src/services/autopack-item-builder.js",
+        "src/core/cargo-canonical.js",
+        "src/packing-core/solution.js",
+        "src/packing-core/budget.js",
+        "src/core/oriented-dims.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js",
+        "src/screens/editor-screen.js"
+      ]
+    },
+    "src/services/autopack-item-builder.js": {
+      "id": "src/services/autopack-item-builder.js",
+      "path": "src/services/autopack-item-builder.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/core/orientation.js",
+        "src/core/cargo-canonical.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/services/autopack-engine.js"
+      ]
+    },
+    "src/services/autopack-solver.js": {
+      "id": "src/services/autopack-solver.js",
+      "path": "src/services/autopack-solver.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/services/pack-library.js",
+        "src/packing-core/validation.js",
+        "src/packing-core/wheel-well-model.js",
+        "src/packing-core/explain.js",
+        "src/packing-core/budget.js",
+        "src/packing-core/retention-model.js",
+        "src/core/orientation.js",
+        "src/core/cargo-canonical.js",
+        "src/core/oriented-dims.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/packing-core/orientation.js",
+        "src/packing-core/solution.js"
+      ]
+    },
+    "src/services/billing-service.js": {
+      "id": "src/services/billing-service.js",
+      "path": "src/services/billing-service.js",
+      "churnRisk": 46,
+      "signals": {
+        "auth": [],
+        "billing": [
+          "refreshBilling()",
+          "fetchBillingStatus()",
+          "clearBillingState()",
+          "getBillingState()",
+          "createCheckoutSession()",
+          "createPortalSession()",
+          "billingStatusEndpoint",
+          "applyAccessGateFromBilling()",
+          "_billingRefreshQueued",
+          "BILLING_THROTTLE_MS",
+          "billingDebugLog()"
+        ],
+        "bundle": [],
+        "orgChange": [
+          "getActiveOrgId()",
+          "getActiveOrgIdForBilling()",
+          "OrgContext"
+        ],
+        "hiddenTabGuard": [
+          "_billingRefreshQueued"
+        ],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": [
+            "tp3d:billing:lock:",
+            "tp3d:billing:fresh:",
+            "tp3d:billing:result:",
+            "tp3d:active-org-id"
+          ]
+        },
+        "storage": [
+          "localStorage.setItem()",
+          "localStorage.getItem()",
+          "localStorage.removeItem()",
+          "sessionStorage",
+          "window.storage-listener",
+          "key:tp3d:active-org-id"
+        ],
+        "singleFlight": [
+          "setTimeout()",
+          "clearTimeout()"
+        ],
+        "listeners": [
+          "storage"
+        ]
+      },
+      "factory": {
+        "name": "createBillingService",
         "params": [],
         "returns": []
       },
@@ -1779,13 +2735,48 @@
       "imports": [
         "src/core/state-store.js",
         "src/core/utils/index.js",
-        "src/core/defaults.js"
+        "src/core/defaults.js",
+        "src/services/category-service.js",
+        "src/core/cargo-canonical.js",
+        "src/core/business-identity.js"
       ],
       "externalImports": [],
       "importedBy": [
         "src/app.js",
         "src/services/import-export.js",
         "src/services/pack-library.js"
+      ]
+    },
+    "src/services/case-rule-summary.js": {
+      "id": "src/services/case-rule-summary.js",
+      "path": "src/services/case-rule-summary.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": null,
+      "imports": [
+        "src/core/orientation.js"
+      ],
+      "externalImports": [
+        "this placed item is locked"
+      ],
+      "importedBy": [
+        "src/screens/cases-screen.js",
+        "src/screens/editor-screen.js",
+        "src/ui/overlays/import-cases-dialog.js"
       ]
     },
     "src/services/category-service.js": {
@@ -1814,7 +2805,9 @@
       ],
       "externalImports": [],
       "importedBy": [
-        "src/app.js"
+        "src/app.js",
+        "src/services/case-library.js",
+        "src/services/pack-library.js"
       ]
     },
     "src/services/cog-service.js": {
@@ -1843,6 +2836,39 @@
         "src/services/pack-library.js"
       ]
     },
+    "src/services/folder-library.js": {
+      "id": "src/services/folder-library.js",
+      "path": "src/services/folder-library.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createFolder",
+        "params": [],
+        "returns": []
+      },
+      "imports": [
+        "src/core/state-store.js",
+        "src/core/utils/index.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/screens/packs-screen.js"
+      ]
+    },
     "src/services/import-export.js": {
       "id": "src/services/import-export.js",
       "path": "src/services/import-export.js",
@@ -1867,8 +2893,15 @@
         "src/core/utils/index.js",
         "src/core/defaults.js",
         "src/core/storage.js",
+        "src/core/normalizer.js",
+        "src/core/state-store.js",
         "src/services/case-library.js",
-        "src/core/version.js"
+        "src/services/pack-library.js",
+        "src/core/version.js",
+        "src/core/orientation.js",
+        "src/core/business-identity.js",
+        "src/core/import-schema.js",
+        "src/core/cargo-canonical.js"
       ],
       "externalImports": [],
       "importedBy": [
@@ -1902,6 +2935,56 @@
         "src/services/pack-library.js"
       ]
     },
+    "src/services/organization-service.js": {
+      "id": "src/services/organization-service.js",
+      "path": "src/services/organization-service.js",
+      "churnRisk": 12,
+      "signals": {
+        "auth": [],
+        "billing": [
+          "getBillingState()"
+        ],
+        "bundle": [],
+        "orgChange": [
+          "tp3d:org-changed",
+          "getActiveOrgId()",
+          "getActiveOrgIdForBilling()"
+        ],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [
+            "tp3d:workspace-switch-state",
+            "tp3d:org-changed"
+          ],
+          "listen": [],
+          "referenced": [
+            "tp3d:workspace-switch-state-sync",
+            "tp3d:active-org-id",
+            "tp3d:org-context-sync"
+          ]
+        },
+        "storage": [
+          "localStorage.setItem()",
+          "localStorage.getItem()",
+          "localStorage.removeItem()"
+        ],
+        "singleFlight": [
+          "setTimeout()",
+          "clearTimeout()"
+        ],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createOrganizationService",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
     "src/services/pack-library.js": {
       "id": "src/services/pack-library.js",
       "path": "src/services/pack-library.js",
@@ -1921,18 +3004,36 @@
         "singleFlight": [],
         "listeners": []
       },
-      "factory": null,
+      "factory": {
+        "name": "createOrientationLockPatch",
+        "params": [],
+        "returns": []
+      },
       "imports": [
         "src/core/state-store.js",
         "src/core/utils/index.js",
         "src/core/normalizer.js",
         "src/services/case-library.js",
+        "src/services/category-service.js",
+        "src/data/trailer-presets.js",
+        "src/core/orientation.js",
+        "src/core/oriented-dims.js",
+        "src/core/cargo-canonical.js",
+        "src/packing-core/validation.js",
+        "src/core/business-identity.js",
+        "src/packing-core/wheel-well-model.js",
+        "src/packing-core/space-utilization-engine.js",
+        "src/packing-core/repair.js",
         "src/services/cog-service.js",
         "src/services/oog-service.js"
       ],
       "externalImports": [],
       "importedBy": [
-        "src/app.js"
+        "src/app.js",
+        "src/packing-core/space-model.js",
+        "src/screens/editor-screen.js",
+        "src/services/autopack-solver.js",
+        "src/services/import-export.js"
       ]
     },
     "src/services/preferences-manager.js": {
@@ -1991,6 +3092,71 @@
       "externalImports": [],
       "importedBy": []
     },
+    "src/ui/app-shell.js": {
+      "id": "src/ui/app-shell.js",
+      "path": "src/ui/app-shell.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "click",
+          "resize"
+        ]
+      },
+      "factory": {
+        "name": "createAppShell",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/ui/error-overlay.js": {
+      "id": "src/ui/error-overlay.js",
+      "path": "src/ui/error-overlay.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "click"
+        ]
+      },
+      "factory": {
+        "name": "createErrorOverlay",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
     "src/ui/helpers/import-dialog-utils.js": {
       "id": "src/ui/helpers/import-dialog-utils.js",
       "path": "src/ui/helpers/import-dialog-utils.js",
@@ -2020,9 +3186,40 @@
       "imports": [],
       "externalImports": [],
       "importedBy": [
-        "src/ui/overlays/import-app-dialog.js",
-        "src/ui/overlays/import-cases-dialog.js",
-        "src/ui/overlays/import-pack-dialog.js"
+        "src/ui/overlays/import-app-dialog.js"
+      ]
+    },
+    "src/ui/keyboard-manager.js": {
+      "id": "src/ui/keyboard-manager.js",
+      "path": "src/ui/keyboard-manager.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "keydown",
+          "click"
+        ]
+      },
+      "factory": {
+        "name": "createKeyboardManager",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
       ]
     },
     "src/ui/overlays/account-overlay.js": {
@@ -2140,6 +3337,40 @@
         "src/app.js"
       ]
     },
+    "src/ui/overlays/case-modal.js": {
+      "id": "src/ui/overlays/case-modal.js",
+      "path": "src/ui/overlays/case-modal.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "input",
+          "change",
+          "click"
+        ]
+      },
+      "factory": null,
+      "imports": [
+        "src/core/orientation.js",
+        "src/core/business-identity.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/screens/cases-screen.js",
+        "src/screens/editor-screen.js"
+      ]
+    },
     "src/ui/overlays/help-modal.js": {
       "id": "src/ui/overlays/help-modal.js",
       "path": "src/ui/overlays/help-modal.js",
@@ -2220,7 +3451,11 @@
         "storage": [],
         "singleFlight": [],
         "listeners": [
-          "click"
+          "click",
+          "change",
+          "dragover",
+          "dragleave",
+          "drop"
         ]
       },
       "factory": {
@@ -2229,7 +3464,9 @@
         "returns": []
       },
       "imports": [
-        "src/ui/helpers/import-dialog-utils.js"
+        "src/core/defaults.js",
+        "src/core/storage.js",
+        "src/services/case-rule-summary.js"
       ],
       "externalImports": [],
       "importedBy": [
@@ -2253,7 +3490,13 @@
         },
         "storage": [],
         "singleFlight": [],
-        "listeners": []
+        "listeners": [
+          "click",
+          "change",
+          "dragover",
+          "dragleave",
+          "drop"
+        ]
       },
       "factory": {
         "name": "createImportPackDialog",
@@ -2261,17 +3504,52 @@
         "returns": []
       },
       "imports": [
-        "src/ui/helpers/import-dialog-utils.js"
+        "src/core/storage.js"
       ],
       "externalImports": [],
       "importedBy": [
         "src/app.js"
       ]
     },
+    "src/ui/overlays/notes-overlay.js": {
+      "id": "src/ui/overlays/notes-overlay.js",
+      "path": "src/ui/overlays/notes-overlay.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [
+          "setTimeout()"
+        ],
+        "listeners": [
+          "click",
+          "keydown"
+        ]
+      },
+      "factory": null,
+      "imports": [
+        "src/core/utils/index.js"
+      ],
+      "externalImports": [],
+      "importedBy": [
+        "src/screens/cases-screen.js",
+        "src/screens/editor-screen.js",
+        "src/screens/packs-screen.js"
+      ]
+    },
     "src/ui/overlays/settings-overlay.js": {
       "id": "src/ui/overlays/settings-overlay.js",
       "path": "src/ui/overlays/settings-overlay.js",
-      "churnRisk": 51,
+      "churnRisk": 45,
       "signals": {
         "auth": [
           "SIGNED_IN",
@@ -2280,9 +3558,7 @@
         ],
         "billing": [
           "refreshBilling()",
-          "clearBillingState()",
-          "getBillingState()",
-          "refreshBillingForOrgChange()"
+          "getBillingState()"
         ],
         "bundle": [
           "getAccountBundleSingleFlight()",
@@ -2307,7 +3583,9 @@
         "tp3dEvents": {
           "emit": [],
           "listen": [
-            "tp3d:org-changed"
+            "tp3d:org-changed",
+            "tp3d:org-access-lost",
+            "tp3d:workspace-switch-state"
           ],
           "referenced": [
             "tp3d:active-org-id",
@@ -2325,15 +3603,17 @@
           "clearTimeout()"
         ],
         "listeners": [
-          "tp3d:org-changed",
           "click",
+          "tp3d:org-changed",
+          "tp3d:org-access-lost",
+          "tp3d:workspace-switch-state",
           "dragover",
           "dragleave",
           "drop",
           "change",
+          "input",
           "submit",
-          "keydown",
-          "input"
+          "keydown"
         ]
       },
       "factory": {
@@ -2351,6 +3631,66 @@
       "externalImports": [],
       "importedBy": [
         "src/app.js"
+      ]
+    },
+    "src/ui/recoverable-error-overlay.js": {
+      "id": "src/ui/recoverable-error-overlay.js",
+      "path": "src/ui/recoverable-error-overlay.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createRecoverableErrorOverlay",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
+    "src/ui/space-utilization-gauge.js": {
+      "id": "src/ui/space-utilization-gauge.js",
+      "path": "src/ui/space-utilization-gauge.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createSpaceUtilizationGauge",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/screens/editor-screen.js"
       ]
     },
     "src/ui/system-overlay.js": {
@@ -2418,6 +3758,38 @@
         "src/app.js"
       ]
     },
+    "src/ui/truck-change-controller.js": {
+      "id": "src/ui/truck-change-controller.js",
+      "path": "src/ui/truck-change-controller.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": [
+          "keydown"
+        ]
+      },
+      "factory": {
+        "name": "createTruckChangeController",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/app.js"
+      ]
+    },
     "src/ui/ui-components.js": {
       "id": "src/ui/ui-components.js",
       "path": "src/ui/ui-components.js",
@@ -2440,6 +3812,8 @@
         ],
         "listeners": [
           "click",
+          "load",
+          "error",
           "change",
           "keydown",
           "resize",
@@ -2563,9 +3937,51 @@
     },
     {
       "from": "src/app.js",
+      "to": "src/ui/error-overlay.js",
+      "type": "import",
+      "spec": "./ui/error-overlay.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/router.js",
+      "type": "import",
+      "spec": "./router.js"
+    },
+    {
+      "from": "src/app.js",
       "to": "src/ui/ui-components.js",
       "type": "import",
       "spec": "./ui/ui-components.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/ui/truck-change-controller.js",
+      "type": "import",
+      "spec": "./ui/truck-change-controller.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/ui/keyboard-manager.js",
+      "type": "import",
+      "spec": "./ui/keyboard-manager.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/ui/app-shell.js",
+      "type": "import",
+      "spec": "./ui/app-shell.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/ui/recoverable-error-overlay.js",
+      "type": "import",
+      "spec": "./ui/recoverable-error-overlay.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/core/operation-lifecycle.js",
+      "type": "import",
+      "spec": "./core/operation-lifecycle.js"
     },
     {
       "from": "src/app.js",
@@ -2587,6 +4003,12 @@
     },
     {
       "from": "src/app.js",
+      "to": "src/editor/trailer-geometry.js",
+      "type": "import",
+      "spec": "./editor/trailer-geometry.js"
+    },
+    {
+      "from": "src/app.js",
       "to": "src/screens/editor-screen.js",
       "type": "import",
       "spec": "./screens/editor-screen.js"
@@ -2602,6 +4024,24 @@
       "to": "src/screens/cases-screen.js",
       "type": "import",
       "spec": "./screens/cases-screen.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/screens/settings-screen.js",
+      "type": "import",
+      "spec": "./screens/settings-screen.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/screens/updates-screen.js",
+      "type": "import",
+      "spec": "./screens/updates-screen.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/screens/roadmap-screen.js",
+      "type": "import",
+      "spec": "./screens/roadmap-screen.js"
     },
     {
       "from": "src/app.js",
@@ -2662,6 +4102,12 @@
       "to": "src/services/import-export.js",
       "type": "import",
       "spec": "./services/import-export.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/services/autopack-engine.js",
+      "type": "import",
+      "spec": "./services/autopack-engine.js"
     },
     {
       "from": "src/app.js",
@@ -2754,6 +4200,30 @@
       "spec": "./data/services/billing.service.js"
     },
     {
+      "from": "src/app.js",
+      "to": "src/services/billing-service.js",
+      "type": "import",
+      "spec": "./services/billing-service.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/services/organization-service.js",
+      "type": "import",
+      "spec": "./services/organization-service.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/services/auth-service.js",
+      "type": "import",
+      "spec": "./services/auth-service.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/account-switcher.js",
+      "type": "import",
+      "spec": "./account-switcher.js"
+    },
+    {
       "from": "src/auth/permissions.js",
       "to": "src/config/roles.js",
       "type": "import",
@@ -2796,10 +4266,22 @@
       "spec": "./plans.js"
     },
     {
+      "from": "src/core/cargo-canonical.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "./orientation.js"
+    },
+    {
       "from": "src/core/defaults.js",
       "to": "src/core/browser.js",
       "type": "import",
       "spec": "./browser.js"
+    },
+    {
+      "from": "src/core/defaults.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "./business-identity.js"
     },
     {
       "from": "src/core/normalizer.js",
@@ -2818,6 +4300,24 @@
       "to": "src/core/browser.js",
       "type": "import",
       "spec": "./browser.js"
+    },
+    {
+      "from": "src/core/normalizer.js",
+      "to": "src/core/oriented-dims.js",
+      "type": "import",
+      "spec": "./oriented-dims.js"
+    },
+    {
+      "from": "src/core/normalizer.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "./cargo-canonical.js"
+    },
+    {
+      "from": "src/core/normalizer.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "./business-identity.js"
     },
     {
       "from": "src/core/session.js",
@@ -2857,6 +4357,12 @@
     },
     {
       "from": "src/core/storage.js",
+      "to": "src/core/defaults.js",
+      "type": "import",
+      "spec": "./defaults.js"
+    },
+    {
+      "from": "src/core/storage.js",
       "to": "src/core/browser.js",
       "type": "import",
       "spec": "./browser.js"
@@ -2869,9 +4375,27 @@
     },
     {
       "from": "src/core/storage.js",
+      "to": "src/core/normalizer.js",
+      "type": "import",
+      "spec": "./normalizer.js"
+    },
+    {
+      "from": "src/core/storage.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "./business-identity.js"
+    },
+    {
+      "from": "src/core/storage.js",
       "to": "src/core/events.js",
       "type": "import",
       "spec": "./events.js"
+    },
+    {
+      "from": "src/core/storage.js",
+      "to": "src/core/import-schema.js",
+      "type": "import",
+      "spec": "./import-schema.js"
     },
     {
       "from": "src/core/utils/index.js",
@@ -2916,6 +4440,18 @@
       "spec": "../../core/utils.js"
     },
     {
+      "from": "src/data/models/case.model.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "../../core/cargo-canonical.js"
+    },
+    {
+      "from": "src/data/models/case.model.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../../core/business-identity.js"
+    },
+    {
       "from": "src/data/models/pack.model.js",
       "to": "src/utils/uuid.js",
       "type": "import",
@@ -2932,6 +4468,12 @@
       "to": "src/core/utils/index.js",
       "type": "import",
       "spec": "../../core/utils/index.js"
+    },
+    {
+      "from": "src/data/models/pack.model.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../../core/business-identity.js"
     },
     {
       "from": "src/data/repositories/local.repository.js",
@@ -2977,12 +4519,6 @@
     },
     {
       "from": "src/data/services/billing.service.js",
-      "to": "src/auth/session.js",
-      "type": "import",
-      "spec": "../../auth/session.js"
-    },
-    {
-      "from": "src/data/services/billing.service.js",
       "to": "src/core/supabase-client.js",
       "type": "import",
       "spec": "../../core/supabase-client.js"
@@ -3006,6 +4542,12 @@
       "spec": "../models/case.model.js"
     },
     {
+      "from": "src/data/services/cases.service.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../../core/business-identity.js"
+    },
+    {
       "from": "src/data/services/packs.service.js",
       "to": "src/auth/session.js",
       "type": "import",
@@ -3024,16 +4566,352 @@
       "spec": "../models/pack.model.js"
     },
     {
+      "from": "src/data/services/packs.service.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../../core/business-identity.js"
+    },
+    {
       "from": "src/data/services/users.service.js",
       "to": "src/auth/session.js",
       "type": "import",
       "spec": "../../auth/session.js"
     },
     {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/domain.js",
+      "type": "import",
+      "spec": "./domain.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/space-model.js",
+      "type": "import",
+      "spec": "./space-model.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/validation.js",
+      "type": "import",
+      "spec": "./validation.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/wheel-well-model.js",
+      "type": "import",
+      "spec": "./wheel-well-model.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/repair.js",
+      "type": "import",
+      "spec": "./repair.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/budget.js",
+      "type": "import",
+      "spec": "./budget.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/retention-model.js",
+      "type": "import",
+      "spec": "./retention-model.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/explain.js",
+      "type": "import",
+      "spec": "./explain.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/solution.js",
+      "type": "import",
+      "spec": "./solution.js"
+    },
+    {
+      "from": "src/packing-core/index.js",
+      "to": "src/packing-core/orientation.js",
+      "type": "import",
+      "spec": "./orientation.js"
+    },
+    {
+      "from": "src/packing-core/orientation.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "../core/orientation.js"
+    },
+    {
+      "from": "src/packing-core/orientation.js",
+      "to": "src/core/oriented-dims.js",
+      "type": "import",
+      "spec": "../core/oriented-dims.js"
+    },
+    {
+      "from": "src/packing-core/orientation.js",
+      "to": "src/services/autopack-solver.js",
+      "type": "import",
+      "spec": "../services/autopack-solver.js"
+    },
+    {
+      "from": "src/packing-core/retention-model.js",
+      "to": "src/packing-core/validation.js",
+      "type": "import",
+      "spec": "./validation.js"
+    },
+    {
+      "from": "src/packing-core/solution.js",
+      "to": "src/services/autopack-solver.js",
+      "type": "import",
+      "spec": "../services/autopack-solver.js"
+    },
+    {
+      "from": "src/packing-core/solution.js",
+      "to": "src/packing-core/wheel-well-model.js",
+      "type": "import",
+      "spec": "./wheel-well-model.js"
+    },
+    {
+      "from": "src/packing-core/solution.js",
+      "to": "src/packing-core/explain.js",
+      "type": "import",
+      "spec": "./explain.js"
+    },
+    {
+      "from": "src/packing-core/space-model.js",
+      "to": "src/services/pack-library.js",
+      "type": "import",
+      "spec": "../services/pack-library.js"
+    },
+    {
+      "from": "src/packing-core/space-model.js",
+      "to": "src/packing-core/wheel-well-model.js",
+      "type": "import",
+      "spec": "./wheel-well-model.js"
+    },
+    {
+      "from": "src/packing-core/space-model.js",
+      "to": "src/packing-core/domain.js",
+      "type": "import",
+      "spec": "./domain.js"
+    },
+    {
+      "from": "src/packing-core/space-utilization-engine.js",
+      "to": "src/core/utils.js",
+      "type": "import",
+      "spec": "../core/utils.js"
+    },
+    {
+      "from": "src/packing-core/space-utilization-engine.js",
+      "to": "src/packing-core/wheel-well-model.js",
+      "type": "import",
+      "spec": "./wheel-well-model.js"
+    },
+    {
+      "from": "src/packing-core/wheel-well-model.js",
+      "to": "src/packing-core/validation.js",
+      "type": "import",
+      "spec": "./validation.js"
+    },
+    {
+      "from": "src/screens/cases-screen.js",
+      "to": "src/ui/overlays/case-modal.js",
+      "type": "import",
+      "spec": "../ui/overlays/case-modal.js"
+    },
+    {
+      "from": "src/screens/cases-screen.js",
+      "to": "src/ui/overlays/notes-overlay.js",
+      "type": "import",
+      "spec": "../ui/overlays/notes-overlay.js"
+    },
+    {
+      "from": "src/screens/cases-screen.js",
+      "to": "src/services/case-rule-summary.js",
+      "type": "import",
+      "spec": "../services/case-rule-summary.js"
+    },
+    {
+      "from": "src/screens/cases-screen.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../core/business-identity.js"
+    },
+    {
+      "from": "src/screens/cases-screen.js",
+      "to": "src/core/storage.js",
+      "type": "import",
+      "spec": "../core/storage.js"
+    },
+    {
       "from": "src/screens/editor-screen.js",
       "to": "src/editor/geometry-factory.js",
       "type": "import",
       "spec": "../editor/geometry-factory.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/ui/overlays/case-modal.js",
+      "type": "import",
+      "spec": "../ui/overlays/case-modal.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/ui/overlays/notes-overlay.js",
+      "type": "import",
+      "spec": "../ui/overlays/notes-overlay.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/ui/space-utilization-gauge.js",
+      "type": "import",
+      "spec": "../ui/space-utilization-gauge.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/core/storage.js",
+      "type": "import",
+      "spec": "../core/storage.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/services/autopack-engine.js",
+      "type": "import",
+      "spec": "../services/autopack-engine.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/services/pack-library.js",
+      "type": "import",
+      "spec": "../services/pack-library.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/services/case-rule-summary.js",
+      "type": "import",
+      "spec": "../services/case-rule-summary.js"
+    },
+    {
+      "from": "src/screens/packs-screen.js",
+      "to": "src/services/folder-library.js",
+      "type": "import",
+      "spec": "../services/folder-library.js"
+    },
+    {
+      "from": "src/screens/packs-screen.js",
+      "to": "src/ui/overlays/notes-overlay.js",
+      "type": "import",
+      "spec": "../ui/overlays/notes-overlay.js"
+    },
+    {
+      "from": "src/screens/packs-screen.js",
+      "to": "src/core/storage.js",
+      "type": "import",
+      "spec": "../core/storage.js"
+    },
+    {
+      "from": "src/screens/packs-screen.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../core/business-identity.js"
+    },
+    {
+      "from": "src/services/autopack-engine.js",
+      "to": "src/services/autopack-item-builder.js",
+      "type": "import",
+      "spec": "./autopack-item-builder.js"
+    },
+    {
+      "from": "src/services/autopack-engine.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "../core/cargo-canonical.js"
+    },
+    {
+      "from": "src/services/autopack-engine.js",
+      "to": "src/packing-core/solution.js",
+      "type": "import",
+      "spec": "../packing-core/solution.js"
+    },
+    {
+      "from": "src/services/autopack-engine.js",
+      "to": "src/packing-core/budget.js",
+      "type": "import",
+      "spec": "../packing-core/budget.js"
+    },
+    {
+      "from": "src/services/autopack-engine.js",
+      "to": "src/core/oriented-dims.js",
+      "type": "import",
+      "spec": "../core/oriented-dims.js"
+    },
+    {
+      "from": "src/services/autopack-item-builder.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "../core/orientation.js"
+    },
+    {
+      "from": "src/services/autopack-item-builder.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "../core/cargo-canonical.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/services/pack-library.js",
+      "type": "import",
+      "spec": "./pack-library.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/packing-core/validation.js",
+      "type": "import",
+      "spec": "../packing-core/validation.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/packing-core/wheel-well-model.js",
+      "type": "import",
+      "spec": "../packing-core/wheel-well-model.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/packing-core/explain.js",
+      "type": "import",
+      "spec": "../packing-core/explain.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/packing-core/budget.js",
+      "type": "import",
+      "spec": "../packing-core/budget.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/packing-core/retention-model.js",
+      "type": "import",
+      "spec": "../packing-core/retention-model.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "../core/orientation.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "../core/cargo-canonical.js"
+    },
+    {
+      "from": "src/services/autopack-solver.js",
+      "to": "src/core/oriented-dims.js",
+      "type": "import",
+      "spec": "../core/oriented-dims.js"
     },
     {
       "from": "src/services/case-library.js",
@@ -3054,6 +4932,30 @@
       "spec": "../core/defaults.js"
     },
     {
+      "from": "src/services/case-library.js",
+      "to": "src/services/category-service.js",
+      "type": "import",
+      "spec": "./category-service.js"
+    },
+    {
+      "from": "src/services/case-library.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "../core/cargo-canonical.js"
+    },
+    {
+      "from": "src/services/case-library.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../core/business-identity.js"
+    },
+    {
+      "from": "src/services/case-rule-summary.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "../core/orientation.js"
+    },
+    {
       "from": "src/services/category-service.js",
       "to": "src/core/state-store.js",
       "type": "import",
@@ -3064,6 +4966,18 @@
       "to": "src/core/defaults.js",
       "type": "import",
       "spec": "../core/defaults.js"
+    },
+    {
+      "from": "src/services/folder-library.js",
+      "to": "src/core/state-store.js",
+      "type": "import",
+      "spec": "../core/state-store.js"
+    },
+    {
+      "from": "src/services/folder-library.js",
+      "to": "src/core/utils/index.js",
+      "type": "import",
+      "spec": "../core/utils/index.js"
     },
     {
       "from": "src/services/import-export.js",
@@ -3085,15 +4999,57 @@
     },
     {
       "from": "src/services/import-export.js",
+      "to": "src/core/normalizer.js",
+      "type": "import",
+      "spec": "../core/normalizer.js"
+    },
+    {
+      "from": "src/services/import-export.js",
+      "to": "src/core/state-store.js",
+      "type": "import",
+      "spec": "../core/state-store.js"
+    },
+    {
+      "from": "src/services/import-export.js",
       "to": "src/services/case-library.js",
       "type": "import",
       "spec": "./case-library.js"
     },
     {
       "from": "src/services/import-export.js",
+      "to": "src/services/pack-library.js",
+      "type": "import",
+      "spec": "./pack-library.js"
+    },
+    {
+      "from": "src/services/import-export.js",
       "to": "src/core/version.js",
       "type": "import",
       "spec": "../core/version.js"
+    },
+    {
+      "from": "src/services/import-export.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "../core/orientation.js"
+    },
+    {
+      "from": "src/services/import-export.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../core/business-identity.js"
+    },
+    {
+      "from": "src/services/import-export.js",
+      "to": "src/core/import-schema.js",
+      "type": "import",
+      "spec": "../core/import-schema.js"
+    },
+    {
+      "from": "src/services/import-export.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "../core/cargo-canonical.js"
     },
     {
       "from": "src/services/pack-library.js",
@@ -3118,6 +5074,66 @@
       "to": "src/services/case-library.js",
       "type": "import",
       "spec": "./case-library.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/services/category-service.js",
+      "type": "import",
+      "spec": "./category-service.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/data/trailer-presets.js",
+      "type": "import",
+      "spec": "../data/trailer-presets.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "../core/orientation.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/core/oriented-dims.js",
+      "type": "import",
+      "spec": "../core/oriented-dims.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "../core/cargo-canonical.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/packing-core/validation.js",
+      "type": "import",
+      "spec": "../packing-core/validation.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../core/business-identity.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/packing-core/wheel-well-model.js",
+      "type": "import",
+      "spec": "../packing-core/wheel-well-model.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/packing-core/space-utilization-engine.js",
+      "type": "import",
+      "spec": "../packing-core/space-utilization-engine.js"
+    },
+    {
+      "from": "src/services/pack-library.js",
+      "to": "src/packing-core/repair.js",
+      "type": "import",
+      "spec": "../packing-core/repair.js"
     },
     {
       "from": "src/services/pack-library.js",
@@ -3156,6 +5172,18 @@
       "spec": "../../core/utils/index.js"
     },
     {
+      "from": "src/ui/overlays/case-modal.js",
+      "to": "src/core/orientation.js",
+      "type": "import",
+      "spec": "../../core/orientation.js"
+    },
+    {
+      "from": "src/ui/overlays/case-modal.js",
+      "to": "src/core/business-identity.js",
+      "type": "import",
+      "spec": "../../core/business-identity.js"
+    },
+    {
       "from": "src/ui/overlays/import-app-dialog.js",
       "to": "src/ui/helpers/import-dialog-utils.js",
       "type": "import",
@@ -3163,15 +5191,33 @@
     },
     {
       "from": "src/ui/overlays/import-cases-dialog.js",
-      "to": "src/ui/helpers/import-dialog-utils.js",
+      "to": "src/core/defaults.js",
       "type": "import",
-      "spec": "../helpers/import-dialog-utils.js"
+      "spec": "../../core/defaults.js"
+    },
+    {
+      "from": "src/ui/overlays/import-cases-dialog.js",
+      "to": "src/core/storage.js",
+      "type": "import",
+      "spec": "../../core/storage.js"
+    },
+    {
+      "from": "src/ui/overlays/import-cases-dialog.js",
+      "to": "src/services/case-rule-summary.js",
+      "type": "import",
+      "spec": "../../services/case-rule-summary.js"
     },
     {
       "from": "src/ui/overlays/import-pack-dialog.js",
-      "to": "src/ui/helpers/import-dialog-utils.js",
+      "to": "src/core/storage.js",
       "type": "import",
-      "spec": "../helpers/import-dialog-utils.js"
+      "spec": "../../core/storage.js"
+    },
+    {
+      "from": "src/ui/overlays/notes-overlay.js",
+      "to": "src/core/utils/index.js",
+      "type": "import",
+      "spec": "../../core/utils/index.js"
     },
     {
       "from": "src/ui/overlays/settings-overlay.js",
@@ -3205,32 +5251,40 @@
     }
   ],
   "summary": {
-    "totalFiles": 68,
-    "totalEdges": 109,
+    "totalFiles": 107,
+    "totalEdges": 221,
     "tp3dEventsEmitted": [
       "tp3d:auth-error",
       "tp3d:auth-signed-out",
+      "tp3d:org-access-lost",
       "tp3d:org-changed",
-      "tp3d:workspace-ready"
+      "tp3d:workspace-ready",
+      "tp3d:workspace-switch-state"
     ],
     "tp3dEventsListened": [
       "tp3d:auth-error",
       "tp3d:auth-signed-out",
+      "tp3d:org-access-lost",
       "tp3d:org-changed",
-      "tp3d:workspace-ready"
+      "tp3d:workspace-ready",
+      "tp3d:workspace-switch-state"
     ],
     "topChurnFiles": [
       {
         "id": "src/app.js",
-        "score": 98
+        "score": 78
       },
       {
         "id": "src/core/supabase-client.js",
         "score": 53
       },
       {
+        "id": "src/services/billing-service.js",
+        "score": 46
+      },
+      {
         "id": "src/ui/overlays/settings-overlay.js",
-        "score": 51
+        "score": 45
       },
       {
         "id": "src/data/services/billing.service.js",
@@ -3241,45 +5295,49 @@
         "score": 17
       },
       {
-        "id": "src/debugger-old.js",
-        "score": 14
+        "id": "src/services/auth-service.js",
+        "score": 12
+      },
+      {
+        "id": "src/services/organization-service.js",
+        "score": 12
+      },
+      {
+        "id": "src/services/autopack-engine.js",
+        "score": 7
       },
       {
         "id": "src/ui/overlays/auth-overlay.js",
         "score": 6
-      },
-      {
-        "id": "src/ui/overlays/account-overlay.js",
-        "score": 5
-      },
-      {
-        "id": "src/core/session.js",
-        "score": 3
-      },
-      {
-        "id": "src/core/storage.js",
-        "score": 3
       }
     ],
     "filesWithBillingCalls": [
       "src/app.js",
       "src/data/services/billing.service.js",
+      "src/services/autopack-engine.js",
+      "src/services/billing-service.js",
+      "src/services/organization-service.js",
       "src/ui/overlays/settings-overlay.js"
     ],
     "filesWithHiddenTabGuards": [
       "src/app.js",
       "src/core/supabase-client.js",
-      "src/debugger-old.js",
       "src/debugger.js",
+      "src/services/billing-service.js",
       "src/ui/overlays/settings-overlay.js"
     ],
     "filesWithCrossTabStorage": [
       "src/app.js",
       "src/core/supabase-client.js",
-      "src/debugger-old.js",
-      "src/debugger.js"
+      "src/debugger.js",
+      "src/services/billing-service.js"
     ],
     "factoryFiles": [
+      {
+        "id": "src/account-switcher.js",
+        "factory": "createAccountSwitcher",
+        "returns": []
+      },
       {
         "id": "src/auth/session.js",
         "factory": "createOrganization",
@@ -3293,6 +5351,11 @@
       {
         "id": "src/core/event-bus.js",
         "factory": "createEventBus",
+        "returns": []
+      },
+      {
+        "id": "src/core/operation-lifecycle.js",
+        "factory": "createOperationLifecycle",
         "returns": []
       },
       {
@@ -3321,6 +5384,16 @@
         "returns": []
       },
       {
+        "id": "src/editor/trailer-geometry.js",
+        "factory": "createTrailerGeometry",
+        "returns": []
+      },
+      {
+        "id": "src/packing-core/budget.js",
+        "factory": "createSolveBudget",
+        "returns": []
+      },
+      {
         "id": "src/screens/cases-screen.js",
         "factory": "createCasesScreen",
         "returns": []
@@ -3333,6 +5406,66 @@
       {
         "id": "src/screens/packs-screen.js",
         "factory": "createPacksScreen",
+        "returns": []
+      },
+      {
+        "id": "src/screens/roadmap-screen.js",
+        "factory": "createRoadmapScreen",
+        "returns": []
+      },
+      {
+        "id": "src/screens/settings-screen.js",
+        "factory": "createSettingsScreen",
+        "returns": []
+      },
+      {
+        "id": "src/screens/updates-screen.js",
+        "factory": "createUpdatesScreen",
+        "returns": []
+      },
+      {
+        "id": "src/services/auth-service.js",
+        "factory": "createAuthService",
+        "returns": []
+      },
+      {
+        "id": "src/services/autopack-engine.js",
+        "factory": "createAutoPackEngine",
+        "returns": []
+      },
+      {
+        "id": "src/services/billing-service.js",
+        "factory": "createBillingService",
+        "returns": []
+      },
+      {
+        "id": "src/services/folder-library.js",
+        "factory": "createFolder",
+        "returns": []
+      },
+      {
+        "id": "src/services/organization-service.js",
+        "factory": "createOrganizationService",
+        "returns": []
+      },
+      {
+        "id": "src/services/pack-library.js",
+        "factory": "createOrientationLockPatch",
+        "returns": []
+      },
+      {
+        "id": "src/ui/app-shell.js",
+        "factory": "createAppShell",
+        "returns": []
+      },
+      {
+        "id": "src/ui/error-overlay.js",
+        "factory": "createErrorOverlay",
+        "returns": []
+      },
+      {
+        "id": "src/ui/keyboard-manager.js",
+        "factory": "createKeyboardManager",
         "returns": []
       },
       {
@@ -3376,6 +5509,16 @@
         "returns": []
       },
       {
+        "id": "src/ui/recoverable-error-overlay.js",
+        "factory": "createRecoverableErrorOverlay",
+        "returns": []
+      },
+      {
+        "id": "src/ui/space-utilization-gauge.js",
+        "factory": "createSpaceUtilizationGauge",
+        "returns": []
+      },
+      {
         "id": "src/ui/system-overlay.js",
         "factory": "createSystemOverlay",
         "returns": []
@@ -3383,6 +5526,11 @@
       {
         "id": "src/ui/table-footer.js",
         "factory": "createTableFooter",
+        "returns": []
+      },
+      {
+        "id": "src/ui/truck-change-controller.js",
+        "factory": "createTruckChangeController",
         "returns": []
       },
       {

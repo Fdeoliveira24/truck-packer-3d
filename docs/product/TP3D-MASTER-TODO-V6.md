@@ -1,6 +1,6 @@
 # Truck Packer 3D — Master TODO V6
 
-**Last updated:** 2026-08-08
+**Last updated:** 2026-09-15
 **Status:** Active operational roadmap.
 
 ---
@@ -26,9 +26,10 @@
 |---|---|
 | Repository branch | `main` |
 | V6 creation baseline | `002c1f187b4a67fae6a1cbfde373c233f83d42f7` (snapshot at V6 creation; historical reference only) |
-| Last merge | PR #26 `chore(ai): add project memory retrieval integration` |
+| Current verified HEAD (2026-09-15 rebaseline) | `b5626aec0f8bc73769b2888a759069898ba4661f` — PR #38 merged; local `main` matches `origin/main` |
+| Last merge | PR #38 `chore: remove obsolete debugger and ignore local MCP config` |
 | Three.js runtime | `three@0.185.1` via npm/Vite (WebGLRenderer, r185.1) |
-| Vite | `8.2.0` |
+| Vite | `8.2.1` |
 | Node requirement | `^20.19.0` or `>=22.12.0` |
 
 ---
@@ -44,6 +45,9 @@
 | Space Utilization foundation | Initial Inspector gauge, editor card layout integration, capacity UI | PR #21, `7409b12` |
 | Generic Space Utilization Engine | Engine extracted to generic spatial calculator; scale-only Inspector card (capacity-only, no arc gauge) | PR #25, `fc50d3c` |
 | Project AI memory/retrieval infrastructure | `.ai/memory.json`, `tools/project-memory` CLI, Obsidian vault integration, Graphify routing | PR #26, `002c1f1` |
+| Import/Export/Recovery | Completed import/export and recovery flows | PR #36, `dc5ff0b` |
+| Font Awesome vendor packaging | Tracked required Font Awesome vendor CSS (fixed missing icon packaging) | PR #37, `794679d` |
+| Debugger / MCP config cleanup | Removed obsolete debugger; ignored local MCP configuration | PR #38, `b5626ae` |
 | Business Identity (Phases 1 + UI) | Case `itemCode`, Load Plan `loadPlanNumber` / `customerReference`, identifier UI, Card Display | PR #14, #16 |
 | Billing/Platform Foundation (Packets 1–3) | org INSERT boundary, server workspace limits, slug integrity, billing fixture harnesses, normalized entitlement | Multiple PRs through V5 |
 | AutoPack Cleanup | Legacy solver removed, strategy differentiation audit, Max Capacity Phase C profile reporting | V5 milestones |
@@ -56,11 +60,11 @@
 
 | Field | Current value |
 |---|---|
-| Task | **Professional 3D Editor Visual Foundation** |
-| Branch | To be created |
-| Outcome | Approved direction — not yet started |
-| Blocker state | Unblocked |
-| Scope | Improve cargo box presentation, edges/lines, labels, materials, selection/hover clarity, contact cues, truck visual presentation, scene hierarchy. Professional visual consistency. **No renderer architecture rewrite.** |
+| Task | None active — awaiting explicit user selection |
+| Branch | None active on `main` |
+| Outcome | A prior attempt at Professional 3D Editor Visual Foundation (PR #29 `fix/editor-visual-resource-ownership`, PR #31 `feat/editor-cargo-visual-language`, PR #33 `feat/editor-typography-annotation-foundation`) was rejected and reverted in PR #34 `revert/rejected-editor-visual-experiments` (`6c305fc`). No replacement milestone has been approved. |
+| Blocker state | Unblocked — pending user decision |
+| Scope | To be defined when the user selects the next milestone from Section 5 or elsewhere. Do not infer or start a milestone on this basis alone. |
 
 ---
 
@@ -168,6 +172,13 @@ Not approved branches. Not active work. Require focused audits and product decis
 - No React/R3F rewrite. No WebGPU migration now.
 - Future addons via `three/addons`.
 - GLB architecture (when introduced): authoritative packing envelope is always separate from optional visual model. Visual model never becomes collision truth by default. Keep technical-box fallback.
+
+### Backend / Persistence Direction
+
+- Supabase remains the temporary development backend for identity, workspaces, and billing.
+- Cases, Load Plans, and related business data remain browser-local during this development phase.
+- NoCodeBackend (NCB) remains the preferred future migration target. A September 2026 investigation found NCB could be viable, but the migration is paused, not canceled, so product, domain, email, billing, settings, and workspace-behavior work can be completed first — see [NCB Migration Investigation — Paused](../archive/2026-09-ncb-migration-paused/README.md).
+- No active backend migration branch exists. A future migration must repeat the provider and source audit against the application state at that time. This entry does not authorize migration implementation.
 
 ### Data and Identity
 

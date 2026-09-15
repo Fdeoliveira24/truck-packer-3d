@@ -9,8 +9,9 @@
 
 1. V6 is the current operational source of truth for Truck Packer 3D.
 2. V5 (`TP3D-MASTER-TODO-V5.md`) is frozen/historical — do not use it to determine active work.
-3. This document contains: current baseline, recently completed milestones, next approved milestone,
-   approved near-term roadmap, deferred work, critical invariants, and technical-debt follow-ups.
+3. This document contains: current baseline, recently completed milestones, the current active milestone
+   (if any), unapproved candidate workstreams, deferred work, critical invariants, and technical-debt
+   follow-ups. A workstream is not active or approved until Section 4 names it.
 4. Git history and project memory hold detailed implementation history. Do not paste full reports here.
 5. Domain contracts win within their stated scope:
    - [Billing Entitlement Rules](./BILLING_ENTITLEMENT_RULES.md)
@@ -68,16 +69,23 @@
 
 ---
 
-## 5. Approved Near-Term Roadmap
+## 5. Candidate Workstreams (Unapproved)
 
-Queue order is approval order. One active branch at a time. Update Section 4 when a branch opens.
+These are unapproved candidate workstreams, not an approved queue. **No next milestone has been
+selected.** List order reflects prior discussion priority only — it does not imply approval or
+sequencing. A user must explicitly select and approve a workstream before any branch opens; update
+Section 4 only when that happens.
 
-1. **Professional 3D Editor Visual Foundation** ← NEXT
+1. **Professional 3D Editor Visual Foundation**
    - Cargo box presentation, edges/lines, labels, materials
    - Selection/hover clarity, contact cues
    - Truck visual presentation, scene hierarchy
    - Professional visual consistency
    - Do not rewrite renderer architecture
+   - **Reverted:** an implementation attempt (PR #29 `fix/editor-visual-resource-ownership`,
+     PR #31 `feat/editor-cargo-visual-language`, PR #33 `feat/editor-typography-annotation-foundation`)
+     was rejected and reverted in PR #34 `revert/rejected-editor-visual-experiments` (`6c305fc`).
+     Must not be restarted without explicit user approval.
 
 2. **Camera / View System**
    - Named viewpoints: Front, Rear, Left, Right, Top, Isometric
@@ -220,8 +228,8 @@ Vault:     Truck-Packer-3D Obsidian Markdown vault (path in .ai/memory.json)
 |---|---|
 | ✅ | Complete and merged to main |
 | 🔄 | In-progress / active branch |
-| ⏭️ | Next approved (not yet started) |
-| 📋 | Approved queue (not yet started) |
+| ⏭️ | Next milestone (explicitly approved by the user) |
+| 📋 | Candidate workstream (unapproved, not yet started) |
 | 🔮 | Deferred — not yet approved |
 
 ---
@@ -229,7 +237,7 @@ Vault:     Truck-Packer-3D Obsidian Markdown vault (path in .ai/memory.json)
 ## 11. Update Rules
 
 1. Update the current baseline and active milestone row only at milestone closeout or real blocker-state change.
-2. Keep the approved queue at 10–15 items maximum.
+2. Keep the candidate workstream list at 10–15 items maximum.
 3. Replace stale status — do not append contradictory blocks.
 4. Move detailed implementation reports and audit evidence to dedicated topic or archive documents.
 5. Do not paste full implementation evidence here.

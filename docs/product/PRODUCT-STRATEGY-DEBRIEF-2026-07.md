@@ -117,7 +117,7 @@ Earlier private-beta estimates of 10–14 weeks and production estimates of 14�
 
 A possible future deployment flow is feature branch → automated checks → preview → review → merge → production. An integration branch could provide staging and `main` could become the production source later. This is a direction, not proof that automatic deployment, previews, or production-from-main exist today.
 
-NoCodeBackend (NCB) is the preferred future migration target for production identity, billing, memberships, and Pack authority. A September 2026 investigation found NCB could be a viable future backend, but the migration was paused so product, domain, email, billing, settings, and workspace-behavior work can be completed first — see [NCB Migration Investigation — Paused](../archive/2026-09-ncb-migration-paused/README.md). NCB is not the current runtime backend; Supabase remains the temporary development backend, and server persistence remains a separate future phase. This update does not authorize migration implementation.
+NoCodeBackend (NCB) is the preferred future migration target for production identity, billing, memberships, and Load Plan (`pack` internally) authority. A September 2026 investigation found NCB could be a viable future backend, but the migration was paused so product, domain, email, billing, settings, and workspace-behavior work can be completed first — see [NCB Migration Investigation — Paused](../archive/2026-09-ncb-migration-paused/README.md). NCB is not the current runtime backend; Supabase remains the temporary development backend, and server persistence remains a separate future phase. This update does not authorize migration implementation.
 
 ## Billing, Account, Workspace, and Stripe Direction
 

@@ -22,14 +22,14 @@ AutoPack and manual-placement reliability remain core product priorities. The Ju
 
 The central operating principle is isolation: each future area requires its own measured scope, audit, product decision, tests, and approval. Visual work must not alter packing geometry. Data-model work must not be mixed into billing or AutoPack work. Operational tooling must not expose customer cargo data or privileged credentials.
 
-Cases and Packs remain intentionally local-first during current development. Supabase remains the main backend direction, but server persistence must become stable before a supported public API. Billing reliability work remains active before Max Capacity Phase C. Visual quality, server persistence, API, operations, and identifier work are future candidates, not concurrent implementation.
+Cases and Packs remain intentionally local-first during current development. Supabase remains the current temporary development backend, but server persistence must become stable before a supported public API. Billing reliability work remains active before Max Capacity Phase C. Visual quality, server persistence, API, operations, and identifier work are future candidates, not concurrent implementation.
 
 ## Settled Product Direction
 
 - The product direction is a premium real-time 3D cargo planning and visualization environment.
 - Packing geometry and visual representation remain separate layers. Visual models, materials, labels, lighting, and effects must never change dimensions, containment, collision, support, gravity, AutoPack, or manual-placement validation.
 - Case and Pack storage remains local-first during current development while the models and solver rules continue to evolve.
-- Supabase remains the principal backend direction for authentication, workspaces, database, storage, and Edge Functions.
+- Supabase remains the current temporary development backend for authentication, workspaces, database, storage, and Edge Functions.
 - AWS is unnecessary without a demonstrated heavy server workload. If adopted later, it should serve a specific job rather than trigger a wholesale platform move.
 - Cloudflare Pages remains a future frontend-hosting candidate; no automatic deployment is asserted by this document.
 - A supported public API waits for stable server-backed Case and Pack persistence.
@@ -110,7 +110,7 @@ Earlier private-beta estimates of 10â€“14 weeks and production estimates of 14â€
 
 - **BanaHosting:** may continue serving the current static frontend and unrelated websites or email while that arrangement remains reliable.
 - **Cloudflare:** remains suitable for DNS, HTTPS, caching, global asset delivery, and security rules.
-- **Supabase:** remains the main backend direction for authentication, workspaces, database work, future storage, and Edge Functions.
+- **Supabase:** remains the current temporary development backend for authentication, workspaces, database work, future storage, and Edge Functions.
 - **GitHub:** remains the source-history and review foundation and can later coordinate tests, branch protections, releases, and deployment records.
 - **Cloudflare Pages:** is a future candidate for frontend hosting, branch previews, staging, production deployment, domains, and rollback.
 - **AWS:** should be considered only for demonstrated heavy workloads such as long-running server AutoPack jobs, queues, workers, server PDF/rendering, CAD conversion, model optimization, or specific enterprise requirements.

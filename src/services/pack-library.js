@@ -2223,7 +2223,9 @@ export function duplicate(packId) {
 export function open(packId) {
   const pack = getById(packId);
   if (!pack) return null;
+  const previousPackId = StateStore.get('currentPackId');
   StateStore.set({ currentPackId: packId, selectedInstanceIds: [] }, { skipHistory: true });
+  if (previousPackId !== packId) StateStore.resetHistory();
   return pack;
 }
 

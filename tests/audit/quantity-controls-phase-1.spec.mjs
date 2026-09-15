@@ -342,6 +342,46 @@ test('Requirement 17 & 18: Undo removes the entire batch, Redo restores the enti
   assert.equal(PackLibrary.getById('pack-1').cases.length, 8);
 });
 
+test('P0 LOAD PLAN UNDO/REDO: opening a different Load Plan establishes a new history boundary', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', title: 'Load Plan A' });
+  const packB = basePack({ id: 'pack-b', loadPlanNumber: 'LP-000B', title: 'Load Plan B' });
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [packA, packB], folderLibrary: [], preferences: {} });
+  PackLibrary.open('pack-a');
+
+  PackLibrary.update('pack-a', { notes: 'edited-a' });
+  PackLibrary.open('pack-b');
+  assert.equal(StateStore.get('currentPackId'), 'pack-b');
+
+  assert.equal(StateStore.undo(), false, 'Undo must not be able to reach history created before B was opened');
+  assert.equal(PackLibrary.getById('pack-a').notes, 'edited-a', "A's edit must survive the failed cross-Pack Undo attempt");
+  assert.equal(StateStore.get('currentPackId'), 'pack-b');
+
+  PackLibrary.update('pack-b', { notes: 'edited-b' });
+  assert.equal(PackLibrary.getById('pack-b').notes, 'edited-b');
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getById('pack-b').notes, undefined, 'B must return to its pre-edit value');
+  assert.equal(StateStore.get('currentPackId'), 'pack-b');
+
+  assert.equal(StateStore.redo(), true);
+  assert.equal(PackLibrary.getById('pack-b').notes, 'edited-b');
+  assert.equal(StateStore.get('currentPackId'), 'pack-b');
+});
+
+test('P0 LOAD PLAN UNDO/REDO: reopening the same active Load Plan preserves valid history', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', title: 'Load Plan A' });
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [packA], folderLibrary: [], preferences: {} });
+  PackLibrary.open('pack-a');
+
+  PackLibrary.update('pack-a', { notes: 'edited-a' });
+  PackLibrary.open('pack-a');
+
+  assert.equal(StateStore.undo(), true, 'reopening the same active Load Plan must not clear its Undo stack');
+  assert.equal(PackLibrary.getById('pack-a').notes, undefined, 'A must return to its pre-edit value');
+});
+
 test('Requirement 19: Qty resets to 1 after a successful Add', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');

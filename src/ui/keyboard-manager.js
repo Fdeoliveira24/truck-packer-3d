@@ -86,12 +86,14 @@ export function createKeyboardManager({
     }
 
     function undo() {
+      if (!inEditor()) return;
       if (mutationBlockedWhileBusy()) return;
       const ok = StateStore.undo();
       UIComponents.showToast(ok ? 'Undone' : 'Nothing to undo', ok ? 'info' : 'warning', { title: 'Edit' });
     }
 
     function redo() {
+      if (!inEditor()) return;
       if (mutationBlockedWhileBusy()) return;
       const ok = StateStore.redo();
       UIComponents.showToast(ok ? 'Redone' : 'Nothing to redo', ok ? 'info' : 'warning', { title: 'Edit' });

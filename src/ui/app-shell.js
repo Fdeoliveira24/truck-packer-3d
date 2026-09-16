@@ -64,7 +64,9 @@ export function createAppShell({
     }
 
     function navigate(screenKey) {
+      const previousScreen = StateStore.get('currentScreen');
       StateStore.set({ currentScreen: screenKey }, { skipHistory: true });
+      if (previousScreen !== 'editor' && screenKey === 'editor') StateStore.resetHistory();
     }
 
     // Toasts default to a fixed bottom-right dock. In the Editor, that spot

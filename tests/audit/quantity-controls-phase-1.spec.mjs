@@ -32,6 +32,7 @@ const normalizerUrl = new URL('../../src/core/normalizer.js', import.meta.url);
 const stateStoreUrl = new URL('../../src/core/state-store.js', import.meta.url);
 const storageUrl = new URL('../../src/core/storage.js', import.meta.url);
 const packLibraryUrl = new URL('../../src/services/pack-library.js', import.meta.url);
+const appShellUrl = new URL('../../src/ui/app-shell.js', import.meta.url);
 const caseLibraryUrl = new URL('../../src/services/case-library.js', import.meta.url);
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
@@ -59,6 +60,32 @@ async function loadModules() {
     import(importExportUrl.href),
   ]);
   return { CoreNormalizer, StateStore, CoreStorage, PackLibrary, CaseLibrary, ImportExport };
+}
+
+// AppShell.navigate() itself never touches the DOM (only the createAppShell()
+// factory does, at construction time, for sidebar/topbar wiring this suite
+// never exercises) — so a minimal document stub is enough to construct the
+// real AppShell and call its real navigate(), without a jsdom harness.
+async function loadAppShellHarness() {
+  const [StateStore, PackLibrary, { createAppShell }] = await Promise.all([
+    import(stateStoreUrl.href),
+    import(packLibraryUrl.href),
+    import(appShellUrl.href),
+  ]);
+  const originalDocument = globalThis.document;
+  globalThis.document = {
+    getElementById: () => null,
+    querySelector: () => null,
+    querySelectorAll: () => [],
+  };
+  let AppShell;
+  try {
+    AppShell = createAppShell({ StateStore, PackLibrary, Utils: {} });
+  } finally {
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+  }
+  return { StateStore, PackLibrary, AppShell };
 }
 
 function baseCase(overrides = {}) {
@@ -380,6 +407,79 @@ test('P0 LOAD PLAN UNDO/REDO: reopening the same active Load Plan preserves vali
 
   assert.equal(StateStore.undo(), true, 'reopening the same active Load Plan must not clear its Undo stack');
   assert.equal(PackLibrary.getById('pack-a').notes, undefined, 'A must return to its pre-edit value');
+});
+
+test('P0 EDITOR UNDO SESSION: AppShell.navigate() establishes a fresh baseline entering Editor from another screen', async () => {
+  const { StateStore, PackLibrary, AppShell } = await loadAppShellHarness();
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', title: 'Load Plan A' });
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [packA],
+    folderLibrary: [],
+    preferences: {},
+    currentScreen: 'packs',
+  });
+  PackLibrary.open('pack-a');
+  AppShell.navigate('editor');
+  PackLibrary.update('pack-a', { notes: 'edited-in-editor' });
+  assert.equal(PackLibrary.getById('pack-a').notes, 'edited-in-editor');
+
+  AppShell.navigate('cases');
+  AppShell.navigate('editor');
+
+  assert.equal(StateStore.undo(), false, 'the pre-exit Editor history must not be reachable after re-entry');
+  assert.equal(PackLibrary.getById('pack-a').notes, 'edited-in-editor',
+    "A's edit must remain — Undo could not reach the old session to revert it");
+});
+
+test('P0 EDITOR UNDO SESSION: AppShell.navigate() does not reset history when already on Editor', async () => {
+  const { StateStore, PackLibrary, AppShell } = await loadAppShellHarness();
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', title: 'Load Plan A' });
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [packA],
+    folderLibrary: [],
+    preferences: {},
+    currentScreen: 'packs',
+  });
+  PackLibrary.open('pack-a');
+  AppShell.navigate('editor');
+  PackLibrary.update('pack-a', { notes: 'edited-in-editor' });
+
+  AppShell.navigate('editor');
+
+  assert.equal(StateStore.undo(), true, 'staying on Editor must preserve the valid Undo stack');
+  assert.equal(PackLibrary.getById('pack-a').notes, undefined, 'A must return to its pre-edit value');
+});
+
+test('P0 EDITOR UNDO SESSION: a late significant write after re-entry cannot expose pre-exit Editor history', async () => {
+  const { StateStore, PackLibrary, AppShell } = await loadAppShellHarness();
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', title: 'Load Plan A' });
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [packA],
+    folderLibrary: [],
+    preferences: {},
+    currentScreen: 'packs',
+  });
+  PackLibrary.open('pack-a');
+  AppShell.navigate('editor');
+  PackLibrary.update('pack-a', { notes: 'old-session-edit' });
+
+  AppShell.navigate('cases');
+  AppShell.navigate('editor');
+
+  // Represents a late system write landing after the re-entry baseline (e.g. an
+  // async automatic preview capture resolving after Editor already re-established
+  // its session) — a normal significant packLibrary mutation, not skipHistory.
+  PackLibrary.update('pack-a', { thumbnailUpdatedAt: 123 });
+
+  assert.equal(StateStore.undo(), true, 'the late write itself remains undoable');
+  assert.equal(PackLibrary.getById('pack-a').thumbnailUpdatedAt, undefined, 'undo removes only the late write');
+
+  assert.equal(StateStore.undo(), false, 'a second Undo must not reach the pre-exit Editor session');
+  assert.equal(PackLibrary.getById('pack-a').notes, 'old-session-edit',
+    "the old session's edit remains in place — it was never rolled back, just sealed off from Undo");
 });
 
 test('Requirement 19: Qty resets to 1 after a successful Add', async () => {

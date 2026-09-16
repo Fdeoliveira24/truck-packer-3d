@@ -131,8 +131,14 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
 
   const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId)', 'function makeAutoPackResultStat(');
   assert.match(apply, /if \(isAutoPackResultsStale\(pack, results\)\)/, 'apply must keep the stale guard');
-  assert.match(apply, /PackLibrary\.update\(pack\.id, \{ cases: buildAppliedAutoPackCases\(option, cloneAutoPackCases\) \}\)/,
-    'apply must commit the applied option through the profile-aware PackLibrary.update path');
+  assert.match(apply, /const appliedCases = buildAppliedAutoPackCases\(option, cloneAutoPackCases\);/,
+    'apply must derive the applied option cases through the profile-aware builder');
+  // HANDLING-RULES-P0A: a successfully applied AutoPack solution has gone
+  // through the current packing validation path, so the same existing
+  // PackLibrary.update() call also stamps the fresh handling-rules signature
+  // — no second StateStore write.
+  assert.match(apply, /PackLibrary\.update\(pack\.id, \{\s*cases: appliedCases,\s*handlingRulesValidatedSignature: appliedSignature,\s*\}\)/,
+    'apply must commit the applied option AND the fresh handling-rules signature through one PackLibrary.update call');
   assert.match(apply, /StateStore\.set\(\{ selectedInstanceIds: \[\] \}/,
     'apply must keep clearing selection after swapping the load');
 });

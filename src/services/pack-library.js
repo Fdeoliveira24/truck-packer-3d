@@ -1929,6 +1929,163 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
   };
 }
 
+// ============================================================================
+// SECTION: HANDLING-RULES CASE-CHANGE PROPAGATION (P0-A)
+//
+// A Case is a shared definition; packed Load Plan instances reference it by
+// caseId. Editing a placement-affecting Handling Rule can make an
+// already-packed Load Plan illegal without moving cargo out from under the
+// user's feet in a Plan they aren't looking at. See docs/engineering — this
+// section owns: the semantic (not raw-storage) Case validity fingerprint, the
+// per-Pack durable signature built from it, and the single-write Case-Save
+// orchestration that revalidates only the actively-displayed Editor Pack and
+// marks every other affected Pack "Validation required" without touching cargo.
+// ============================================================================
+
+const HANDLING_RULES_SIGNATURE_VERSION = 'v1';
+
+// Semantic fingerprint of one Case's placement-affecting Handling Rules, built
+// from the EFFECTIVE validation semantics (canonicalOrientationLock,
+// rulesAllowStackOnTop, rulesMaxStackCount — the same shared authorities
+// AutoPack/manual revalidation already consult), never from raw stored values.
+// Two storage representations with identical hard-rule behavior (e.g. the
+// legacy stackable/noStackOnTop aliases) therefore always fingerprint
+// identically. canFlip, maxPalletWeight, laneItem, loadPriority, and shape do
+// not define existing manual packed-placement validity and are intentionally
+// excluded.
+function handlingRuleSemanticFingerprint(caseData) {
+  const lock = canonicalOrientationLock(caseData && caseData.orientationLock);
+  const allowStackOnTop = rulesAllowStackOnTop(caseData || {});
+  const maxStackCount = rulesMaxStackCount(caseData || {});
+  const isPallet = Boolean(caseData && caseData.isPallet === true);
+  return `${lock}:${allowStackOnTop ? 1 : 0}:${maxStackCount}:${isPallet ? 1 : 0}`;
+}
+
+// True only when the two Cases' EFFECTIVE placement-affecting semantics
+// differ. A missing oldCase (new Case creation, or a caseId no longer in the
+// library) is defined as "not a change" — there is nothing for any Pack to
+// have been validated against yet.
+export function hasPlacementAffectingHandlingRuleChange(oldCase, newCase) {
+  if (!oldCase) return false;
+  return handlingRuleSemanticFingerprint(oldCase) !== handlingRuleSemanticFingerprint(newCase);
+}
+
+// Deterministic per-Pack signature of the placement-affecting Handling Rules
+// currently governing every PACKED (placement === 'packed', never staged)
+// instance's Case. Staged instances are excluded: a staged item has no
+// current truck placement to invalidate, and will be evaluated against
+// whatever rules are live if/when it is later packed. Deterministic
+// regardless of Case Library or instance ordering (unique caseIds, sorted).
+export function buildHandlingRulesValiditySignature(pack, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  const packedCaseIds = Array.from(new Set(
+    ((pack && pack.cases) || [])
+      .filter(inst => inst && inst.placement === 'packed' && inst.caseId)
+      .map(inst => String(inst.caseId))
+  )).sort();
+  const parts = packedCaseIds.map(caseId => {
+    const caseData = caseMap.get(caseId);
+    if (!caseData) return `${caseId}:missing`;
+    return `${caseId}:${handlingRuleSemanticFingerprint(caseData)}`;
+  });
+  return `${HANDLING_RULES_SIGNATURE_VERSION}:${parts.join('|')}`;
+}
+
+// Shared pure staleness authority — UI code must not reproduce signature logic.
+// A Pack with no stored signature is never rendered stale (legacy Packs from
+// before this feature existed must not all become "Validation required" the
+// moment it lands); staleness only exists once a signature has actually been
+// recorded and a later Case edit makes it disagree with the live computation.
+export function isHandlingRulesValidationRequired(pack, caseLibrary) {
+  const stored = pack && pack.handlingRulesValidatedSignature;
+  if (!stored) return false;
+  return stored !== buildHandlingRulesValiditySignature(pack, caseLibrary || CaseLibrary.getCases());
+}
+
+// Atomic Case Save orchestration: prepares the Case (+ optional category) and,
+// when the edit changed placement-affecting semantics, the impact on every
+// affected Pack — all BEFORE publishing — then commits everything through
+// exactly one StateStore.set(). Only the Pack actively displayed in the Editor
+// (currentScreen === 'editor' AND pack.id === currentPackId) may be
+// automatically revalidated/repaired/staged; every other affected Pack is left
+// untouched except for the minimal validation-required metadata described
+// below, so cargo in a Plan the user is not viewing is never silently moved.
+export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
+  const oldCaseLibrary = CaseLibrary.getCases();
+  const oldCase = oldCaseLibrary.find(c => c && c.id === (caseData && caseData.id)) || null;
+  const { case: nextCase, cases: nextCaseLibrary } = CaseLibrary.prepareCaseSave(caseData, oldCaseLibrary);
+
+  const setPatch = { caseLibrary: nextCaseLibrary };
+  let category = null;
+  if (categoryUpdate) {
+    const calculated = CategoryService.calculateUpsert(categoryUpdate);
+    category = calculated.category;
+    if (calculated.preferences) setPatch.preferences = calculated.preferences;
+  }
+
+  let packImpact = null;
+
+  if (hasPlacementAffectingHandlingRuleChange(oldCase, nextCase)) {
+    const packs = getPacks();
+    const affectedPacks = packs.filter(p =>
+      ((p && p.cases) || []).some(inst => inst && inst.placement === 'packed' && inst.caseId === nextCase.id)
+    );
+
+    if (affectedPacks.length) {
+      const currentScreen = StateStore.get('currentScreen');
+      const currentPackId = StateStore.get('currentPackId');
+      const affectedIds = new Set(affectedPacks.map(p => p.id));
+
+      const nextPacks = packs.map(p => {
+        if (!affectedIds.has(p.id)) return p;
+
+        const isActiveEditorPack = currentScreen === 'editor' && p.id === currentPackId;
+
+        if (isActiveEditorPack) {
+          const result = revalidateManualPlacements(p, nextCaseLibrary, {
+            repairDependents: true,
+            preserveStagedPositions: true,
+          });
+          const hasFailures = Array.isArray(result.failedIds) && result.failedIds.length > 0;
+          const revalidated = { ...result.pack };
+          revalidated.stats = computeStats(revalidated, nextCaseLibrary);
+          revalidated.lastEdited = Date.now();
+          if (!hasFailures) {
+            revalidated.handlingRulesValidatedSignature =
+              buildHandlingRulesValiditySignature(revalidated, nextCaseLibrary);
+          } else if (!p.handlingRulesValidatedSignature) {
+            // Do not silently stamp a current signature over an unresolved
+            // validation: baseline to the pre-change signature so the Pack
+            // continues to report "Validation required".
+            revalidated.handlingRulesValidatedSignature =
+              buildHandlingRulesValiditySignature(p, oldCaseLibrary);
+          }
+          // else: leave the existing (already pre-change) signature untouched.
+          packImpact = {
+            packId: p.id,
+            summary: result.summary,
+            failedIds: result.failedIds,
+            warnings: result.warnings,
+          };
+          return revalidated;
+        }
+
+        // Not actively displayed: never move cargo, never touch lastEdited.
+        if (p.handlingRulesValidatedSignature) return p;
+        return {
+          ...p,
+          handlingRulesValidatedSignature: buildHandlingRulesValiditySignature(p, oldCaseLibrary),
+        };
+      });
+
+      setPatch.packLibrary = nextPacks;
+    }
+  }
+
+  StateStore.set(setPatch);
+  return { case: nextCase, category, packImpact };
+}
+
 export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   const source = pack && typeof pack === 'object' ? pack : {};
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
@@ -1982,8 +2139,33 @@ export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary
   if (!pack) return null;
   const proposed = { ...pack, cases: Array.isArray(nextCases) ? nextCases : [] };
   const result = revalidateManualPlacements(proposed, caseLibrary, options);
-  const updated = update(packId, { cases: result.pack.cases });
+  const patch = { cases: result.pack.cases };
+  // A fresh handling-rules signature may only be persisted once a path has
+  // actually performed a complete, successful whole-Pack revalidation — never
+  // after an unresolved failure. Centralized here so every existing caller
+  // (drag/rotate/delete-repair/truck-change) and the explicit Validate Load
+  // Plan action all get correct signature lifecycle for free.
+  const hasFailures = Array.isArray(result.failedIds) && result.failedIds.length > 0;
+  if (!hasFailures) {
+    patch.handlingRulesValidatedSignature = buildHandlingRulesValiditySignature(result.pack, caseLibrary);
+  }
+  const updated = update(packId, patch);
   return { ...result, pack: updated || result.pack };
+}
+
+// Smallest possible "Validate Load Plan" service action: re-runs the same
+// whole-Pack revalidation this Pack's own current cases against the current
+// Case Library, applying repair/staging exactly like any other manual
+// revalidation and clearing the "Validation required" state only on complete
+// success. One existing significant Pack update -> one Undo/Redo action, no
+// bespoke history code needed.
+export function validateLoadPlan(packId, caseLibrary = CaseLibrary.getCases()) {
+  const pack = getById(packId);
+  if (!pack) return null;
+  return updateCasesWithManualRevalidation(packId, pack.cases, caseLibrary, {
+    repairDependents: true,
+    preserveStagedPositions: true,
+  });
 }
 
 // Repack the invalid items into the NEW truck's free floor/deck space front-first
@@ -2850,6 +3032,11 @@ export function planPackImport(payload) {
   const repairedPack = repairPackInstancePlacements(pack, finalCases);
   pack.cases = repairedPack.cases;
   pack.stats = computeStats(pack, finalCases);
+  // This path remaps Case IDs and just performed full placement repair against
+  // the planned final (local) Case set, so it is safe to certify: recompute the
+  // handling-rules signature against the LOCAL Case Library. Never trust a
+  // foreign signature value the imported file itself might have carried.
+  pack.handlingRulesValidatedSignature = buildHandlingRulesValiditySignature(pack, finalCases);
 
   let placementsPreserved = 0;
   let placementsRepaired = 0;

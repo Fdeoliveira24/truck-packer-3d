@@ -1554,6 +1554,17 @@ export function createPacksScreen({
           showCustomerReference: badgePrefs.showCustomerReference !== false,
         });
 
+        if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
+          const validationBadge = document.createElement('div');
+          validationBadge.className = 'badge badge--warning';
+          validationBadge.textContent = 'Validation required';
+          validationBadge.setAttribute(
+            'data-tooltip',
+            'A referenced Case’s Handling Rules changed since this Load Plan was last validated.'
+          );
+          titleWrap.appendChild(validationBadge);
+        }
+
         const stats = PackLibrary.computeStats(pack);
         tdTitle.appendChild(titleWrap);
 
@@ -1742,6 +1753,17 @@ export function createPacksScreen({
 
         const badgesWrap = document.createElement('div');
         badgesWrap.className = 'pack-meta-badges';
+
+        if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
+          const validationBadge = document.createElement('div');
+          validationBadge.className = 'badge badge--warning';
+          validationBadge.textContent = 'Validation required';
+          validationBadge.setAttribute(
+            'data-tooltip',
+            'A referenced Case’s Handling Rules changed since this Load Plan was last validated.'
+          );
+          badgesWrap.appendChild(validationBadge);
+        }
 
         if (badgePrefs.showTruckDims !== false) {
           const truck = document.createElement('div');

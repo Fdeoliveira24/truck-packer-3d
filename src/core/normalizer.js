@@ -399,6 +399,13 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
   const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
   const thumbnailSource =
     p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
+  // P0-A: durable "validated against current Handling Rules" signature. A
+  // simple typed passthrough — normalizePack() does not itself recompute or
+  // validate it (import paths that remap Case IDs and perform their own full
+  // repair recompute it explicitly; see planPackImport). Legacy Packs with no
+  // stored value stay null, never rendered as stale.
+  const handlingRulesValidatedSignature =
+    typeof (p && p.handlingRulesValidatedSignature) === 'string' ? p.handlingRulesValidatedSignature : null;
   const baseStats = {
     totalCases: 0,
     hiddenCases: 0,
@@ -437,6 +444,7 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     thumbnail,
     thumbnailUpdatedAt,
     thumbnailSource,
+    handlingRulesValidatedSignature,
   };
 }
 

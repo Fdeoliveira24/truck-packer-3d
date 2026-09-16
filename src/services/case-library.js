@@ -125,6 +125,15 @@ export function upsert(caseData) {
   StateStore.set({ caseLibrary: nextCases });
 }
 
+// Pure: identical to the private prepareCaseUpsert(), exposed for orchestration
+// callers (PackLibrary.commitCaseHandlingRuleChange) that must prepare the full
+// Case-side patch before their own single StateStore write — never publishes
+// state itself. Existing callers of prepareCaseUpsert/upsert/commitCaseWithCategory
+// are unaffected.
+export function prepareCaseSave(caseData, cases = getCases()) {
+  return prepareCaseUpsert(caseData, cases);
+}
+
 // Atomically commit one Case (insert or update, through the same canonical
 // build/identity checks as upsert()) together with an optional category
 // change, as a single significant StateStore write — one history entry, one

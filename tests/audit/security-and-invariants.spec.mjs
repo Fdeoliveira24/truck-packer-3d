@@ -7758,7 +7758,12 @@ test('EDITOR Case Browser New Case shortcut uses shared modal without adding to 
     'shared Case modal must preserve a current category when it exists in project categories');
   assert.match(modalSrc, /catColorInput\.type = 'color'[\s\S]*catColorInput\.setAttribute\('aria-label', 'Category color'\)/,
     'shared Case modal category swatch must expose a real color input');
-  assert.match(modalSrc, /CaseLibrary\.commitCaseWithCategory\(caseData, \{ key: categoryKey, name: catMeta\.name, color: categoryColor \}\)/,
+  // HANDLING-RULES-P0A: the Save handler now commits through PackLibrary's
+  // atomic orchestration (Case + category + any actively-displayed-Pack
+  // revalidation as one StateStore write) instead of calling
+  // CaseLibrary.commitCaseWithCategory directly — still exactly one commit,
+  // still atomic with the category color.
+  assert.match(modalSrc, /PackLibrary\.commitCaseHandlingRuleChange\(\s*caseData,\s*\{ key: categoryKey, name: catMeta\.name, color: categoryColor \}\s*\)/,
     'shared Case modal must persist edited category colors atomically with the Case commit');
   assert.match(modalSrc, /color: categoryColor/,
     'saved case data must use the edited category color');
@@ -20343,7 +20348,13 @@ test('P0 CASE/CATEGORY ATOMICITY: Case modal Save wiring uses the atomic commit,
     'Save must not publish the category separately from the Case commit');
   assert.doesNotMatch(saveBlock, /CaseLibrary\.upsert\(caseData\)/,
     'Save must not publish the Case separately from the category commit');
-  assert.match(saveBlock, /CaseLibrary\.commitCaseWithCategory\(caseData,/,
+  // HANDLING-RULES-P0A: PackLibrary.commitCaseHandlingRuleChange() is the one
+  // atomic commit now — it still publishes the Case and category together
+  // (plus, when applicable, the actively-displayed Pack's revalidation) in a
+  // single StateStore write; see PACK VALIDITY SIGNATURE atomicity coverage.
+  assert.doesNotMatch(saveBlock, /CaseLibrary\.commitCaseWithCategory\(/,
+    'Save must route through the atomic PackLibrary orchestration, not call CaseLibrary.commitCaseWithCategory directly');
+  assert.match(saveBlock, /PackLibrary\.commitCaseHandlingRuleChange\(\s*caseData,/,
     'Save must commit the Case and category atomically in one call');
   // The inline "+Add" category button remains a separate, category-only,
   // already-atomic action and must keep using CategoryService.upsert().
@@ -25031,7 +25042,10 @@ test('APP-STABILIZATION-PHASE3 dialog guards sit immediately before import, cate
   const saveBlock = caseModal.slice(saveStart, saveStart + 4200);
   const saveGuard = saveBlock.indexOf('beforeMutate() === false');
   assert.ok(saveGuard >= 0, 'shared modal Save has a lifecycle guard');
-  assert.ok(saveGuard < saveBlock.indexOf('CaseLibrary.commitCaseWithCategory'),
+  // HANDLING-RULES-P0A: the atomic commit is now PackLibrary.commitCaseHandlingRuleChange().
+  const commitIndex = saveBlock.indexOf('PackLibrary.commitCaseHandlingRuleChange');
+  assert.ok(commitIndex >= 0, 'Save must call the atomic PackLibrary orchestration');
+  assert.ok(saveGuard < commitIndex,
     'Save guards the atomic Case + category commit');
 });
 

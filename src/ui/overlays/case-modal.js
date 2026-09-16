@@ -137,6 +137,29 @@ function normalizeCategoryKey(value) {
     .toLowerCase();
 }
 
+// Case Save toast wording for the actively-displayed Editor Pack's revalidation
+// impact, if any. Reuses the existing showToast(message, tone) pattern and the
+// exact "could not rest safely and was moved to staging" wording already used
+// elsewhere for this class of event — no new notification system.
+function caseSaveToastArgs(packImpact) {
+  if (!packImpact) return ['Case saved', 'success'];
+  const summary = packImpact.summary || {};
+  const hasFailures = Array.isArray(packImpact.failedIds) && packImpact.failedIds.length > 0;
+  if (hasFailures) {
+    return ['Case saved, but the Load Plan still requires validation.', 'warning'];
+  }
+  const staged = Number(summary.staged) || 0;
+  const repaired = Number(summary.repaired) || 0;
+  const adjusted = Number(summary.adjusted) || 0;
+  if (staged > 0) {
+    return ['Case saved. Affected cargo could not rest safely and was moved to staging.', 'warning'];
+  }
+  if (repaired > 0 || adjusted > 0) {
+    return ['Case saved. The Load Plan was revalidated and cargo was adjusted.', 'info'];
+  }
+  return ['Case saved', 'success'];
+}
+
 export function openCaseModal({
   existing = null,
   Utils,
@@ -144,6 +167,7 @@ export function openCaseModal({
   PreferencesManager,
   CaseLibrary,
   CategoryService,
+  PackLibrary,
   onSaved,
   beforeMutate = null,
   doc = document,
@@ -511,11 +535,16 @@ export function openCaseModal({
             color: categoryColor,
           };
           if (typeof beforeMutate === 'function' && beforeMutate() === false) return false;
-          // One atomic commit: the Case and its category publish together as a
-          // single significant history entry, so one Undo/Redo always covers the
-          // whole Save — never an extra invisible category-only step.
-          CaseLibrary.commitCaseWithCategory(caseData, { key: categoryKey, name: catMeta.name, color: categoryColor });
-          UIComponents.showToast('Case saved', 'success');
+          // One atomic commit: the Case, its category, and (when the edit changes
+          // placement-affecting Handling Rules) the actively-displayed Editor
+          // Pack's revalidation all publish together as a single significant
+          // history entry — one Undo/Redo always covers the whole Save.
+          const { packImpact } = PackLibrary.commitCaseHandlingRuleChange(
+            caseData,
+            { key: categoryKey, name: catMeta.name, color: categoryColor }
+          );
+          const [toastMessage, toastTone] = caseSaveToastArgs(packImpact);
+          UIComponents.showToast(toastMessage, toastTone);
           if (typeof onSaved === 'function') onSaved(caseData);
           return true;
         },

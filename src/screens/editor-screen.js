@@ -3492,7 +3492,53 @@ export function createEditorScreen({
     const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
     const viewportHintBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('viewport-hint-icon'));
+    const handlingRulesBannerEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-handling-rules-banner'));
+    const handlingRulesBannerTextEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-handling-rules-banner-text'));
+    const handlingRulesValidateBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('editor-handling-rules-validate-btn'));
     let packNotesButton = null;
+
+    // Renders the "Validation required" banner for the actively-displayed Pack.
+    // Never mutates cargo on its own — opening/rendering the Editor must never
+    // move cargo; only the explicit Validate Load Plan click below does that.
+    function renderHandlingRulesBanner(pack) {
+      if (!handlingRulesBannerEl) return;
+      const stale = Boolean(pack) &&
+        PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases());
+      handlingRulesBannerEl.hidden = !stale;
+      if (stale && handlingRulesBannerTextEl) {
+        handlingRulesBannerTextEl.textContent =
+          'Handling Rules changed. Validate this Load Plan before relying on its placement.';
+      }
+    }
+
+    if (handlingRulesValidateBtn) {
+      handlingRulesValidateBtn.addEventListener('click', () => {
+        if (editorMutationBlocked()) return;
+        const packId = StateStore.get('currentPackId');
+        if (!packId) return;
+        const result = PackLibrary.validateLoadPlan(packId, CaseLibrary.getCases());
+        if (!result) {
+          UIComponents.showToast('Validation failed. Please try again.', 'error');
+          return;
+        }
+        const hasFailures = Array.isArray(result.failedIds) && result.failedIds.length > 0;
+        const summary = result.summary || {};
+        let message = 'Load Plan validated. No cargo changes were needed.';
+        let tone = 'success';
+        if (hasFailures) {
+          message = 'Some cargo could not be validated and remains flagged.';
+          tone = 'warning';
+        } else if ((summary.staged || 0) > 0) {
+          message = 'Load Plan validated. Affected cargo could not rest safely and was moved to staging.';
+          tone = 'warning';
+        } else if ((summary.repaired || 0) > 0 || (summary.adjusted || 0) > 0) {
+          message = 'Load Plan validated. Cargo was adjusted to match current Handling Rules.';
+          tone = 'info';
+        }
+        UIComponents.showToast(message, tone);
+        render();
+      });
+    }
 
     // Swap a button into a visible "working" state (spinner + label) and back. The
     // idle markup is captured once so it can be restored exactly. Pairs with the
@@ -3655,7 +3701,19 @@ export function createEditorScreen({
       if (!option || !Array.isArray(option.nextCases)) return;
       if (option.id === results.selectedId) return;
 
-      PackLibrary.update(pack.id, { cases: buildAppliedAutoPackCases(option, cloneAutoPackCases) });
+      const appliedCases = buildAppliedAutoPackCases(option, cloneAutoPackCases);
+      // A successfully applied AutoPack solution has gone through the current
+      // packing validation path, so it is safe to certify: stamp the fresh
+      // handling-rules signature in the SAME existing Pack update (no second
+      // StateStore write).
+      const appliedSignature = PackLibrary.buildHandlingRulesValiditySignature(
+        { ...pack, cases: appliedCases },
+        CaseLibrary.getCases()
+      );
+      PackLibrary.update(pack.id, {
+        cases: appliedCases,
+        handlingRulesValidatedSignature: appliedSignature,
+      });
       StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
       CaseScene.setSelected([]);
       StateStore.set({
@@ -4205,6 +4263,7 @@ export function createEditorScreen({
         renderCaseBrowser();
         renderInspectorNoPack();
         renderAutoPackResultsPanel(null);
+        renderHandlingRulesBanner(null);
         SceneManager.resize();
         return;
       }
@@ -4217,6 +4276,7 @@ export function createEditorScreen({
       renderCaseBrowser();
       renderInspector(pack);
       renderAutoPackResultsPanel(pack);
+      renderHandlingRulesBanner(pack);
       SceneManager.resize();
     }
 
@@ -4729,6 +4789,7 @@ export function createEditorScreen({
         PreferencesManager,
         CaseLibrary,
         CategoryService,
+        PackLibrary,
         beforeMutate: () => !editorMutationBlocked(),
         onSaved: () => {
           if (caseSearchEl) caseSearchEl.value = '';

@@ -482,6 +482,73 @@ test('P0 EDITOR UNDO SESSION: a late significant write after re-entry cannot exp
     "the old session's edit remains in place — it was never rolled back, just sealed off from Undo");
 });
 
+test('P0 EDITOR UNDO ATOMICITY: a derived preview write consumes zero user-facing Undo steps', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', title: 'Load Plan A' });
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [packA], folderLibrary: [], preferences: {} });
+
+  // one visible user mutation
+  PackLibrary.update('pack-a', { notes: 'user-edit' });
+  assert.equal(PackLibrary.getById('pack-a').notes, 'user-edit');
+
+  // a derived/system write (e.g. automatic preview capture) landing right after —
+  // must not consume its own Undo step.
+  PackLibrary.update('pack-a', {
+    thumbnail: 'data:image/jpeg;base64,x',
+    thumbnailUpdatedAt: 999,
+    thumbnailSource: 'auto',
+  }, { skipHistory: true });
+  assert.equal(PackLibrary.getById('pack-a').thumbnail, 'data:image/jpeg;base64,x');
+
+  assert.equal(StateStore.undo(), true, 'one Undo must reach the user edit directly');
+  assert.equal(PackLibrary.getById('pack-a').notes, undefined, 'the user edit is reverted on the first Undo');
+
+  assert.equal(StateStore.undo(), false, 'no second, hidden Undo step exists for the derived write');
+
+  assert.equal(StateStore.redo(), true);
+  assert.equal(PackLibrary.getById('pack-a').notes, 'user-edit', 'one Redo restores the user edit');
+});
+
+test('P0 EDITOR UNDO ATOMICITY: PackLibrary.update() without options still creates normal history', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', title: 'Load Plan A' });
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [packA], folderLibrary: [], preferences: {} });
+
+  PackLibrary.update('pack-a', { notes: 'default-call-edit' });
+  assert.equal(PackLibrary.getById('pack-a').notes, 'default-call-edit');
+
+  assert.equal(StateStore.undo(), true,
+    'the existing two-argument PackLibrary.update(packId, patch) call must still push normal, undoable history');
+  assert.equal(PackLibrary.getById('pack-a').notes, undefined);
+});
+
+test('P0 EDITOR UNDO ATOMICITY: Hide/Show batch commits and reverts N instances in one Undo/Redo step', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const instA = insideInstance({ id: 'inst-a' });
+  const instB = insideInstance({ id: 'inst-b' });
+  const instC = insideInstance({ id: 'inst-c' });
+  const packA = basePack({ id: 'pack-a', loadPlanNumber: 'LP-000A', cases: [instA, instB, instC] });
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [packA], folderLibrary: [], preferences: {} });
+
+  // Mirrors the fixed makeVisibilityButton() handler: one batched PackLibrary.update()
+  // for the whole selection, not one PackLibrary.updateInstance() per instance.
+  const targetIds = new Set(['inst-a', 'inst-b', 'inst-c']);
+  const livePack = PackLibrary.getById('pack-a');
+  const nextCases = livePack.cases.map(inst => (targetIds.has(inst.id) ? { ...inst, hidden: true } : inst));
+  PackLibrary.update('pack-a', { cases: nextCases });
+
+  const hiddenAfter = PackLibrary.getById('pack-a').cases;
+  assert.ok(hiddenAfter.every(inst => inst.hidden === true), 'all three instances are hidden after one Hide action');
+
+  assert.equal(StateStore.undo(), true, 'one Undo must restore the whole selection');
+  const restored = PackLibrary.getById('pack-a').cases;
+  assert.ok(restored.every(inst => inst.hidden === false), 'all three instances are visible again after exactly one Undo');
+
+  assert.equal(StateStore.redo(), true, 'one Redo must re-apply the whole selection');
+  const redone = PackLibrary.getById('pack-a').cases;
+  assert.ok(redone.every(inst => inst.hidden === true), 'all three instances are hidden again after exactly one Redo');
+});
+
 test('Requirement 19: Qty resets to 1 after a successful Add', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');

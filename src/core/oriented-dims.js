@@ -85,6 +85,26 @@ export function rotateVectorXYZ(vec, rotation) {
   return { x, y: yx, z: zx };
 }
 
+// Right-angle rotated components of a unit vector land within float error of
+// 0 or ±1 (e.g. cos(π/2) ≈ 6.12e-17), never near this boundary by accident.
+const VERTICAL_AXIS_EPSILON = 1e-6;
+
+/**
+ * Whether a Case's saved local height axis (+Y) is still parallel to world Y
+ * after a right-angle rotation. Both +Y and -Y (an inverted, upside-down
+ * pose) count as vertical — this is the physical-axis test that Handling
+ * Rule orientation policy (upright/onSide) is defined on, as opposed to
+ * checking raw Euler-component values, which can misclassify a pose that
+ * inverts the case without tipping its height axis off-vertical.
+ * @param {{x?:number,y?:number,z?:number}} rotation radians
+ * @returns {boolean}
+ */
+export function isHeightAxisVertical(rotation = {}) {
+  const locked = normalizeRightAngleRotation(rotation);
+  const axis = rotateVectorXYZ({ x: 0, y: 1, z: 0 }, locked);
+  return Math.abs(axis.x) <= VERTICAL_AXIS_EPSILON && Math.abs(axis.z) <= VERTICAL_AXIS_EPSILON;
+}
+
 /**
  * Effective (oriented) bounding-box dimensions of an axis-aligned case after a
  * right-angle rotation, matching THREE.js Euler order 'XYZ'. The case's

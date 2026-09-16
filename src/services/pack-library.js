@@ -19,9 +19,9 @@ import * as CategoryService from './category-service.js';
 import { TrailerPresets } from '../data/trailer-presets.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 import {
-  normalizeRightAngle,
   normalizeRightAngleRotation,
   getOrientedDimsForRotation,
+  isHeightAxisVertical,
 } from '../core/oriented-dims.js';
 import { caseSafeReuseKey, caseSafeReuseEqual } from '../core/cargo-canonical.js';
 // Hard-rule predicates and tolerances come from the single validation authority
@@ -437,21 +437,22 @@ export function clearOrientationLockPatch() {
 
 /**
  * Returns true if the given rotation is permitted by the case's orientation policy.
- * Mirrors the orientation gates AutoPack uses in buildOrientationCandidates() without
+ * Mirrors the orientation gate AutoPack's Case-policy checks are meant to use, without
  * importing the solver.
  *
- * - 'upright'        : only Y-axis rotation allowed (rx === 0 and rz === 0 after normalization)
- * - 'onside'/'on-side': only non-upright rotations allowed
+ * Upright/onSide are physical-axis facts, not Euler-representation facts: a pose is
+ * upright when the case's saved local height axis (+Y) is still parallel to world Y
+ * after the rotation (in either direction — an inverted, upside-down pose is still
+ * upright), via the shared isHeightAxisVertical() helper.
+ *
+ * - 'upright'        : isHeightAxisVertical(rotation)
+ * - 'onside'/'on-side': !isHeightAxisVertical(rotation)
  * - 'any' or missing : all rotations allowed (no restriction)
  */
 export function isOrientationAllowedByCasePolicy(caseData = {}, rotation = {}) {
-  const locked = normalizeRightAngleRotation(rotation);
-  const rx = normalizeRightAngle(locked.x);
-  const rz = normalizeRightAngle(locked.z);
-  const isUpright = rx === 0 && rz === 0;
   const lock = canonicalOrientationLock(caseData.orientationLock);
-  if (lock === 'upright') return isUpright;
-  if (lock === 'onSide') return !isUpright;
+  if (lock === 'upright') return isHeightAxisVertical(rotation);
+  if (lock === 'onSide') return !isHeightAxisVertical(rotation);
   return true;
 }
 

@@ -25686,3 +25686,234 @@ test('HANDLING-RULES-P0D both ordinary load entry points (seedIfEmpty and loadSc
 });
 
 // ── End HANDLING-RULES-P0D-LIVE-LOAD-CANONICALIZATION ────────────────────────
+
+// ── HANDLING-RULES-P0C-ONSIDE-GEOMETRY ────────────────────────────────────────
+// P0-C: manual orientation-policy validation (isOrientationAllowedByCasePolicy)
+// classified upright/onSide from raw normalized Euler-component presence
+// (rx===0 && rz===0), not from the case's actual physical height axis. A 180°
+// inversion (e.g. x=π) leaves the saved local +Y axis still world-vertical, but
+// the old Euler check misclassified it as onSide; the mirror case (z=π under
+// 'upright') was wrongly rejected even though the height axis is still vertical.
+//
+// The fix adds isHeightAxisVertical() next to the existing canonical rotation
+// authority in core/oriented-dims.js (built on the same rotateVectorXYZ() THREE
+// 'XYZ'-order math already used everywhere else) and reroutes
+// isOrientationAllowedByCasePolicy() through it. These tests verify the helper
+// against an INDEPENDENT oracle (real THREE.js Vector3/Euler, not the production
+// helper under test), then verify the production policy predicate and the real
+// manual-revalidation path.
+
+const RIGHT_ANGLE = Math.PI / 2;
+const RIGHT_ANGLES = [0, RIGHT_ANGLE, Math.PI, 3 * RIGHT_ANGLE];
+
+// Independent oracle: real THREE.js Euler/Vector3 math, not oriented-dims.js's
+// hand-rolled rotateVectorXYZ(). A rotation's height axis is vertical when the
+// case's local +Y unit vector, rotated by THREE Euler order 'XYZ', still has
+// world X and Z components at (or within float error of) zero.
+function threeOracleHeightAxisVertical(THREE, x, y, z) {
+  const v = new THREE.Vector3(0, 1, 0);
+  v.applyEuler(new THREE.Euler(x, y, z, 'XYZ'));
+  const EPS = 1e-6;
+  return Math.abs(v.x) <= EPS && Math.abs(v.z) <= EPS;
+}
+
+test('HANDLING-RULES-P0C isHeightAxisVertical direct truth table for the required single-axis right-angle cases', async () => {
+  const { isHeightAxisVertical } = await import(`${orientedDimsPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const cases = [
+    ['IDENTITY', { x: 0, y: 0, z: 0 }, true],
+    ['YAW 90', { x: 0, y: RIGHT_ANGLE, z: 0 }, true],
+    ['YAW 180', { x: 0, y: Math.PI, z: 0 }, true],
+    ['YAW 270', { x: 0, y: 3 * RIGHT_ANGLE, z: 0 }, true],
+    ['X 90', { x: RIGHT_ANGLE, y: 0, z: 0 }, false],
+    ['X 180', { x: Math.PI, y: 0, z: 0 }, true],
+    ['X 270', { x: 3 * RIGHT_ANGLE, y: 0, z: 0 }, false],
+    ['Z 90', { x: 0, y: 0, z: RIGHT_ANGLE }, false],
+    ['Z 180', { x: 0, y: 0, z: Math.PI }, true],
+    ['Z 270', { x: 0, y: 0, z: 3 * RIGHT_ANGLE }, false],
+    // Representative compound right-angle rotations.
+    ['X180+YAW90', { x: Math.PI, y: RIGHT_ANGLE, z: 0 }, true],
+    ['X180+Z180', { x: Math.PI, y: 0, z: Math.PI }, true],
+    ['X90+Z90', { x: RIGHT_ANGLE, y: 0, z: RIGHT_ANGLE }, false],
+    ['X90+YAW180', { x: RIGHT_ANGLE, y: Math.PI, z: 0 }, false],
+  ];
+
+  for (const [label, rotation, expected] of cases) {
+    assert.equal(isHeightAxisVertical(rotation), expected, `${label}: ${JSON.stringify(rotation)}`);
+  }
+});
+
+test('HANDLING-RULES-P0C 64-combination right-angle matrix agrees with an independent THREE.js oracle for geometric verticality and both upright/onSide policy results', async () => {
+  const THREE = await import(`${vendorThreePath.href}?t=${Date.now()}-${Math.random()}`);
+  const { isHeightAxisVertical } = await import(`${orientedDimsPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  let checked = 0;
+  const disagreementClassCovered = { xPiOnSideFalse: false, zPiUprightTrue: false };
+
+  for (const x of RIGHT_ANGLES) {
+    for (const y of RIGHT_ANGLES) {
+      for (const z of RIGHT_ANGLES) {
+        const rotation = { x, y, z };
+        const expectedVertical = threeOracleHeightAxisVertical(THREE, x, y, z);
+
+        assert.equal(isHeightAxisVertical(rotation), expectedVertical,
+          `geometric classification disagrees with independent oracle at x=${x} y=${y} z=${z}`);
+
+        const uprightAllowed = PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, rotation);
+        const onSideAllowed = PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'onSide' }, rotation);
+        assert.equal(uprightAllowed, expectedVertical,
+          `upright policy disagrees with oracle at x=${x} y=${y} z=${z}`);
+        assert.equal(onSideAllowed, !expectedVertical,
+          `onSide policy disagrees with oracle at x=${x} y=${y} z=${z}`);
+
+        if (x === Math.PI && y === 0 && z === 0) {
+          assert.equal(onSideAllowed, false, 'the original confirmed defect: x=π must NOT be legal onSide');
+          disagreementClassCovered.xPiOnSideFalse = true;
+        }
+        if (x === 0 && y === 0 && z === Math.PI) {
+          assert.equal(uprightAllowed, true, 'the mirror confirmed defect: z=π must be legal upright');
+          disagreementClassCovered.zPiUprightTrue = true;
+        }
+
+        checked += 1;
+      }
+    }
+  }
+
+  assert.equal(checked, 64, 'must cover all 4×4×4 right-angle combinations');
+  assert.equal(disagreementClassCovered.xPiOnSideFalse, true, 'the x=π/onSide disagreement class must be exercised');
+  assert.equal(disagreementClassCovered.zPiUprightTrue, true, 'the z=π/upright disagreement class must be exercised');
+});
+
+test('HANDLING-RULES-P0C required policy regressions A-F: the confirmed defects, their mirrors, genuine tips, any-policy, and canFlip independence', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  // A: onSide + x=π must REJECT (saved height axis remains vertical).
+  assert.equal(
+    PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'onSide' }, { x: Math.PI, y: 0, z: 0 }),
+    false, 'A: onSide policy must reject x=π — the height axis is still vertical, merely inverted'
+  );
+
+  // B: upright + z=π must ACCEPT (saved height axis remains vertical).
+  assert.equal(
+    PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, { x: 0, y: 0, z: Math.PI }),
+    true, 'B: upright policy must accept z=π — the height axis is still vertical, merely inverted'
+  );
+
+  // C: onSide + x=π/2 must ACCEPT (genuine tip).
+  assert.equal(
+    PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'onSide' }, { x: RIGHT_ANGLE, y: 0, z: 0 }),
+    true, 'C: onSide policy must accept a genuine x=π/2 tip'
+  );
+
+  // D: upright + y=π/2 must ACCEPT (yaw never tips the height axis).
+  assert.equal(
+    PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, { x: 0, y: RIGHT_ANGLE, z: 0 }),
+    true, 'D: upright policy must accept a pure yaw — it never tips the height axis'
+  );
+
+  // E: 'any' policy allows every right-angle pose regardless of upright/onSide classification.
+  for (const x of RIGHT_ANGLES) {
+    for (const y of RIGHT_ANGLES) {
+      for (const z of RIGHT_ANGLES) {
+        assert.equal(
+          PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'any' }, { x, y, z }),
+          true, `E: 'any' policy must allow x=${x} y=${y} z=${z}`
+        );
+      }
+    }
+  }
+
+  // F: canFlip must not affect manual policy results (it is AutoPack-scoped only).
+  for (const canFlip of [true, false]) {
+    assert.equal(
+      PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'onSide', canFlip }, { x: Math.PI, y: 0, z: 0 }),
+      false, `F: canFlip=${canFlip} must not change the onSide/x=π rejection`
+    );
+    assert.equal(
+      PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright', canFlip }, { x: 0, y: 0, z: Math.PI }),
+      true, `F: canFlip=${canFlip} must not change the upright/z=π acceptance`
+    );
+  }
+});
+
+function handlingRulesP0cCase(overrides = {}) {
+  const dimensions = overrides.dimensions || { length: 10, width: 10, height: 10 };
+  return {
+    id: overrides.id || 'case-p0c',
+    name: 'P0C Case',
+    manufacturer: 'QA',
+    category: 'Default',
+    color: '#9ca3af',
+    dimensions,
+    weight: overrides.weight || 10,
+    volume: dimensions.length * dimensions.width * dimensions.height,
+    canFlip: true,
+    stackable: true,
+    ...overrides,
+  };
+}
+
+function handlingRulesP0cInstance(id, caseId, rotation) {
+  return {
+    id, caseId, placement: 'packed', hidden: false, groupId: null,
+    transform: { position: { x: 60, y: 5, z: 0 }, rotation, scale: { x: 1, y: 1, z: 1 } },
+  };
+}
+
+test('HANDLING-RULES-P0C manual revalidation rejects a packed onSide-policy instance at x=π through the real PackLibrary validation path', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+
+  const caseData = handlingRulesP0cCase({ id: 'case-p0c-onside', orientationLock: 'onSide' });
+  const inst = handlingRulesP0cInstance('inst-p0c-onside', 'case-p0c-onside', { x: Math.PI, y: 0, z: 0 });
+  const pack = { id: 'pack-p0c-onside', truck, cases: [inst] };
+
+  const result = PackLib.revalidateManualPlacements(pack, [caseData]);
+
+  assert.deepEqual(result.invalidIds, ['inst-p0c-onside'],
+    'reproduces the original defect through the real production path: x=π must be invalid under an onSide policy');
+  assert.deepEqual(result.stagedIds, ['inst-p0c-onside'],
+    'the existing invalid-placement handling behavior (staging) must still apply — no new behavior invented');
+  const revalidated = result.pack.cases.find(c => c.id === 'inst-p0c-onside');
+  assert.equal(revalidated.placement, 'staged');
+});
+
+test('HANDLING-RULES-P0C manual revalidation does not reject a packed upright-policy instance at z=π on orientation grounds', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+
+  const caseData = handlingRulesP0cCase({ id: 'case-p0c-upright', orientationLock: 'upright' });
+  const inst = handlingRulesP0cInstance('inst-p0c-upright', 'case-p0c-upright', { x: 0, y: 0, z: Math.PI });
+  const pack = { id: 'pack-p0c-upright', truck, cases: [inst] };
+
+  const result = PackLib.revalidateManualPlacements(pack, [caseData]);
+
+  assert.deepEqual(result.invalidIds, [],
+    'the mirror defect fix: z=π must not be rejected by orientation policy under an upright lock');
+  assert.deepEqual(result.stagedIds, []);
+  const revalidated = result.pack.cases.find(c => c.id === 'inst-p0c-upright');
+  assert.equal(revalidated.placement, 'packed', 'the valid pose must remain packed in place, untouched');
+  assert.deepEqual(revalidated.transform.position, { x: 60, y: 5, z: 0 });
+});
+
+test('HANDLING-RULES-P0C isOrientationAllowedByCasePolicy delegates to the shared oriented-dims helper instead of reimplementing Euler-component checks', async () => {
+  const src = await fs.readFile(packLibraryPath, 'utf8');
+  const start = src.indexOf('export function isOrientationAllowedByCasePolicy(');
+  assert.ok(start >= 0, 'isOrientationAllowedByCasePolicy must be extractable');
+  const end = src.indexOf('\nfunction isFinitePositive(', start);
+  const body = src.slice(start, end);
+
+  assert.match(body, /isHeightAxisVertical\(rotation\)/,
+    'the policy predicate must delegate to isHeightAxisVertical, not reimplement axis math');
+  assert.doesNotMatch(body, /rx\s*===\s*0/,
+    'the old raw Euler-component check (rx === 0) must be removed');
+  assert.doesNotMatch(body, /rz\s*===\s*0/,
+    'the old raw Euler-component check (rz === 0) must be removed');
+
+  assert.match(src, /isHeightAxisVertical,?\s*\n?\s*\} from '\.\.\/core\/oriented-dims\.js'/,
+    'isHeightAxisVertical must be imported from the existing rotation authority, not redefined locally');
+});
+
+// ── End HANDLING-RULES-P0C-ONSIDE-GEOMETRY ────────────────────────────────────

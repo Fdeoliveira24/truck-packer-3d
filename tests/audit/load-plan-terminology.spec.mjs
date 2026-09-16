@@ -211,6 +211,8 @@ test('CASE-NOTES-TERM the in-progress app.js diff stays within approved PDF, lin
     'const filename = `${slugName}-backup-',
     'ImportExport.buildWorkspaceExportJSON(safeName, workspaceId)',
     "UIComponents.showToast('Workspace Backup download started'",
+    // HANDLING-RULES-P0D: live-load Case cargo-rule canonicalization owner marker.
+    'applyCanonicalCargoFields',
   ];
   const guardedDiff = diff
     .split(/(?=^@@)/m)

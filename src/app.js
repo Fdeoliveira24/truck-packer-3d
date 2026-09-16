@@ -88,6 +88,7 @@ import { createImportAppDialog } from './ui/overlays/import-app-dialog.js';
 import { createImportPackDialog } from './ui/overlays/import-pack-dialog.js';
 import { createImportCasesDialog } from './ui/overlays/import-cases-dialog.js';
 import { createAppHelpers } from './core/app-helpers.js';
+import { applyCanonicalCargoFields } from './core/cargo-canonical.js';
 import { installDevHelpers } from './core/dev/dev-helpers.js';
 import * as SupabaseClient from './core/supabase-client.js';
 import { createAuthOverlay } from './ui/overlays/auth-overlay.js';
@@ -2557,7 +2558,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
     function seedIfEmpty() {
       const stored = Storage.load();
       if (stored && Array.isArray(stored.caseLibrary) && Array.isArray(stored.packLibrary)) {
-        const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
+        const storedCases = (stored.caseLibrary || [])
+          .map(applyCanonicalCargoFields)
+          .map(applyCaseDefaultColor);
         const storedPacks = stored.packLibrary.map(pack =>
           PackLibrary.repairRestoredPackPlacements(pack, storedCases)
         );
@@ -2625,7 +2628,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
     function loadScopedStateOrSeed({ seedIfMissing = true } = {}) {
       const stored = Storage.load();
       if (stored && Array.isArray(stored.caseLibrary) && Array.isArray(stored.packLibrary)) {
-        const storedCases = (stored.caseLibrary || []).map(applyCaseDefaultColor);
+        const storedCases = (stored.caseLibrary || [])
+          .map(applyCanonicalCargoFields)
+          .map(applyCaseDefaultColor);
         const storedPacks = stored.packLibrary.map(pack =>
           PackLibrary.repairRestoredPackPlacements(pack, storedCases)
         );

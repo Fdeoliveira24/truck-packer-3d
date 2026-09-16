@@ -20210,6 +20210,36 @@ test('OPERATION-LIFECYCLE-AMEND global keyboard mutations are blocked while busy
     'delete shortcut must route through the guarded InteractionManager.deleteSelection');
 });
 
+test('P0 EDITOR-ONLY UNDO/REDO: keyboard Undo does not reach StateStore.undo() outside Editor', async () => {
+  const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
+  const start = keyboardSrc.indexOf('function undo()');
+  assert.ok(start >= 0, 'function undo() must exist');
+  const block = keyboardSrc.slice(start, start + 260);
+  const guardIdx = block.indexOf('if (!inEditor()) return;');
+  const busyGuardIdx = block.indexOf('if (mutationBlockedWhileBusy()) return;');
+  const storeCallIdx = block.indexOf('StateStore.undo()');
+  assert.ok(guardIdx >= 0, 'undo() must check inEditor() before mutating StateStore');
+  assert.ok(busyGuardIdx > guardIdx, 'undo() must still preserve the existing busy guard inside Editor');
+  assert.ok(storeCallIdx > busyGuardIdx, 'undo() must still call StateStore.undo() inside Editor after both guards');
+  assert.match(block, /UIComponents\.showToast\(ok \? 'Undone' : 'Nothing to undo'/,
+    'undo() must preserve its existing toast behavior inside Editor');
+});
+
+test('P0 EDITOR-ONLY UNDO/REDO: keyboard Redo does not reach StateStore.redo() outside Editor', async () => {
+  const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
+  const start = keyboardSrc.indexOf('function redo()');
+  assert.ok(start >= 0, 'function redo() must exist');
+  const block = keyboardSrc.slice(start, start + 260);
+  const guardIdx = block.indexOf('if (!inEditor()) return;');
+  const busyGuardIdx = block.indexOf('if (mutationBlockedWhileBusy()) return;');
+  const storeCallIdx = block.indexOf('StateStore.redo()');
+  assert.ok(guardIdx >= 0, 'redo() must check inEditor() before mutating StateStore');
+  assert.ok(busyGuardIdx > guardIdx, 'redo() must still preserve the existing busy guard inside Editor');
+  assert.ok(storeCallIdx > busyGuardIdx, 'redo() must still call StateStore.redo() inside Editor after both guards');
+  assert.match(block, /UIComponents\.showToast\(ok \? 'Redone' : 'Nothing to redo'/,
+    'redo() must preserve its existing toast behavior inside Editor');
+});
+
 test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are blocked while busy', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   assert.match(editorSrc, /function editorMutationBlocked\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,

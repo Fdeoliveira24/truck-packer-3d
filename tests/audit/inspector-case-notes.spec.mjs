@@ -1187,7 +1187,7 @@ test('the Load Plan Notes dot follows trimmed pack.notes and shared Save/Clear u
     'Save trims through the shared overlay');
   assert.match(overlaySrc, /writeValue\(clearValue, true/,
     'Clear is a distinct shared-overlay action');
-  assert.match(packLibrarySrc, /StateStore\.set\(\{ packLibrary: nextPacks \}\)/,
+  assert.match(packLibrarySrc, /StateStore\.set\(\{ packLibrary: nextPacks \}/,
     'PackLibrary.update must continue publishing the packLibrary change');
   assert.match(appSrc, /if \(changes\.caseLibrary \|\| changes\.packLibrary[\s\S]*?EditorUI\.render\(\);/,
     'a Save or Clear packLibrary change must synchronously rerender the Editor');

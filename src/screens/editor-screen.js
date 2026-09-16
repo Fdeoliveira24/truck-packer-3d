@@ -5178,7 +5178,13 @@ export function createEditorScreen({
         disabled: !instances.length,
         onClick: () => {
           if (editorMutationBlocked()) return;
-          instances.forEach(inst => PackLibrary.updateInstance(pack.id, inst.id, { hidden: !showSelection }));
+          const targetIds = new Set(instances.map(inst => inst.id));
+          const livePack = PackLibrary.getById(pack.id);
+          if (!livePack) return;
+          const nextCases = (livePack.cases || []).map(inst =>
+            targetIds.has(inst.id) ? { ...inst, hidden: !showSelection } : inst
+          );
+          PackLibrary.update(pack.id, { cases: nextCases });
         },
       });
     }

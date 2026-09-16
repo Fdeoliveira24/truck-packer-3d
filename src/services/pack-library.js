@@ -2154,7 +2154,7 @@ export function create(packData) {
   return pack;
 }
 
-export function update(packId, patch) {
+export function update(packId, patch, { skipHistory = false } = {}) {
   const packs = getPacks();
   const idx = packs.findIndex(p => p.id === packId);
   if (idx === -1) return null;
@@ -2188,7 +2188,7 @@ export function update(packId, patch) {
   next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
   next.stats = computeStats(next);
   const nextPacks = packs.map((p, i) => (i === idx ? next : p));
-  StateStore.set({ packLibrary: nextPacks });
+  StateStore.set({ packLibrary: nextPacks }, { skipHistory });
   return next;
 }
 

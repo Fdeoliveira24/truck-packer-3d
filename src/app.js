@@ -1630,7 +1630,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             thumbnail: dataUrl,
             thumbnailUpdatedAt: Date.now(),
             thumbnailSource: source === 'manual' ? 'manual' : 'auto',
-          });
+          }, { skipHistory: true });
 
           if (!quiet) UIComponents.showToast('Preview captured', 'success', { title: 'Preview' });
           return true;

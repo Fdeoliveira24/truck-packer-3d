@@ -20266,6 +20266,46 @@ test('P0 RUNTIME WIRING: app.js StateStore facade exposes resetHistory to AppShe
     'createAppShell must receive the app.js StateStore facade (not the CoreStateStore module directly)');
 });
 
+test('P0 EDITOR UNDO ATOMICITY: automatic preview capture writes skipHistory, never a user-facing Undo step', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+
+  const captureStart = appSrc.indexOf('async function capturePackPreview(packId,');
+  assert.ok(captureStart >= 0, 'capturePackPreview() must exist');
+  const captureEnd = appSrc.indexOf('\n      function clearPackPreview(', captureStart);
+  assert.ok(captureEnd > captureStart, 'capturePackPreview() must be extractable up to clearPackPreview()');
+  const captureBlock = appSrc.slice(captureStart, captureEnd);
+
+  assert.match(captureBlock, /PackLibrary\.update\(packId, \{\s*thumbnail: dataUrl,\s*thumbnailUpdatedAt: Date\.now\(\),\s*thumbnailSource: source === 'manual' \? 'manual' : 'auto',\s*\}, \{ skipHistory: true \}\)/,
+    'the derived preview write must pass skipHistory: true so it never consumes a user Undo step');
+  assert.doesNotMatch(captureBlock, /skipNotify/,
+    'the preview write must keep notifying subscribers normally — only history recording is skipped');
+
+  // clearPackPreview() (an explicit manual user action) is intentionally left
+  // on normal history semantics and must not be touched by this guard.
+  const clearStart = appSrc.indexOf('function clearPackPreview(');
+  const clearEnd = appSrc.indexOf('\n      }', clearStart);
+  const clearBlock = appSrc.slice(clearStart, clearEnd);
+  assert.doesNotMatch(clearBlock, /skipHistory/,
+    'clearPackPreview() is a manual user action and must remain normally undoable');
+});
+
+test('P0 EDITOR UNDO ATOMICITY: Hide/Show commits the whole selection in one PackLibrary.update() call', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+
+  const start = editorSrc.indexOf('function makeVisibilityButton(pack, selectedIds) {');
+  assert.ok(start >= 0, 'makeVisibilityButton() must exist');
+  const end = editorSrc.indexOf('\n    }', start);
+  assert.ok(end > start, 'makeVisibilityButton() must close');
+  const block = editorSrc.slice(start, end);
+
+  assert.doesNotMatch(block, /PackLibrary\.updateInstance\(/,
+    'Hide/Show must not loop PackLibrary.updateInstance() once per selected instance');
+  const updateCalls = block.match(/PackLibrary\.update\(pack\.id/g) || [];
+  assert.equal(updateCalls.length, 1, 'Hide/Show must call PackLibrary.update() exactly once for the whole selection');
+  assert.match(block, /if \(editorMutationBlocked\(\)\) return;/,
+    'Hide/Show must keep its existing mutation-blocked guard');
+});
+
 test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are blocked while busy', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   assert.match(editorSrc, /function editorMutationBlocked\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
@@ -24962,7 +25002,7 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
     src.indexOf('function makeVisibilityButton('),
     src.indexOf('function duplicateSelection(', src.indexOf('function makeVisibilityButton(')),
   );
-  assert.ok(visibility.indexOf('editorMutationBlocked()') < visibility.indexOf('PackLibrary.updateInstance'),
+  assert.ok(visibility.indexOf('editorMutationBlocked()') < visibility.indexOf('PackLibrary.update(pack.id'),
     'visibility mutation is guarded before any instance write');
 
   const category = src.slice(

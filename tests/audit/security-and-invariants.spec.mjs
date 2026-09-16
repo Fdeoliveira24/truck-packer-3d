@@ -7758,8 +7758,8 @@ test('EDITOR Case Browser New Case shortcut uses shared modal without adding to 
     'shared Case modal must preserve a current category when it exists in project categories');
   assert.match(modalSrc, /catColorInput\.type = 'color'[\s\S]*catColorInput\.setAttribute\('aria-label', 'Category color'\)/,
     'shared Case modal category swatch must expose a real color input');
-  assert.match(modalSrc, /CategoryService\.upsert\(\{ key: categoryKey, name: catMeta\.name, color: categoryColor \}\)/,
-    'shared Case modal must persist edited category colors through CategoryService');
+  assert.match(modalSrc, /CaseLibrary\.commitCaseWithCategory\(caseData, \{ key: categoryKey, name: catMeta\.name, color: categoryColor \}\)/,
+    'shared Case modal must persist edited category colors atomically with the Case commit');
   assert.match(modalSrc, /color: categoryColor/,
     'saved case data must use the edited category color');
   assert.doesNotMatch(modalSrc, /tp3d-cases-new-category-toggle|New category'/,
@@ -20306,6 +20306,46 @@ test('P0 EDITOR UNDO ATOMICITY: Hide/Show commits the whole selection in one Pac
     'Hide/Show must keep its existing mutation-blocked guard');
 });
 
+test('P0 CASE/CATEGORY ATOMICITY: Editor Set Category wiring uses the atomic commit, not per-case upsert', async () => {
+  const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
+
+  const start = editorSrc.indexOf('function openSetCategoryModal(pack, selectedIds) {');
+  assert.ok(start >= 0, 'openSetCategoryModal() must exist');
+  const end = editorSrc.indexOf('\n    }', start);
+  assert.ok(end > start, 'openSetCategoryModal() must close');
+  const block = editorSrc.slice(start, end);
+
+  assert.doesNotMatch(block, /CaseLibrary\.upsert\(/,
+    'Set Category must not loop CaseLibrary.upsert() once per selected Case template');
+  assert.doesNotMatch(block, /CategoryService\.upsert\(/,
+    'Set Category must not publish the category separately from the Case commit');
+  const commitCalls = block.match(/CaseLibrary\.commitCasesWithCategory\(/g) || [];
+  assert.equal(commitCalls.length, 1,
+    'Set Category must call the atomic Case+category commit exactly once for the whole Apply');
+});
+
+test('P0 CASE/CATEGORY ATOMICITY: Case modal Save wiring uses the atomic commit, not two separate publishes', async () => {
+  const src = await fs.readFile(caseModalPath, 'utf8');
+
+  const saveStart = src.indexOf("label: 'Save'", src.indexOf('UIComponents.showModal({'));
+  assert.ok(saveStart >= 0, 'the shared Case modal Save action must exist');
+  const saveBlock = src.slice(saveStart, saveStart + 4200);
+
+  assert.doesNotMatch(saveBlock, /CategoryService\.upsert\(/,
+    'Save must not publish the category separately from the Case commit');
+  assert.doesNotMatch(saveBlock, /CaseLibrary\.upsert\(caseData\)/,
+    'Save must not publish the Case separately from the category commit');
+  assert.match(saveBlock, /CaseLibrary\.commitCaseWithCategory\(caseData,/,
+    'Save must commit the Case and category atomically in one call');
+  // The inline "+Add" category button remains a separate, category-only,
+  // already-atomic action and must keep using CategoryService.upsert().
+  const addCategoryStart = src.indexOf("newCatSave.addEventListener('click'");
+  const addCategoryEnd = src.indexOf('catWrap.appendChild(catCreateRow)');
+  const addCategoryBlock = src.slice(addCategoryStart, addCategoryEnd);
+  assert.match(addCategoryBlock, /CategoryService\.upsert\(/,
+    'the standalone Add Category action is unaffected by the Save atomicity fix');
+});
+
 test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are blocked while busy', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   assert.match(editorSrc, /function editorMutationBlocked\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
@@ -24982,8 +25022,8 @@ test('APP-STABILIZATION-PHASE3 dialog guards sit immediately before import, cate
   const saveBlock = caseModal.slice(saveStart, saveStart + 4200);
   const saveGuard = saveBlock.indexOf('beforeMutate() === false');
   assert.ok(saveGuard >= 0, 'shared modal Save has a lifecycle guard');
-  assert.ok(saveGuard < saveBlock.indexOf('CategoryService.upsert'), 'Save guards the category commit');
-  assert.ok(saveGuard < saveBlock.indexOf('CaseLibrary.upsert'), 'Save guards the case commit');
+  assert.ok(saveGuard < saveBlock.indexOf('CaseLibrary.commitCaseWithCategory'),
+    'Save guards the atomic Case + category commit');
 });
 
 test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMutationBlocked', async () => {
@@ -25011,8 +25051,8 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
   );
   assert.match(category, /function openSetCategoryModal[\s\S]*editorMutationBlocked\(\)/,
     'Set Category entry is guarded');
-  assert.ok(category.lastIndexOf('editorMutationBlocked()') < category.indexOf('CategoryService.upsert'),
-    'Set Category Apply re-checks before its first write');
+  assert.ok(category.lastIndexOf('editorMutationBlocked()') < category.indexOf('CaseLibrary.commitCasesWithCategory'),
+    'Set Category Apply re-checks before its atomic Case + category commit');
 
   const notesSave = src.slice(
     src.indexOf("label: 'Save'", src.indexOf('function openNotesModal(')),

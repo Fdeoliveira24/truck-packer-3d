@@ -8497,7 +8497,7 @@ test('REPAIR-1C 3+4: lane Always and lane Never both pack the corrected beam hor
   assert.notEqual(Solver.classifyAutoPackItem({ dims: { l: 144, w: 8, h: 8 }, laneItem: false, orientationLock: 'upright' }), 'LANE_ITEM', 'lane Never → skips the forced lane phase');
 });
 
-test('REPAIR-1C 5: manual exact lock explains the old before/after without changing the case rule', async () => {
+test('REPAIR-1C 5 (P0-B): an exact instance lock at a pose the case policy forbids does not override it and still does not pack', async () => {
   const stamp = `?t=${Date.now()}-${Math.random()}`;
   const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
   const PackLib = await import(`${packLibraryPath.href}${stamp}`);
@@ -8507,13 +8507,21 @@ test('REPAIR-1C 5: manual exact lock explains the old before/after without chang
   const before = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true,
     items: [r1cSolverItem({ orientationLock: 'onSide', canFlip: false })] });
   assert.ok(!before.placements.has('i'), 'onSide beam does not pack (engine correctly honors the case policy)');
-  // Manual horizontal rotation = an exact instance lock at identity, which has
-  // higher precedence than the case policy → packs. Case rule is unchanged.
+  // P0-B: the horizontal (identity) pose is upright — isHeightAxisVertical is true —
+  // which is illegal under an onSide case policy. Locking to it no longer overrides
+  // the case policy (that was the confirmed P0-B defect); buildOrientationCandidates
+  // returns no candidate for the stale lock, so the item still does not pack, exactly
+  // like the unlocked "before" case. The case rule itself is unchanged.
   const after = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true,
     items: [r1cSolverItem({ orientationLock: 'onSide', canFlip: false, orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 } })] });
-  assert.ok(after.placements.has('i'), 'an exact instance lock at the horizontal pose overrides onSide and packs');
-  const od = after.orientedDims.get('i');
-  assert.deepEqual({ l: od.length, w: od.width, h: od.height }, { l: 144, w: 8, h: 8 }, 'manual exact lock packs horizontal 144x8x8');
+  assert.ok(!after.placements.has('i'),
+    'an exact instance lock at a case-policy-illegal pose (onSide + horizontal/upright) must not override the policy and must not pack');
+  assert.equal(
+    Solver.buildOrientationCandidates({ l: 144, w: 8, h: 8 },
+      { orientationLock: 'onSide', canFlip: false, orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 } }
+    ).length,
+    0, 'the stale lock yields no orientation candidate at all — no silent fallback to another pose'
+  );
 });
 
 test('REPAIR-1C 6: a correctly-configured beam that still cannot fit stages atomic on the floor', async () => {
@@ -25917,3 +25925,158 @@ test('HANDLING-RULES-P0C isOrientationAllowedByCasePolicy delegates to the share
 });
 
 // ── End HANDLING-RULES-P0C-ONSIDE-GEOMETRY ────────────────────────────────────
+
+// ── HANDLING-RULES-P0B-EXACT-LOCK-PRECEDENCE ──────────────────────────────────
+// P0-B: buildOrientationCandidates() returned an exact instance lock's candidate
+// before ever consulting the case's current orientationLock, so a stale lock
+// (legal when created, illegal after the case was edited) could still be packed
+// by AutoPack while manual validation (isOrientationAllowedByCasePolicy, fixed
+// under P0-C) correctly rejected the identical pose. Case orientation policy is
+// now authoritative: an exact lock is only ever a valid candidate if its pose is
+// still legal under the case's current policy (via P0-C's isHeightAxisVertical).
+// An illegal lock yields NO candidate — never a silent fallback to another
+// orientation, and never a mutation of the stale lock itself (that lifecycle is
+// P0-A's separate concern).
+
+test('HANDLING-RULES-P0B direct exact-lock matrix A-H against the real buildOrientationCandidates()', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const dims = { l: 10, w: 20, h: 30 };
+  const cand = (orientationLock, lockedRotation, canFlip) =>
+    Solver.buildOrientationCandidates(dims, { orientationLock, orientationLocked: true, lockedRotation, canFlip });
+
+  // A: upright + illegal tip -> no candidate.
+  assert.deepEqual(cand('upright', { x: RIGHT_ANGLE, y: 0, z: 0 }), [],
+    'A: upright policy + a tipped lock must yield no candidate');
+
+  // B: upright + normal upright -> exactly one candidate, preserving lock/rotation/dims.
+  let cs = cand('upright', { x: 0, y: 0, z: 0 });
+  assert.equal(cs.length, 1, 'B: upright + identity lock must yield exactly one candidate');
+  assert.equal(cs[0].locked, true, 'B: the candidate must be marked locked');
+  assert.deepEqual(cs[0].rotation, { x: 0, y: 0, z: 0 }, 'B: rotation must be the normalized locked rotation');
+  assert.deepEqual({ l: cs[0].l, w: cs[0].w, h: cs[0].h }, { l: 10, w: 20, h: 30 }, 'B: dims must match the unrotated case');
+
+  // C: upright + inverted upright (x=π) -> exactly one candidate. Proves P0-B consumes P0-C.
+  cs = cand('upright', { x: Math.PI, y: 0, z: 0 });
+  assert.equal(cs.length, 1, 'C: upright + an inverted-but-vertical lock must still yield exactly one candidate');
+  assert.equal(cs[0].locked, true);
+  assert.deepEqual(cs[0].rotation, { x: Math.PI, y: 0, z: 0 });
+  assert.deepEqual({ l: cs[0].l, w: cs[0].w, h: cs[0].h }, { l: 10, w: 20, h: 30 },
+    'C: a 180° inversion about X leaves l/w/h magnitudes unchanged');
+
+  // D: onSide + upright -> no candidate.
+  assert.deepEqual(cand('onSide', { x: 0, y: 0, z: 0 }), [],
+    'D: onSide policy + an upright lock must yield no candidate');
+
+  // E: onSide + genuine side -> exactly one candidate.
+  cs = cand('onSide', { x: RIGHT_ANGLE, y: 0, z: 0 });
+  assert.equal(cs.length, 1, 'E: onSide + a genuine tip must yield exactly one candidate');
+  assert.equal(cs[0].locked, true);
+  assert.deepEqual(cs[0].rotation, { x: RIGHT_ANGLE, y: 0, z: 0 });
+
+  // F: onSide + inverted vertical (x=π) -> no candidate (still vertical, so still illegal under onSide).
+  assert.deepEqual(cand('onSide', { x: Math.PI, y: 0, z: 0 }), [],
+    'F: onSide policy + an inverted-but-still-vertical lock must yield no candidate');
+
+  // G: any + tipped + canFlip:false -> exactly one candidate. canFlip does not gate an explicit exact lock.
+  cs = cand('any', { x: RIGHT_ANGLE, y: 0, z: 0 }, false);
+  assert.equal(cs.length, 1, 'G: any policy + a tipped lock must yield exactly one candidate regardless of canFlip:false');
+  assert.equal(cs[0].locked, true);
+  assert.deepEqual(cs[0].rotation, { x: RIGHT_ANGLE, y: 0, z: 0 });
+
+  // H: any + tipped + canFlip:true -> exactly one candidate, same as G.
+  cs = cand('any', { x: RIGHT_ANGLE, y: 0, z: 0 }, true);
+  assert.equal(cs.length, 1, 'H: any policy + a tipped lock must yield exactly one candidate regardless of canFlip:true');
+  assert.equal(cs[0].locked, true);
+  assert.deepEqual(cs[0].rotation, { x: RIGHT_ANGLE, y: 0, z: 0 });
+});
+
+test('HANDLING-RULES-P0B solver integration: AutoPack must not place an item using a case-policy-illegal exact lock, and must place a legal one normally', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const truck = { length: 240, width: 96, height: 96 };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const dims = { l: 20, w: 10, h: 5 };
+
+  // Before P0-B this illegal tipped lock would pack. It must now be treated as
+  // having no legal orientation candidate — the existing unresolved/partial
+  // result behavior applies, with no new rejection UI invented.
+  const illegalItem = {
+    instanceId: 'illegal-lock', caseId: 'c', dims,
+    orientationLock: 'upright', canFlip: false,
+    orientationLocked: true, lockedRotation: { x: RIGHT_ANGLE, y: 0, z: 0 },
+  };
+  const illegalResult = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [illegalItem] });
+  assert.equal(illegalResult.placements.has('illegal-lock'), false,
+    'AutoPack must not place an item using an illegal exact lock');
+  assert.ok(illegalResult.unpacked.includes('illegal-lock'),
+    'the item must follow the existing unpacked/partial-result behavior');
+  assert.equal(illegalResult.solveStatus.complete, false, 'the solve must be reported incomplete, not silently successful');
+
+  // Control: same geometry, a legal exact upright lock — must pack normally.
+  const legalItem = {
+    instanceId: 'legal-lock', caseId: 'c', dims,
+    orientationLock: 'upright', canFlip: false,
+    orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 },
+  };
+  const legalResult = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [legalItem] });
+  assert.equal(legalResult.placements.has('legal-lock'), true,
+    'AutoPack must place an item using a case-policy-legal exact lock, geometry otherwise allowing');
+  assert.deepEqual(legalResult.orientedDims.get('legal-lock'), { length: 20, width: 10, height: 5 });
+  assert.equal(legalResult.solveStatus.complete, true);
+});
+
+test('HANDLING-RULES-P0B manual validation and AutoPack now agree on the same stale-lock pose, and on its legal inverted-upright control', async () => {
+  const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const dims = { l: 10, w: 20, h: 30 };
+
+  // The original confirmed disagreement: upright policy + a tipped rotation.
+  const tippedRot = { x: RIGHT_ANGLE, y: 0, z: 0 };
+  assert.equal(
+    PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, tippedRot),
+    false, 'manual policy: upright rejects a tipped rotation'
+  );
+  assert.deepEqual(
+    Solver.buildOrientationCandidates(dims, { orientationLock: 'upright', orientationLocked: true, lockedRotation: tippedRot }),
+    [], 'AutoPack: upright + the identical tipped exact lock must now also yield no candidate'
+  );
+
+  // Legal inverted-upright control: both paths must agree it is allowed.
+  const invertedRot = { x: Math.PI, y: 0, z: 0 };
+  assert.equal(
+    PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, invertedRot),
+    true, 'manual policy: upright accepts an inverted-but-vertical rotation'
+  );
+  const invertedCands = Solver.buildOrientationCandidates(dims,
+    { orientationLock: 'upright', orientationLocked: true, lockedRotation: invertedRot });
+  assert.equal(invertedCands.length, 1, 'AutoPack: upright + the identical inverted-upright exact lock must yield one candidate');
+  assert.equal(invertedCands[0].locked, true);
+});
+
+test('HANDLING-RULES-P0B canFlip is not part of the exact-lock policy gate, and unlocked candidate generation is untouched', async () => {
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  const start = src.indexOf('export function buildOrientationCandidates(');
+  assert.ok(start >= 0, 'buildOrientationCandidates must be extractable');
+  const lockedBranchEnd = src.indexOf('\n  const canFlip = item.canFlip === true;', start);
+  assert.ok(lockedBranchEnd > start, 'the locked branch must be extractable');
+  const lockedBranch = src.slice(start, lockedBranchEnd);
+
+  assert.doesNotMatch(lockedBranch, /item\.canFlip/,
+    'the exact-lock branch must not read item.canFlip — it only gates AutoPack-generated alternatives, not an explicit exact lock');
+  assert.match(lockedBranch, /isHeightAxisVertical\(lockedRotation\)/,
+    'the exact-lock branch must delegate to the shared P0-C geometric helper');
+  assert.match(lockedBranch, /canonicalOrientationLock\(item\.orientationLock\)/,
+    'the exact-lock branch must use the canonical policy-value authority');
+
+  // The unlocked candidate-generation body (after the locked branch) must be
+  // byte-identical to before P0-B — this diff only touches the locked branch.
+  const unlockedBody = src.slice(lockedBranchEnd, src.indexOf('\n  return candidates;\n}', lockedBranchEnd));
+  assert.match(unlockedBody, /if \(lock === 'upright' \|\| lock === 'any'\) \{\s*\n\s*add\(0, 0, 0\);\s*\n\s*add\(0, RIGHT_ANGLE_RAD, 0\);/,
+    'unlocked upright/any candidate generation must be unchanged');
+  assert.match(unlockedBody, /if \(lock === 'onSide'\) \{\s*\n\s*add\(0, 0, RIGHT_ANGLE_RAD\);\s*\n\s*add\(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD\);/,
+    'unlocked onSide candidate generation must be unchanged');
+  assert.match(unlockedBody, /if \(canFlip && lock === 'any'\) \{/,
+    'canFlip-gated tipped-face generation for unlocked items must be unchanged');
+});
+
+// ── End HANDLING-RULES-P0B-EXACT-LOCK-PRECEDENCE ──────────────────────────────

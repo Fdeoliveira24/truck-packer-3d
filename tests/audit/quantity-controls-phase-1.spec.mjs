@@ -34,6 +34,7 @@ const storageUrl = new URL('../../src/core/storage.js', import.meta.url);
 const packLibraryUrl = new URL('../../src/services/pack-library.js', import.meta.url);
 const appShellUrl = new URL('../../src/ui/app-shell.js', import.meta.url);
 const caseLibraryUrl = new URL('../../src/services/case-library.js', import.meta.url);
+const categoryServiceUrl = new URL('../../src/services/category-service.js', import.meta.url);
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
@@ -51,15 +52,16 @@ const indexHtmlPath = new URL('../../index.html', import.meta.url);
 // same way, or StateStore.init() here would initialize a DIFFERENT module
 // instance than the one those services actually read from.
 async function loadModules() {
-  const [CoreNormalizer, StateStore, CoreStorage, PackLibrary, CaseLibrary, ImportExport] = await Promise.all([
+  const [CoreNormalizer, StateStore, CoreStorage, PackLibrary, CaseLibrary, CategoryService, ImportExport] = await Promise.all([
     import(normalizerUrl.href),
     import(stateStoreUrl.href),
     import(storageUrl.href),
     import(packLibraryUrl.href),
     import(caseLibraryUrl.href),
+    import(categoryServiceUrl.href),
     import(importExportUrl.href),
   ]);
-  return { CoreNormalizer, StateStore, CoreStorage, PackLibrary, CaseLibrary, ImportExport };
+  return { CoreNormalizer, StateStore, CoreStorage, PackLibrary, CaseLibrary, CategoryService, ImportExport };
 }
 
 // AppShell.navigate() itself never touches the DOM (only the createAppShell()
@@ -547,6 +549,186 @@ test('P0 EDITOR UNDO ATOMICITY: Hide/Show batch commits and reverts N instances 
   assert.equal(StateStore.redo(), true, 'one Redo must re-apply the whole selection');
   const redone = PackLibrary.getById('pack-a').cases;
   assert.ok(redone.every(inst => inst.hidden === true), 'all three instances are hidden again after exactly one Redo');
+});
+
+test('P0 CASE/CATEGORY ATOMICITY: Set Category commits N Case templates + category preferences as one Undo/Redo step', async () => {
+  const { StateStore, CaseLibrary } = await loadModules();
+  const caseA = baseCase({ id: 'case-a', name: 'Case A', category: 'x' });
+  const caseB = baseCase({ id: 'case-b', name: 'Case B', category: 'y' });
+  StateStore.init({
+    caseLibrary: [caseA, caseB],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: {
+      categories: [
+        { key: 'x', name: 'X', color: '#111111' },
+        { key: 'y', name: 'Y', color: '#222222' },
+      ],
+    },
+  });
+
+  // Mirrors the fixed openSetCategoryModal() Apply handler: build the patch
+  // list first (preserving the existing per-case no-op skip), then commit the
+  // whole selection + category atomically in one call.
+  const result = CaseLibrary.commitCasesWithCategory(
+    [
+      { id: 'case-a', category: 'cables', name: 'Cables' },
+      { id: 'case-b', category: 'cables', name: 'Cables' },
+    ],
+    { name: 'Cables', color: '#ff9f1c' }
+  );
+  assert.equal(result.cases.length, 2, 'both Case templates are committed');
+
+  assert.equal(CaseLibrary.getById('case-a').category, 'cables');
+  assert.equal(CaseLibrary.getById('case-b').category, 'cables');
+  assert.ok(StateStore.get('preferences').categories.find(c => c.key === 'cables'),
+    'the Cables category preference exists after Apply');
+
+  assert.equal(StateStore.undo(), true, 'one Undo must be sufficient for the whole Apply');
+  assert.equal(CaseLibrary.getById('case-a').category, 'x', 'Case A returns to its original category');
+  assert.equal(CaseLibrary.getById('case-a').name, 'Case A', 'Case A returns to its original name');
+  assert.equal(CaseLibrary.getById('case-b').category, 'y', 'Case B returns to its original category');
+  assert.equal(CaseLibrary.getById('case-b').name, 'Case B', 'Case B returns to its original name');
+  assert.equal(StateStore.get('preferences').categories.find(c => c.key === 'cables'), undefined,
+    'the category preference is gone — the exact prior state is restored');
+
+  assert.equal(StateStore.undo(), false, 'a second Undo must not be required for the same Apply action');
+
+  assert.equal(StateStore.redo(), true, 'one Redo restores both templates and the category preference together');
+  assert.equal(CaseLibrary.getById('case-a').category, 'cables');
+  assert.equal(CaseLibrary.getById('case-b').category, 'cables');
+  assert.ok(StateStore.get('preferences').categories.find(c => c.key === 'cables'));
+});
+
+test('P0 CASE/CATEGORY ATOMICITY: multiple selected instances sharing one Case template still commit once', async () => {
+  const { StateStore, CaseLibrary } = await loadModules();
+  const caseA = baseCase({ id: 'case-a', name: 'Case A', category: 'x' });
+  StateStore.init({
+    caseLibrary: [caseA],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: { categories: [{ key: 'x', name: 'X', color: '#111111' }] },
+  });
+
+  // Two cargo instances both reference case-a — the Editor de-dupes to one
+  // patch via a Set before calling this, and the atomic commit itself must
+  // also never create more than one entry for the shared template.
+  const result = CaseLibrary.commitCasesWithCategory(
+    [{ id: 'case-a', category: 'cables', name: 'Cables' }],
+    { name: 'Cables', color: '#ff9f1c' }
+  );
+  assert.equal(result.cases.length, 1, 'the shared Case template is committed exactly once');
+  assert.equal(CaseLibrary.getCases().length, 1, 'no duplicate Case entry was created');
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(CaseLibrary.getById('case-a').category, 'x');
+  assert.equal(StateStore.undo(), false, 'history remains exactly one step for the whole action');
+});
+
+test('P0 CASE/CATEGORY ATOMICITY: New Case Save with an unchanged existing category is one Undo/Redo step', async () => {
+  const { StateStore, CaseLibrary } = await loadModules();
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: { categories: [{ key: 'default', name: 'Default', color: '#9ca3af' }] },
+  });
+
+  const newCase = baseCase({ id: 'case-new', name: 'New Case', category: 'default' });
+  const result = CaseLibrary.commitCaseWithCategory(newCase, { key: 'default', name: 'Default', color: '#9ca3af' });
+  assert.ok(result.case, 'the new Case was committed');
+  assert.equal(CaseLibrary.getById('case-new').name, 'New Case');
+
+  assert.equal(StateStore.undo(), true, 'one Undo must remove the Save');
+  assert.equal(CaseLibrary.getById('case-new'), null, 'the new Case is gone after one Undo');
+
+  assert.equal(StateStore.undo(), false, 'no extra invisible category Undo step exists');
+
+  assert.equal(StateStore.redo(), true, 'one Redo must restore the Save');
+  assert.equal(CaseLibrary.getById('case-new').name, 'New Case');
+});
+
+test('P0 CASE/CATEGORY ATOMICITY: Case Save that also creates/changes category metadata is one Undo/Redo step', async () => {
+  const { StateStore, CaseLibrary } = await loadModules();
+  StateStore.init({
+    caseLibrary: [],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: { categories: [{ key: 'default', name: 'Default', color: '#9ca3af' }] },
+  });
+
+  const newCase = baseCase({ id: 'case-new', name: 'New Case', category: 'cables' });
+  CaseLibrary.commitCaseWithCategory(newCase, { key: 'cables', name: 'Cables', color: '#ff9f1c' });
+
+  assert.equal(CaseLibrary.getById('case-new').category, 'cables');
+  assert.ok(StateStore.get('preferences').categories.find(c => c.key === 'cables'), 'the new category preference exists');
+
+  assert.equal(StateStore.undo(), true, 'one Undo must restore both prior states');
+  assert.equal(CaseLibrary.getById('case-new'), null, 'the Case is gone');
+  assert.equal(StateStore.get('preferences').categories.find(c => c.key === 'cables'), undefined,
+    'the category preference is also gone — restored together');
+
+  assert.equal(StateStore.redo(), true, 'one Redo must restore both new states');
+  assert.equal(CaseLibrary.getById('case-new').category, 'cables');
+  assert.ok(StateStore.get('preferences').categories.find(c => c.key === 'cables'));
+});
+
+test('P0 CASE/CATEGORY ATOMICITY: editing an existing Case plus its category metadata is one Undo/Redo step', async () => {
+  const { StateStore, CaseLibrary } = await loadModules();
+  const existing = baseCase({ id: 'case-a', name: 'Case A', category: 'x' });
+  StateStore.init({
+    caseLibrary: [existing],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: { categories: [{ key: 'x', name: 'X', color: '#111111' }] },
+  });
+
+  const edited = { ...existing, name: 'Case A Updated', category: 'cables' };
+  CaseLibrary.commitCaseWithCategory(edited, { key: 'cables', name: 'Cables', color: '#ff9f1c' });
+
+  assert.equal(CaseLibrary.getById('case-a').name, 'Case A Updated');
+  assert.equal(CaseLibrary.getById('case-a').category, 'cables');
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(CaseLibrary.getById('case-a').name, 'Case A');
+  assert.equal(CaseLibrary.getById('case-a').category, 'x');
+  assert.equal(StateStore.get('preferences').categories.find(c => c.key === 'cables'), undefined);
+
+  assert.equal(StateStore.undo(), false, 'the edit remains a single Undo step');
+
+  assert.equal(StateStore.redo(), true);
+  assert.equal(CaseLibrary.getById('case-a').name, 'Case A Updated');
+});
+
+test('P0 CASE/CATEGORY ATOMICITY: a validation failure commits neither preferences nor caseLibrary, and no history entry', async () => {
+  const { StateStore, CaseLibrary } = await loadModules();
+  const caseA = baseCase({ id: 'case-a', name: 'Case A', category: 'x', itemCode: 'ITEM-1' });
+  const caseB = baseCase({ id: 'case-b', name: 'Case B', category: 'y', itemCode: 'ITEM-2' });
+  StateStore.init({
+    caseLibrary: [caseA, caseB],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: {
+      categories: [
+        { key: 'x', name: 'X', color: '#111111' },
+        { key: 'y', name: 'Y', color: '#222222' },
+      ],
+    },
+  });
+
+  const prefsBefore = StateStore.get('preferences');
+  const casesBefore = CaseLibrary.getCases();
+
+  assert.throws(() =>
+    CaseLibrary.commitCaseWithCategory(
+      { ...caseB, itemCode: 'ITEM-1' },
+      { name: 'Cables', color: '#ff9f1c' }
+    )
+  );
+
+  assert.deepEqual(StateStore.get('preferences'), prefsBefore, 'preferences must remain fully unchanged after a failed commit');
+  assert.deepEqual(CaseLibrary.getCases(), casesBefore, 'caseLibrary must remain fully unchanged after a failed commit');
+  assert.equal(StateStore.undo(), false, 'no history entry was produced by the failed action');
 });
 
 test('Requirement 19: Qty resets to 1 after a successful Add', async () => {

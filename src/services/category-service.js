@@ -121,9 +121,14 @@ export function resetToDefaultIfNoCases(cases) {
   return true;
 }
 
-export function upsert({ key, name, color }) {
+// Pure: compute the resulting category and the full next preferences object
+// for an upsert, without publishing it. Reused by upsert() and by
+// CaseLibrary's atomic Case/category commit paths so a Case Save or Set
+// Category action can bundle the category change into the SAME
+// StateStore.set() call as the Case write (one history entry, not two).
+function calculateUpsertResult({ key, name, color }) {
   const k = normalizeKey(key || name) || 'default';
-  if (!k) return meta('default');
+  if (!k) return { category: meta('default'), preferences: null };
   const list = all();
   const colorHex = normalizeHex(color) || meta(k).color || colorForKey(k);
   const next = { key: k, name: name || meta(k).name, color: colorHex };
@@ -131,8 +136,17 @@ export function upsert({ key, name, color }) {
   if (idx > -1) list[idx] = next;
   else list.push(next);
   const prefs = getPreferences() || {};
-  savePreferences({ ...prefs, categories: ensureDefault(list) });
-  return next;
+  return { category: next, preferences: { ...prefs, categories: ensureDefault(list) } };
+}
+
+export function calculateUpsert(input) {
+  return calculateUpsertResult(input);
+}
+
+export function upsert({ key, name, color }) {
+  const { category, preferences } = calculateUpsertResult({ key, name, color });
+  if (preferences) savePreferences(preferences);
+  return category;
 }
 
 function reassignCategoryInCases(from, to) {

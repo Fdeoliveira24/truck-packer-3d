@@ -108,14 +108,68 @@ export function buildStorableCase(caseData) {
   return next;
 }
 
-export function upsert(caseData) {
-  const cases = getCases();
+// Pure: canonicalize + identity-validate one Case (insert or update) against a
+// given cases array, without touching state. Shared by upsert() and by the
+// atomic Case/category commit paths below so every write path enforces the
+// same canonical storage and itemCode-uniqueness rules.
+function prepareCaseUpsert(caseData, cases) {
   const idx = cases.findIndex(c => c.id === caseData.id);
   const next = buildStorableCase(caseData);
   next.itemCode = assertItemCodeAvailable(next.itemCode, cases, { excludeId: next.id });
   const nextCases = idx > -1 ? cases.map((c, i) => (i === idx ? next : c)) : [...cases, next];
+  return { case: next, cases: nextCases };
+}
 
+export function upsert(caseData) {
+  const { cases: nextCases } = prepareCaseUpsert(caseData, getCases());
   StateStore.set({ caseLibrary: nextCases });
+}
+
+// Atomically commit one Case (insert or update, through the same canonical
+// build/identity checks as upsert()) together with an optional category
+// change, as a single significant StateStore write — one history entry, one
+// Undo/Redo step for the whole logical Save.
+export function commitCaseWithCategory(caseData, categoryUpdate) {
+  const { case: next, cases: nextCases } = prepareCaseUpsert(caseData, getCases());
+  const setPatch = { caseLibrary: nextCases };
+  let category = null;
+  if (categoryUpdate) {
+    const calculated = CategoryService.calculateUpsert(categoryUpdate);
+    category = calculated.category;
+    if (calculated.preferences) setPatch.preferences = calculated.preferences;
+  }
+  StateStore.set(setPatch);
+  return { case: next, category };
+}
+
+// Atomically commit a batch of EXISTING Case template patches (matched by id;
+// a patch whose id has no existing match is skipped, mirroring the existing
+// per-case "case not found" skip) together with an optional category change,
+// as a single significant StateStore write — used by Editor Set Category so
+// every affected Case template and the category commit as one logical
+// mutation with one Undo/Redo step, never a partially-reverted selection.
+export function commitCasesWithCategory(casePatches, categoryUpdate) {
+  const patches = Array.isArray(casePatches) ? casePatches : [];
+  let cases = getCases();
+  const updated = [];
+  patches.forEach(patch => {
+    const existing = cases.find(c => c.id === patch.id);
+    if (!existing) return;
+    const { case: next, cases: nextCases } = prepareCaseUpsert({ ...existing, ...patch }, cases);
+    cases = nextCases;
+    updated.push(next);
+  });
+
+  const setPatch = {};
+  let category = null;
+  if (categoryUpdate) {
+    const calculated = CategoryService.calculateUpsert(categoryUpdate);
+    category = calculated.category;
+    if (calculated.preferences) setPatch.preferences = calculated.preferences;
+  }
+  if (updated.length) setPatch.caseLibrary = cases;
+  if (Object.keys(setPatch).length) StateStore.set(setPatch);
+  return { cases: updated, category };
 }
 
 export function reassignCategory(oldKey, newKey) {

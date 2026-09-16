@@ -5323,17 +5323,22 @@ export function createEditorScreen({
                 return false;
               }
               const color = String(colorInput.value || '').trim();
-              const meta = CategoryService.upsert({ name, color });
-              let updated = 0;
+              const meta = CategoryService.calculateUpsert({ name, color }).category;
+              const casePatches = [];
               selectedCaseIds.forEach(caseId => {
                 const c = CaseLibrary.getById(caseId);
                 if (!c) return;
-                const next = { ...c, category: meta.key };
+                const next = { id: caseId, category: meta.key };
                 if (renameCheckbox.checked) next.name = name;
                 if ((c.category || 'default') === meta.key && (!renameCheckbox.checked || c.name === name)) return;
-                CaseLibrary.upsert(next);
-                updated += 1;
+                casePatches.push(next);
               });
+              // One atomic commit: the category preference and every affected Case
+              // template publish together as a single significant history entry, so
+              // one Undo/Redo always covers the whole Apply — never a partially
+              // reverted selection.
+              CaseLibrary.commitCasesWithCategory(casePatches, { name, color });
+              const updated = casePatches.length;
               UIComponents.showToast(
                 updated
                   ? `Updated category to “${meta.name}” for ${updated} case template(s)`

@@ -511,8 +511,10 @@ export function openCaseModal({
             color: categoryColor,
           };
           if (typeof beforeMutate === 'function' && beforeMutate() === false) return false;
-          CategoryService.upsert({ key: categoryKey, name: catMeta.name, color: categoryColor });
-          CaseLibrary.upsert(caseData);
+          // One atomic commit: the Case and its category publish together as a
+          // single significant history entry, so one Undo/Redo always covers the
+          // whole Save — never an extra invisible category-only step.
+          CaseLibrary.commitCaseWithCategory(caseData, { key: categoryKey, name: catMeta.name, color: categoryColor });
           UIComponents.showToast('Case saved', 'success');
           if (typeof onSaved === 'function') onSaved(caseData);
           return true;

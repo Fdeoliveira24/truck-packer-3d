@@ -696,6 +696,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       set: CoreStateStore.set,
       replace: CoreStateStore.replace,
       snapshot: CoreStateStore.snapshot,
+      resetHistory: CoreStateStore.resetHistory,
       undo: CoreStateStore.undo,
       redo: CoreStateStore.redo,
       subscribe: CoreStateStore.subscribe,

@@ -20240,6 +20240,32 @@ test('P0 EDITOR-ONLY UNDO/REDO: keyboard Redo does not reach StateStore.redo() o
     'redo() must preserve its existing toast behavior inside Editor');
 });
 
+test('P0 RUNTIME WIRING: app.js StateStore facade exposes resetHistory to AppShell', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+
+  const facadeStart = appSrc.indexOf('const StateStore = {');
+  assert.ok(facadeStart >= 0, 'app.js must define the runtime StateStore facade');
+  const facadeEnd = appSrc.indexOf('\n    };', facadeStart);
+  assert.ok(facadeEnd > facadeStart, 'the StateStore facade object literal must close');
+  const facadeBlock = appSrc.slice(facadeStart, facadeEnd);
+
+  // AppShell.navigate() calls StateStore.resetHistory() on Editor entry — if the
+  // hand-maintained facade drifts and stops forwarding it, that throws at runtime
+  // ("StateStore.resetHistory is not a function") even though every method exists
+  // on the underlying core/state-store.js module.
+  for (const method of ['init', 'get', 'set', 'replace', 'snapshot', 'resetHistory', 'undo', 'redo', 'subscribe']) {
+    assert.match(facadeBlock, new RegExp(`${method}:\\s*CoreStateStore\\.${method},`),
+      `the StateStore facade must forward ${method} from CoreStateStore`);
+  }
+
+  const appShellCallStart = appSrc.indexOf('createAppShell({');
+  assert.ok(appShellCallStart >= 0, 'app.js must construct AppShell');
+  const appShellCallEnd = appSrc.indexOf('});', appShellCallStart);
+  const appShellCallBlock = appSrc.slice(appShellCallStart, appShellCallEnd);
+  assert.match(appShellCallBlock, /\bStateStore,/,
+    'createAppShell must receive the app.js StateStore facade (not the CoreStateStore module directly)');
+});
+
 test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are blocked while busy', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   assert.match(editorSrc, /function editorMutationBlocked\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,

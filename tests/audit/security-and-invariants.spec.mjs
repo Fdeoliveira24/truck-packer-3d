@@ -25441,3 +25441,59 @@ test('P0-CONTRACT window.OrgContext exposes exactly four members and no unresolv
   }
   assert.match(app, /window\.OrgContext = OrgContext/, 'OrgContext assignment timing must be preserved');
 });
+
+// ── EDIT-CASE-MODAL-SCROLL-CLIPPING ──────────────────────────────────────────
+
+test('EDIT-CASE-MODAL-SCROLL-CLIPPING shared .modal shell is height-constrained and scrollable at all widths, not only under the mobile media query', async () => {
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+
+  const modalMatch = css.match(/(?<!-)\.modal\s*\{([^}]*)\}/);
+  assert.ok(modalMatch, 'base .modal rule must be locatable');
+  const modalRule = modalMatch[1];
+  assert.match(modalRule, /max-height:\s*90vh/,
+    'base .modal must cap its own height so it never exceeds the viewport, regardless of viewport width');
+  assert.match(modalRule, /display:\s*flex/,
+    'base .modal must lay out header/body/footer as a flex column so the footer can stay pinned');
+  assert.match(modalRule, /flex-direction:\s*column/,
+    'base .modal must stack header/body/footer vertically');
+
+  const modalBodyMatch = css.match(/\.modal-body\s*\{([^}]*)\}/);
+  assert.ok(modalBodyMatch, '.modal-body rule must be locatable');
+  const modalBodyRule = modalBodyMatch[1];
+  assert.match(modalBodyRule, /overflow-y:\s*auto/,
+    '.modal-body must scroll internally when content is taller than the modal, keeping header/footer visible');
+  assert.match(modalBodyRule, /flex:\s*1/,
+    '.modal-body must be the flexible (growing/shrinking) region between the fixed header and footer');
+  assert.match(modalBodyRule, /min-height:\s*0/,
+    '.modal-body must allow shrinking below its content size so overflow-y: auto can take effect inside a flex column');
+
+  const mobileModalBlockMatch = css.match(/\/\* Modal mobile improvements \*\/\s*@media \(max-width: 768px\) \{([\s\S]*?)\n\}/);
+  assert.ok(mobileModalBlockMatch, 'the modal mobile-improvements media query must still exist');
+  const mobileBlock = mobileModalBlockMatch[1];
+  assert.doesNotMatch(mobileBlock, /\.modal\s*\{/,
+    'height containment must not be re-declared as a width-gated .modal override — it must live in the base rule');
+  assert.doesNotMatch(mobileBlock, /\.modal-body\s*\{/,
+    'scrolling must not be re-declared as a width-gated .modal-body override — it must live in the base rule');
+});
+
+test('EDIT-CASE-MODAL-SCROLL-CLIPPING mobile modal-footer stacking is unchanged by the height-containment fix', async () => {
+  const css = await fs.readFile(stylesMainPath, 'utf8');
+
+  const mobileModalBlockMatch = css.match(/\/\* Modal mobile improvements \*\/\s*@media \(max-width: 768px\) \{([\s\S]*?)\n\}/);
+  assert.ok(mobileModalBlockMatch, 'the modal mobile-improvements media query must still exist');
+  const mobileBlock = mobileModalBlockMatch[1];
+
+  const footerMatch = mobileBlock.match(/\.modal-footer\s*\{([^}]*)\}/);
+  assert.ok(footerMatch, 'mobile .modal-footer override must remain');
+  assert.match(footerMatch[1], /flex-direction:\s*column-reverse/,
+    'mobile footer buttons must remain stacked column-reverse (primary action on top)');
+  assert.match(footerMatch[1], /padding-bottom:\s*calc\(var\(--space-4\) \+ env\(safe-area-inset-bottom\)\)/,
+    'mobile footer must keep its safe-area bottom padding');
+
+  const footerBtnMatch = mobileBlock.match(/\.modal-footer \.btn\s*\{([^}]*)\}/);
+  assert.ok(footerBtnMatch, 'mobile .modal-footer .btn override must remain');
+  assert.match(footerBtnMatch[1], /width:\s*100%/,
+    'mobile footer buttons must remain full-width');
+});
+
+// ── End EDIT-CASE-MODAL-SCROLL-CLIPPING ──────────────────────────────────────

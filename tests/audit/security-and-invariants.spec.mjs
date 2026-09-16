@@ -24452,6 +24452,7 @@ async function createLateWorkspaceHydrationRuntime({
     };
     const Utils = { volumeInCubicInches: () => 0 };
     const applyCaseDefaultColor = value => value;
+    const applyCanonicalCargoFields = value => value;
     ${src.slice(scopeStart, scopeEnd)}
     ${src.slice(uiResetStart, uiResetEnd)}
     globalThis.__applyWorkspaceScopedLocalState = applyWorkspaceScopedLocalState;
@@ -25497,3 +25498,191 @@ test('EDIT-CASE-MODAL-SCROLL-CLIPPING mobile modal-footer stacking is unchanged 
 });
 
 // ── End EDIT-CASE-MODAL-SCROLL-CLIPPING ──────────────────────────────────────
+
+// ── HANDLING-RULES-P0D-LIVE-LOAD-CANONICALIZATION ────────────────────────────
+// P0-D: ordinary storage load (Storage.load() via app.js's seedIfEmpty()/
+// loadScopedStateOrSeed()) did not canonicalize Case Handling Rule field types,
+// so a legacy string-typed value (e.g. stackable:"false") could diverge in
+// meaning between the summary/UI (strict === false, reads as "not restricted"),
+// restored placement repair (uses the raw value directly), and AutoPack (which
+// already canonicalized on its own path). These tests exercise the real
+// production functions the fix touches — Storage.load(), applyCanonicalCargoFields(),
+// and PackLibrary.repairRestoredPackPlacements() — not a re-implementation.
+
+function handlingRulesP0dMemoryStorage() {
+  const values = new Map();
+  return {
+    get length() {
+      return values.size;
+    },
+    getItem(key) {
+      return values.has(key) ? values.get(key) : null;
+    },
+    setItem(key, value) {
+      values.set(key, String(value));
+    },
+    removeItem(key) {
+      values.delete(key);
+    },
+    key(index) {
+      return Array.from(values.keys())[index] || null;
+    },
+  };
+}
+
+test('HANDLING-RULES-P0D legacy string-typed Case rules survive raw Storage.load() but are canonicalized by the same applyCanonicalCargoFields() step app.js now applies before publication', async () => {
+  const Storage = await import(`${storagePath.href}?t=${Date.now()}-${Math.random()}`);
+  const { applyCanonicalCargoFields } = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+  const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
+  const { getCaseHandlingSummary } = await import(`${summaryPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const originalWindow = globalThis.window;
+  const localStorage = handlingRulesP0dMemoryStorage();
+  const legacyCase = {
+    id: 'case-p0d-legacy',
+    name: 'Legacy Case',
+    manufacturer: 'QA',
+    category: 'Default',
+    dimensions: { length: 20, width: 10, height: 5 },
+    weight: 12,
+    createdAt: 100,
+    updatedAt: 200,
+    canFlip: 'false',
+    stackable: 'false',
+    noStackOnTop: 'true',
+    isPallet: 'false',
+    laneItem: 'false',
+    someApprovedExtensionField: 'keep-me',
+  };
+
+  try {
+    globalThis.window = { localStorage };
+    Storage.setStorageScope('p0d-user');
+    Storage.setWorkspaceScope('p0d-org');
+    localStorage.setItem('truckPacker3d:v1:p0d-user', JSON.stringify({
+      version: 'test',
+      savedAt: 1,
+      preferences: {},
+    }));
+    localStorage.setItem('truckPacker3d:v1:p0d-user:workspace:p0d-org', JSON.stringify({
+      version: 'test',
+      savedAt: 2,
+      caseLibrary: [legacyCase],
+      packLibrary: [],
+      folderLibrary: [],
+      currentPackId: null,
+    }));
+
+    const loaded = Storage.load();
+    const rawCase = loaded.caseLibrary.find(c => c.id === 'case-p0d-legacy');
+    assert.equal(typeof rawCase.stackable, 'string',
+      'ordinary Storage.load() alone does not canonicalize Case rule types (this is the confirmed P0-D gap)');
+    assert.equal(rawCase.stackable, 'false');
+
+    // This is the exact transform app.js's seedIfEmpty()/loadScopedStateOrSeed()
+    // now apply to stored.caseLibrary before it reaches placement repair/publication.
+    const canonicalCases = loaded.caseLibrary.map(applyCanonicalCargoFields);
+    const canon = canonicalCases.find(c => c.id === 'case-p0d-legacy');
+
+    assert.equal(canon.canFlip, false);
+    assert.equal(typeof canon.canFlip, 'boolean');
+    assert.equal(canon.stackable, false);
+    assert.equal(typeof canon.stackable, 'boolean');
+    assert.equal(canon.noStackOnTop, true);
+    assert.equal(typeof canon.noStackOnTop, 'boolean');
+    assert.equal(canon.isPallet, false);
+    assert.equal(typeof canon.isPallet, 'boolean');
+    assert.equal(canon.laneItem, false);
+    assert.equal(typeof canon.laneItem, 'boolean');
+
+    assert.equal(canon.id, 'case-p0d-legacy', 'Case id must be unchanged');
+    assert.equal(canon.name, 'Legacy Case', 'unrelated display fields must survive');
+    assert.deepEqual(canon.dimensions, { length: 20, width: 10, height: 5 }, 'dimensions must be untouched');
+    assert.equal(canon.weight, 12, 'weight must be untouched');
+    assert.equal(canon.createdAt, 100, 'createdAt must be untouched');
+    assert.equal(canon.someApprovedExtensionField, 'keep-me', 'safe extension metadata must survive');
+
+    // Summary must now agree with what repair/AutoPack already treated as canonical.
+    assert.deepEqual(getCaseHandlingSummary(rawCase), [],
+      'the strict-equality summary reads the raw legacy string as "no restriction" — this is the divergence P0-D closes');
+    assert.deepEqual(getCaseHandlingSummary(canon), ['No top load', 'Lane: Never'],
+      'once canonicalized, the summary agrees with the canonical value repair/AutoPack use');
+  } finally {
+    Storage.setStorageScope('anon');
+    Storage.setWorkspaceScope('no-org');
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
+test('HANDLING-RULES-P0D restored placement repair must evaluate a legacy stackable:"false" support canonically and must not silently retain a child resting on it as packed', async () => {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const { applyCanonicalCargoFields } = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
+
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+  // The base covers nearly the whole floor so, once its support is correctly
+  // disqualified, there is no other legal floor spot for the child to repair
+  // to — the outcome is deterministic (staged), not geometry-dependent.
+  const rawBaseCase = makePackImportSafeCase({
+    id: 'p0d-base-case',
+    dimensions: { length: 100, width: 44, height: 10 },
+    weight: 200,
+    stackable: 'false', // legacy string, as Storage.load() would return it uncanonicalized
+  });
+  const childCase = makePackImportSafeCase({
+    id: 'p0d-child-case',
+    dimensions: { length: 10, width: 10, height: 10 },
+    weight: 5,
+  });
+  const baseInst = makePackImportInstance('p0d-base-case', {
+    id: 'p0d-base',
+    transform: { position: { x: 60, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    placement: 'packed',
+  });
+  const childInst = makePackImportInstance('p0d-child-case', {
+    id: 'p0d-child',
+    transform: { position: { x: 60, y: 15, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+    placement: 'packed',
+  });
+  const pack = { id: 'p0d-pack', truck, cases: [baseInst, childInst] };
+
+  // Pre-fix contrast: feeding repair the raw, uncanonicalized rule value
+  // reproduces the confirmed defect — the child is silently retained as packed
+  // on a support whose rule says it must not carry anything.
+  const preFixResult = PackLib.repairRestoredPackPlacements(pack, [rawBaseCase, childCase]);
+  assert.equal(preFixResult.cases.find(c => c.id === 'p0d-child').placement, 'packed',
+    'documents the confirmed P0-D defect: raw string "false" does not trip the strict stackable === false check');
+
+  // Fixed pipeline: canonicalize before repair, exactly as app.js now does.
+  const canonicalCases = [applyCanonicalCargoFields(rawBaseCase), childCase];
+  const fixedResult = PackLib.repairRestoredPackPlacements(pack, canonicalCases);
+  const repairedChild = fixedResult.cases.find(c => c.id === 'p0d-child');
+  const repairedBase = fixedResult.cases.find(c => c.id === 'p0d-base');
+
+  assert.notEqual(repairedChild.placement, 'packed',
+    'restored placement repair must not silently accept a child resting on a canonically stackable:false support');
+  assert.equal(repairedChild.placement, 'staged',
+    'with no other legal floor space, the correctly-disqualified child must be staged');
+  assert.equal(repairedBase.placement, 'packed',
+    'the valid, unaffected support must not be moved or staged by this repair');
+});
+
+test('HANDLING-RULES-P0D both ordinary load entry points (seedIfEmpty and loadScopedStateOrSeed) canonicalize Case cargo rules before repair, not just initial boot', async () => {
+  const appSrc = await fs.readFile(appPath, 'utf8');
+
+  for (const fnName of ['seedIfEmpty', 'loadScopedStateOrSeed']) {
+    const start = appSrc.indexOf(`function ${fnName}(`);
+    assert.ok(start >= 0, `${fnName} must be extractable from app.js`);
+    const repairCallIdx = appSrc.indexOf('repairRestoredPackPlacements', start);
+    assert.ok(repairCallIdx > start, `${fnName} must call repairRestoredPackPlacements`);
+    const body = appSrc.slice(start, repairCallIdx);
+    assert.match(body, /\.map\(applyCanonicalCargoFields\)[\s\S]*\.map\(applyCaseDefaultColor\)/,
+      `${fnName} must canonicalize Case cargo-rule fields (applyCanonicalCargoFields) before ` +
+      'applyCaseDefaultColor and before placement repair, not just at initial application boot');
+  }
+
+  assert.match(appSrc, /import \{ applyCanonicalCargoFields \} from '\.\/core\/cargo-canonical\.js'/,
+    'app.js must import the existing narrow cargo-rule canonicalizer, not reimplement it');
+});
+
+// ── End HANDLING-RULES-P0D-LIVE-LOAD-CANONICALIZATION ────────────────────────

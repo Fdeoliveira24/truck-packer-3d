@@ -53,6 +53,7 @@ import {
   RIGHT_ANGLE_RAD,
   normalizeRightAngleRotation,
   getOrientedDimsForRotation as getOrientedDimsForRotationCanonical,
+  isHeightAxisVertical,
 } from '../core/oriented-dims.js';
 
 const LONG_RATIO = 4;
@@ -112,6 +113,14 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
   const d = readDims(dims);
   if (!d.l || !d.w || !d.h) return [];
 
+  const lock = canonicalOrientationLock(item.orientationLock); // 'any' | 'upright' | 'onSide'
+
+  // Case orientation policy is authoritative even over an exact instance lock.
+  // A lock's pose was legal when created, but the Case may have been edited
+  // since — canFlip plays no part here (it only gates AutoPack's freedom to
+  // GENERATE alternative faces, not the validity of an already-chosen exact
+  // pose). An illegal locked pose yields no candidate at all: exact lock means
+  // exact lock, never a silent fallback to another orientation.
   if (item.orientationLocked === true) {
     const lockedRotation = normalizeRightAngleRotation(
       item.lockedRotation ||
@@ -119,11 +128,12 @@ export function buildOrientationCandidates(dims = {}, item = {}) {
         item.rotation ||
         {}
     );
+    if (lock === 'upright' && !isHeightAxisVertical(lockedRotation)) return [];
+    if (lock === 'onSide' && isHeightAxisVertical(lockedRotation)) return [];
     const oriented = getOrientedDimsForRotation(d, lockedRotation);
     return [makeCandidate(oriented.l, oriented.w, oriented.h, lockedRotation, true)];
   }
 
-  const lock = canonicalOrientationLock(item.orientationLock); // 'any' | 'upright' | 'onSide'
   const canFlip = item.canFlip === true;
   const seen = new Set();
   const candidates = [];

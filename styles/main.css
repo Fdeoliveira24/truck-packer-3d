@@ -1508,6 +1508,9 @@ tr:hover td {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   overflow: hidden;
+  max-height: 90vh;
+  display: flex;
+  flex-direction: column;
 }
 
 .modal-header {
@@ -1529,6 +1532,9 @@ tr:hover td {
   padding: var(--space-5);
   display: grid;
   gap: var(--space-4);
+  overflow-y: auto;
+  flex: 1;
+  min-height: 0;
 }
 
 .modal-footer {
@@ -1686,18 +1692,6 @@ tr:hover td {
 
 /* Modal mobile improvements */
 @media (max-width: 768px) {
-  .modal {
-    max-height: 90vh;
-    display: flex;
-    flex-direction: column;
-  }
-
-  .modal-body {
-    overflow-y: auto;
-    flex: 1;
-    min-height: 0;
-  }
-
   .modal-footer {
     flex-direction: column-reverse;
     gap: var(--space-3);

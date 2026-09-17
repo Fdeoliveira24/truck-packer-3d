@@ -2088,14 +2088,6 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
   return { case: nextCase, category, packImpact };
 }
 
-// Ordinary local/workspace load preserves deliberately stale cargo until the
-// user validates it. Explicit import/backup repair keeps its existing contract.
-export function preparePackForOrdinaryLoad(pack, caseLibrary) {
-  return isHandlingRulesValidationRequired(pack, caseLibrary)
-    ? pack
-    : repairRestoredPackPlacements(pack, caseLibrary);
-}
-
 // Completeness concerns packed placements only; staged integrity diagnostics
 // remain available without preventing certification of understood truck cargo.
 export function getPackedReconciliationCompleteness(pack, reconciliation, failedIds = []) {

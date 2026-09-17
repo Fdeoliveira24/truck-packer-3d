@@ -489,40 +489,46 @@ test('HANDLING-RULES-P0A incomplete validation drives both warning toasts', asyn
   assert.match(handler, /tone = 'warning'/);
 });
 
-test('HANDLING-RULES-P0A ordinary persisted reload preserves stale cargo, while current and legacy Packs still repair', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase();
-  const pack = activePackFixture();
-  initFixture(StateStore, caseA, pack, 'packs');
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-  const saved = JSON.parse(JSON.stringify(StateStore.snapshot()));
-  assert.deepEqual(saved.packLibrary[0].cases, pack.cases);
-  assert.equal(saved.packLibrary[0].lastEdited, pack.lastEdited);
-  const reloaded = PackLibrary.preparePackForOrdinaryLoad(saved.packLibrary[0], saved.caseLibrary);
-  assert.deepEqual(reloaded, saved.packLibrary[0]);
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(reloaded, saved.caseLibrary), true);
-  for (const legacy of [false, true]) {
-    const candidate = { ...pack };
-    if (!legacy) candidate.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(candidate, saved.caseLibrary);
-    const repaired = PackLibrary.preparePackForOrdinaryLoad(candidate, saved.caseLibrary);
-    assert.deepEqual(repaired, PackLibrary.repairRestoredPackPlacements(candidate, saved.caseLibrary));
-    assert.notDeepEqual(repaired.cases, candidate.cases, 'ordinary repair remains active');
-  }
-});
-
-test('HANDLING-RULES-P0A both ordinary app load call sites use the shared stale-preserving helper', () => {
+// Execute the exact production map callbacks from both private load functions.
+// The surrounding auth/storage shell is outside this focused persistence test.
+function ordinaryLoadMapper(name, PackLibrary, storedCases) {
   const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
-  for (const name of ['seedIfEmpty', 'loadScopedStateOrSeed']) {
-    const start = app.indexOf(`function ${name}(`);
-    assert.ok(start >= 0);
-    const end = app.indexOf('const storedPrefs', start);
-    assert.ok(end > start);
-    const block = app.slice(start, end);
-    assert.match(block, /\.map\(applyCanonicalCargoFields\)/);
-    assert.match(block, /stored\.packLibrary\.map\(pack =>\s*PackLibrary\.preparePackForOrdinaryLoad\(pack, storedCases\)\s*\)/);
-    assert.doesNotMatch(block, /repairRestoredPackPlacements/);
-  }
-});
+  const start = app.indexOf(`function ${name}(`);
+  assert.ok(start >= 0);
+  const end = app.indexOf('const storedPrefs', start);
+  assert.ok(end > start);
+  const block = app.slice(start, end);
+  assert.match(block, /\.map\(applyCanonicalCargoFields\)/);
+  const match = block.match(/stored\.packLibrary\.map\((pack =>[\s\S]*?)\n        \);/);
+  assert.ok(match, 'production load mapper must be found');
+  assert.match(match[1], /isHandlingRulesValidationRequired\(pack, storedCases\)/);
+  assert.match(match[1], /\? pack\s*: PackLibrary\.repairRestoredPackPlacements\(pack, storedCases\)/);
+  return runInNewContext(`(${match[1]})`, { PackLibrary, storedCases });
+}
+
+for (const name of ['seedIfEmpty', 'loadScopedStateOrSeed']) {
+  test(`HANDLING-RULES-P0A ${name}: persisted stale cargo survives reload; current and legacy cargo still repair`, async () => {
+    const { StateStore, PackLibrary } = await freshModules();
+    const caseA = mkCase();
+    const pack = activePackFixture();
+    initFixture(StateStore, caseA, pack, 'packs');
+    PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
+    const saved = JSON.parse(JSON.stringify(StateStore.snapshot()));
+    assert.deepEqual(saved.packLibrary[0].cases, pack.cases);
+    assert.equal(saved.packLibrary[0].lastEdited, pack.lastEdited);
+    const load = ordinaryLoadMapper(name, PackLibrary, saved.caseLibrary);
+    const reloaded = load(saved.packLibrary[0]);
+    assert.deepEqual(reloaded, saved.packLibrary[0]);
+    assert.equal(PackLibrary.isHandlingRulesValidationRequired(reloaded, saved.caseLibrary), true);
+    for (const legacy of [false, true]) {
+      const candidate = { ...pack };
+      if (!legacy) candidate.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(candidate, saved.caseLibrary);
+      const repaired = load(candidate);
+      assert.deepEqual(repaired, PackLibrary.repairRestoredPackPlacements(candidate, saved.caseLibrary));
+      assert.notDeepEqual(repaired.cases, candidate.cases, 'ordinary repair remains active');
+    }
+  });
+}
 
 async function runProductionUnpack(StateStore, PackLibrary, CaseLibrary) {
   const fn = sourceFunction(editorSource, 'async function unpackAll()', 'function renderInspectorNoPack()');

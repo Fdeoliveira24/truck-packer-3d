@@ -3521,11 +3521,10 @@ export function createEditorScreen({
           UIComponents.showToast('Validation failed. Please try again.', 'error');
           return;
         }
-        const hasFailures = Array.isArray(result.failedIds) && result.failedIds.length > 0;
         const summary = result.summary || {};
         let message = 'Load Plan validated. No cargo changes were needed.';
         let tone = 'success';
-        if (hasFailures) {
+        if (result.validationComplete !== true) {
           message = 'Some cargo could not be validated and remains flagged.';
           tone = 'warning';
         } else if ((summary.staged || 0) > 0) {
@@ -4943,7 +4942,13 @@ export function createEditorScreen({
         const nextCases = organized.cases;
         const movedCount = organized.movedCount;
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
-        PackLibrary.update(packId, { cases: nextCases });
+        const patch = { cases: nextCases };
+        if (!nextCases.some(inst => inst.placement === 'packed')) {
+          patch.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(
+            { ...livePack, cases: nextCases }, CaseLibrary.getCases()
+          );
+        }
+        PackLibrary.update(packId, patch);
         UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });
         render();
       } finally {

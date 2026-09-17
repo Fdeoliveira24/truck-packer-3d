@@ -144,8 +144,7 @@ function normalizeCategoryKey(value) {
 function caseSaveToastArgs(packImpact) {
   if (!packImpact) return ['Case saved', 'success'];
   const summary = packImpact.summary || {};
-  const hasFailures = Array.isArray(packImpact.failedIds) && packImpact.failedIds.length > 0;
-  if (hasFailures) {
+  if (packImpact.validationComplete !== true) {
     return ['Case saved, but the Load Plan still requires validation.', 'warning'];
   }
   const staged = Number(summary.staged) || 0;

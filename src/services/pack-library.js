@@ -2046,11 +2046,10 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
             repairDependents: true,
             preserveStagedPositions: true,
           });
-          const hasFailures = Array.isArray(result.failedIds) && result.failedIds.length > 0;
           const revalidated = { ...result.pack };
           revalidated.stats = computeStats(revalidated, nextCaseLibrary);
           revalidated.lastEdited = Date.now();
-          if (!hasFailures) {
+          if (result.validationComplete === true) {
             revalidated.handlingRulesValidatedSignature =
               buildHandlingRulesValiditySignature(revalidated, nextCaseLibrary);
           } else if (!p.handlingRulesValidatedSignature) {
@@ -2065,6 +2064,9 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
             packId: p.id,
             summary: result.summary,
             failedIds: result.failedIds,
+            validationComplete: result.validationComplete,
+            unresolved: result.unresolved,
+            malformed: result.malformed,
             warnings: result.warnings,
           };
           return revalidated;
@@ -2084,6 +2086,31 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
 
   StateStore.set(setPatch);
   return { case: nextCase, category, packImpact };
+}
+
+// Ordinary local/workspace load preserves deliberately stale cargo until the
+// user validates it. Explicit import/backup repair keeps its existing contract.
+export function preparePackForOrdinaryLoad(pack, caseLibrary) {
+  return isHandlingRulesValidationRequired(pack, caseLibrary)
+    ? pack
+    : repairRestoredPackPlacements(pack, caseLibrary);
+}
+
+// Completeness concerns packed placements only; staged integrity diagnostics
+// remain available without preventing certification of understood truck cargo.
+export function getPackedReconciliationCompleteness(pack, reconciliation, failedIds = []) {
+  const packedIds = new Set((pack.cases || []).filter(inst => inst && inst.placement === 'packed').map(inst => inst.id));
+  const unresolved = reconciliation.unresolved || [];
+  const malformed = reconciliation.malformed || [];
+  const packedUnresolved = unresolved.filter(entry => packedIds.has(entry.id));
+  const packedMalformed = malformed.filter(entry => packedIds.has(entry.id));
+  return {
+    unresolved,
+    malformed,
+    packedUnresolved,
+    packedMalformed,
+    validationComplete: failedIds.length === 0 && packedUnresolved.length === 0 && packedMalformed.length === 0,
+  };
 }
 
 export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
@@ -2119,6 +2146,7 @@ export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
 
   return {
     pack: nextPack,
+    ...getPackedReconciliationCompleteness(source, reconciliation, failedIds),
     adjustedIds: (reconciliation.adjusted || []).map(entry => entry.id),
     repairedIds,
     stagedIds,
@@ -2143,11 +2171,15 @@ export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary
   // A fresh handling-rules signature may only be persisted once a path has
   // actually performed a complete, successful whole-Pack revalidation — never
   // after an unresolved failure. Centralized here so every existing caller
-  // (drag/rotate/delete-repair/truck-change) and the explicit Validate Load
+  // (drag/rotate/delete-repair) and the explicit Validate Load
   // Plan action all get correct signature lifecycle for free.
-  const hasFailures = Array.isArray(result.failedIds) && result.failedIds.length > 0;
-  if (!hasFailures) {
+  if (result.validationComplete === true) {
     patch.handlingRulesValidatedSignature = buildHandlingRulesValiditySignature(result.pack, caseLibrary);
+  } else if (!pack.handlingRulesValidatedSignature ||
+      pack.handlingRulesValidatedSignature === buildHandlingRulesValiditySignature(result.pack, caseLibrary)) {
+    // A legacy/current signature must not make an incomplete explicit validation
+    // look successful. This non-current marker cannot equal a Case fingerprint.
+    patch.handlingRulesValidatedSignature = 'v1:incomplete';
   }
   const updated = update(packId, patch);
   return { ...result, pack: updated || result.pack };

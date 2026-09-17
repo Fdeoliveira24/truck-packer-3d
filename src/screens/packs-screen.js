@@ -2312,6 +2312,7 @@ export function createPacksScreen({
                   ...metadata,
                   truck: finalPack.truck,
                   cases: finalPack.cases,
+                  handlingRulesValidatedSignature: finalPack.handlingRulesValidatedSignature,
                 }),
                 onCommitted: () => editModalRef && editModalRef.close(),
               });

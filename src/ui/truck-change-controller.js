@@ -207,9 +207,22 @@ export function createTruckChangeController({
   }
 
   function commit(ctx, finalPack, message) {
+    // Only the reconciled geometry-change flow reaches this commit. Recheck
+    // the final poses against current Cases without repairing or publishing;
+    // the unchanged-geometry metadata save deliberately bypasses certification.
+    const currentCases = CaseLibrary.getCases();
+    const finalReconciliation = PackLibrary.reconcilePlacementsForTruck(
+      finalPack, ctx.nextTruck, currentCases, { preserveStagedPositions: true }
+    );
+    const completeness = PackLibrary.getPackedReconciliationCompleteness(finalPack, finalReconciliation);
+    if (!completeness.validationComplete || finalReconciliation.invalid.length || finalReconciliation.adjusted.length) {
+      throw new Error('Load Plan validation is incomplete. No truck changes were saved.');
+    }
+    const handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(finalPack, currentCases);
+    const validatedPack = { ...finalPack, handlingRulesValidatedSignature };
     const committed = ctx.commit
-      ? ctx.commit(finalPack)
-      : PackLibrary.update(ctx.pack.id, { truck: ctx.nextTruck, cases: finalPack.cases });
+      ? ctx.commit(validatedPack)
+      : PackLibrary.update(ctx.pack.id, { truck: ctx.nextTruck, cases: finalPack.cases, handlingRulesValidatedSignature });
     if (!committed) throw new Error('Truck change could not be saved. No changes were applied.');
     ctx.committed = true;
     if (typeof ctx.onCommitted === 'function') ctx.onCommitted(committed);

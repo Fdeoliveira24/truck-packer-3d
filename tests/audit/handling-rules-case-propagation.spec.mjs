@@ -679,3 +679,10 @@ test('HANDLING-RULES-P0A Truck Change final certification uses current Case defi
     'a changed Case invalidating the preview must block, never certify old poses with new rules');
   assert.deepEqual(StateStore.snapshot(), beforeCommit);
 });
+
+test('HANDLING-RULES-P0A Editor banner starts hidden and CSS honors hidden state', () => {
+  const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../../styles/main.css', import.meta.url), 'utf8');
+  assert.match(html, /<div\b[^>]*\bid="editor-handling-rules-banner"[^>]*\bhidden(?:\s|>)/);
+  assert.match(css, /\.tp3d-handling-rules-banner\[hidden\]\s*\{\s*display:\s*none\s*;\s*\}/);
+});

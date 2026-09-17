@@ -4101,6 +4101,10 @@ body.modal-open {
   box-shadow: var(--shadow-md);
 }
 
+.tp3d-handling-rules-banner[hidden] {
+  display: none;
+}
+
 .tp3d-handling-rules-banner__text {
   flex: 1;
   min-width: 0;

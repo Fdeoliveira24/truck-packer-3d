@@ -4078,12 +4078,13 @@ body.modal-open {
 
 /* Handling Rules "Validation required" warning for the actively-displayed
    Editor Pack. Same overlay treatment as .viewport-toolbar (absolute inside
-   the relatively-positioned .canvas-wrap), positioned below it so the two
-   never overlap. Never appears merely because the Editor opened — only when
-   PackLibrary.isHandlingRulesValidationRequired() is true for this Pack. */
+   the relatively-positioned .canvas-wrap), positioned below the toolbar's
+   normal desktop footprint so the two never overlap. Never appears merely
+   because the Editor opened — only when PackLibrary.isHandlingRulesValidationRequired()
+   is true for this Pack. */
 .tp3d-handling-rules-banner {
   position: absolute;
-  top: 64px;
+  top: 132px;
   left: 12px;
   right: 12px;
   z-index: 5;

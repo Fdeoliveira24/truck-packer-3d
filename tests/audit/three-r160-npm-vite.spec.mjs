@@ -249,25 +249,11 @@ test('feature owners outside the approved scene compatibility change are unchang
     'src/services/cog-service.js',
     'src/core/oriented-dims.js',
   ];
-  // HANDLING-RULES-P0C: a later, separately-approved change corrects manual
-  // orientation-policy validation to use the case's physical height axis
-  // (isHeightAxisVertical, added beside the existing rotateVectorXYZ authority
-  // in oriented-dims.js) instead of raw Euler-component presence in
-  // pack-library.js's isOrientationAllowedByCasePolicy(). That diff is scoped
-  // out of this r185/Vite-migration protection by content, not by removing the
-  // path from protection — any other change to these files still trips this test.
-  // HANDLING-RULES-P0A: a further, separately-approved change propagates a
-  // Case Handling Rule edit's validity to affected Load Plans (pack-library.js
-  // signature/orchestration; editor-screen.js Validation-required banner,
-  // Validate Load Plan action, and AutoPack Apply signature stamping). Also
-  // scoped out by content, not by removing the paths from protection.
+  // Working-tree scope guard, not a PR-diff validator. Run the complete suite
+  // after approved owner changes are committed; no content marker exempts an
+  // unrelated edit in the same protected file.
   const diff = git(['diff', '--unified=0', '--', ...protectedPaths]).stdout;
-  const approvedOwnerMarkers = ['isHeightAxisVertical', 'HandlingRules'];
-  const guardedDiff = diff
-    .split(/(?=^diff --git)/m)
-    .filter(fileDiff => !approvedOwnerMarkers.some(marker => fileDiff.includes(marker)))
-    .join('');
-  assert.equal(guardedDiff.trim(), '');
+  assert.equal(diff.trim(), '');
 });
 
 test('no GLTF, DRACO, KTX2, Meshopt, or post-processing product integration was added', () => {

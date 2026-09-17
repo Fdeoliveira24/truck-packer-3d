@@ -133,6 +133,11 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
   assert.match(apply, /if \(isAutoPackResultsStale\(pack, results\)\)/, 'apply must keep the stale guard');
   assert.match(apply, /const appliedCases = buildAppliedAutoPackCases\(option, cloneAutoPackCases\);/,
     'apply must derive the applied option cases through the profile-aware builder');
+  // Source-level production wiring coverage (not behavioral Apply execution).
+  assert.match(apply, /const appliedSignature = PackLibrary\.buildHandlingRulesValiditySignature\(\s*\{ \.\.\.pack, cases: appliedCases \},\s*CaseLibrary\.getCases\(\)\s*\);/,
+    'Apply must sign its post-apply cases against the current Case Library');
+  assert.equal((apply.match(/PackLibrary\.update\(/g) || []).length, 1,
+    'Apply must publish cases and signature together, without a second Pack update');
   // HANDLING-RULES-P0A: a successfully applied AutoPack solution has gone
   // through the current packing validation path, so the same existing
   // PackLibrary.update() call also stamps the fresh handling-rules signature

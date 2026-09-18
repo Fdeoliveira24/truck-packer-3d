@@ -1973,3 +1973,341 @@ test('normalizePreferences: an invalid persisted packsViewMode normalizes safely
     assert.equal(CoreNormalizer.normalizePreferences({ packsViewMode: invalid }).packsViewMode, 'grid');
   }
 });
+
+// ===========================================================================
+// P1-A — staged-only removal authority
+// ===========================================================================
+
+test('P1-A G1/G2: empty and unknown explicit Delete targets are true no-ops', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  for (const requestedIds of [[], ['unknown-instance']]) {
+    const initialPack = basePack({
+      cases: [
+        insideInstance({
+          id: 'floating-packed',
+          transform: {
+            position: { x: 20, y: 25, z: 0 },
+            rotation: { x: 0, y: 0, z: 0 },
+            scale: { x: 1, y: 1, z: 1 },
+          },
+        }),
+      ],
+      handlingRulesValidatedSignature: 'v1:preserve-me',
+      lastEdited: 12345,
+    });
+    StateStore.init({ caseLibrary: [baseCase()], packLibrary: [initialPack], folderLibrary: [], preferences: {} });
+    const before = StateStore.snapshot();
+    let packWrites = 0;
+    const unsubscribe = StateStore.subscribe(changes => {
+      if (changes.packLibrary) packWrites++;
+    });
+
+    const result = PackLibrary.removeInstances('pack-1', requestedIds);
+    unsubscribe();
+
+    assert.equal(result, null);
+    assert.equal(packWrites, 0);
+    assert.deepEqual(StateStore.snapshot(), before);
+    assert.equal(StateStore.undo(), false, 'a no-op Delete must not create history');
+  }
+});
+
+test('P1-A G3: physically staged explicit Delete bypasses revalidation and is one Undo/Redo action', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const packed = insideInstance({
+    id: 'floating-packed',
+    transform: {
+      position: { x: 20, y: 25, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientedDims: { length: 10, width: 10, height: 10 },
+    packedProfile: 'max-capacity',
+    instanceNotes: 'preserve packed metadata',
+  });
+  const staged = outsideInstance({ id: 'staged-target', placement: 'packed' });
+  const initialPack = basePack({
+    cases: [packed, staged],
+    handlingRulesValidatedSignature: 'v1:stale-before-delete',
+    lastEdited: 12345,
+  });
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [initialPack], folderLibrary: [], preferences: {} });
+  const packedBefore = structuredClone(packed);
+  let packWrites = 0;
+  const unsubscribe = StateStore.subscribe(changes => {
+    if (changes.packLibrary) packWrites++;
+  });
+
+  const result = PackLibrary.removeInstances('pack-1', ['staged-target']);
+  unsubscribe();
+
+  assert.deepEqual(result.deletedInstanceIds, ['staged-target']);
+  assert.deepEqual(result.dependentStagedIds, []);
+  assert.deepEqual(result.dependentRepairedIds, []);
+  assert.deepEqual(result.revalidation, {
+    adjustedIds: [], repairedIds: [], stagedIds: [], failedIds: [], invalidIds: [],
+    summary: { adjusted: 0, repaired: 0, staged: 0, failed: 0 }, warnings: [],
+  });
+  assert.equal(packWrites, 1);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.find(inst => inst.id === 'floating-packed'), packedBefore);
+  assert.equal(PackLibrary.getById('pack-1').handlingRulesValidatedSignature, 'v1:stale-before-delete');
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getById('pack-1').cases.some(inst => inst.id === 'staged-target'), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.find(inst => inst.id === 'floating-packed'), packedBefore);
+  assert.equal(StateStore.undo(), false, 'the staged Delete must be exactly one history step');
+  assert.equal(StateStore.redo(), true);
+  assert.equal(PackLibrary.getById('pack-1').cases.some(inst => inst.id === 'staged-target'), false);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.find(inst => inst.id === 'floating-packed'), packedBefore);
+});
+
+test('P1-A G4: multiple physically staged explicit targets are removed in one Pack write', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })],
+    folderLibrary: [],
+    preferences: {},
+  });
+  let packWrites = 0;
+  const unsubscribe = StateStore.subscribe(changes => {
+    if (changes.packLibrary) packWrites++;
+  });
+  const result = PackLibrary.removeInstances('pack-1', ['s1', 's2']);
+  unsubscribe();
+
+  assert.deepEqual(result.deletedInstanceIds, ['s1', 's2']);
+  assert.equal(result.pack.cases.length, 0);
+  assert.equal(packWrites, 1);
+  assert.equal(StateStore.undo(), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), ['s1', 's2']);
+  assert.equal(StateStore.undo(), false);
+  assert.equal(StateStore.redo(), true);
+  assert.equal(PackLibrary.getById('pack-1').cases.length, 0);
+});
+
+test('P1-A G5/G6: packed and mixed explicit Delete retain one dependent-revalidation write', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  for (const requestedIds of [['support'], ['support', 'staged-target']]) {
+    const cases = [
+      insideInstance({ id: 'support' }),
+      insideInstance({
+        id: 'child',
+        transform: {
+          position: { x: 20, y: 15, z: 0 },
+          rotation: { x: 0, y: 0, z: 0 },
+          scale: { x: 1, y: 1, z: 1 },
+        },
+      }),
+      outsideInstance({ id: 'staged-target' }),
+    ];
+    StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases })], folderLibrary: [], preferences: {} });
+    let packWrites = 0;
+    const unsubscribe = StateStore.subscribe(changes => {
+      if (changes.packLibrary) packWrites++;
+    });
+
+    const result = PackLibrary.removeInstances('pack-1', requestedIds);
+    unsubscribe();
+
+    assert.deepEqual(result.deletedInstanceIds, requestedIds);
+    assert.equal(result.pack.cases.some(inst => inst.id === 'support'), false);
+    assert.equal(result.revalidation.adjustedIds.includes('child'), true,
+      'the packed child must flow through the existing dependent-revalidation path');
+    assert.deepEqual(result.pack.cases.find(inst => inst.id === 'child').transform.position, { x: 20, y: 5, z: 0 });
+    assert.equal(packWrites, 1);
+    assert.equal(StateStore.undo(), true);
+    assert.equal(PackLibrary.getById('pack-1').cases.some(inst => inst.id === 'support'), true);
+    assert.equal(StateStore.undo(), false, 'packed/mixed Delete must remain one history step');
+    assert.equal(StateStore.redo(), true);
+  }
+});
+
+test('P1-A R1/R2/R3/R5/R9/R10/R18: staged Case removal is selective, deterministic, and atomic', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const sameNameOtherCase = baseCase({ id: 'case-b', name: 'Case A' });
+  const cases = [
+    outsideInstance({ id: 'eligible-1' }),
+    outsideInstance({ id: 'hidden', hidden: true }),
+    outsideInstance({ id: 'grouped', groupId: 'group-1' }),
+    insideInstance({ id: 'physical-packed-but-labeled-staged', placement: 'staged' }),
+    outsideInstance({ id: 'other-case', caseId: 'case-b' }),
+    outsideInstance({ id: 'eligible-2', groupId: '' }),
+    outsideInstance({ id: 'eligible-3' }),
+  ];
+  StateStore.init({
+    caseLibrary: [baseCase(), sameNameOtherCase],
+    packLibrary: [basePack({ cases })],
+    folderLibrary: [],
+    preferences: {},
+    selectedInstanceIds: ['eligible-3', 'other-case'],
+  });
+  const counts = PackLibrary.getCaseInstanceCounts('pack-1', 'case-a');
+  assert.equal(counts.inTruck, 1);
+  assert.equal(counts.staged, 4);
+  assert.equal(counts.hidden, 1);
+  let packWrites = 0;
+  const unsubscribe = StateStore.subscribe(changes => {
+    if (changes.packLibrary) packWrites++;
+  });
+
+  const result = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', 2);
+  unsubscribe();
+
+  assert.equal(result.reason, 'ok');
+  assert.equal(result.requestedCount, 2);
+  assert.equal(result.eligibleCount, 3);
+  assert.equal(result.removedCount, 2);
+  assert.deepEqual(result.removedInstanceIds, ['eligible-3', 'eligible-2'],
+    'the last N eligible Pack-array records must be returned in reverse array order');
+  assert.deepEqual(result.pack.cases.map(inst => inst.id), [
+    'eligible-1', 'hidden', 'grouped', 'physical-packed-but-labeled-staged', 'other-case',
+  ]);
+  assert.deepEqual(StateStore.get('selectedInstanceIds'), ['eligible-3', 'other-case'],
+    'the service must remain UI-selection agnostic');
+  assert.equal(packWrites, 1);
+
+  assert.equal(StateStore.undo(), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), cases.map(inst => inst.id));
+  assert.equal(StateStore.undo(), false);
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), result.pack.cases.map(inst => inst.id));
+});
+
+test('P1-A R4/R6: staged Case removal shortage is all-or-nothing, including zero eligible', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  for (const cases of [
+    [outsideInstance({ id: 'eligible-1' }), outsideInstance({ id: 'eligible-2' })],
+    [insideInstance({ id: 'packed-only' })],
+  ]) {
+    StateStore.init({
+      caseLibrary: [baseCase()],
+      packLibrary: [basePack({ cases, lastEdited: 12345 })],
+      folderLibrary: [],
+      preferences: {},
+    });
+    const before = StateStore.snapshot();
+    const requestedCount = cases.length === 2 ? 3 : 1;
+    const expectedEligible = cases.length === 2 ? 2 : 0;
+    const result = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', requestedCount);
+
+    assert.equal(result.reason, 'insufficient-eligible');
+    assert.equal(result.eligibleCount, expectedEligible);
+    assert.equal(result.removedCount, 0);
+    assert.deepEqual(result.removedInstanceIds, []);
+    assert.equal(result.pack, null);
+    assert.deepEqual(StateStore.snapshot(), before);
+    assert.equal(StateStore.undo(), false);
+  }
+});
+
+test('P1-A R11/R12/R13: invalid commands and missing authorities never mutate a Pack', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const invalidCounts = [0, -1, 1.9, 10001, NaN, Infinity, 'garbage', '2', true, false, null, undefined];
+  for (const count of invalidCounts) {
+    StateStore.init({
+      caseLibrary: [baseCase()],
+      packLibrary: [basePack({ cases: [outsideInstance({ id: 'eligible' })] })],
+      folderLibrary: [],
+      preferences: {},
+    });
+    const before = StateStore.snapshot();
+    const result = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', count);
+    assert.equal(result.reason, 'invalid-count');
+    assert.equal(result.removedCount, 0);
+    assert.deepEqual(StateStore.snapshot(), before);
+    assert.equal(StateStore.undo(), false);
+  }
+
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+  assert.equal(PackLibrary.removeCaseInstancesFromStaging('missing-pack', 'case-a', 1).reason, 'pack-not-found');
+  assert.equal(PackLibrary.removeCaseInstancesFromStaging('pack-1', 'missing-case', 1).reason, 'case-not-found');
+  assert.equal(StateStore.undo(), false);
+});
+
+test('P1-A R7/R8: hidden and grouped staged instances are never automatically eligible', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const cases = [
+    outsideInstance({ id: 'hidden', hidden: true }),
+    outsideInstance({ id: 'grouped', groupId: 'group-1' }),
+    outsideInstance({ id: 'blank-group', groupId: '   ' }),
+  ];
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [basePack({ cases })],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const result = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', 1);
+  assert.equal(result.reason, 'ok');
+  assert.equal(result.eligibleCount, 1);
+  assert.deepEqual(result.removedInstanceIds, ['blank-group']);
+  assert.deepEqual(result.pack.cases.map(inst => inst.id), ['hidden', 'grouped']);
+});
+
+test('P1-A R14-R17: every staged-only authority preserves signature state and invalid packed bytes', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const currentCase = baseCase({ noStackOnTop: true });
+  const oldCase = baseCase({ noStackOnTop: false });
+  const packed = insideInstance({
+    id: 'floating-max-capacity',
+    transform: {
+      position: { x: 20, y: 25, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientedDims: { length: 10, width: 10, height: 10 },
+    packedProfile: 'max-capacity',
+    orientationLocked: true,
+    lockedRotation: { x: 0, y: 0, z: 0 },
+    deliverySequence: 7,
+    instanceNotes: 'preserve everything',
+  });
+  const staged = outsideInstance({ id: 'remove-me' });
+  const unsignedPack = basePack({ cases: [packed, staged] });
+  const currentSignature = PackLibrary.buildHandlingRulesValiditySignature(unsignedPack, [currentCase]);
+  const staleSignature = PackLibrary.buildHandlingRulesValiditySignature(unsignedPack, [oldCase]);
+  const signatures = [
+    { name: 'current', value: currentSignature, stale: false },
+    { name: 'stale', value: staleSignature, stale: true },
+    { name: 'legacy-null', value: null, stale: false },
+  ];
+  const operations = [
+    { name: 'generic Delete', run: () => PackLibrary.removeInstances('pack-1', ['remove-me']) },
+    { name: 'staged Case removal', run: () => PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', 1) },
+  ];
+
+  for (const operation of operations) {
+    for (const signature of signatures) {
+      StateStore.init({
+        caseLibrary: [currentCase],
+        packLibrary: [basePack({
+          cases: [packed, staged],
+          handlingRulesValidatedSignature: signature.value,
+          lastEdited: 12345,
+        })],
+        folderLibrary: [],
+        preferences: {},
+      });
+      const before = PackLibrary.getById('pack-1');
+      const packedBefore = structuredClone(before.cases.find(inst => inst.id === packed.id));
+      assert.equal(
+        PackLibrary.isHandlingRulesValidationRequired(before, [currentCase]),
+        signature.stale,
+        `${operation.name}/${signature.name}: precondition`
+      );
+
+      operation.run();
+      const after = PackLibrary.getById('pack-1');
+      assert.equal(after.handlingRulesValidatedSignature, signature.value,
+        `${operation.name}/${signature.name}: signature value must be byte-equivalent`);
+      assert.equal(
+        PackLibrary.isHandlingRulesValidationRequired(after, [currentCase]),
+        signature.stale,
+        `${operation.name}/${signature.name}: stale/current state must not change`
+      );
+      assert.deepEqual(after.cases.find(inst => inst.id === packed.id), packedBefore,
+        `${operation.name}/${signature.name}: floating packed transform and Max Capacity metadata must not change`);
+    }
+  }
+});

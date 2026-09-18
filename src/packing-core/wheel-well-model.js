@@ -31,6 +31,7 @@ import {
   CONTACT_EPS,
   MIN_SUPPORT_FRACTION,
   aabbsOverlap,
+  computeXzOverlapArea,
   canSupportStack,
   hasStackCapacity,
   canSupportCandidateWeight,
@@ -239,6 +240,19 @@ export function computeWheelWellSupport(candidateAabb, packed, geometry, candida
   return { fraction, comSupported, overhangFraction, supportCount: overlaps.length };
 }
 
+function hasDisqualifiedDirectCargoSupport(candidateAabb, packed, candidateItem) {
+  const supports = Array.isArray(packed) ? packed : [];
+  const bottom = candidateAabb.min.y;
+  return supports.some(support => {
+    if (!support || !support.aabb) return false;
+    if (Math.abs(bottom - support.aabb.max.y) > CONTACT_EPS) return false;
+    if (computeXzOverlapArea(candidateAabb, support.aabb) <= 0.05) return false;
+    return !canSupportStack(support) ||
+      !hasStackCapacity(support, supports) ||
+      !canSupportCandidateWeight(candidateItem, support);
+  });
+}
+
 /**
  * A wheel-well-assisted placement is acceptable only when it does not penetrate
  * the body, has at least MIN_SUPPORT_FRACTION combined vertical support, and is
@@ -249,6 +263,7 @@ export function computeWheelWellSupport(candidateAabb, packed, geometry, candida
 export function isWheelWellSupportedAndStable(candidateAabb, packed, geometry, candidateItem = null) {
   if (!geometry || !candidateAabb) return false;
   if (aabbIntersectsWheelWellBody(candidateAabb, geometry)) return false;
+  if (hasDisqualifiedDirectCargoSupport(candidateAabb, packed, candidateItem)) return false;
   const { fraction, comSupported, overhangFraction } = computeWheelWellSupport(candidateAabb, packed, geometry, candidateItem);
   if (fraction + 1e-9 < MIN_SUPPORT_FRACTION) return false;
   if (!comSupported) return false;

@@ -19,6 +19,10 @@ import { getCaseHandlingSummary } from '../services/case-rule-summary.js';
 import { compareBusinessIdentityValues } from '../core/business-identity.js';
 import { getStorageScope, getWorkspaceScope } from '../core/storage.js';
 
+export function resetCasesSelection(selectedIds) {
+  selectedIds.clear();
+}
+
 export function createCasesScreen({
   Utils,
   UIComponents,
@@ -341,6 +345,11 @@ export function createCasesScreen({
 
     function clearSelection() {
       selectedIds.clear();
+    }
+
+    function resetWorkspaceState() {
+      resetCasesSelection(selectedIds);
+      lastVisibleIds = [];
     }
 
     function toggleAllVisible(checked) {
@@ -1562,7 +1571,7 @@ export function createCasesScreen({
 
     // Import Cases dialog extracted to src/ui/overlays/import-cases-dialog.js
 
-    return { init: initCasesUI, render };
+    return { init: initCasesUI, render, resetWorkspaceState };
   })();
 
   return CasesUI;

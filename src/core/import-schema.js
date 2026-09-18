@@ -16,6 +16,8 @@
  * @author Truck Packer 3D Team
  */
 
+import { stripForbiddenCaseQuantityFields } from './cargo-canonical.js';
+
 // ============================================================================
 // SECTION: ENVELOPE CONSTANTS
 // ============================================================================
@@ -241,7 +243,7 @@ export function projectPortableCategories(preferences) {
 
 /** Case DTO minus `volume`, which every import path recomputes from dimensions. */
 export function projectPortableCase(caseData) {
-  const c = caseData && typeof caseData === 'object' ? caseData : {};
+  const c = stripForbiddenCaseQuantityFields(caseData);
   const { volume: _volume, ...portable } = c;
   return portable;
 }

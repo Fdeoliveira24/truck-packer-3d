@@ -29,6 +29,10 @@ function caseCountText(count) {
   return `${count} case${count === 1 ? '' : 's'}`;
 }
 
+export function resetEditorCaseQtyDrafts(caseQtyDrafts) {
+  caseQtyDrafts.clear();
+}
+
 function getDeleteFinalSelection(result) {
   return result && Array.isArray(result.finalSelectionIds) ? result.finalSelectionIds : [];
 }
@@ -3580,10 +3584,10 @@ export function createEditorScreen({
     const supportsWebGL = Utils.hasWebGL();
     const browserCats = new Set();
     const browserManufacturers = new Set();
-    // Ephemeral per-Case Qty selector drafts, keyed by caseId. Session-only:
-    // never read from or written to StateStore/localStorage/Pack/Case. Survives
-    // Case Browser re-renders (search/filter/group changes) while this Editor
-    // screen instance stays mounted; recreated empty on Editor recreation/reload.
+    // Ephemeral per-Case Qty selector drafts, keyed by caseId and scoped to the
+    // active workspace. Never read from or written to StateStore/localStorage/
+    // Pack/Case. Survives same-workspace re-renders, Pack changes and navigation;
+    // resetWorkspaceState clears it only when workspace scope changes.
     const caseQtyDrafts = new Map();
     const CASE_QTY_MIN = 1;
     const CASE_QTY_MAX = 10000;
@@ -3595,6 +3599,9 @@ export function createEditorScreen({
       const clamped = Math.min(CASE_QTY_MAX, Math.max(CASE_QTY_MIN, Math.trunc(value)));
       caseQtyDrafts.set(caseId, clamped);
       return clamped;
+    }
+    function resetWorkspaceState() {
+      resetEditorCaseQtyDrafts(caseQtyDrafts);
     }
     let layoutRaf = null;
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
@@ -6710,7 +6717,7 @@ export function createEditorScreen({
       return ok ? out : null;
     }
 
-    return { init: initEditorUI, render, onActivated };
+    return { init: initEditorUI, render, onActivated, resetWorkspaceState };
   })();
 
   const onDeactivated = () => { };

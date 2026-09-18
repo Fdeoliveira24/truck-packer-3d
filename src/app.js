@@ -3748,6 +3748,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (PacksUI && typeof PacksUI.resetWorkspaceState === 'function') {
           PacksUI.resetWorkspaceState();
         }
+        if (CasesUI && typeof CasesUI.resetWorkspaceState === 'function') {
+          CasesUI.resetWorkspaceState();
+        }
+        if (EditorUI && typeof EditorUI.resetWorkspaceState === 'function') {
+          EditorUI.resetWorkspaceState();
+        }
       } catch {
         // ignore
       }

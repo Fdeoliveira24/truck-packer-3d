@@ -214,7 +214,7 @@ export function createPacksScreen({
     function trailerModeLabel(shapeMode) {
       const mode = String(shapeMode || 'rect');
       if (mode === 'wheelWells') return 'Wheel Wells';
-      if (mode === 'frontBonus') return 'Box + Front Overhang';
+      if (mode === 'frontBonus') return 'Front Overhang';
       return 'Standard';
     }
 
@@ -1986,7 +1986,7 @@ export function createPacksScreen({
       modeSelect.innerHTML = `
 	                <option value="rect">Standard</option>
 	                <option value="wheelWells">Wheel Wells</option>
-	                <option value="frontBonus">Box + Front Overhang</option>
+	                <option value="frontBonus">Front Overhang</option>
 	              `;
       modeSelect.value = 'rect';
       modeWrap.appendChild(modeLabel);
@@ -2148,7 +2148,7 @@ export function createPacksScreen({
       modeSelect.innerHTML = `
                 <option value="rect">Standard</option>
                 <option value="wheelWells">Wheel Wells</option>
-                <option value="frontBonus">Box + Front Overhang</option>
+                <option value="frontBonus">Front Overhang</option>
               `;
       modeSelect.value =
         pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')

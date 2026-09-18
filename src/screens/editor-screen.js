@@ -5867,7 +5867,7 @@ export function createEditorScreen({
       shapeSelect.innerHTML = `
 	                <option value="rect">Standard</option>
 	                <option value="wheelWells">Wheel Wells</option>
-	                <option value="frontBonus">Box + Front Overhang</option>
+	                <option value="frontBonus">Front Overhang</option>
 	              `;
       shapeSelect.value =
         effectiveTruck && (effectiveTruck.shapeMode === 'wheelWells' || effectiveTruck.shapeMode === 'frontBonus')

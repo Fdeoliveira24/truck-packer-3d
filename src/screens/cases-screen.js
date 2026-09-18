@@ -1205,6 +1205,7 @@ export function createCasesScreen({
         PreferencesManager,
         CaseLibrary,
         CategoryService,
+        PackLibrary,
         beforeMutate,
         onSaved: () => render(),
       });

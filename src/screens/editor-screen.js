@@ -5866,7 +5866,7 @@ export function createEditorScreen({
       shapeSelect.classList.add('tp3d-editor-select-full');
       shapeSelect.innerHTML = `
 	                <option value="rect">Standard</option>
-	                <option value="wheelWells">Box + Wheel Wells</option>
+	                <option value="wheelWells">Wheel Wells</option>
 	                <option value="frontBonus">Box + Front Overhang</option>
 	              `;
       shapeSelect.value =

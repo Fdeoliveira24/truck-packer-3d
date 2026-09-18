@@ -2585,25 +2585,39 @@ export function updateInstance(packId, instanceId, patch) {
   return update(packId, { cases: nextInstances });
 }
 
-export function removeInstances(packId, instanceIds) {
-  const pack = getById(packId);
-  if (!pack) return null;
-  const requestedDeletedIds = Array.isArray(instanceIds) ? instanceIds : [];
-  const idSet = new Set(requestedDeletedIds);
-  const deletedInstanceIds = (pack.cases || [])
-    .filter(i => i && idSet.has(i.id))
-    .map(i => i.id);
-  const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
-  // Delete path enables local dependent repair: affected cases are re-settled
-  // inside the truck when legally possible; only truly unplaceable ones stage.
-  const result = updateCasesWithManualRevalidation(packId, nextInstances, CaseLibrary.getCases(), {
-    repairDependents: true,
-  });
-  if (!result) return null;
+function createPhysicalPlacementClassifier(pack, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(caseData => [caseData.id, caseData]));
+  const zonesInches = getTrailerUsableZones(pack && pack.truck);
+  const wheelWell = getWheelWellGeometry(pack && pack.truck);
 
+  return inst => {
+    const caseData = caseMap.get(inst && inst.caseId);
+    if (!caseData) return null;
+    const effDims = getInstanceEffectiveDims(inst, caseData);
+    const pos = inst && inst.transform && inst.transform.position
+      ? inst.transform.position
+      : { x: 0, y: 0, z: 0 };
+    const aabb = makeAabb(pos, effDims);
+    return isAabbInsideTruckGeometry(aabb, zonesInches, wheelWell) ? 'packed' : 'staged';
+  };
+}
+
+function emptyRemovalRevalidation() {
+  return {
+    adjustedIds: [],
+    repairedIds: [],
+    stagedIds: [],
+    failedIds: [],
+    invalidIds: [],
+    summary: { adjusted: 0, repaired: 0, staged: 0, failed: 0 },
+    warnings: [],
+  };
+}
+
+function buildRemoveInstancesResult(pack, requestedDeletedIds, deletedInstanceIds, revalidation) {
   const deletedSet = new Set(deletedInstanceIds);
-  const dependentStagedIds = (result.stagedIds || []).filter(id => !deletedSet.has(id));
-  const dependentRepairedIds = (result.repairedIds || []).filter(id => !deletedSet.has(id));
+  const dependentStagedIds = (revalidation.stagedIds || []).filter(id => !deletedSet.has(id));
+  const dependentRepairedIds = (revalidation.repairedIds || []).filter(id => !deletedSet.has(id));
   const mutation = {
     type: 'removeInstances',
     requestedDeletedIds: [...requestedDeletedIds],
@@ -2613,20 +2627,12 @@ export function removeInstances(packId, instanceIds) {
     dependentRepairedIds,
     dependentRepairedCount: dependentRepairedIds.length,
     finalSelectionIds: [],
-    revalidation: {
-      adjustedIds: result.adjustedIds || [],
-      repairedIds: result.repairedIds || [],
-      stagedIds: result.stagedIds || [],
-      failedIds: result.failedIds || [],
-      invalidIds: result.invalidIds || [],
-      summary: result.summary || {},
-      warnings: result.warnings || [],
-    },
+    revalidation,
   };
 
   return {
-    ...result.pack,
-    pack: result.pack,
+    ...pack,
+    pack,
     mutation,
     deletedInstanceIds,
     requestedDeletedIds: [...requestedDeletedIds],
@@ -2635,8 +2641,109 @@ export function removeInstances(packId, instanceIds) {
     dependentRepairedIds,
     dependentRepairedCount: dependentRepairedIds.length,
     finalSelectionIds: [],
-    revalidation: mutation.revalidation,
+    revalidation,
   };
+}
+
+export function removeInstances(packId, instanceIds) {
+  const pack = getById(packId);
+  if (!pack) return null;
+  const requestedDeletedIds = Array.isArray(instanceIds) ? instanceIds : [];
+  const idSet = new Set(requestedDeletedIds);
+  const deletedInstances = (pack.cases || []).filter(i => i && idSet.has(i.id));
+  if (!deletedInstances.length) return null;
+
+  const deletedInstanceIds = deletedInstances.map(i => i.id);
+  const nextInstances = (pack.cases || []).filter(i => !idSet.has(i.id));
+
+  const classifyPhysicalPlacement = createPhysicalPlacementClassifier(pack, CaseLibrary.getCases());
+  if (deletedInstances.every(inst => classifyPhysicalPlacement(inst) === 'staged')) {
+    const updatedPack = update(packId, { cases: nextInstances });
+    if (!updatedPack) return null;
+    return buildRemoveInstancesResult(
+      updatedPack,
+      requestedDeletedIds,
+      deletedInstanceIds,
+      emptyRemovalRevalidation()
+    );
+  }
+
+  // Delete path enables local dependent repair: affected cases are re-settled
+  // inside the truck when legally possible; only truly unplaceable ones stage.
+  const result = updateCasesWithManualRevalidation(packId, nextInstances, CaseLibrary.getCases(), {
+    repairDependents: true,
+  });
+  if (!result) return null;
+
+  const revalidation = {
+    adjustedIds: result.adjustedIds || [],
+    repairedIds: result.repairedIds || [],
+    stagedIds: result.stagedIds || [],
+    failedIds: result.failedIds || [],
+    invalidIds: result.invalidIds || [],
+    summary: result.summary || {},
+    warnings: result.warnings || [],
+  };
+  return buildRemoveInstancesResult(
+    result.pack,
+    requestedDeletedIds,
+    deletedInstanceIds,
+    revalidation
+  );
+}
+
+function stagedCaseRemovalResult(reason, requestedCount, eligibleCount = 0, removedInstanceIds = [], pack = null) {
+  return {
+    reason,
+    requestedCount,
+    eligibleCount,
+    removedCount: removedInstanceIds.length,
+    removedInstanceIds,
+    pack,
+  };
+}
+
+function hasActiveGroup(inst) {
+  return inst && inst.groupId != null && String(inst.groupId).trim() !== '';
+}
+
+/**
+ * Remove a requested number of visible, ungrouped, physically staged instances
+ * for one Case. This is the service authority for the Editor's future Qty
+ * Remove action; it never removes packed cargo or invokes Pack revalidation.
+ */
+export function removeCaseInstancesFromStaging(packId, caseId, count) {
+  if (typeof count !== 'number' || !Number.isFinite(count) ||
+      !Number.isInteger(count) || count < 1 || count > BULK_ADD_MAX_QUANTITY) {
+    return stagedCaseRemovalResult('invalid-count', count);
+  }
+
+  const pack = getById(packId);
+  if (!pack) return stagedCaseRemovalResult('pack-not-found', count);
+  if (!caseId || !CaseLibrary.getById(caseId)) {
+    return stagedCaseRemovalResult('case-not-found', count);
+  }
+
+  const classifyPhysicalPlacement = createPhysicalPlacementClassifier(pack, CaseLibrary.getCases());
+  const eligibleInstances = (pack.cases || []).filter(inst =>
+    inst &&
+    inst.caseId === caseId &&
+    inst.hidden !== true &&
+    !hasActiveGroup(inst) &&
+    classifyPhysicalPlacement(inst) === 'staged'
+  );
+  const eligibleCount = eligibleInstances.length;
+  if (eligibleCount < count) {
+    return stagedCaseRemovalResult('insufficient-eligible', count, eligibleCount);
+  }
+
+  const targets = eligibleInstances.slice(-count).reverse();
+  const removedInstanceIds = targets.map(inst => inst.id);
+  const targetIds = new Set(removedInstanceIds);
+  const nextInstances = (pack.cases || []).filter(inst => !targetIds.has(inst && inst.id));
+  const updatedPack = update(packId, { cases: nextInstances });
+  if (!updatedPack) return stagedCaseRemovalResult('pack-not-found', count, eligibleCount);
+  return stagedCaseRemovalResult('ok', count, eligibleCount, removedInstanceIds, updatedPack);
 }
 
 function computeShapeAwareOOGWarnings(pack, caseLibrary) {
@@ -2773,14 +2880,8 @@ export function getCaseInstanceCounts(packOrId, caseId, caseLibraryOverride) {
   const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
   if (!pack || !caseId) return { ...EMPTY_CASE_INSTANCE_COUNTS };
 
-  const getCase = id => {
-    if (Array.isArray(caseLibraryOverride)) return caseLibraryOverride.find(c => c.id === id) || null;
-    return CaseLibrary.getById(id);
-  };
-  const caseData = getCase(caseId);
-
-  const zonesInches = getTrailerUsableZones(pack.truck);
-  const wheelWell = getWheelWellGeometry(pack.truck);
+  const caseLibrary = Array.isArray(caseLibraryOverride) ? caseLibraryOverride : CaseLibrary.getCases();
+  const classifyPhysicalPlacement = createPhysicalPlacementClassifier(pack, caseLibrary);
 
   let inTruck = 0;
   let staged = 0;
@@ -2791,15 +2892,12 @@ export function getCaseInstanceCounts(packOrId, caseId, caseLibraryOverride) {
       hidden++;
       return;
     }
+    const physicalPlacement = classifyPhysicalPlacement(inst);
     // No resolvable case definition means no geometry to test — consistent with
     // computeStats() excluding unresolved instances from packed/staged totals.
-    if (!caseData) return;
-    const effDims = getInstanceEffectiveDims(inst, caseData);
-    const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
-    const aabb = makeAabb(pos, effDims);
-    if (isAabbInsideTruckGeometry(aabb, zonesInches, wheelWell)) {
+    if (physicalPlacement === 'packed') {
       inTruck++;
-    } else {
+    } else if (physicalPlacement === 'staged') {
       staged++;
     }
   });

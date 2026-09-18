@@ -144,6 +144,7 @@ export function canonicalCargoForStorage(raw) {
 // shallow copy), preserving every other field (incl. safe extensions). Dimensions
 // and weight are handled by the storage layer (buildStorableCase) which already
 // coerces them; this only governs the handling-rule fields.
+/** @returns {Record<string, any>} */
 export function applyCanonicalCargoFields(c) {
   const src = stripForbiddenCaseQuantityFields(c);
   return { ...src, ...canonicalCargoForStorage(src) };

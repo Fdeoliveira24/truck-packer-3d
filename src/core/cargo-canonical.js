@@ -145,7 +145,7 @@ export function canonicalCargoForStorage(raw) {
 // and weight are handled by the storage layer (buildStorableCase) which already
 // coerces them; this only governs the handling-rule fields.
 export function applyCanonicalCargoFields(c) {
-  const src = c && typeof c === 'object' ? c : {};
+  const src = stripForbiddenCaseQuantityFields(c);
   return { ...src, ...canonicalCargoForStorage(src) };
 }
 
@@ -278,9 +278,48 @@ function sanitizeExtensionValue(v, depth) {
   return undefined; // functions, symbols, undefined, NaN, Infinity
 }
 
-export function pickSafeExtensions(raw, knownKeys) {
+// Case definitions describe reusable cargo, never a requested or inventory
+// quantity. Normalize only for comparison so case/separator variants of the
+// rejected quantity-era aliases are removed without affecting unrelated safe
+// extension keys.
+const FORBIDDEN_CASE_QUANTITY_KEYS = new Set([
+  'quantity',
+  'qty',
+  'casequantity',
+  'caseqty',
+  'requiredquantity',
+  'requiredqty',
+  'desiredquantity',
+  'desiredqty',
+  'targetquantity',
+  'targetqty',
+  'inventoryquantity',
+  'inventoryqty',
+  'caserequirements',
+]);
+
+export function isForbiddenCaseQuantityKey(key) {
+  const normalized = String(key || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_-]+/g, '');
+  return FORBIDDEN_CASE_QUANTITY_KEYS.has(normalized);
+}
+
+export function stripForbiddenCaseQuantityFields(raw) {
   const src = raw && typeof raw === 'object' ? raw : {};
+  const out = {};
+  for (const key of Object.keys(src)) {
+    if (!isForbiddenCaseQuantityKey(key)) out[key] = src[key];
+  }
+  return out;
+}
+
+export function pickSafeExtensions(raw, knownKeys) {
   const known = knownKeys instanceof Set ? knownKeys : new Set(knownKeys || []);
+  const src = known === CANONICAL_CASE_KEYS
+    ? stripForbiddenCaseQuantityFields(raw)
+    : (raw && typeof raw === 'object' ? raw : {});
   const out = {};
   for (const k of Object.keys(src)) {
     if (known.has(k) || UNSAFE_EXTENSION_KEYS.has(k)) continue;

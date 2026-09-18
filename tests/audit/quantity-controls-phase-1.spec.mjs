@@ -36,6 +36,8 @@ const appShellUrl = new URL('../../src/ui/app-shell.js', import.meta.url);
 const caseLibraryUrl = new URL('../../src/services/case-library.js', import.meta.url);
 const categoryServiceUrl = new URL('../../src/services/category-service.js', import.meta.url);
 const importExportUrl = new URL('../../src/services/import-export.js', import.meta.url);
+const cargoCanonicalUrl = new URL('../../src/core/cargo-canonical.js', import.meta.url);
+const importSchemaUrl = new URL('../../src/core/import-schema.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
 const packsScreenPath = new URL('../../src/screens/packs-screen.js', import.meta.url);
@@ -230,6 +232,139 @@ test('obsolete-code scan: caseRequirements/requiredQuantity have no production o
     await walk(path.join(fileURLToPath(repoRoot), root));
   }
   assert.deepEqual(hits, [], `caseRequirements/requiredQuantity must not appear in: ${hits.join(', ')}`);
+});
+
+test('Case canonicalization strips only forbidden quantity-domain aliases', async () => {
+  const [{ normalizeCase }, CargoCanonical, ImportSchema] = await Promise.all([
+    import(normalizerUrl.href),
+    import(cargoCanonicalUrl.href),
+    import(importSchemaUrl.href),
+  ]);
+  const forbiddenKeys = [
+    'quantity', 'qty', 'caseQuantity', 'case_quantity', 'case-qty',
+    'requiredQuantity', 'required_quantity', 'Required-Qty',
+    'desiredQuantity', 'desired_qty', 'targetQuantity', 'target-qty',
+    'inventoryQuantity', 'inventory_qty', 'caseRequirements',
+  ];
+  const raw = baseCase({ customExtension: 'keep-me' });
+  forbiddenKeys.forEach((key, index) => { raw[key] = index + 1; });
+
+  const normalized = normalizeCase(raw, 123);
+  const stripped = CargoCanonical.stripForbiddenCaseQuantityFields(raw);
+  const portable = ImportSchema.projectPortableCase({ ...raw, volume: 1000 });
+
+  for (const key of forbiddenKeys) {
+    assert.equal(Object.prototype.hasOwnProperty.call(normalized, key), false, `normalized Case dropped ${key}`);
+    assert.equal(Object.prototype.hasOwnProperty.call(stripped, key), false, `central sanitizer dropped ${key}`);
+    assert.equal(Object.prototype.hasOwnProperty.call(portable, key), false, `portable Case dropped ${key}`);
+  }
+  assert.equal(normalized.customExtension, 'keep-me');
+  assert.equal(stripped.customExtension, 'keep-me');
+  assert.equal(portable.customExtension, 'keep-me');
+  assert.equal(Object.prototype.hasOwnProperty.call(portable, 'volume'), false);
+});
+
+test('CaseLibrary upsert and duplicate cannot persist forbidden quantity aliases', async () => {
+  const { StateStore, CaseLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+
+  CaseLibrary.upsert(baseCase({
+    quantity: 7,
+    requiredQuantity: 9,
+    target_quantity: 12,
+    caseRequirements: [{ caseId: 'case-a', requiredQuantity: 99 }],
+    customExtension: 'keep-me',
+  }));
+  const stored = CaseLibrary.getById('case-a');
+  assert.equal(stored.customExtension, 'keep-me');
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'requiredQuantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'target_quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'caseRequirements'), false);
+
+  const duplicateResult = CaseLibrary.duplicate('case-a');
+  const duplicate = CaseLibrary.getById(duplicateResult.id);
+  assert.ok(duplicate);
+  assert.equal(duplicate.customExtension, 'keep-me');
+  assert.equal(Object.prototype.hasOwnProperty.call(duplicate, 'quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(duplicate, 'requiredQuantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(duplicate, 'target_quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(duplicate, 'caseRequirements'), false);
+  assert.equal(StateStore.get('packLibrary').length, 0, 'legacy Case quantities never create cargo instances');
+
+  const importPlan = CaseLibrary.planCaseCatalogImport([baseCase({
+    id: 'case-imported',
+    name: 'Imported Case',
+    inventoryQty: 6,
+    desired_quantity: 4,
+    customExtension: 'import-keep-me',
+  })]);
+  assert.equal(importPlan.newCases.length, 1);
+  assert.equal(importPlan.newCases[0].customExtension, 'import-keep-me');
+  assert.equal(Object.prototype.hasOwnProperty.call(importPlan.newCases[0], 'inventoryQty'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(importPlan.newCases[0], 'desired_quantity'), false);
+});
+
+test('legacy Case quantity aliases are dropped on app normalization without creating instances', async () => {
+  const { normalizeAppData } = await import(normalizerUrl.href);
+  const normalized = normalizeAppData({
+    caseLibrary: [baseCase({
+      Quantity: 7,
+      required_quantity: 9,
+      targetQty: 12,
+      inventory_quantity: 3,
+      customExtension: 'keep-me',
+    })],
+    packLibrary: [],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const stored = normalized.caseLibrary[0];
+  assert.equal(stored.customExtension, 'keep-me');
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'Quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'required_quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'targetQty'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(stored, 'inventory_quantity'), false);
+  assert.deepEqual(normalized.packLibrary, []);
+});
+
+test('Case catalog and backup exports cannot emit Case-owned quantity aliases', async () => {
+  const { StateStore, CaseLibrary, ImportExport } = await loadModules();
+  const legacyCase = baseCase({
+    quantity: 7,
+    required_quantity: 9,
+    targetQty: 12,
+    caseRequirements: [{ caseId: 'case-a', requiredQty: 5 }],
+    customExtension: 'keep-me',
+  });
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  CaseLibrary.upsert(legacyCase);
+
+  const catalogJson = ImportExport.buildCaseCatalogExportJSON([legacyCase]);
+  const appJson = ImportExport.buildAppExportJSON();
+  const workspaceJson = ImportExport.buildWorkspaceExportJSON('Quantity Invariant');
+  for (const json of [catalogJson, appJson, workspaceJson]) {
+    assert.doesNotMatch(json, /"(?:quantity|required[_-]?quantity|target[_-]?qty|caseRequirements)"\s*:/i);
+    assert.match(json, /"customExtension"\s*:\s*"keep-me"/);
+  }
+
+  const importedCatalog = ImportExport.parseCaseCatalogImportJSON(catalogJson);
+  assert.equal(importedCatalog.length, 1);
+  assert.equal(importedCatalog[0].customExtension, 'keep-me');
+  assert.equal(Object.prototype.hasOwnProperty.call(importedCatalog[0], 'quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(importedCatalog[0], 'required_quantity'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(importedCatalog[0], 'targetQty'), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(importedCatalog[0], 'caseRequirements'), false);
+
+  const restoredApp = ImportExport.parseAppImportJSON(appJson);
+  const restoredWorkspace = ImportExport.parseWorkspaceImportJSON(workspaceJson);
+  for (const restoredCase of [restoredApp.caseLibrary[0], restoredWorkspace.caseLibrary[0]]) {
+    assert.equal(restoredCase.customExtension, 'keep-me');
+    assert.equal(Object.prototype.hasOwnProperty.call(restoredCase, 'quantity'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(restoredCase, 'required_quantity'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(restoredCase, 'targetQty'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(restoredCase, 'caseRequirements'), false);
+  }
 });
 
 // ===========================================================================
@@ -817,6 +952,49 @@ test('Requirement 27: no Qty UI state is persisted to StateStore/localStorage/Pa
   assert.doesNotMatch(src, /PackLibrary\.update\([^)]*caseQtyDrafts/);
 });
 
+test('workspace reset clears the production Editor Qty-draft state but ordinary same-workspace use does not', async () => {
+  const { resetEditorCaseQtyDrafts } = await import(editorScreenPath.href);
+  const drafts = new Map([['case-a', 7]]);
+  const getDraft = caseId => drafts.get(caseId) ?? 1;
+
+  assert.equal(getDraft('case-a'), 7, 'same-workspace rerenders and Pack changes do not clear the draft');
+  resetEditorCaseQtyDrafts(drafts);
+  assert.equal(getDraft('case-a'), 1, 'the same Case id starts from the default in the replacement workspace');
+
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.match(src, /function resetWorkspaceState\(\) \{\s*resetEditorCaseQtyDrafts\(caseQtyDrafts\);\s*\}/);
+  assert.match(src, /return \{ init: initEditorUI, render, onActivated, resetWorkspaceState \};/);
+});
+
+test('workspace reset clears the production Cases selection state without changing ordinary selection semantics', async () => {
+  const { resetCasesSelection } = await import(casesScreenPath.href);
+  const selectedIds = new Set(['case-x']);
+
+  assert.equal(selectedIds.has('case-x'), true, 'same-workspace render/view changes retain the current selection owner');
+  resetCasesSelection(selectedIds);
+  assert.equal(selectedIds.has('case-x'), false, 'a matching Case id is not selected in the replacement workspace');
+
+  const src = await fs.readFile(casesScreenPath, 'utf8');
+  assert.match(src, /function resetWorkspaceState\(\) \{\s*resetCasesSelection\(selectedIds\);\s*lastVisibleIds = \[\];\s*\}/);
+  assert.match(src, /return \{ init: initCasesUI, render, resetWorkspaceState \};/);
+});
+
+test('the established workspace reset boundary invokes Cases and Editor transient-state hooks once per workspace key', async () => {
+  const src = await fs.readFile(appJsPath, 'utf8');
+  const start = src.indexOf('function resetWorkspaceScopedUiState(targetOrgId) {');
+  const end = src.indexOf('\n    function clearOrgContext', start);
+  assert.ok(start >= 0 && end > start);
+  const block = src.slice(start, end);
+
+  assert.match(block, /if \(lastWorkspaceUiResetKey === resetKey\) return;/,
+    'same-workspace repeats remain a no-op');
+  assert.match(block, /PacksUI\.resetWorkspaceState\(\);/);
+  assert.match(block, /CasesUI\.resetWorkspaceState\(\);/);
+  assert.match(block, /EditorUI\.resetWorkspaceState\(\);/);
+  assert.equal((src.match(/CasesUI\.resetWorkspaceState\(\)/g) || []).length, 1);
+  assert.equal((src.match(/EditorUI\.resetWorkspaceState\(\)/g) || []).length, 1);
+});
+
 // ===========================================================================
 // CASES PAGE (Requirements 28-41)
 // ===========================================================================
@@ -1183,6 +1361,7 @@ test('new Load Plan, App Backup, and Workspace exports never emit obsolete targe
 
 test('normal scoped storage load/save removes and persists the obsolete field without a schema bump', async () => {
   const { StateStore, CoreStorage } = await loadModules();
+  const { applyCanonicalCargoFields } = await import(cargoCanonicalUrl.href);
   const hadWindow = Object.prototype.hasOwnProperty.call(globalThis, 'window');
   const priorWindow = globalThis.window;
   const localStorage = createMemoryLocalStorage();
@@ -1200,7 +1379,13 @@ test('normal scoped storage load/save removes and persists the obsolete field wi
     localStorage.setItem(workspaceKey, JSON.stringify({
       version: '1.0.0',
       savedAt: 1,
-      caseLibrary: [baseCase()],
+      caseLibrary: [baseCase({
+        quantity: 7,
+        RequiredQuantity: 9,
+        target_quantity: 12,
+        caseRequirements: [{ caseId: 'case-a', requiredQuantity: 99 }],
+        customExtension: 'keep-me',
+      })],
       packLibrary: [legacy],
       folderLibrary: [],
       currentPackId: legacy.id,
@@ -1209,12 +1394,20 @@ test('normal scoped storage load/save removes and persists the obsolete field wi
     const loaded = CoreStorage.load();
     assert.equal(loaded.packLibrary[0].caseRequirements, undefined);
     assert.equal(loaded.packLibrary[0].cases.length, legacy.cases.length);
+    const loadedCase = applyCanonicalCargoFields(loaded.caseLibrary[0]);
+    assert.equal(loadedCase.customExtension, 'keep-me');
+    assert.equal(Object.prototype.hasOwnProperty.call(loadedCase, 'quantity'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(loadedCase, 'RequiredQuantity'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(loadedCase, 'target_quantity'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(loadedCase, 'caseRequirements'), false);
     const rewritten = localStorage.getItem(workspaceKey);
-    assert.doesNotMatch(rewritten, /caseRequirements|requiredQuantity/);
-    assert.equal(JSON.parse(rewritten).version, '1.0.0');
+    const rewrittenPayload = JSON.parse(rewritten);
+    assert.equal(Object.prototype.hasOwnProperty.call(rewrittenPayload.packLibrary[0], 'caseRequirements'), false,
+      'the existing Pack compatibility cleanup remains in place');
+    assert.equal(rewrittenPayload.version, '1.0.0');
 
     StateStore.init({
-      caseLibrary: [baseCase()],
+      caseLibrary: [loadedCase],
       packLibrary: [legacy],
       folderLibrary: [],
       preferences: {},
@@ -1222,7 +1415,7 @@ test('normal scoped storage load/save removes and persists the obsolete field wi
     });
     CoreStorage.saveNow();
     const saved = localStorage.getItem(workspaceKey);
-    assert.doesNotMatch(saved, /caseRequirements|requiredQuantity/);
+    assert.doesNotMatch(saved, /caseRequirements|requiredQuantity|required_quantity|target_quantity|"quantity"/i);
     assert.equal(JSON.parse(saved).packLibrary[0].cases.length, legacy.cases.length);
   } finally {
     CoreStorage.setStorageScope('anon');

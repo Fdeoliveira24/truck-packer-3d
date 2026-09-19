@@ -209,6 +209,9 @@ export function openCaseModal({
   const catWrap = doc.createElement('div');
   catWrap.className = 'field';
   catWrap.classList.add('tp3d-grid-span-full');
+  // Layout only: lets the existing category selector row and the new-category
+  // creator row sit inline as one Category control area (see main.css).
+  catWrap.classList.add('tp3d-cases-category-controls');
   const catLabel = doc.createElement('div');
   catLabel.className = 'label';
   catLabel.textContent = 'Category';

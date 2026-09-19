@@ -5225,6 +5225,34 @@ body.modal-open {
   margin-top: 8px;
 }
 
+/* New/Edit Case modal: the Category field keeps its label, existing selector row
+   and new-category creator row (all inside the same .field grid) but lays the two
+   control rows out inline under the label. The creator gets the wider column for
+   its name input. Stacks below 600px, where the two groups would get too narrow. */
+.tp3d-cases-category-controls {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  column-gap: var(--space-3);
+  align-items: center;
+}
+
+.tp3d-cases-category-controls > .label {
+  grid-column: 1 / -1;
+}
+
+.tp3d-cases-category-controls > .tp3d-cases-new-category-row {
+  margin-top: 0;
+}
+
+@media (max-width: 600px) {
+  .tp3d-cases-category-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .tp3d-cases-category-controls > .tp3d-cases-new-category-row {
+    margin-top: 8px;
+  }
+}
+
 .tp3d-cases-flip-row {
   display: flex;
   align-items: center;
@@ -5697,6 +5725,14 @@ body.modal-open {
 
 .tp3d-editor-case-qty-input[type='number'] {
   -moz-appearance: textfield;
+}
+
+/* Staged-only Remove: a neutral .btn beneath the Qty/Add row, right-aligned under
+   Add. Same compact padding as .tp3d-editor-btn-add so this secondary action
+   never outweighs the primary one. */
+.tp3d-editor-case-qty-remove {
+  justify-self: end;
+  padding: 6px 10px;
 }
 
 .tp3d-editor-case-qty-readout {

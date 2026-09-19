@@ -33,6 +33,54 @@ export function resetEditorCaseQtyDrafts(caseQtyDrafts) {
   caseQtyDrafts.clear();
 }
 
+const STAGING_QTY_INVALID_MESSAGE = 'Enter a whole quantity from 1 to 10,000.';
+const NO_LOAD_PLAN_MESSAGE = 'Create or open a load plan first';
+const CASE_MISSING_MESSAGE = 'This case no longer exists.';
+
+// Maps a non-ok PackLibrary.addInstancesToStaging() result to its user feedback.
+// The service owns the reason; this only chooses copy and toast tone.
+export function getStagingAddFailureFeedback(result) {
+  const reason = result && result.reason;
+  if (reason === 'invalid-count') return { message: STAGING_QTY_INVALID_MESSAGE, tone: 'warning' };
+  if (reason === 'pack-not-found') return { message: NO_LOAD_PLAN_MESSAGE, tone: 'warning' };
+  if (reason === 'case-not-found') return { message: CASE_MISSING_MESSAGE, tone: 'error' };
+  if (reason === 'placement-incomplete') {
+    return { message: "Couldn't place the full quantity in staging. Nothing was added.", tone: 'warning' };
+  }
+  return { message: 'Add failed. Please try again.', tone: 'error' };
+}
+
+// Maps a PackLibrary.removeCaseInstancesFromStaging() result to its user
+// feedback. Shortage is all-or-nothing, so its copy always says nothing was
+// removed; eligibleCount comes from the service, never recomputed in the Editor.
+export function getStagingRemoveFeedback(result) {
+  const reason = result && result.reason;
+  if (reason === 'ok') {
+    return { message: `Removed ${caseCountText(result.removedCount)} from staging.`, tone: 'info' };
+  }
+  if (reason === 'insufficient-eligible') {
+    return result.eligibleCount > 0
+      ? { message: `Only ${result.eligibleCount} can be removed from staging. Nothing was removed.`, tone: 'warning' }
+      : { message: 'No cases can be removed from staging. Nothing was removed.', tone: 'warning' };
+  }
+  if (reason === 'invalid-count') return { message: STAGING_QTY_INVALID_MESSAGE, tone: 'warning' };
+  if (reason === 'pack-not-found') return { message: NO_LOAD_PLAN_MESSAGE, tone: 'warning' };
+  if (reason === 'case-not-found') return { message: CASE_MISSING_MESSAGE, tone: 'error' };
+  return { message: 'Remove failed. Please try again.', tone: 'error' };
+}
+
+// Selection after a Qty Remove: drop ONLY the removed ids and keep every other
+// selected id (including any unrelated stale one) exactly as it was. Returns
+// null when none of the removed ids were selected, meaning "make no selection
+// write". Qty Remove is not explicit Delete, which clears the whole selection.
+export function pruneSelectionAfterRemoval(selectedIds, removedIds) {
+  const selected = Array.isArray(selectedIds) ? selectedIds : [];
+  const removed = new Set(Array.isArray(removedIds) ? removedIds : []);
+  if (!selected.length || !removed.size) return null;
+  if (!selected.some(id => removed.has(id))) return null;
+  return selected.filter(id => !removed.has(id));
+}
+
 function getDeleteFinalSelection(result) {
   return result && Array.isArray(result.finalSelectionIds) ? result.finalSelectionIds : [];
 }
@@ -4639,7 +4687,8 @@ export function createEditorScreen({
      * written to the Pack/Case/StateStore/localStorage. Clicking "+ Add"
      * creates exactly the drafted Qty as new staged physical instances via
      * PackLibrary.addInstancesToStaging() (one atomic Pack update, one Undo
-     * step), then resets the draft back to 1.
+     * step). A full success resets the draft back to 1; any failure leaves the
+     * Pack untouched and preserves the requested Qty.
      */
     function buildCaseQtyAddRow(c, pack) {
       const packId = pack.id;
@@ -4673,7 +4722,7 @@ export function createEditorScreen({
       input.step = '1';
       input.inputMode = 'numeric';
       input.value = String(getCaseQtyDraft(c.id));
-      input.setAttribute('aria-label', `Quantity to add for ${c.name}`);
+      input.setAttribute('aria-label', `Quantity to add or remove for ${c.name}`);
       input.dataset.caseId = c.id;
       input.dataset.qtyRole = 'input';
       row.appendChild(input);
@@ -4702,6 +4751,24 @@ export function createEditorScreen({
       readout.textContent = `${counts.inLoad} in load · ${counts.inTruck} in truck · ${counts.staged} staged`;
 
       section.appendChild(row);
+
+      // Remove is offered only when this Case has physically staged cargo at all
+      // (counts.staged is the readout's own figure). That is NOT an eligibility
+      // check: whether any staged instance is actually removable stays entirely
+      // with PackLibrary.removeCaseInstancesFromStaging().
+      let removeBtn = null;
+      if (counts.staged > 0) {
+        removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-sm tp3d-editor-case-qty-remove';
+        removeBtn.textContent = 'Remove';
+        removeBtn.title = 'Removes staged cases only. Packed, hidden, or grouped cases are not affected.';
+        removeBtn.setAttribute('aria-label', `Remove from staging for ${c.name}`);
+        removeBtn.dataset.caseId = c.id;
+        removeBtn.dataset.qtyRole = 'remove';
+        section.appendChild(removeBtn);
+      }
+
       section.appendChild(readout);
 
       const revertInput = () => {
@@ -4728,6 +4795,21 @@ export function createEditorScreen({
         input.value = String(getCaseQtyDraft(c.id));
       };
 
+      // Add acts on what is VISIBLY in the input, even if the user never blurred
+      // it or pressed Enter. Returns the committed whole quantity, or null (after
+      // reverting the field to the last valid draft and warning) when the visible
+      // value is not a whole number from CASE_QTY_MIN to CASE_QTY_MAX.
+      const readLiveQty = () => {
+        const n = parseDirectEntry();
+        if (n === null || n > CASE_QTY_MAX) {
+          revertInput();
+          UIComponents.showToast(STAGING_QTY_INVALID_MESSAGE, 'warning');
+          return null;
+        }
+        commitDraft(n);
+        return n;
+      };
+
       minusBtn.addEventListener('click', () => {
         commitDraft(getCaseQtyDraft(c.id) - 1);
       });
@@ -4752,11 +4834,13 @@ export function createEditorScreen({
 
       addBtn.addEventListener('click', () => {
         if (editorMutationBlocked()) return;
-        const qty = getCaseQtyDraft(c.id);
+        const qty = readLiveQty();
+        if (qty === null) return;
         minusBtn.disabled = true;
         plusBtn.disabled = true;
         input.disabled = true;
         addBtn.disabled = true;
+        let added = false;
         try {
           // Reset the draft BEFORE the mutating call: addInstancesToStaging's
           // Pack update triggers a synchronous StateStore-driven re-render
@@ -4767,7 +4851,12 @@ export function createEditorScreen({
           // Resolves the latest Pack/Case internally at call time — never
           // trusts a stale render-time reference.
           const result = PackLibrary.addInstancesToStaging(packId, c.id, qty);
-          if (!result || result.addedCount <= 0) return;
+          if (!result || result.reason !== 'ok') {
+            const feedback = getStagingAddFailureFeedback(result);
+            UIComponents.showToast(feedback.message, feedback.tone);
+            return;
+          }
+          added = true;
           if (result.addedCount === 1) {
             StateStore.set({ selectedInstanceIds: result.createdInstanceIds }, { skipHistory: true });
           }
@@ -4776,12 +4865,49 @@ export function createEditorScreen({
             : `Added ${result.addedCount} items to staging.`;
           UIComponents.showToast(message, 'success');
         } finally {
+          // A failed Add writes nothing to the Pack, so no re-render replaced this
+          // card and the visible input still shows the requested Qty: put the
+          // pre-call draft back so it matches (also covers a throw).
+          if (!added) setCaseQtyDraft(c.id, qty);
           minusBtn.disabled = false;
           plusBtn.disabled = false;
           input.disabled = false;
           addBtn.disabled = false;
         }
       });
+
+      if (removeBtn) {
+        removeBtn.addEventListener('click', () => {
+          if (editorMutationBlocked()) return;
+          const qty = readLiveQty();
+          if (qty === null) return;
+          let removed = false;
+          try {
+            // Same ordering as Add: a successful removal re-renders this card
+            // synchronously from caseQtyDrafts, so the reset must already be in place.
+            setCaseQtyDraft(c.id, CASE_QTY_MIN);
+            const result = PackLibrary.removeCaseInstancesFromStaging(packId, c.id, qty);
+            const feedback = getStagingRemoveFeedback(result);
+            if (!result || result.reason !== 'ok') {
+              UIComponents.showToast(feedback.message, feedback.tone);
+              return;
+            }
+            removed = true;
+            // Qty Remove is not explicit Delete: drop only the removed ids from the
+            // selection, and make no selection write at all if none were selected.
+            const nextSelection = pruneSelectionAfterRemoval(
+              StateStore.get('selectedInstanceIds'),
+              result.removedInstanceIds
+            );
+            if (nextSelection) InteractionManager.setSelection(nextSelection);
+            UIComponents.showToast(feedback.message, feedback.tone);
+          } finally {
+            // A rejected Remove writes nothing to the Pack, so no re-render replaced
+            // this card: restore the requested Qty so the field and draft match.
+            if (!removed) setCaseQtyDraft(c.id, qty);
+          }
+        });
+      }
 
       return section;
     }

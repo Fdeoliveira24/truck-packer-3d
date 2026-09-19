@@ -2470,18 +2470,26 @@ export function addInstance(packId, caseId, position) {
 
 export const BULK_ADD_MAX_QUANTITY = 10000;
 
-const EMPTY_BULK_ADD_RESULT = Object.freeze({
-  requestedCount: 0,
-  addedCount: 0,
-  createdInstanceIds: [],
-  pack: null,
-});
+// Every result gets its own createdInstanceIds array so a caller can never
+// mutate state shared with another call.
+function bulkAddResult(reason, requestedCount, addedCount = 0, createdInstanceIds = [], pack = null) {
+  return { reason, requestedCount, addedCount, createdInstanceIds, pack };
+}
 
 /**
  * Quantity Controls: bulk-create `count` physical instances of `caseId`, all
  * placed in staging (never inside the truck), committed as ONE PackLibrary
  * update/history entry — never one update() per instance. `count` comes from
  * the Editor's ephemeral Qty selector, not any persisted/computed value.
+ *
+ * Strict, all-or-nothing command contract (same spirit as
+ * removeCaseInstancesFromStaging). `count` must already be a whole number from
+ * 1 to BULK_ADD_MAX_QUANTITY: nothing is coerced, truncated, or clamped.
+ * `reason` is one of 'ok' | 'invalid-count' | 'pack-not-found' |
+ * 'case-not-found' | 'placement-incomplete'. Any non-'ok' result performs ZERO
+ * Pack writes (no update, no history entry, no lastEdited bump) and reports
+ * addedCount 0 with an empty createdInstanceIds. A successful Add always adds
+ * exactly `count` instances.
  *
  * Reuses the exact same staging-grid layout formula getStagingLayout() and
  * findSafeStagingPosition() are built on (normalizeDims, buildAcceptedAabbs,
@@ -2498,15 +2506,16 @@ const EMPTY_BULK_ADD_RESULT = Object.freeze({
  * O(n^2), which is what keeps a 10,000-item batch responsive.
  */
 export function addInstancesToStaging(packId, caseId, count) {
-  const pack = getById(packId);
-  if (!pack || !caseId) return EMPTY_BULK_ADD_RESULT;
-  const caseData = CaseLibrary.getById(caseId);
-  if (!caseData) return EMPTY_BULK_ADD_RESULT;
+  if (typeof count !== 'number' || !Number.isFinite(count) ||
+      !Number.isInteger(count) || count < 1 || count > BULK_ADD_MAX_QUANTITY) {
+    return bulkAddResult('invalid-count', count);
+  }
+  const requestedCount = count;
 
-  const rawCount = Number(count);
-  if (!Number.isFinite(rawCount)) return EMPTY_BULK_ADD_RESULT;
-  const requestedCount = Math.max(0, Math.min(BULK_ADD_MAX_QUANTITY, Math.trunc(rawCount)));
-  if (requestedCount <= 0) return { ...EMPTY_BULK_ADD_RESULT, requestedCount, pack };
+  const pack = getById(packId);
+  if (!pack) return bulkAddResult('pack-not-found', requestedCount);
+  const caseData = caseId ? CaseLibrary.getById(caseId) : null;
+  if (!caseData) return bulkAddResult('case-not-found', requestedCount);
 
   const dims = normalizeDims(caseData.dimensions);
   const existingInstances = pack.cases || [];
@@ -2566,16 +2575,25 @@ export function addInstancesToStaging(packId, caseId, count) {
     });
   }
 
-  // Single write: all created instances committed together, one update()
-  // call, one history/Undo entry. Nothing is written if requestedCount is 0.
-  const updatedPack = update(packId, { cases: [...existingInstances, ...newInstances] });
+  // All-or-nothing: if the deterministic placement search could not create the
+  // FULL requested batch, discard the locally built instances and write nothing.
+  // A partial batch is never published, so there is no partial-Add outcome.
+  if (newInstances.length !== requestedCount) {
+    return bulkAddResult('placement-incomplete', requestedCount);
+  }
 
-  return {
+  // Single write: all created instances committed together, one update()
+  // call, one history/Undo entry.
+  const updatedPack = update(packId, { cases: [...existingInstances, ...newInstances] });
+  if (!updatedPack) return bulkAddResult('pack-not-found', requestedCount);
+
+  return bulkAddResult(
+    'ok',
     requestedCount,
-    addedCount: newInstances.length,
-    createdInstanceIds: newInstances.map(inst => inst.id),
-    pack: updatedPack,
-  };
+    newInstances.length,
+    newInstances.map(inst => inst.id),
+    updatedPack
+  );
 }
 
 export function updateInstance(packId, instanceId, patch) {

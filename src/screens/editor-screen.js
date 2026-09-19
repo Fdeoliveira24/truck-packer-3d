@@ -33,6 +33,23 @@ export function resetEditorCaseQtyDrafts(caseQtyDrafts) {
   caseQtyDrafts.clear();
 }
 
+const STAGING_QTY_INVALID_MESSAGE = 'Enter a whole quantity from 1 to 10,000.';
+const NO_LOAD_PLAN_MESSAGE = 'Create or open a load plan first';
+const CASE_MISSING_MESSAGE = 'This case no longer exists.';
+
+// Maps a non-ok PackLibrary.addInstancesToStaging() result to its user feedback.
+// The service owns the reason; this only chooses copy and toast tone.
+export function getStagingAddFailureFeedback(result) {
+  const reason = result && result.reason;
+  if (reason === 'invalid-count') return { message: STAGING_QTY_INVALID_MESSAGE, tone: 'warning' };
+  if (reason === 'pack-not-found') return { message: NO_LOAD_PLAN_MESSAGE, tone: 'warning' };
+  if (reason === 'case-not-found') return { message: CASE_MISSING_MESSAGE, tone: 'error' };
+  if (reason === 'placement-incomplete') {
+    return { message: "Couldn't place the full quantity in staging. Nothing was added.", tone: 'warning' };
+  }
+  return { message: 'Add failed. Please try again.', tone: 'error' };
+}
+
 function getDeleteFinalSelection(result) {
   return result && Array.isArray(result.finalSelectionIds) ? result.finalSelectionIds : [];
 }
@@ -4639,7 +4656,8 @@ export function createEditorScreen({
      * written to the Pack/Case/StateStore/localStorage. Clicking "+ Add"
      * creates exactly the drafted Qty as new staged physical instances via
      * PackLibrary.addInstancesToStaging() (one atomic Pack update, one Undo
-     * step), then resets the draft back to 1.
+     * step). A full success resets the draft back to 1; any failure leaves the
+     * Pack untouched and preserves the requested Qty.
      */
     function buildCaseQtyAddRow(c, pack) {
       const packId = pack.id;
@@ -4728,6 +4746,21 @@ export function createEditorScreen({
         input.value = String(getCaseQtyDraft(c.id));
       };
 
+      // Add acts on what is VISIBLY in the input, even if the user never blurred
+      // it or pressed Enter. Returns the committed whole quantity, or null (after
+      // reverting the field to the last valid draft and warning) when the visible
+      // value is not a whole number from CASE_QTY_MIN to CASE_QTY_MAX.
+      const readLiveQty = () => {
+        const n = parseDirectEntry();
+        if (n === null || n > CASE_QTY_MAX) {
+          revertInput();
+          UIComponents.showToast(STAGING_QTY_INVALID_MESSAGE, 'warning');
+          return null;
+        }
+        commitDraft(n);
+        return n;
+      };
+
       minusBtn.addEventListener('click', () => {
         commitDraft(getCaseQtyDraft(c.id) - 1);
       });
@@ -4752,11 +4785,13 @@ export function createEditorScreen({
 
       addBtn.addEventListener('click', () => {
         if (editorMutationBlocked()) return;
-        const qty = getCaseQtyDraft(c.id);
+        const qty = readLiveQty();
+        if (qty === null) return;
         minusBtn.disabled = true;
         plusBtn.disabled = true;
         input.disabled = true;
         addBtn.disabled = true;
+        let added = false;
         try {
           // Reset the draft BEFORE the mutating call: addInstancesToStaging's
           // Pack update triggers a synchronous StateStore-driven re-render
@@ -4767,7 +4802,12 @@ export function createEditorScreen({
           // Resolves the latest Pack/Case internally at call time — never
           // trusts a stale render-time reference.
           const result = PackLibrary.addInstancesToStaging(packId, c.id, qty);
-          if (!result || result.addedCount <= 0) return;
+          if (!result || result.reason !== 'ok') {
+            const feedback = getStagingAddFailureFeedback(result);
+            UIComponents.showToast(feedback.message, feedback.tone);
+            return;
+          }
+          added = true;
           if (result.addedCount === 1) {
             StateStore.set({ selectedInstanceIds: result.createdInstanceIds }, { skipHistory: true });
           }
@@ -4776,6 +4816,10 @@ export function createEditorScreen({
             : `Added ${result.addedCount} items to staging.`;
           UIComponents.showToast(message, 'success');
         } finally {
+          // A failed Add writes nothing to the Pack, so no re-render replaced this
+          // card and the visible input still shows the requested Qty: put the
+          // pre-call draft back so it matches (also covers a throw).
+          if (!added) setCaseQtyDraft(c.id, qty);
           minusBtn.disabled = false;
           plusBtn.disabled = false;
           input.disabled = false;

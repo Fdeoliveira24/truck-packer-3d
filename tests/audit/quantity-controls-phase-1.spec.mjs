@@ -2311,3 +2311,246 @@ test('P1-A R14-R17: every staged-only authority preserves signature state and in
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// P1-B commit 1 — strict, all-or-nothing staged Add
+// ---------------------------------------------------------------------------
+
+function trackPackWrites(StateStore) {
+  let writes = 0;
+  const unsubscribe = StateStore.subscribe(changes => {
+    if (changes.packLibrary) writes++;
+  });
+  return { count: () => writes, stop: unsubscribe };
+}
+
+// A single enormous pre-existing instance. With rect truck 120x60 and a 10x10x10
+// Case the staging grid is 6 columns wide, rows start at z=42 and repeat every
+// 22. `fromZ` is where the blocker's footprint begins: everything at or beyond it
+// is unplaceable, everything before it stays free.
+function stagingBlockerInstance(fromZ) {
+  const width = 1e9;
+  return outsideInstance({
+    id: 'staging-blocker',
+    transform: {
+      position: { x: 60, y: 5, z: fromZ + width / 2 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientedDims: { length: 1e6, width, height: 1e6 },
+  });
+}
+
+test('P1-B A1: addInstancesToStaging accepts whole quantities 1, N, and the 10,000 maximum', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  for (const count of [1, 7, 10000]) {
+    StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+    const result = PackLibrary.addInstancesToStaging('pack-1', 'case-a', count);
+    assert.equal(result.reason, 'ok', `count ${count}`);
+    assert.equal(result.requestedCount, count);
+    assert.equal(result.addedCount, count, 'a successful Add adds exactly the requested count');
+    assert.equal(result.createdInstanceIds.length, count);
+    assert.equal(new Set(result.createdInstanceIds).size, count, 'created ids are unique');
+    assert.equal(PackLibrary.getById('pack-1').cases.length, count);
+    assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, count);
+  }
+});
+
+test('P1-B A2: strict count contract rejects everything except a whole number 1..10000, with zero writes', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const invalidCounts = [
+    0, -1, -7, 0.5, 1.9, 2.5, 10001, 1e9, NaN, Infinity, -Infinity,
+    '5', '', ' ', 'abc', true, false, null, undefined, [5], [], {}, { valueOf: () => 3 },
+  ];
+  for (const count of invalidCounts) {
+    StateStore.init({
+      caseLibrary: [baseCase()],
+      packLibrary: [basePack({ cases: [insideInstance()], lastEdited: 12345 })],
+      folderLibrary: [],
+      preferences: {},
+    });
+    const before = StateStore.snapshot();
+    const writes = trackPackWrites(StateStore);
+    const first = PackLibrary.addInstancesToStaging('pack-1', 'case-a', count);
+    const second = PackLibrary.addInstancesToStaging('pack-1', 'case-a', count);
+    writes.stop();
+
+    const label = `count=${typeof count === 'object' ? JSON.stringify(count) : String(count)}`;
+    assert.equal(first.reason, 'invalid-count', label);
+    assert.equal(first.addedCount, 0, label);
+    assert.deepEqual(first.createdInstanceIds, [], label);
+    assert.equal(first.pack, null, label);
+    assert.notStrictEqual(first.createdInstanceIds, second.createdInstanceIds,
+      `${label}: failure arrays must be fresh, never shared mutable state`);
+    assert.equal(writes.count(), 0, `${label}: no Pack write`);
+    assert.deepEqual(StateStore.snapshot(), before, `${label}: state byte-identical (lastEdited untouched)`);
+    assert.equal(StateStore.undo(), false, `${label}: no history entry`);
+  }
+});
+
+test('P1-B A3: missing Pack and missing Case report their own reason and never write', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+  const writes = trackPackWrites(StateStore);
+
+  const noPack = PackLibrary.addInstancesToStaging('missing-pack', 'case-a', 3);
+  assert.equal(noPack.reason, 'pack-not-found');
+  for (const caseId of ['missing-case', '', null, undefined]) {
+    const noCase = PackLibrary.addInstancesToStaging('pack-1', caseId, 3);
+    assert.equal(noCase.reason, 'case-not-found', `caseId=${String(caseId)}`);
+    assert.equal(noCase.addedCount, 0);
+    assert.deepEqual(noCase.createdInstanceIds, []);
+    assert.equal(noCase.pack, null);
+  }
+  writes.stop();
+
+  assert.equal(noPack.addedCount, 0);
+  assert.deepEqual(noPack.createdInstanceIds, []);
+  assert.equal(noPack.pack, null);
+  assert.equal(writes.count(), 0);
+  assert.deepEqual(StateStore.snapshot(), before);
+  assert.equal(StateStore.undo(), false);
+});
+
+test('P1-B A4: placement-incomplete is all-or-nothing — a partial batch is never published', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  // Row 0 (6 columns) is free; the blocker begins at z=60, so row 1 onwards is
+  // unplaceable. Requesting 10 could only ever place 6 before the search gives up.
+  const blocked = [
+    { name: 'partially blocked (6 placeable, 10 requested)', fromZ: 60, requested: 10 },
+    { name: 'fully blocked (0 placeable)', fromZ: -5e8, requested: 3 },
+  ];
+  for (const scenario of blocked) {
+    const cases = [stagingBlockerInstance(scenario.fromZ)];
+    StateStore.init({
+      caseLibrary: [baseCase()],
+      packLibrary: [basePack({ cases, lastEdited: 12345 })],
+      folderLibrary: [],
+      preferences: {},
+    });
+    const before = StateStore.snapshot();
+    const writes = trackPackWrites(StateStore);
+    const result = PackLibrary.addInstancesToStaging('pack-1', 'case-a', scenario.requested);
+    writes.stop();
+
+    assert.equal(result.reason, 'placement-incomplete', scenario.name);
+    assert.equal(result.requestedCount, scenario.requested, scenario.name);
+    assert.equal(result.addedCount, 0, `${scenario.name}: no partial count is exposed`);
+    assert.deepEqual(result.createdInstanceIds, [], scenario.name);
+    assert.equal(result.pack, null, scenario.name);
+    assert.equal(writes.count(), 0, `${scenario.name}: ZERO Pack writes`);
+    assert.deepEqual(StateStore.snapshot(), before, `${scenario.name}: Pack, lastEdited and stats untouched`);
+    assert.equal(PackLibrary.getById('pack-1').lastEdited, 12345, `${scenario.name}: lastEdited not bumped`);
+    assert.equal(StateStore.undo(), false, `${scenario.name}: ZERO history entries`);
+  }
+
+  // Positive control: the very same partially-blocked fixture does place a full
+  // batch that fits, so the failure above is the all-or-nothing rule, not a bad fixture.
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [basePack({ cases: [stagingBlockerInstance(60)] })],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const fits = PackLibrary.addInstancesToStaging('pack-1', 'case-a', 6);
+  assert.equal(fits.reason, 'ok');
+  assert.equal(fits.addedCount, 6);
+  assert.equal(PackLibrary.getById('pack-1').cases.length, 7);
+});
+
+test('P1-B A5: a successful Add is exactly one Pack write and one Undo/Redo step', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+  const writes = trackPackWrites(StateStore);
+  const result = PackLibrary.addInstancesToStaging('pack-1', 'case-a', 5);
+  writes.stop();
+
+  assert.equal(result.reason, 'ok');
+  assert.equal(writes.count(), 1, 'one Pack write for the whole batch');
+  assert.equal(result.createdInstanceIds.length, result.requestedCount);
+  const createdInPack = PackLibrary.getById('pack-1').cases.map(inst => inst.id);
+  assert.deepEqual([...createdInPack].sort(), [...result.createdInstanceIds].sort());
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getById('pack-1').cases.length, 0, 'one Undo removes the whole batch');
+  assert.equal(StateStore.undo(), false, 'the batch was a single history step');
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), createdInPack,
+    'one Redo restores the whole batch');
+});
+
+test('P1-B A6: every Add result carries the same reason/count/ids/pack shape', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+  const shape = ['addedCount', 'createdInstanceIds', 'pack', 'reason', 'requestedCount'];
+  const results = [
+    PackLibrary.addInstancesToStaging('pack-1', 'case-a', 2),
+    PackLibrary.addInstancesToStaging('pack-1', 'case-a', 0),
+    PackLibrary.addInstancesToStaging('missing-pack', 'case-a', 1),
+    PackLibrary.addInstancesToStaging('pack-1', 'missing-case', 1),
+  ];
+  for (const result of results) assert.deepEqual(Object.keys(result).sort(), shape);
+  assert.deepEqual(results.map(result => result.reason), ['ok', 'invalid-count', 'pack-not-found', 'case-not-found']);
+  assert.ok(results[0].pack && Array.isArray(results[0].pack.cases), 'ok carries the updated Pack');
+});
+
+test('P1-B A7: the service source no longer coerces, truncates, or clamps count', async () => {
+  const src = await fs.readFile(packLibraryUrl, 'utf8');
+  const block = extractFunctionBlock(src, 'export function addInstancesToStaging(packId, caseId, count) {', '\n}');
+  assert.match(block, /typeof count !== 'number'/);
+  assert.match(block, /!Number\.isInteger\(count\)/);
+  assert.match(block, /count < 1 \|\| count > BULK_ADD_MAX_QUANTITY/);
+  assert.doesNotMatch(block, /Number\(count\)|Math\.trunc\(|Math\.min\(BULK_ADD_MAX_QUANTITY/,
+    'no silent coercion, fraction truncation, or clamping at the command authority');
+  assert.doesNotMatch(src, /EMPTY_BULK_ADD_RESULT/, 'no shared frozen result object with a shared mutable array');
+  const guard = block.indexOf('newInstances.length !== requestedCount');
+  const write = block.indexOf('update(packId');
+  assert.ok(guard > 0 && write > guard, 'the all-or-nothing guard must run before the single update()');
+});
+
+test('P1-B A8: Add failure feedback maps each service reason to its copy and tone', async () => {
+  const { getStagingAddFailureFeedback } = await import(editorScreenPath.href);
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'invalid-count' }),
+    { message: 'Enter a whole quantity from 1 to 10,000.', tone: 'warning' });
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'pack-not-found' }),
+    { message: 'Create or open a load plan first', tone: 'warning' });
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'case-not-found' }),
+    { message: 'This case no longer exists.', tone: 'error' });
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'placement-incomplete' }),
+    { message: "Couldn't place the full quantity in staging. Nothing was added.", tone: 'warning' });
+  assert.equal(getStagingAddFailureFeedback(null).tone, 'error', 'an unexpected result still gives feedback');
+});
+
+test('P1-B A9: the Add click reads the live input, restores the requested Qty on failure, and never writes on invalid input', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');
+  const click = extractFunctionBlock(block, "addBtn.addEventListener('click', () => {", '\n      });');
+
+  // Live input authority: busy guard first, then parse the visible value, then act.
+  const guard = click.indexOf('editorMutationBlocked()');
+  const parse = click.indexOf('readLiveQty()');
+  const service = click.indexOf('PackLibrary.addInstancesToStaging(packId, c.id, qty)');
+  assert.ok(guard >= 0 && parse > guard && service > parse,
+    'editorMutationBlocked() -> readLiveQty() -> addInstancesToStaging()');
+  assert.match(click, /const qty = readLiveQty\(\);\s*if \(qty === null\) return;/,
+    'an invalid visible value stops before any mutation');
+  const live = extractFunctionBlock(block, 'const readLiveQty = () => {', '\n      };');
+  assert.match(live, /const n = parseDirectEntry\(\);/);
+  assert.match(live, /n === null \|\| n > CASE_QTY_MAX/);
+  assert.match(live, /revertInput\(\);\s*UIComponents\.showToast\(STAGING_QTY_INVALID_MESSAGE, 'warning'\);\s*return null;/);
+  assert.match(live, /commitDraft\(n\);\s*return n;/, 'a valid value is committed to the draft and used exactly');
+
+  // Failure: feedback, no selection write, draft restored (also when the service throws).
+  assert.match(click, /if \(!result \|\| result\.reason !== 'ok'\) \{\s*const feedback = getStagingAddFailureFeedback\(result\);\s*UIComponents\.showToast\(feedback\.message, feedback\.tone\);\s*return;/);
+  assert.match(click, /finally \{[\s\S]*?if \(!added\) setCaseQtyDraft\(c\.id, qty\);/);
+  const failureBranch = click.slice(click.indexOf("result.reason !== 'ok'"), click.indexOf('added = true;'));
+  assert.doesNotMatch(failureBranch, /StateStore\.set|selectedInstanceIds/, 'failure never touches selection');
+
+  // Success semantics are unchanged: Add 1 selects the new instance, Add N preserves selection.
+  assert.match(click, /added = true;\s*if \(result\.addedCount === 1\) \{\s*StateStore\.set\(\{ selectedInstanceIds: result\.createdInstanceIds \}, \{ skipHistory: true \}\);/);
+  assert.match(click, /'Case added to staging\.'/);
+  assert.match(click, /`Added \$\{result\.addedCount\} items to staging\.`/);
+  assert.match(click, /UIComponents\.showToast\(message, 'success'\);/);
+  assert.doesNotMatch(click, /removeInstances|removeCaseInstancesFromStaging/, 'Add never removes anything');
+});

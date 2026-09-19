@@ -2554,3 +2554,220 @@ test('P1-B A9: the Add click reads the live input, restores the requested Qty on
   assert.match(click, /UIComponents\.showToast\(message, 'success'\);/);
   assert.doesNotMatch(click, /removeInstances|removeCaseInstancesFromStaging/, 'Add never removes anything');
 });
+
+// ---------------------------------------------------------------------------
+// P1-B commit 2 — staged-only Qty Remove control
+// ---------------------------------------------------------------------------
+
+function qtyRowBlock(src) {
+  return extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');
+}
+
+test('P1-B R1: Remove is offered only when the Case has physically staged cargo (counts.staged > 0), never from eligibility logic', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+
+  assert.match(block, /let removeBtn = null;\s*if \(counts\.staged > 0\) \{\s*removeBtn = document\.createElement\('button'\);/);
+  const created = block.indexOf("removeBtn = document.createElement('button')");
+  const gate = block.indexOf('if (counts.staged > 0) {');
+  const appended = block.indexOf('section.appendChild(removeBtn);');
+  assert.ok(gate >= 0 && created > gate && appended > created, 'the button is created and appended only inside the staged gate');
+  assert.match(block, /if \(removeBtn\) \{\s*removeBtn\.addEventListener\('click'/, 'the handler only exists with the button');
+  // The Editor must not re-derive which staged instances are removable.
+  assert.doesNotMatch(block, /hasActiveGroup|groupId|\.hidden\b|classifyPhysicalPlacement|createPhysicalPlacementClassifier|eligibleInstances/);
+
+  const { StateStore, PackLibrary } = await loadModules();
+  const cases = {
+    'packed only': { cases: [insideInstance({ id: 'p1' })], staged: 0 },
+    'hidden staged only': { cases: [outsideInstance({ id: 'h1', hidden: true })], staged: 0 },
+    'visible staged': { cases: [outsideInstance({ id: 's1' })], staged: 1 },
+    'grouped staged only': { cases: [outsideInstance({ id: 'g1', groupId: 'group-1' })], staged: 1 },
+  };
+  for (const [name, fixture] of Object.entries(cases)) {
+    StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: fixture.cases })], folderLibrary: [], preferences: {} });
+    assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, fixture.staged, name);
+  }
+  // staged > 0 but nothing removable: the button appears, the service alone rejects.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: cases['grouped staged only'].cases })], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+  const shortage = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', 1);
+  assert.equal(shortage.reason, 'insufficient-eligible');
+  assert.equal(shortage.eligibleCount, 0);
+  assert.deepEqual(StateStore.snapshot(), before);
+});
+
+test('P1-B R2: Remove is a neutral secondary .btn placed right-aligned beneath the Qty/Add row, above the unchanged readout', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const css = await fs.readFile(new URL('../../styles/main.css', import.meta.url), 'utf8');
+  const block = qtyRowBlock(src);
+
+  const rowAt = block.indexOf('section.appendChild(row);');
+  const removeAt = block.indexOf('section.appendChild(removeBtn);');
+  const readoutAt = block.indexOf('section.appendChild(readout);');
+  assert.ok(rowAt >= 0 && removeAt > rowAt && readoutAt > removeAt, 'row -> Remove -> readout inside the existing .tp3d-editor-case-qty grid');
+
+  assert.match(block, /removeBtn\.className = 'btn btn-sm tp3d-editor-case-qty-remove';/);
+  assert.match(block, /removeBtn\.textContent = 'Remove';/, 'text only: no icon');
+  const removeSetup = block.slice(block.indexOf("removeBtn = document.createElement('button')"), removeAt);
+  assert.doesNotMatch(removeSetup, /btn-danger|btn-primary|fa-|<i\b|innerHTML|\.style\./, 'neutral: not red, not primary, no icon, no inline style');
+
+  // Add is untouched and stays the primary action with the exact "+ Add" label.
+  assert.match(block, /addBtn\.className = 'btn btn-primary btn-sm tp3d-editor-btn-add';/);
+  assert.match(block, /addBtn\.innerHTML = '<i class="fa-solid fa-plus"><\/i> Add';/);
+  assert.doesNotMatch(block, /Add \$\{/);
+
+  // The readout concept and copy are exactly what they were; no hidden count.
+  assert.match(block, /readout\.textContent = `\$\{counts\.inLoad\} in load · \$\{counts\.inTruck\} in truck · \$\{counts\.staged\} staged`;/);
+  assert.doesNotMatch(block, /counts\.hidden/);
+
+  const rule = css.match(/\.tp3d-editor-case-qty-remove\s*\{([^}]*)\}/);
+  assert.ok(rule, '.tp3d-editor-case-qty-remove must be defined in main.css');
+  assert.match(rule[1], /justify-self:\s*end;/);
+  assert.doesNotMatch(rule[1], /\bwidth\s*:|\bheight\s*:|min-width|max-width/, 'no fixed widths');
+  assert.doesNotMatch(css, /\.tp3d-editor-case-qty-remove[^{]*\{[^}]*(?:background|color|border)/, 'no colour treatment: stays a default .btn');
+});
+
+test('P1-B R3: Remove accessibility — input names both actions, Remove has its own name and help text, Add and steppers keep theirs', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+
+  assert.match(block, /input\.setAttribute\('aria-label', `Quantity to add or remove for \$\{c\.name\}`\);/);
+  assert.doesNotMatch(src, /Quantity to add for/);
+  assert.match(block, /removeBtn\.setAttribute\('aria-label', `Remove from staging for \$\{c\.name\}`\);/);
+  assert.match(block, /removeBtn\.title = 'Removes staged cases only\. Packed, hidden, or grouped cases are not affected\.';/);
+  assert.match(block, /minusBtn\.setAttribute\('aria-label', `Decrease quantity for \$\{c\.name\}`\);/);
+  assert.match(block, /plusBtn\.setAttribute\('aria-label', `Increase quantity for \$\{c\.name\}`\);/);
+  assert.match(block, /addBtn\.setAttribute\('aria-label', `Add to staging for \$\{c\.name\}`\);/);
+  // Names are static: no dynamic Qty in any aria-label.
+  const ariaLabels = block.match(/setAttribute\('aria-label', `[^`]*`\)/g) || [];
+  assert.equal(ariaLabels.length, 5);
+  for (const label of ariaLabels) assert.doesNotMatch(label, /qty|getCaseQtyDraft|input\.value/i);
+  // Remove carries the role attribute the focus-restore selector keys on.
+  assert.match(block, /removeBtn\.dataset\.caseId = c\.id;\s*removeBtn\.dataset\.qtyRole = 'remove';/);
+  // Input keyboard behavior is unchanged: Enter commits only, Escape reverts and blurs.
+  assert.match(block, /if \(ev\.key === 'Enter'\) \{\s*ev\.preventDefault\(\);\s*commitDraft\(parseDirectEntry\(\)\);\s*\} else if \(ev\.key === 'Escape'\) \{\s*ev\.preventDefault\(\);\s*revertInput\(\);\s*input\.blur\(\);/);
+});
+
+test('P1-B R4: the Remove click is busy-guarded, reads the live input, and calls ONLY the staged-removal service authority', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const click = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
+
+  const guard = click.indexOf('editorMutationBlocked()');
+  const parse = click.indexOf('readLiveQty()');
+  const service = click.indexOf('PackLibrary.removeCaseInstancesFromStaging(packId, c.id, qty)');
+  assert.ok(guard >= 0 && parse > guard && service > parse, 'editorMutationBlocked() -> readLiveQty() -> removeCaseInstancesFromStaging()');
+  assert.match(click, /const qty = readLiveQty\(\);\s*if \(qty === null\) return;/, 'an invalid visible value stops before any mutation');
+
+  // The caller only ever hands the service (packId, caseId, count): it targets no instance ids,
+  // so packed cargo can never be named, and there is no fallback to any other removal path.
+  assert.equal((click.match(/PackLibrary\./g) || []).length, 1, 'exactly one PackLibrary call');
+  assert.doesNotMatch(block, /removeInstances|deleteInstancesWithFeedback|deleteSelection|PackLibrary\.update\(/);
+  // The Add click is untouched by Remove.
+  const addClick = extractFunctionBlock(block, "addBtn.addEventListener('click', () => {", '\n      });');
+  assert.doesNotMatch(addClick, /removeCaseInstancesFromStaging|pruneSelectionAfterRemoval/);
+  // Successful removal renders through the normal StateStore subscriber, not by hand.
+  assert.doesNotMatch(click, /render\(|renderCaseBrowser|capturePackPreview|CaseScene\.sync/);
+});
+
+test('P1-B R5: Remove resets the draft only on success; a shortage or failure preserves Qty and mutates nothing else', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const click = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
+
+  assert.match(click, /setCaseQtyDraft\(c\.id, CASE_QTY_MIN\);\s*const result = PackLibrary\.removeCaseInstancesFromStaging/,
+    'success reset is staged before the synchronous re-render, like Add');
+  assert.match(click, /finally \{[\s\S]*?if \(!removed\) setCaseQtyDraft\(c\.id, qty\);/, 'any non-ok result (or a throw) restores the requested Qty');
+  const failure = click.slice(click.indexOf("result.reason !== 'ok'"), click.indexOf('removed = true;'));
+  assert.match(failure, /UIComponents\.showToast\(feedback\.message, feedback\.tone\);\s*return;/);
+  assert.doesNotMatch(failure, /StateStore\.set|InteractionManager|setSelection|selectedInstanceIds|PackLibrary/, 'a rejected Remove makes no selection write and no fallback mutation');
+});
+
+test('P1-B R6: Qty Remove feedback maps each service reason to its copy and tone', async () => {
+  const { getStagingRemoveFeedback } = await import(editorScreenPath.href);
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'ok', removedCount: 1 }), { message: 'Removed 1 case from staging.', tone: 'info' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'ok', removedCount: 5 }), { message: 'Removed 5 cases from staging.', tone: 'info' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 3 }),
+    { message: 'Only 3 can be removed from staging. Nothing was removed.', tone: 'warning' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 0 }),
+    { message: 'No cases can be removed from staging. Nothing was removed.', tone: 'warning' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'pack-not-found' }), { message: 'Create or open a load plan first', tone: 'warning' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'case-not-found' }), { message: 'This case no longer exists.', tone: 'error' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'invalid-count' }), { message: 'Enter a whole quantity from 1 to 10,000.', tone: 'warning' });
+  assert.equal(getStagingRemoveFeedback(null).tone, 'error');
+
+  const every = [
+    getStagingRemoveFeedback({ reason: 'ok', removedCount: 2 }),
+    getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 1 }),
+    getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 0 }),
+    getStagingRemoveFeedback(null),
+  ].map(f => f.message).join(' ');
+  assert.doesNotMatch(every, /newest|oldest|last added|latest/i, 'removal order is never described as newest/oldest');
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.doesNotMatch(src, /newest|oldest|last added/i);
+});
+
+test('P1-B R7: pruneSelectionAfterRemoval drops only the removed ids and reports "no write" when none were selected', async () => {
+  const { pruneSelectionAfterRemoval } = await import(editorScreenPath.href);
+  assert.deepEqual(pruneSelectionAfterRemoval(['a', 'b', 'c'], ['b']), ['a', 'c'], 'only the removed id leaves the selection');
+  assert.deepEqual(pruneSelectionAfterRemoval(['keep-1', 'gone', 'keep-2'], ['gone', 'other']), ['keep-1', 'keep-2'], 'unrelated selected ids are preserved in order');
+  assert.deepEqual(pruneSelectionAfterRemoval(['stale-unrelated', 'a'], ['a']), ['stale-unrelated'], 'unrelated stale ids are left alone, not opportunistically pruned');
+  assert.deepEqual(pruneSelectionAfterRemoval(['a', 'b'], ['a', 'b']), [], 'all selected removed yields an empty selection (a write), not "no write"');
+  assert.equal(pruneSelectionAfterRemoval(['a', 'b'], ['x', 'y']), null, 'removed ids were not selected: no selection write');
+  assert.equal(pruneSelectionAfterRemoval([], ['x']), null);
+  assert.equal(pruneSelectionAfterRemoval(['a'], []), null);
+  assert.equal(pruneSelectionAfterRemoval(undefined, undefined), null);
+  const input = ['a', 'b', 'c'];
+  pruneSelectionAfterRemoval(input, ['b']);
+  assert.deepEqual(input, ['a', 'b', 'c'], 'the caller-supplied selection array is never mutated');
+
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const click = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
+  assert.match(click, /const nextSelection = pruneSelectionAfterRemoval\(\s*StateStore\.get\('selectedInstanceIds'\),\s*result\.removedInstanceIds\s*\);\s*if \(nextSelection\) InteractionManager\.setSelection\(nextSelection\);/);
+  assert.doesNotMatch(click, /selectedInstanceIds:\s*\[\]|setSelection\(\[\]\)/, 'Qty Remove never clears the whole selection');
+  // Only one raw selection write exists in the row, and it belongs to Add 1 (Requirement 20).
+  assert.equal((block.match(/StateStore\.set\(\{ selectedInstanceIds:/g) || []).length, 1);
+  // The shared selection authority writes through skipHistory and keeps the 3D scene in sync.
+  const interactionSrc = extractFunctionBlock(src, 'function setSelection(nextIds) {', '\n    }');
+  assert.match(interactionSrc, /StateStore\.set\(\{ selectedInstanceIds: ids \}, \{ skipHistory: true \}\);\s*CaseScene\.setSelected\(ids\);/);
+});
+
+test('P1-B R8: one successful Qty Remove is exactly one Pack write and one Undo/Redo step; selection is history-free', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { pruneSelectionAfterRemoval } = await import(editorScreenPath.href);
+  const cases = [
+    outsideInstance({ id: 'e1' }),
+    outsideInstance({ id: 'e2' }),
+    outsideInstance({ id: 'e3' }),
+    insideInstance({ id: 'packed-1' }),
+    outsideInstance({ id: 'hidden-1', hidden: true }),
+    outsideInstance({ id: 'grouped-1', groupId: 'group-1' }),
+  ];
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [basePack({ cases })],
+    folderLibrary: [],
+    preferences: {},
+    selectedInstanceIds: ['e3', 'packed-1', 'unrelated-stale'],
+  });
+  const writes = trackPackWrites(StateStore);
+  const result = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', 2);
+  // The caller's selection follow-up, exactly as the click handler performs it.
+  const next = pruneSelectionAfterRemoval(StateStore.get('selectedInstanceIds'), result.removedInstanceIds);
+  StateStore.set({ selectedInstanceIds: next }, { skipHistory: true });
+  writes.stop();
+
+  assert.equal(result.reason, 'ok');
+  assert.equal(writes.count(), 1, 'one Pack write; the selection follow-up is not a Pack write');
+  assert.deepEqual(result.removedInstanceIds, ['e3', 'e2']);
+  assert.deepEqual(StateStore.get('selectedInstanceIds'), ['packed-1', 'unrelated-stale']);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), ['e1', 'packed-1', 'hidden-1', 'grouped-1'],
+    'packed, hidden, and grouped cargo are untouched');
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getById('pack-1').cases.length, cases.length, 'one Undo restores the whole removal');
+  assert.equal(StateStore.undo(), false, 'the selection write created no history entry');
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), ['e1', 'packed-1', 'hidden-1', 'grouped-1']);
+});

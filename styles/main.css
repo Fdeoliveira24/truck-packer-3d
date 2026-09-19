@@ -5699,6 +5699,14 @@ body.modal-open {
   -moz-appearance: textfield;
 }
 
+/* Staged-only Remove: a neutral .btn beneath the Qty/Add row, right-aligned under
+   Add. Same compact padding as .tp3d-editor-btn-add so this secondary action
+   never outweighs the primary one. */
+.tp3d-editor-case-qty-remove {
+  justify-self: end;
+  padding: 6px 10px;
+}
+
 .tp3d-editor-case-qty-readout {
   font-size: var(--text-xs);
   color: var(--text-secondary);

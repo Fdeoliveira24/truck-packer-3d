@@ -81,6 +81,31 @@ export function pruneSelectionAfterRemoval(selectedIds, removedIds) {
   return selected.filter(id => !removed.has(id));
 }
 
+// Duplicate-click suppression for "+ Add". A physical double-click delivers its
+// second click to the button the FIRST click's synchronous re-render just built,
+// after Qty has already reset to 1 — so it would add a second, unintended batch.
+// This remembers only the most recent SUCCESSFUL Add (Pack + Case) in memory: no
+// persistence, no StateStore/history, no lifecycle kind, nothing async. It lives
+// outside the card DOM, so it survives the card being replaced. It never guards
+// Unstage, and the window is short so a deliberate second Add is unaffected.
+export const STAGING_ADD_DUPLICATE_CLICK_MS = 400;
+
+export function createStagingAddDuplicateGuard({
+  windowMs = STAGING_ADD_DUPLICATE_CLICK_MS,
+  now = () => performance.now(),
+} = {}) {
+  let last = null;
+  const keyOf = (packId, caseId) => JSON.stringify([packId, caseId]);
+  return {
+    isDuplicate(packId, caseId) {
+      return last !== null && last.key === keyOf(packId, caseId) && now() - last.at < windowMs;
+    },
+    recordSuccess(packId, caseId) {
+      last = { key: keyOf(packId, caseId), at: now() };
+    },
+  };
+}
+
 function getDeleteFinalSelection(result) {
   return result && Array.isArray(result.finalSelectionIds) ? result.finalSelectionIds : [];
 }
@@ -3637,6 +3662,9 @@ export function createEditorScreen({
     // Pack/Case. Survives same-workspace re-renders, Pack changes and navigation;
     // resetWorkspaceState clears it only when workspace scope changes.
     const caseQtyDrafts = new Map();
+    // Ephemeral, in-memory only (see createStagingAddDuplicateGuard). Held here,
+    // beside the drafts, so it outlives the Case Browser card the Add rebuilds.
+    const stagingAddGuard = createStagingAddDuplicateGuard();
     const CASE_QTY_MIN = 1;
     const CASE_QTY_MAX = 10000;
     function getCaseQtyDraft(caseId) {
@@ -4858,12 +4886,37 @@ export function createEditorScreen({
           input.blur();
         }
       });
-      input.addEventListener('blur', () => {
+      // Add and Unstage validate the LIVE input in their own click handler
+      // (readLiveQty). Moving focus from the Qty input to either of them must not
+      // pre-commit or revert that value first: the blur that precedes the click
+      // would otherwise swap an invalid entry such as 1.5 for the previous draft,
+      // and the click would then act on the restored value. relatedTarget names
+      // the button where the browser focuses it on press (Chrome, Tab); the
+      // pointerdown flag covers browsers that do not focus a button on click
+      // (relatedTarget === null). Every other blur is unchanged.
+      let actionPressPending = false;
+      const markActionPress = () => {
+        actionPressPending = true;
+      };
+      addBtn.addEventListener('pointerdown', markActionPress);
+      if (removeBtn) removeBtn.addEventListener('pointerdown', markActionPress);
+      input.addEventListener('focus', () => {
+        actionPressPending = false;
+      });
+      input.addEventListener('blur', ev => {
+        // removeBtn is null with no staged cargo: never match a null relatedTarget to it.
+        const next = ev.relatedTarget;
+        const toAction = actionPressPending || (Boolean(next) && (next === addBtn || next === removeBtn));
+        actionPressPending = false;
+        if (toAction) return;
         commitDraft(parseDirectEntry());
       });
 
       addBtn.addEventListener('click', () => {
         if (editorMutationBlocked()) return;
+        // The second click of a physical double-click lands on the button the first
+        // click's synchronous re-render just created, with Qty already reset: ignore it.
+        if (stagingAddGuard.isDuplicate(packId, c.id)) return;
         const qty = readLiveQty();
         if (qty === null) return;
         minusBtn.disabled = true;
@@ -4886,6 +4939,8 @@ export function createEditorScreen({
             UIComponents.showToast(feedback.message, feedback.tone);
             return;
           }
+          // Only a completed Add arms the duplicate-click window; a rejected one never does.
+          stagingAddGuard.recordSuccess(packId, c.id);
           added = true;
           if (result.addedCount === 1) {
             StateStore.set({ selectedInstanceIds: result.createdInstanceIds }, { skipHistory: true });

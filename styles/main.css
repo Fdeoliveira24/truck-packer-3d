@@ -5734,6 +5734,10 @@ body.modal-open {
 /* Quantity Controls — Case Browser Qty stepper + Add row */
 .tp3d-editor-case-qty {
   display: grid;
+
+  /* minmax(0, 1fr), not the implicit auto track: the row must never grow past the
+     card just because the Qty field's intrinsic width is wider than the space. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
@@ -5861,8 +5865,29 @@ body.modal-open {
 }
 
 /* Narrow card: the joined control drops beneath the stepper and spans the row,
-   the two segments splitting it evenly. Labels stay text; nothing overflows. */
+   the two segments splitting it evenly. Labels stay text; nothing overflows.
+   The Qty stepper fills its row too, so − and + are equal-width, the Qty field is
+   proportionally wider, and the group's right edge lines up with the joined
+   control below it. (Wide cards keep the compact fixed-size stepper.) */
 @container (max-width: 300px) {
+  .tp3d-editor-case-qty-stepper {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .tp3d-editor-case-qty-stepper > .tp3d-editor-case-qty-btn {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+
+  .tp3d-editor-case-qty-stepper > .tp3d-editor-case-qty-input {
+    flex: 1.4 1 0;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+  }
+
   .tp3d-editor-case-qty-actions--segmented {
     flex: 1 1 100%;
   }

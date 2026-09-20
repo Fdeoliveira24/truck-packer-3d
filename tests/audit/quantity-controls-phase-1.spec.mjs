@@ -2639,6 +2639,14 @@ test('P1-B R2: Unstage is the neutral LEFT segment of one [ Unstage | + Add ] co
   assert.match(css, /\.tp3d-editor-case-qty-row\s*\{[^}]*flex-wrap:\s*wrap;/);
   assert.match(css, /\.tp3d-editor-case-qty-stepper\s*\{[^}]*flex:\s*0 0 auto;/);
   assert.match(css, /\.tp3d-editor-case-qty\s*\{[^}]*container-type:\s*inline-size;/);
+  // The section's single column may never outgrow the card (an auto track would size to the Qty field's intrinsic width).
+  assert.match(css, /\.tp3d-editor-case-qty\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/);
+  // Narrow cards: the stepper fills its row with equal-width −/+ and a proportionally wider field.
+  const narrow = css.match(/@container \(max-width: \d+px\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(narrow, 'the narrow container query exists');
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper\s*\{[^}]*flex:\s*1 1 0;/);
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper > \.tp3d-editor-case-qty-btn\s*\{[^}]*flex:\s*1 1 0;/);
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper > \.tp3d-editor-case-qty-input\s*\{[^}]*flex:\s*1\.4 1 0;/);
   assert.match(css, /@container \(max-width: \d+px\)\s*\{[^@]*\.tp3d-editor-case-qty-actions--segmented\s*\{[^}]*flex:\s*1 1 100%;/);
 });
 

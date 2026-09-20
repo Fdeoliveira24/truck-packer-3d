@@ -395,11 +395,96 @@ export function createPacksScreen({
       });
     }
 
-    // Compact status icon for a Load Plan whose Handling Rules validity is stale
-    // (PackLibrary.isHandlingRulesValidationRequired). A STATUS, not an action: it does
-    // not validate, open the Load Plan, toggle selection, or open Notes/overflow — the
-    // same click/keydown containment as the Notes button. The tooltip is deliberately
-    // just the short label; the explanation and the Validate action live only in the Editor.
+    // Load Plan "needs review" status (a stale Handling Rules check per
+    // PackLibrary.isHandlingRulesValidationRequired). Hover/focus shows ONE small shared
+    // floating card. It is position: fixed and appended to <body>, because the List's
+    // scrolling table wrapper (overflow hidden) and the card edges would clip an
+    // absolutely positioned child near the bottom row. Informational only: no button,
+    // no pointer capture; the explanation and the Check Load Plan action live in the Editor.
+    const PACK_STATUS_CARD_ID = 'tp3d-pack-status-card';
+    const PACK_STATUS_CARD_BODY_ID = 'tp3d-pack-status-card-body';
+    let packStatusCardAnchor = null;
+    let packStatusCardAlign = 'end';
+
+    function ensurePackStatusCard() {
+      let card = document.getElementById(PACK_STATUS_CARD_ID);
+      if (card) return card;
+      card = document.createElement('div');
+      card.id = PACK_STATUS_CARD_ID;
+      card.className = 'tp3d-status-card tp3d-status-card--floating';
+      card.setAttribute('role', 'tooltip');
+      card.innerHTML =
+        '<span class="tp3d-status-card__title">Load plan needs review</span>' +
+        `<span class="tp3d-status-card__body" id="${PACK_STATUS_CARD_BODY_ID}">Loading rules have changed.</span>`;
+      document.body.appendChild(card);
+      return card;
+    }
+
+    // Above the icon, clamped inside the viewport. Above is the least harmful spot: in
+    // the Grid it lands on the card's own thumbnail (not its metadata or actions). It
+    // flips below only when there is no room above. `align` picks which card edge lines
+    // up with the icon: 'end' (Grid: the card stays inside its own thumbnail) or 'start'
+    // (List: the icon follows the title, so the card extends right and leaves the row
+    // above's title uncovered). Returns false when the anchor is scrolled out of view.
+    function positionPackStatusCard(card, anchor, align) {
+      const gap = 6;
+      const edge = 8;
+      const rect = anchor.getBoundingClientRect();
+      const viewportWidth = document.documentElement.clientWidth;
+      const viewportHeight = document.documentElement.clientHeight;
+      if (rect.bottom <= 0 || rect.top >= viewportHeight) return false;
+      const width = card.offsetWidth;
+      const height = card.offsetHeight;
+      const desired = align === 'start' ? rect.left : rect.right - width;
+      const left = Math.min(Math.max(desired, edge), Math.max(edge, viewportWidth - width - edge));
+      let top = rect.top - gap - height;
+      if (top < edge) top = Math.min(rect.bottom + gap, Math.max(edge, viewportHeight - edge - height));
+      card.style.left = `${Math.round(left)}px`;
+      card.style.top = `${Math.round(top)}px`;
+      return true;
+    }
+
+    function refreshPackStatusCard() {
+      const card = document.getElementById(PACK_STATUS_CARD_ID);
+      const anchor = packStatusCardAnchor;
+      if (!card || !anchor || !anchor.isConnected || !positionPackStatusCard(card, anchor, packStatusCardAlign)) {
+        hidePackStatusCard();
+      }
+    }
+
+    // Listeners exist only while the card is visible, so nothing accumulates across renders.
+    function showPackStatusCard(anchor, align) {
+      const card = ensurePackStatusCard();
+      const wasHidden = !packStatusCardAnchor;
+      packStatusCardAnchor = anchor;
+      packStatusCardAlign = align;
+      if (!positionPackStatusCard(card, anchor, align)) {
+        hidePackStatusCard();
+        return;
+      }
+      card.classList.add('is-visible');
+      if (wasHidden) {
+        window.addEventListener('scroll', refreshPackStatusCard, true);
+        window.addEventListener('resize', refreshPackStatusCard);
+      }
+    }
+
+    // With an anchor, only the icon that owns the card may hide it (a late blur/leave
+    // from an earlier icon must not hide another icon's card).
+    function hidePackStatusCard(anchor) {
+      if (!packStatusCardAnchor) return;
+      if (anchor && anchor !== packStatusCardAnchor) return;
+      packStatusCardAnchor = null;
+      window.removeEventListener('scroll', refreshPackStatusCard, true);
+      window.removeEventListener('resize', refreshPackStatusCard);
+      const card = document.getElementById(PACK_STATUS_CARD_ID);
+      if (card) card.classList.remove('is-visible');
+    }
+
+    // Compact status icon for a stale Load Plan. A STATUS, not an action: it does not
+    // validate, open the Load Plan, toggle selection, or open Notes/overflow — the same
+    // click/keydown containment as the Notes button. Deliberately no generic
+    // [data-tooltip]; the floating card above is its hover/focus message.
     function createPackValidationStatus({ inline = false } = {}) {
       const status = document.createElement('span');
       status.className = inline
@@ -407,12 +492,34 @@ export function createPacksScreen({
         : 'tp3d-validation-status';
       status.setAttribute('data-pack-status', 'validation');
       status.setAttribute('role', 'img');
-      status.setAttribute('aria-label', 'Validation required');
-      status.setAttribute('data-tooltip', 'Validation required');
+      status.setAttribute('aria-label', 'Load plan needs review');
+      status.setAttribute('aria-describedby', PACK_STATUS_CARD_BODY_ID);
       status.tabIndex = 0;
       status.innerHTML = '<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>';
       status.addEventListener('keydown', ev => ev.stopPropagation());
       status.addEventListener('click', ev => ev.stopPropagation());
+
+      // Visible while hovered OR keyboard/touch-focused — one card either way, never two.
+      // A mouse click focuses the icon too; that focus must not keep the card up after the
+      // pointer leaves, so focus counts only when it did not come from a mouse press.
+      let hovered = false;
+      let focused = false;
+      let pressType = '';
+      const align = inline ? 'start' : 'end';
+      const sync = () => {
+        if (hovered || focused) showPackStatusCard(status, align);
+        else hidePackStatusCard(status);
+      };
+      status.addEventListener('pointerdown', ev => { pressType = ev.pointerType || ''; });
+      status.addEventListener('pointerenter', () => { hovered = true; sync(); });
+      status.addEventListener('pointerleave', () => { hovered = false; sync(); });
+      status.addEventListener('focus', () => {
+        focused = pressType !== 'mouse';
+        pressType = '';
+        sync();
+      });
+      status.addEventListener('blur', () => { focused = false; sync(); });
+      ensurePackStatusCard();
       return status;
     }
 
@@ -1379,6 +1486,9 @@ export function createPacksScreen({
     }
 
     function render(modeOverride) {
+      // The rebuild below replaces every status icon (so their pointerleave/blur never
+      // fires); drop the shared card and its listeners first.
+      hidePackStatusCard();
       applyFiltersVisibility();
       const q = normalizeBusinessIdentityComparison(searchEl.value) || '';
       const allPacks = PackLibrary.getPacks().slice();

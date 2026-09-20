@@ -843,13 +843,17 @@
                     class="tp3d-editor-validation-status__btn"
                     id="editor-validation-status-btn"
                     type="button"
-                    aria-label="Validation required"
+                    aria-label="Load plan needs review"
                     aria-expanded="false"
                     aria-controls="editor-validation-popover"
-                    data-tooltip="Validation required"
+                    aria-describedby="editor-validation-hint-body"
                   >
                     <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
                   </button>
+                  <div class="tp3d-status-card tp3d-editor-validation-hint" id="editor-validation-hint" role="tooltip">
+                    <span class="tp3d-status-card__title">Load plan needs review</span>
+                    <span class="tp3d-status-card__body" id="editor-validation-hint-body">Loading rules have changed.</span>
+                  </div>
                   <div
                     class="tp3d-editor-validation-popover"
                     id="editor-validation-popover"
@@ -859,17 +863,18 @@
                     hidden
                   >
                     <div class="tp3d-editor-validation-popover__title" id="editor-validation-popover-title">
-                      Validation required
+                      Load plan needs review
                     </div>
                     <p class="tp3d-editor-validation-popover__body">
-                      Handling Rules changed since this Load Plan was last validated.
+                      A case’s loading rules changed after this plan was last checked. Review the plan to make sure the
+                      cargo still follows the latest rules.
                     </p>
                     <button
                       class="btn btn-primary tp3d-editor-validation-popover__action"
                       id="editor-handling-rules-validate-btn"
                       type="button"
                     >
-                      Validate Load Plan
+                      Check Load Plan
                     </button>
                   </div>
                 </div>

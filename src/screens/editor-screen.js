@@ -3579,9 +3579,9 @@ export function createEditorScreen({
 
     // Handling Rules validation STATUS: a compact warning icon plus a small anchored
     // panel. Presentation only — PackLibrary.isHandlingRulesValidationRequired() is
-    // still the sole authority for "stale", and only the explicit Validate Load Plan
+    // still the sole authority for "stale", and only the explicit "Check Load Plan"
     // click below mutates cargo. Rendering the icon and opening the panel never move
-    // cargo.
+    // cargo. (The hover/focus status card is pure CSS and shares no state with the panel.)
     let validationPopoverOpen = false;
     let validationPopoverPackId = null;
 

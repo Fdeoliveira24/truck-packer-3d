@@ -2556,21 +2556,21 @@ test('P1-B A9: the Add click reads the live input, restores the requested Qty on
 });
 
 // ---------------------------------------------------------------------------
-// P1-B commit 2 — staged-only Qty Remove control
+// P1-B commit 2 — staged-only Qty Unstage control (segmented with + Add)
 // ---------------------------------------------------------------------------
 
 function qtyRowBlock(src) {
   return extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');
 }
 
-test('P1-B R1: Remove is offered only when the Case has physically staged cargo (counts.staged > 0), never from eligibility logic', async () => {
+test('P1-B R1: Unstage is offered only when the Case has physically staged cargo (counts.staged > 0), never from eligibility logic', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = qtyRowBlock(src);
 
   assert.match(block, /let removeBtn = null;\s*if \(counts\.staged > 0\) \{\s*removeBtn = document\.createElement\('button'\);/);
   const created = block.indexOf("removeBtn = document.createElement('button')");
   const gate = block.indexOf('if (counts.staged > 0) {');
-  const appended = block.indexOf('section.appendChild(removeBtn);');
+  const appended = block.indexOf('actions.appendChild(removeBtn);');
   assert.ok(gate >= 0 && created > gate && appended > created, 'the button is created and appended only inside the staged gate');
   assert.match(block, /if \(removeBtn\) \{\s*removeBtn\.addEventListener\('click'/, 'the handler only exists with the button');
   // The Editor must not re-derive which staged instances are removable.
@@ -2596,44 +2596,153 @@ test('P1-B R1: Remove is offered only when the Case has physically staged cargo 
   assert.deepEqual(StateStore.snapshot(), before);
 });
 
-test('P1-B R2: Remove is a neutral secondary .btn placed right-aligned beneath the Qty/Add row, above the unchanged readout', async () => {
+test('P1-B R2: Unstage is the neutral LEFT segment of one [ Unstage | + Add ] control beside the Qty stepper, above the readout', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const css = await fs.readFile(new URL('../../styles/main.css', import.meta.url), 'utf8');
   const block = qtyRowBlock(src);
 
+  // Row = [stepper][actions]; Unstage is appended to the actions group BEFORE Add (left segment).
+  assert.match(block, /stepper\.className = 'tp3d-editor-case-qty-stepper';\s*row\.appendChild\(stepper\);/);
+  assert.match(block, /actions\.className = 'tp3d-editor-case-qty-actions';\s*row\.appendChild\(actions\);/);
+  const unstageAt = block.indexOf('actions.appendChild(removeBtn);');
+  const addAt = block.indexOf('actions.appendChild(addBtn);');
   const rowAt = block.indexOf('section.appendChild(row);');
-  const removeAt = block.indexOf('section.appendChild(removeBtn);');
   const readoutAt = block.indexOf('section.appendChild(readout);');
-  assert.ok(rowAt >= 0 && removeAt > rowAt && readoutAt > removeAt, 'row -> Remove -> readout inside the existing .tp3d-editor-case-qty grid');
+  assert.ok(unstageAt > 0 && addAt > unstageAt, 'Unstage precedes + Add inside the actions group');
+  assert.ok(rowAt > addAt && readoutAt > rowAt, 'row (with the segmented control) -> readout inside the existing .tp3d-editor-case-qty grid');
+  assert.doesNotMatch(block, /section\.appendChild\(removeBtn\)/, 'no standalone button beneath the row');
 
-  assert.match(block, /removeBtn\.className = 'btn btn-sm tp3d-editor-case-qty-remove';/);
-  assert.match(block, /removeBtn\.textContent = 'Remove';/, 'text only: no icon');
-  const removeSetup = block.slice(block.indexOf("removeBtn = document.createElement('button')"), removeAt);
-  assert.doesNotMatch(removeSetup, /btn-danger|btn-primary|fa-|<i\b|innerHTML|\.style\./, 'neutral: not red, not primary, no icon, no inline style');
+  // Neutral, text-only Unstage: not red, not primary, no icon, no inline style.
+  assert.match(block, /removeBtn\.className = 'btn btn-sm tp3d-editor-case-qty-unstage';/);
+  assert.match(block, /removeBtn\.textContent = 'Unstage';/, 'text only: no icon');
+  assert.match(block, /actions\.classList\.add\('tp3d-editor-case-qty-actions--segmented'\);/);
+  const unstageSetup = block.slice(block.indexOf("removeBtn = document.createElement('button')"), unstageAt);
+  assert.doesNotMatch(unstageSetup, /btn-danger|btn-primary|fa-|<i\b|innerHTML|\.style\./, 'neutral: not red, not primary, no icon, no inline style');
+  assert.doesNotMatch(src, /'Remove'/, 'the visible staged-removal label is no longer "Remove"');
 
   // Add is untouched and stays the primary action with the exact "+ Add" label.
   assert.match(block, /addBtn\.className = 'btn btn-primary btn-sm tp3d-editor-btn-add';/);
   assert.match(block, /addBtn\.innerHTML = '<i class="fa-solid fa-plus"><\/i> Add';/);
   assert.doesNotMatch(block, /Add \$\{/);
+  assert.doesNotMatch(block, /counts\.hidden/, 'no hidden count in the readout');
 
-  // The readout concept and copy are exactly what they were; no hidden count.
-  assert.match(block, /readout\.textContent = `\$\{counts\.inLoad\} in load · \$\{counts\.inTruck\} in truck · \$\{counts\.staged\} staged`;/);
-  assert.doesNotMatch(block, /counts\.hidden/);
-
-  const rule = css.match(/\.tp3d-editor-case-qty-remove\s*\{([^}]*)\}/);
-  assert.ok(rule, '.tp3d-editor-case-qty-remove must be defined in main.css');
-  assert.match(rule[1], /justify-self:\s*end;/);
-  assert.doesNotMatch(rule[1], /\bwidth\s*:|\bheight\s*:|min-width|max-width/, 'no fixed widths');
-  assert.doesNotMatch(css, /\.tp3d-editor-case-qty-remove[^{]*\{[^}]*(?:background|color|border)/, 'no colour treatment: stays a default .btn');
+  // CSS contract (structure, not pixel values): the old standalone-button rule is gone.
+  assert.doesNotMatch(css, /tp3d-editor-case-qty-remove/, 'the rejected standalone Remove styling is removed');
+  const unstageRule = css.match(/\.tp3d-editor-case-qty-unstage\s*\{([^}]*)\}/);
+  assert.ok(unstageRule, '.tp3d-editor-case-qty-unstage must be defined in main.css');
+  assert.doesNotMatch(unstageRule[1], /--error|btn-danger|239,\s*68,\s*68|red|--accent|255,\s*159,\s*28/, 'Unstage is neutral: no danger or accent colour');
+  assert.match(css, /\.tp3d-editor-case-qty-actions--segmented > \.tp3d-editor-case-qty-unstage\s*\{[^}]*border-radius:[^}]*0 0/);
+  assert.match(css, /\.tp3d-editor-case-qty-actions--segmented > \.tp3d-editor-btn-add\s*\{[^}]*border-radius:\s*0 /);
+  // Narrow reflow is CSS only: the row wraps, the stepper never shrinks, and the joined
+  // control spans the row (stays text) under a container query on the card's own width.
+  assert.match(css, /\.tp3d-editor-case-qty-row\s*\{[^}]*flex-wrap:\s*wrap;/);
+  assert.match(css, /\.tp3d-editor-case-qty-stepper\s*\{[^}]*flex:\s*0 0 auto;/);
+  assert.match(css, /\.tp3d-editor-case-qty\s*\{[^}]*container-type:\s*inline-size;/);
+  assert.match(css, /@container \(max-width: \d+px\)\s*\{[^@]*\.tp3d-editor-case-qty-actions--segmented\s*\{[^}]*flex:\s*1 1 100%;/);
 });
 
-test('P1-B R3: Remove accessibility — input names both actions, Remove has its own name and help text, Add and steppers keep theirs', async () => {
+// Minimal DOM double so the REAL buildCaseQtyAddRow can be rendered for both card states.
+function createFakeDom() {
+  const makeTextNode = text => ({ isText: true, children: [], get textContent() { return text; } });
+  const makeElement = tagName => {
+    const el = {
+      tagName,
+      children: [],
+      dataset: {},
+      attributes: {},
+      classSet: new Set(),
+      _text: '',
+      get className() { return [...this.classSet].join(' '); },
+      set className(value) { this.classSet = new Set(String(value).split(/\s+/).filter(Boolean)); },
+      classList: { add: (...names) => names.forEach(n => el.classSet.add(n)) },
+      appendChild(child) { el.children.push(child); return child; },
+      setAttribute(name, value) { el.attributes[name] = String(value); },
+      addEventListener() {},
+      get textContent() { return el.children.length ? el.children.map(c => c.textContent).join('') : el._text; },
+      set textContent(value) { el._text = String(value); el.children = []; },
+      set innerHTML(value) { el._innerHTML = String(value); el._text = ''; },
+    };
+    return el;
+  };
+  return { createElement: makeElement, createTextNode: makeTextNode };
+}
+
+async function renderQtyRow(counts) {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const source = `${qtyRowBlock(src)}\n      return section;\n    }`;
+  const { runInNewContext } = await import('node:vm');
+  const build = runInNewContext(`(${source})`, {
+    document: createFakeDom(),
+    PackLibrary: { getCaseInstanceCounts: () => counts },
+    CASE_QTY_MIN: 1,
+    CASE_QTY_MAX: 10000,
+    getCaseQtyDraft: () => 1,
+    setCaseQtyDraft: () => {},
+    String,
+  });
+  const section = build({ id: 'case-a', name: 'A-Test-03' }, { id: 'pack-1' });
+  const [row, readout] = section.children;
+  const [stepper, actions] = row.children;
+  return { section, row, readout, stepper, actions };
+}
+
+function collectNodes(node, out = []) {
+  out.push(node);
+  (node.children || []).forEach(child => collectNodes(child, out));
+  return out;
+}
+
+test('P1-B R2b: staged > 0 renders the segmented [ Unstage | + Add ] control and a semibold "N staged" span; wording is unchanged', async () => {
+  const { row, readout, stepper, actions } = await renderQtyRow({ inLoad: 15, inTruck: 12, staged: 3 });
+
+  assert.deepEqual(stepper.children.map(c => c.textContent || c.tagName), ['Qty', '−', 'input', '+'], 'Qty stepper is unchanged and stays one group');
+  assert.equal(row.children.length, 2, 'row = stepper + one actions group');
+  assert.ok(actions.classSet.has('tp3d-editor-case-qty-actions--segmented'));
+  assert.equal(actions.children.length, 2);
+  const [unstage, add] = actions.children;
+
+  assert.equal(unstage.textContent, 'Unstage', 'label now says Unstage, not Remove');
+  assert.equal(unstage.attributes['aria-label'], 'Unstage for A-Test-03');
+  assert.equal(unstage.title, 'Removes staged cases only. Packed, hidden, or grouped cases are not affected.');
+  assert.equal(unstage.dataset.qtyRole, 'remove', 'internal focus-restore role token is unchanged');
+  assert.ok(unstage.classSet.has('btn') && !unstage.classSet.has('btn-primary') && !unstage.classSet.has('btn-danger'), 'Unstage stays neutral');
+  assert.ok(add.classSet.has('btn-primary'), 'Add remains the orange primary action');
+  assert.equal(add._innerHTML, '<i class="fa-solid fa-plus"></i> Add');
+
+  // Visible wording is exactly "N in load · N in truck · N staged"; only "3 staged" is emphasised.
+  assert.equal(readout.textContent, '15 in load · 12 in truck · 3 staged');
+  const emphasised = collectNodes(readout).filter(n => n.classSet && n.classSet.has('tp3d-editor-case-qty-readout-staged'));
+  assert.equal(emphasised.length, 1, 'one dedicated staged span');
+  assert.equal(emphasised[0].textContent, '3 staged');
+  assert.equal(readout.children.length, 2, 'plain lead-in text node + the staged span, nothing else');
+  assert.doesNotMatch(readout.textContent, /hidden/i, 'no hidden-count addition');
+  assert.doesNotMatch(collectNodes(readout.children[0]).map(n => n.textContent).join(''), /staged/, 'the rest of the readout is not emphasised');
+});
+
+test('P1-B R2c: staged = 0 renders only "+ Add" — no Unstage, no empty or disabled half — and an unemphasised readout', async () => {
+  const { row, readout, stepper, actions } = await renderQtyRow({ inLoad: 12, inTruck: 12, staged: 0 });
+
+  assert.equal(row.children.length, 2);
+  assert.equal(actions.children.length, 1, 'only the Add action');
+  assert.equal(actions.classSet.has('tp3d-editor-case-qty-actions--segmented'), false, 'no segmented shape around a lone Add');
+  assert.ok(actions.children[0].classSet.has('btn-primary'));
+  assert.equal(actions.children[0].attributes['aria-label'], 'Add to staging for A-Test-03');
+  const everything = [...collectNodes(stepper), ...collectNodes(actions)];
+  assert.equal(everything.some(n => n.textContent === 'Unstage' || (n.classSet && n.classSet.has('tp3d-editor-case-qty-unstage'))), false, 'no Unstage element of any kind');
+  assert.equal(everything.some(n => n.attributes && 'disabled' in n.attributes), false, 'no disabled ghost segment');
+
+  assert.equal(readout.textContent, '12 in load · 12 in truck · 0 staged');
+  assert.equal(collectNodes(readout).some(n => n.classSet && n.classSet.has('tp3d-editor-case-qty-readout-staged')), false, '0 staged keeps the normal secondary weight');
+});
+
+test('P1-B R3: Unstage accessibility — input names both actions, Unstage has its own name and help text, Add and steppers keep theirs', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = qtyRowBlock(src);
 
   assert.match(block, /input\.setAttribute\('aria-label', `Quantity to add or remove for \$\{c\.name\}`\);/);
   assert.doesNotMatch(src, /Quantity to add for/);
-  assert.match(block, /removeBtn\.setAttribute\('aria-label', `Remove from staging for \$\{c\.name\}`\);/);
+  assert.match(block, /removeBtn\.setAttribute\('aria-label', `Unstage for \$\{c\.name\}`\);/);
+  assert.doesNotMatch(block, /Remove from staging for/, 'the old visible-verb accessible name is gone');
   assert.match(block, /removeBtn\.title = 'Removes staged cases only\. Packed, hidden, or grouped cases are not affected\.';/);
   assert.match(block, /minusBtn\.setAttribute\('aria-label', `Decrease quantity for \$\{c\.name\}`\);/);
   assert.match(block, /plusBtn\.setAttribute\('aria-label', `Increase quantity for \$\{c\.name\}`\);/);

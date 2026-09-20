@@ -4689,6 +4689,10 @@ export function createEditorScreen({
      * PackLibrary.addInstancesToStaging() (one atomic Pack update, one Undo
      * step). A full success resets the draft back to 1; any failure leaves the
      * Pack untouched and preserves the requested Qty.
+     *
+     * While the Case has staged cargo, "Unstage" joins "+ Add" as the left
+     * segment of one segmented action control (Unstage | + Add). It removes the
+     * chosen Qty from staging only, via PackLibrary.removeCaseInstancesFromStaging().
      */
     function buildCaseQtyAddRow(c, pack) {
       const packId = pack.id;
@@ -4700,10 +4704,20 @@ export function createEditorScreen({
       const row = document.createElement('div');
       row.className = 'tp3d-editor-case-qty-row';
 
+      // Two groups so a narrow card can wrap the action control beneath the
+      // stepper without ever splitting "Qty [−] [N] [+]" (see main.css).
+      const stepper = document.createElement('div');
+      stepper.className = 'tp3d-editor-case-qty-stepper';
+      row.appendChild(stepper);
+
+      const actions = document.createElement('div');
+      actions.className = 'tp3d-editor-case-qty-actions';
+      row.appendChild(actions);
+
       const label = document.createElement('span');
       label.className = 'tp3d-editor-case-qty-label';
       label.textContent = 'Qty';
-      row.appendChild(label);
+      stepper.appendChild(label);
 
       const minusBtn = document.createElement('button');
       minusBtn.type = 'button';
@@ -4712,7 +4726,7 @@ export function createEditorScreen({
       minusBtn.setAttribute('aria-label', `Decrease quantity for ${c.name}`);
       minusBtn.dataset.caseId = c.id;
       minusBtn.dataset.qtyRole = 'minus';
-      row.appendChild(minusBtn);
+      stepper.appendChild(minusBtn);
 
       const input = document.createElement('input');
       input.type = 'number';
@@ -4725,7 +4739,7 @@ export function createEditorScreen({
       input.setAttribute('aria-label', `Quantity to add or remove for ${c.name}`);
       input.dataset.caseId = c.id;
       input.dataset.qtyRole = 'input';
-      row.appendChild(input);
+      stepper.appendChild(input);
 
       const plusBtn = document.createElement('button');
       plusBtn.type = 'button';
@@ -4734,7 +4748,28 @@ export function createEditorScreen({
       plusBtn.setAttribute('aria-label', `Increase quantity for ${c.name}`);
       plusBtn.dataset.caseId = c.id;
       plusBtn.dataset.qtyRole = 'plus';
-      row.appendChild(plusBtn);
+      stepper.appendChild(plusBtn);
+
+      // Unstage is offered only when this Case has physically staged cargo at all
+      // (counts.staged is the readout's own figure). That is NOT an eligibility
+      // check: whether any staged instance is actually removable stays entirely
+      // with PackLibrary.removeCaseInstancesFromStaging(). With no staged cargo
+      // nothing is rendered here — "+ Add" stands alone, no empty/disabled half.
+      // It is the LEFT segment, so it is appended before "+ Add".
+      let removeBtn = null;
+      if (counts.staged > 0) {
+        removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-sm tp3d-editor-case-qty-unstage';
+        removeBtn.textContent = 'Unstage';
+        removeBtn.title = 'Removes staged cases only. Packed, hidden, or grouped cases are not affected.';
+        removeBtn.setAttribute('aria-label', `Unstage for ${c.name}`);
+        // qtyRole is the internal focus-restore key — intentionally left as 'remove'.
+        removeBtn.dataset.caseId = c.id;
+        removeBtn.dataset.qtyRole = 'remove';
+        actions.classList.add('tp3d-editor-case-qty-actions--segmented');
+        actions.appendChild(removeBtn);
+      }
 
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
@@ -4744,31 +4779,26 @@ export function createEditorScreen({
       addBtn.setAttribute('aria-label', `Add to staging for ${c.name}`);
       addBtn.dataset.caseId = c.id;
       addBtn.dataset.qtyRole = 'add';
-      row.appendChild(addBtn);
+      actions.appendChild(addBtn);
 
+      // Visible wording is unchanged: "N in load · N in truck · N staged". Only
+      // the "N staged" fragment gets its own span (semibold) while staged cargo
+      // exists, so it reads as the count the adjacent Unstage acts on.
       const readout = document.createElement('div');
       readout.className = 'tp3d-editor-case-qty-readout';
-      readout.textContent = `${counts.inLoad} in load · ${counts.inTruck} in truck · ${counts.staged} staged`;
-
-      section.appendChild(row);
-
-      // Remove is offered only when this Case has physically staged cargo at all
-      // (counts.staged is the readout's own figure). That is NOT an eligibility
-      // check: whether any staged instance is actually removable stays entirely
-      // with PackLibrary.removeCaseInstancesFromStaging().
-      let removeBtn = null;
+      readout.appendChild(
+        document.createTextNode(`${counts.inLoad} in load · ${counts.inTruck} in truck · `)
+      );
       if (counts.staged > 0) {
-        removeBtn = document.createElement('button');
-        removeBtn.type = 'button';
-        removeBtn.className = 'btn btn-sm tp3d-editor-case-qty-remove';
-        removeBtn.textContent = 'Remove';
-        removeBtn.title = 'Removes staged cases only. Packed, hidden, or grouped cases are not affected.';
-        removeBtn.setAttribute('aria-label', `Remove from staging for ${c.name}`);
-        removeBtn.dataset.caseId = c.id;
-        removeBtn.dataset.qtyRole = 'remove';
-        section.appendChild(removeBtn);
+        const stagedEmphasis = document.createElement('span');
+        stagedEmphasis.className = 'tp3d-editor-case-qty-readout-staged';
+        stagedEmphasis.textContent = `${counts.staged} staged`;
+        readout.appendChild(stagedEmphasis);
+      } else {
+        readout.appendChild(document.createTextNode(`${counts.staged} staged`));
       }
 
+      section.appendChild(row);
       section.appendChild(readout);
 
       const revertInput = () => {
@@ -4893,7 +4923,7 @@ export function createEditorScreen({
               return;
             }
             removed = true;
-            // Qty Remove is not explicit Delete: drop only the removed ids from the
+            // Qty Unstage is not explicit Delete: drop only the removed ids from the
             // selection, and make no selection write at all if none were selected.
             const nextSelection = pruneSelectionAfterRemoval(
               StateStore.get('selectedInstanceIds'),
@@ -4902,7 +4932,7 @@ export function createEditorScreen({
             if (nextSelection) InteractionManager.setSelection(nextSelection);
             UIComponents.showToast(feedback.message, feedback.tone);
           } finally {
-            // A rejected Remove writes nothing to the Pack, so no re-render replaced
+            // A rejected Unstage writes nothing to the Pack, so no re-render replaced
             // this card: restore the requested Qty so the field and draft match.
             if (!removed) setCaseQtyDraft(c.id, qty);
           }

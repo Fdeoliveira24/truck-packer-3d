@@ -2650,7 +2650,18 @@ test('P1-B R2: Unstage is the neutral LEFT segment of one [ Unstage | + Add ] co
   // BOTH action states take the full second row — the Unstage | + Add pair AND a lone + Add — so the
   // card keeps one shape as staged cargo appears. The rule must target the base actions group, never
   // only the --segmented modifier (that scoping left a lone Add beside the stepper, compressing it).
-  assert.match(narrow[1], /\.tp3d-editor-case-qty-actions\s*\{[^}]*flex:\s*1 1 100%;/);
+  // The action group must be NON-SHRINKABLE and a guaranteed full row. A shrinkable `flex: 1 1 100%` group
+  // is not enough: it is the shape that let a lone + Add sit beside the stepper at ~67px.
+  const actionsRule = narrow[1].match(/\.tp3d-editor-case-qty-actions\s*\{([^}]*)\}/);
+  assert.ok(actionsRule, 'the narrow query styles the base actions group');
+  const flexShorthand = actionsRule[1].match(/(?:^|[;\s])flex:\s*(\S+)\s+(\S+)\s+(\S+)\s*;/);
+  const flexShrink = flexShorthand ? flexShorthand[2] : (actionsRule[1].match(/flex-shrink:\s*(\S+);/) || [])[1];
+  const flexBasis = flexShorthand ? flexShorthand[3] : (actionsRule[1].match(/flex-basis:\s*(\S+);/) || [])[1];
+  assert.equal(flexShrink, '0', 'the narrow action group must not shrink into space beside the stepper');
+  assert.equal(flexBasis, '100%', 'and it must claim the whole row');
+  assert.match(actionsRule[1], /\bwidth:\s*100%;/, 'full width is stated, not left to line-breaking');
+  assert.match(actionsRule[1], /min-width:\s*0;/, 'the group can never overflow the card via its min-content');
+  assert.match(actionsRule[1], /margin-left:\s*0;/, 'the wide-layout right-alignment margin is reset');
   assert.match(narrow[1], /\.tp3d-editor-case-qty-actions > \.btn\s*\{[^}]*flex:\s*1 1 0;[^}]*justify-content:\s*center;/);
   assert.doesNotMatch(narrow[1], /--segmented/, 'the two-row rules are not limited to the segmented (staged) state');
   // The threshold is content-derived (documented in main.css), not a magic number: it must at least cover the

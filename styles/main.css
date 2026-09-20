@@ -5896,8 +5896,14 @@ body.modal-open {
     padding: 0;
   }
 
+  /* Guaranteed own row in BOTH states: non-shrinkable, full-width, so a lone
+     + Add can never be squeezed onto the stepper's line (and no engine-specific
+     line-breaking is relied on). */
   .tp3d-editor-case-qty-actions {
-    flex: 1 1 100%;
+    flex: 0 0 100%;
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
   }
 
   .tp3d-editor-case-qty-actions > .btn {

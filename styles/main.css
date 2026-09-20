@@ -5737,9 +5737,15 @@ body.modal-open {
   gap: 4px;
   padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
+
   /* The action control reflows by the card's own width (the editor column is
      only minmax(272px, 20%) wide), not by the viewport. */
   container-type: inline-size;
+
+  /* One control height for the whole row: −, the Qty field, +, and Unstage | + Add
+     share it, so the row reads as a single even rhythm. It is the height the
+     segmented control already renders at. */
+  --tp3d-qty-control-height: 30px;
 }
 
 /* Two groups: the Qty stepper and the action control. Wide enough, they share
@@ -5771,6 +5777,10 @@ body.modal-open {
   margin-left: 0;
 }
 
+.tp3d-editor-case-qty-actions > .btn {
+  height: var(--tp3d-qty-control-height);
+}
+
 .tp3d-editor-case-qty-label {
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
@@ -5778,18 +5788,26 @@ body.modal-open {
   margin-right: 2px;
 }
 
+/* − and + are matching squares at the shared row height, so they mirror each
+   other around the Qty field. */
 .tp3d-editor-case-qty-btn {
-  padding: 2px 8px;
+  flex: 0 0 auto;
+  width: var(--tp3d-qty-control-height);
+  height: var(--tp3d-qty-control-height);
+  padding: 0;
   font-size: var(--text-sm);
-  line-height: 1.2;
-  min-width: 28px;
+  line-height: 1;
   justify-content: center;
 }
 
+/* Same height as the buttons either side. The 60px width keeps the whole
+   [−][field][+] group at the same 120px it always was, so the narrow-card wrap
+   point below is unchanged. */
 .tp3d-editor-case-qty-input {
-  width: 64px;
+  width: 60px;
+  height: var(--tp3d-qty-control-height);
   flex: 0 0 auto;
-  padding: 4px 6px;
+  padding: 0 6px;
   text-align: center;
 }
 

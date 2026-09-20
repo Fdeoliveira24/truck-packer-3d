@@ -2647,7 +2647,16 @@ test('P1-B R2: Unstage is the neutral LEFT segment of one [ Unstage | + Add ] co
   assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper\s*\{[^}]*flex:\s*1 1 0;/);
   assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper > \.tp3d-editor-case-qty-btn\s*\{[^}]*flex:\s*1 1 0;/);
   assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper > \.tp3d-editor-case-qty-input\s*\{[^}]*flex:\s*1\.4 1 0;/);
-  assert.match(css, /@container \(max-width: \d+px\)\s*\{[^@]*\.tp3d-editor-case-qty-actions--segmented\s*\{[^}]*flex:\s*1 1 100%;/);
+  // BOTH action states take the full second row — the Unstage | + Add pair AND a lone + Add — so the
+  // card keeps one shape as staged cargo appears. The rule must target the base actions group, never
+  // only the --segmented modifier (that scoping left a lone Add beside the stepper, compressing it).
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-actions\s*\{[^}]*flex:\s*1 1 100%;/);
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-actions > \.btn\s*\{[^}]*flex:\s*1 1 0;[^}]*justify-content:\s*center;/);
+  assert.doesNotMatch(narrow[1], /--segmented/, 'the two-row rules are not limited to the segmented (staged) state');
+  // The threshold is content-derived (documented in main.css), not a magic number: it must at least cover the
+  // ~308px Case Browser container the audit identified, where the compact stepper used to remain.
+  const threshold = Number(css.match(/@container \(max-width: (\d+)px\)/)[1]);
+  assert.ok(threshold >= 308, `the narrow container query (${threshold}px) must cover the ~308px container`);
 });
 
 // Minimal DOM double so the REAL buildCaseQtyAddRow can be rendered for both card states.
@@ -2768,6 +2777,7 @@ async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
   const editor = await import(editorScreenPath.href);
   const drafts = new Map();
   const toasts = [];
+  const busy = { value: false };
   const MIN = 1;
   const MAX = 10000;
   const build = runInNewContext(`(${source})`, {
@@ -2785,7 +2795,7 @@ async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
       drafts.set(id, clamped);
       return clamped;
     },
-    editorMutationBlocked: () => false,
+    editorMutationBlocked: () => busy.value,
     pruneSelectionAfterRemoval: editor.pruneSelectionAfterRemoval,
     getStagingAddFailureFeedback: editor.getStagingAddFailureFeedback,
     getStagingRemoveFeedback: editor.getStagingRemoveFeedback,
@@ -2802,7 +2812,7 @@ async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
     const unstageBtn = actions.children.length === 2 ? actions.children[0] : null;
     return { section, readout, input, minusBtn, plusBtn, addBtn, unstageBtn };
   };
-  return { mount, drafts, toasts };
+  return { mount, drafts, toasts, busy };
 }
 
 const INVALID_QTY_MESSAGE = 'Enter a whole quantity from 1 to 10,000.';
@@ -3189,6 +3199,118 @@ test('P1-B Q11: Add and Unstage never suppress each other, nor other Cases; an U
   clock.t += 1;
   fire(h.mount().unstageBtn, 'click');
   assert.equal(stagedOf('case-a'), 1, 'after the window: a deliberate Unstage proceeds normally');
+});
+
+test('P1-B Q12: actionPressPending is one-shot — a cancelled press, an early-return click, and a consumed press never leave it stale', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_KIND: K } = await import(editorScreenPath.href);
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })], folderLibrary: [], preferences: {} });
+  const clock = { t: 1000 };
+  const guard = createStagingActionDuplicateGuard({ now: () => clock.t });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  const before = StateStore.snapshot();
+  const writes = trackPackWrites(StateStore);
+
+  // An unrelated blur (no relatedTarget) with an invalid value: it must revert exactly as before.
+  const unrelatedBlur = card => {
+    card.input.value = '1.5';
+    fire(card.input, 'blur', { relatedTarget: null });
+    return card.input.value;
+  };
+
+  for (const [name, button, kind] of [['+ Add', 'addBtn', K.ADD], ['Unstage', 'unstageBtn', K.UNSTAGE]]) {
+    // (a) The intended path still works: pointerdown protects the invalid live value through the
+    //     blur, and the CLICK (readLiveQty) owns validation — warning, restore, no write.
+    let card = h.mount();
+    card.input.value = '1.5';
+    fire(card[button], 'pointerdown');
+    fire(card.input, 'blur', { relatedTarget: null }); // Safari/Firefox: the button took no focus
+    assert.equal(card.input.value, '1.5', `${name}: protected through the intended blur`);
+    fire(card[button], 'click');
+    assert.deepEqual(h.toasts.at(-1), { message: INVALID_QTY_MESSAGE, tone: 'warning' }, `${name}: the click owns validation`);
+    assert.equal(card.input.value, '1', `${name}: field restored to the prior valid draft`);
+
+    // (b) A cancelled/interrupted press (touch scroll, system cancel): the input stays focused, so
+    //     neither blur nor click ever consumes the flag. It must not survive the cancel.
+    card = h.mount();
+    fire(card[button], 'pointerdown');
+    fire(card[button], 'pointercancel');
+    assert.equal(unrelatedBlur(card), '1', `${name}: after pointercancel a later unrelated blur reverts normally`);
+
+    // (c) A click whose handler returns EARLY — busy — must not leave the flag behind.
+    card = h.mount();
+    h.busy.value = true;
+    fire(card[button], 'pointerdown');
+    fire(card[button], 'click');
+    h.busy.value = false;
+    assert.equal(unrelatedBlur(card), '1', `${name}: a busy early return leaves no stale flag`);
+
+    // (d) ...nor a duplicate-click early return.
+    card = h.mount();
+    guard.recordSuccess(kind, 'pack-1', 'case-a');
+    fire(card[button], 'pointerdown');
+    fire(card[button], 'click');
+    assert.equal(unrelatedBlur(card), '1', `${name}: a duplicate-guard early return leaves no stale flag`);
+    clock.t += 1000;
+
+    // (e) One-shot: the protected blur consumes the flag; the next blur has no press behind it.
+    card = h.mount();
+    fire(card[button], 'pointerdown');
+    card.input.value = '1.5';
+    fire(card.input, 'blur', { relatedTarget: null });
+    assert.equal(card.input.value, '1.5', `${name}: first blur protected`);
+    assert.equal(unrelatedBlur(card), '1', `${name}: the second blur is ordinary and reverts`);
+
+    // (f) A press that never reached a blur is cleared when the input regains focus.
+    card = h.mount();
+    fire(card[button], 'pointerdown');
+    fire(card.input, 'focus');
+    assert.equal(unrelatedBlur(card), '1', `${name}: refocusing the input clears a leftover press`);
+  }
+  writes.stop();
+
+  assert.equal(writes.count(), 0, 'none of these paths wrote to the Pack');
+  assert.deepEqual(StateStore.snapshot(), before, 'and nothing else changed');
+  assert.equal(StateStore.undo(), false, 'no history entry');
+});
+
+test('P1-B Q13: keyboard focus movement is unchanged; the press-flag listeners are local, ordered before the click handlers, and never global', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard } = await import(editorScreenPath.href);
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard() });
+
+  // Keyboard: Tab from the input to Add/Unstage delivers relatedTarget with NO pointer events at all.
+  for (const button of ['addBtn', 'unstageBtn']) {
+    const card = h.mount();
+    card.input.value = '1.5';
+    fire(card.input, 'blur', { relatedTarget: card[button] });
+    assert.equal(card.input.value, '1.5', `${button}: Tab toward the action defers to its click`);
+    fire(card[button], 'click'); // Enter / Space activate the focused button
+    assert.deepEqual(h.toasts.at(-1), { message: INVALID_QTY_MESSAGE, tone: 'warning' });
+    assert.equal(card.input.value, '1');
+  }
+  // Tab to an unrelated control still commits/reverts, as before.
+  const card = h.mount();
+  card.input.value = '7';
+  fire(card.input, 'blur', { relatedTarget: card.plusBtn });
+  assert.equal(h.drafts.get('case-a'), 7);
+  card.input.value = '1.5';
+  fire(card.input, 'blur', { relatedTarget: card.minusBtn });
+  assert.equal(card.input.value, '7', 'an invalid value reverts to the committed draft');
+
+  // Structure: listeners are registered on this card's own elements, the click-clear BEFORE each action's own click handler.
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const clearOnClick = block.indexOf("button.addEventListener('click', clearActionPress);");
+  const addClickAt = block.indexOf("addBtn.addEventListener('click', () => {");
+  const removeClickAt = block.indexOf("removeBtn.addEventListener('click', () => {");
+  assert.ok(clearOnClick > 0 && clearOnClick < addClickAt && clearOnClick < removeClickAt,
+    'the flag is cleared before either action handler can return early');
+  assert.match(block, /button\.addEventListener\('pointerdown', markActionPress\);\s*button\.addEventListener\('pointercancel', clearActionPress\);/);
+  assert.match(block, /input\.addEventListener\('focus', clearActionPress\);/);
+  assert.doesNotMatch(block, /(?:document|window)\.addEventListener|setTimeout|setInterval|requestAnimationFrame|StateStore\.set\(\{ ?actionPress/,
+    'no global listeners, timers, or persisted state for the press flag');
 });
 
 test('P1-B R3: Unstage accessibility — input names both actions, Unstage has its own name and help text, Add and steppers keep theirs', async () => {

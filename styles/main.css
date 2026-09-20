@@ -5864,12 +5864,20 @@ body.modal-open {
   z-index: 1;
 }
 
-/* Narrow card: the joined control drops beneath the stepper and spans the row,
-   the two segments splitting it evenly. Labels stay text; nothing overflows.
-   The Qty stepper fills its row too, so − and + are equal-width, the Qty field is
-   proportionally wider, and the group's right edge lines up with the joined
-   control below it. (Wide cards keep the compact fixed-size stepper.) */
-@container (max-width: 300px) {
+/* Narrow card: a stable TWO-ROW layout whether or not the Case has staged cargo.
+   Row 1 is the Qty stepper filling the row (− and + equal width, the Qty field
+   proportionally wider); row 2 is the action control at full width — the
+   Unstage | + Add pair splitting it evenly, or a lone + Add spanning it — so the
+   card does not change shape when the first item is staged. Labels stay text and
+   nothing overflows.
+   Threshold: the compact single row needs the Qty label + gap (21 + 8) and the
+   30/60/30 stepper with its 6px gaps (132) = 161px, plus the widest action
+   control, Unstage | + Add (128px) = 289px. It stays inline only while at least
+   ~24px of clear space still separates the two groups (four times the 6px inner
+   gap; less reads as one crammed run) with ~7px spare for font metrics:
+   289 + 24 + 7 = 320px. This is measured on the card's own container, not the
+   viewport, so it holds wherever the Case Browser column is resized. */
+@container (max-width: 320px) {
   .tp3d-editor-case-qty-stepper {
     flex: 1 1 0;
     min-width: 0;
@@ -5888,11 +5896,11 @@ body.modal-open {
     padding: 0;
   }
 
-  .tp3d-editor-case-qty-actions--segmented {
+  .tp3d-editor-case-qty-actions {
     flex: 1 1 100%;
   }
 
-  .tp3d-editor-case-qty-actions--segmented > .btn {
+  .tp3d-editor-case-qty-actions > .btn {
     flex: 1 1 0;
     justify-content: center;
   }

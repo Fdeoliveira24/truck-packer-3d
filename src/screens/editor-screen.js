@@ -4897,15 +4897,27 @@ export function createEditorScreen({
       // the button where the browser focuses it on press (Chrome, Tab); the
       // pointerdown flag covers browsers that do not focus a button on click
       // (relatedTarget === null). Every other blur is unchanged.
+      //
+      // The flag is one-shot and strictly local to this card's listeners. It is
+      // consumed by the next blur, and cleared if that press never reaches one:
+      // pointercancel (a touch scroll or system interruption leaves the input
+      // focused with no blur and no click), click (registered BEFORE each action's
+      // own click listener, so it runs even when that handler returns early — busy,
+      // duplicate, invalid Qty), and the input regaining focus.
       let actionPressPending = false;
       const markActionPress = () => {
         actionPressPending = true;
       };
-      addBtn.addEventListener('pointerdown', markActionPress);
-      if (removeBtn) removeBtn.addEventListener('pointerdown', markActionPress);
-      input.addEventListener('focus', () => {
+      const clearActionPress = () => {
         actionPressPending = false;
+      };
+      [addBtn, removeBtn].forEach(button => {
+        if (!button) return; // removeBtn is null with no staged cargo
+        button.addEventListener('pointerdown', markActionPress);
+        button.addEventListener('pointercancel', clearActionPress);
+        button.addEventListener('click', clearActionPress);
       });
+      input.addEventListener('focus', clearActionPress);
       input.addEventListener('blur', ev => {
         // removeBtn is null with no staged cargo: never match a null relatedTarget to it.
         const next = ev.relatedTarget;

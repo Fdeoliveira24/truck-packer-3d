@@ -686,9 +686,380 @@ test('HANDLING-RULES-P0A Truck Change final certification uses current Case defi
   assert.deepEqual(StateStore.snapshot(), beforeCommit);
 });
 
-test('HANDLING-RULES-P0A Editor banner starts hidden and CSS honors hidden state', () => {
-  const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
-  const css = readFileSync(new URL('../../styles/main.css', import.meta.url), 'utf8');
-  assert.match(html, /<div\b[^>]*\bid="editor-handling-rules-banner"[^>]*\bhidden(?:\s|>)/);
-  assert.match(css, /\.tp3d-handling-rules-banner\[hidden\]\s*\{\s*display:\s*none\s*;\s*\}/);
+// ---------------------------------------------------------------------------
+// Validation STATUS UI — presentation only.
+//
+// The Handling Rules validation SAFETY feature is unchanged (the authority is
+// PackLibrary.isHandlingRulesValidationRequired / validateLoadPlan and the stored
+// signature). What changed is how a stale Load Plan is shown: a compact warning
+// icon on Load Plans (Grid + List) and a compact icon + small anchored panel in the
+// Editor, replacing the Load Plans chip, the full-width Editor banner, and the
+// generic viewport info icon.
+// ---------------------------------------------------------------------------
+
+const indexHtml = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+const mainCss = readFileSync(new URL('../../styles/main.css', import.meta.url), 'utf8');
+const packsSource = readFileSync(new URL('../../src/screens/packs-screen.js', import.meta.url), 'utf8');
+const casesSource = readFileSync(new URL('../../src/screens/cases-screen.js', import.meta.url), 'utf8');
+
+test('VALIDATION-STATUS-UI Editor markup: banner and generic viewport info icon are gone; a compact hidden status + hidden panel replace them', () => {
+  // Removed presentations.
+  assert.doesNotMatch(indexHtml, /viewport-hint-icon|Editor tips|Click to select\. Drag to move/, 'the generic viewport info icon is removed');
+  assert.doesNotMatch(indexHtml, /handling-rules-banner/, 'the full-width Handling Rules banner is removed');
+  assert.doesNotMatch(mainCss, /viewport-hint|handling-rules-banner|\.badge--warning/, 'their dedicated CSS is removed');
+  // The legitimate Editor/Inspector help icons are untouched.
+  assert.match(mainCss, /\.tp3d-editor-info-icon\[data-tooltip\]::after/, 'other help icons keep their tooltip rules');
+
+  // New compact status: hidden by default (bottom-left corner is empty for a current Pack).
+  assert.match(indexHtml, /<div\b[^>]*\bclass="tp3d-editor-validation-status"[^>]*\bid="editor-validation-status"[^>]*\bhidden(?:\s|>)/);
+  const statusBtn = indexHtml.match(/<button\b[^>]*\bid="editor-validation-status-btn"[^>]*>/)?.[0] || '';
+  assert.match(statusBtn, /type="button"/);
+  assert.match(statusBtn, /aria-label="Validation required"/);
+  assert.match(statusBtn, /aria-expanded="false"/);
+  assert.match(statusBtn, /aria-controls="editor-validation-popover"/);
+  assert.match(statusBtn, /data-tooltip="Validation required"\s/, 'the hover/focus label is just "Validation required"');
+  // Small panel: hidden by default, exact information hierarchy, real Validate button that keeps its id.
+  const popover = indexHtml.match(/<div\b[^>]*\bid="editor-validation-popover"[\s\S]*?<\/button>\s*<\/div>/)?.[0] || '';
+  assert.match(popover, /\bhidden\b/);
+  assert.match(popover, /role="dialog"[\s\S]*aria-modal="false"/, 'a small non-modal panel, not an alert modal');
+  assert.match(popover, /class="tp3d-editor-validation-popover__title"[^>]*>\s*Validation required\s*</);
+  assert.match(popover, /class="tp3d-editor-validation-popover__body"[^>]*>\s*Handling Rules changed since this Load Plan was last validated\.\s*</);
+  assert.match(popover, /<button\b[^>]*\bid="editor-handling-rules-validate-btn"[^>]*\btype="button"[^>]*>\s*Validate Load Plan\s*<\/button>/);
+  // Hidden state is honoured by CSS.
+  assert.match(mainCss, /\.tp3d-editor-validation-status\[hidden\]\s*\{\s*display:\s*none\s*;\s*\}/);
+  assert.match(mainCss, /\.tp3d-editor-validation-popover\[hidden\]\s*\{\s*display:\s*none\s*;\s*\}/);
+  // Restrained: an anchored panel with no backdrop, opening upward from the corner icon.
+  const popCss = mainCss.match(/\.tp3d-editor-validation-popover\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(popCss, /position:\s*absolute;/);
+  assert.match(popCss, /bottom:\s*calc\(14px \+ 32px \+ 8px\);/, 'opens upward from the corner icon');
+  assert.doesNotMatch(mainCss, /tp3d-editor-validation[^{]*\{[^}]*(?:backdrop|background:\s*rgb\(0)/, 'no modal backdrop or dimming scrim');
+
+  // The wrapper is a transparent, click-through layer over the canvas (so the 3D scene stays interactive) that is
+  // a size container, letting the panel and hover label be capped to the canvas's OWN width. Without the cap the
+  // panel is clipped by .canvas-wrap { overflow: hidden } when the side panels squeeze the canvas (~900px) and the
+  // Validate button becomes unreachable.
+  const layerCss = mainCss.match(/\.tp3d-editor-validation-status\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(layerCss, /position:\s*absolute;[\s\S]*inset:\s*0;/);
+  assert.match(layerCss, /pointer-events:\s*none;/, 'the layer never blocks the 3D scene');
+  assert.match(layerCss, /container-type:\s*inline-size;/);
+  assert.match(popCss, /pointer-events:\s*auto;/, 'the panel itself stays interactive');
+  assert.match(popCss, /max-width:\s*min\(260px, calc\(100cqw - 28px\)\);/, 'never wider than the canvas');
+  assert.match(popCss, /min-width:\s*min\(220px, calc\(100cqw - 28px\)\);/, 'and its minimum also yields to a narrow canvas');
+  const btnAnchor = mainCss.match(/\.tp3d-editor-validation-status__btn\[data-tooltip\]\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(btnAnchor, /position:\s*absolute;/, 'the icon stays anchored (generic [data-tooltip] would otherwise make it relative)');
+  const tipCss = mainCss.match(/\.tp3d-editor-validation-status__btn\[data-tooltip\]::after\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(tipCss, /max-width:\s*calc\(100cqw - 20px\);/, 'the short hover label is also capped to the canvas');
+});
+
+test('VALIDATION-STATUS-UI Editor source: dead hint/banner code is gone, helper renamed, and no second validation authority is introduced', () => {
+  assert.doesNotMatch(editorSource, /viewportHintBtn|viewportHintOpen|setViewportHintOpen|handlingRulesBanner|renderHandlingRulesBanner|viewport-hint-icon/);
+  assert.match(editorSource, /function renderHandlingRulesStatus\(pack\) \{/);
+  assert.equal((editorSource.match(/renderHandlingRulesStatus\(/g) || []).length, 3, 'defined once, called for no-Pack and for a Pack');
+  const region = statusRegion();
+  assert.doesNotMatch(region.status, /validateLoadPlan|buildHandlingRulesValiditySignature|handlingRulesValidatedSignature|commitCaseHandlingRuleChange/,
+    'the status/panel code decides nothing and validates nothing itself');
+  assert.match(region.status, /PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)/, 'staleness still comes from the existing authority');
+  assert.equal((region.all.match(/PackLibrary\.validateLoadPlan\(/g) || []).length, 1, 'exactly one validateLoadPlan call: the existing Validate handler');
+  assert.match(region.handler, /PackLibrary\.validateLoadPlan\(packId, CaseLibrary\.getCases\(\)\)/);
+  assert.doesNotMatch(packsSource, /validateLoadPlan\(/, 'Load Plans management screens never validate');
+});
+
+// Extracts the exact production status/panel code (and the untouched Validate handler) for behavioral tests.
+function statusRegion() {
+  const from = editorSource.indexOf('let validationPopoverOpen = false;');
+  const to = editorSource.indexOf('\n    // Swap a button', from);
+  assert.ok(from >= 0 && to > from);
+  const all = editorSource.slice(from, to);
+  const handlerFrom = all.indexOf("handlingRulesValidateBtn.addEventListener('click', () => {");
+  assert.ok(handlerFrom >= 0);
+  const statusEnd = all.indexOf('if (validationStatusBtn) {');
+  return { all, status: all.slice(0, statusEnd), handler: all.slice(handlerFrom) };
+}
+
+class StatusFakeNode {}
+function makeStatusEl(doc, name, children = []) {
+  const el = new StatusFakeNode();
+  Object.assign(el, { name, hidden: true, attrs: {}, listeners: {}, children });
+  el.setAttribute = (k, v) => { el.attrs[k] = String(v); };
+  el.addEventListener = (type, fn) => { (el.listeners[type] ||= []).push(fn); };
+  el.focus = () => { doc.activeElement = el; };
+  el.contains = node => node === el || children.some(c => c === node || c.contains(node));
+  return el;
+}
+function fireOn(el, type, extra = {}) {
+  const ev = { type, target: el, stopped: false, stopPropagation() { this.stopped = true; }, preventDefault() {}, ...extra };
+  (el.listeners[type] || []).slice().forEach(fn => fn(ev));
+  return ev;
+}
+function fireOnDocument(doc, type, extra = {}) {
+  const ev = { type, stopped: false, stopPropagation() { this.stopped = true; }, preventDefault() {}, ...extra };
+  doc.listeners.filter(l => l.type === type).slice().forEach(l => l.fn(ev));
+  return ev;
+}
+
+// Mounts the REAL status/panel/Validate-handler source against the REAL PackLibrary.
+function mountEditorStatus({ StateStore, PackLibrary, CaseLibrary }) {
+  const doc = {
+    activeElement: null,
+    listeners: [],
+    addEventListener(type, fn, capture) { this.listeners.push({ type, fn, capture }); },
+    removeEventListener(type, fn, capture) {
+      this.listeners = this.listeners.filter(l => !(l.type === type && l.fn === fn && l.capture === capture));
+    },
+  };
+  const validateBtn = makeStatusEl(doc, 'validate');
+  const popover = makeStatusEl(doc, 'popover', [validateBtn]);
+  const statusBtn = makeStatusEl(doc, 'status-btn');
+  const status = makeStatusEl(doc, 'status', [statusBtn, popover]);
+  const toasts = [];
+  const calls = { validate: [], render: 0 };
+  const busy = { value: false };
+  const spyLibrary = { ...PackLibrary, validateLoadPlan: (...args) => { calls.validate.push(args); return PackLibrary.validateLoadPlan(...args); } };
+  const ctx = {
+    document: doc, Node: StatusFakeNode, StateStore, CaseLibrary, PackLibrary: spyLibrary,
+    UIComponents: { showToast: (message, tone) => toasts.push({ message, tone }) },
+    editorMutationBlocked: () => busy.value,
+    render: () => { calls.render += 1; },
+    validationStatusEl: status, validationStatusBtn: statusBtn, validationPopoverEl: popover, handlingRulesValidateBtn: validateBtn,
+  };
+  const api = runInNewContext(
+    `(function () {\n${statusRegion().all}\nreturn { renderHandlingRulesStatus, setValidationPopoverOpen, isOpen: () => validationPopoverOpen };\n})()`,
+    ctx
+  );
+  return { doc, api, status, statusBtn, popover, validateBtn, toasts, calls, busy, spyLibrary, ctx };
+}
+
+const stalePackFixture = () => ({ ...activePackFixture(), handlingRulesValidatedSignature: 'v1:OLD' });
+
+test('VALIDATION-STATUS-UI Editor: a stale Pack shows ONE compact status; a current Pack shows nothing', async () => {
+  const mods = await freshModules();
+  const caseA = mkCase();
+  initFixture(mods.StateStore, caseA, stalePackFixture());
+  const m = mountEditorStatus(mods);
+  const stale = mods.PackLibrary.getById('pack-active');
+  assert.equal(mods.PackLibrary.isHandlingRulesValidationRequired(stale, [caseA]), true, 'fixture really is stale under the real authority');
+
+  m.api.renderHandlingRulesStatus(stale);
+  assert.equal(m.status.hidden, false, 'stale: the compact status is shown');
+  assert.equal(m.popover.hidden, true, 'the panel stays closed until the icon is clicked');
+  assert.equal(m.statusBtn.attrs['aria-expanded'], undefined, 'no state is written until the user interacts');
+
+  const current = { ...stale, handlingRulesValidatedSignature: mods.PackLibrary.buildHandlingRulesValiditySignature(stale, [caseA]) };
+  m.api.renderHandlingRulesStatus(current);
+  assert.equal(m.status.hidden, true, 'current: the bottom-left corner is empty');
+  m.api.renderHandlingRulesStatus(null);
+  assert.equal(m.status.hidden, true, 'no Pack: nothing is shown');
+});
+
+test('VALIDATION-STATUS-UI Editor: clicking the icon only toggles the panel — it never validates or mutates cargo', async () => {
+  const mods = await freshModules();
+  initFixture(mods.StateStore, mkCase(), stalePackFixture());
+  const m = mountEditorStatus(mods);
+  const before = mods.StateStore.snapshot();
+  m.api.renderHandlingRulesStatus(mods.PackLibrary.getById('pack-active'));
+
+  fireOn(m.statusBtn, 'click');
+  assert.equal(m.api.isOpen(), true);
+  assert.equal(m.popover.hidden, false);
+  assert.equal(m.statusBtn.attrs['aria-expanded'], 'true');
+  fireOn(m.statusBtn, 'click');
+  assert.equal(m.api.isOpen(), false);
+  assert.equal(m.popover.hidden, true);
+  assert.equal(m.statusBtn.attrs['aria-expanded'], 'false');
+
+  assert.equal(m.calls.validate.length, 0, 'opening/closing the panel never calls the validation authority');
+  assert.equal(m.calls.render, 0);
+  assert.deepEqual(mods.StateStore.snapshot(), before, 'and never touches cargo, signature, or history');
+  assert.equal(mods.StateStore.undo(), false);
+});
+
+test('VALIDATION-STATUS-UI Editor: Validate Load Plan reuses the existing authority and toasts, closes the panel, and the status disappears once current', async () => {
+  const mods = await freshModules();
+  const caseA = mkCase();
+  initFixture(mods.StateStore, caseA, stalePackFixture());
+  const m = mountEditorStatus(mods);
+  m.api.renderHandlingRulesStatus(mods.PackLibrary.getById('pack-active'));
+  fireOn(m.statusBtn, 'click');
+
+  fireOn(m.validateBtn, 'click');
+  assert.equal(m.calls.validate.length, 1, 'exactly one validation, through the existing PackLibrary.validateLoadPlan');
+  assert.deepEqual(m.calls.validate[0], ['pack-active', mods.CaseLibrary.getCases()]);
+  assert.equal(m.calls.render, 1, 'the existing handler re-renders');
+  assert.equal(m.api.isOpen(), false, 'the panel closes as soon as the explicit action is taken');
+  assert.deepEqual(m.toasts, [{ message: 'Load Plan validated. No cargo changes were needed.', tone: 'success' }]);
+
+  const after = mods.PackLibrary.getById('pack-active');
+  assert.equal(mods.PackLibrary.isHandlingRulesValidationRequired(after, [caseA]), false, 'the real authority now reports current');
+  m.api.renderHandlingRulesStatus(after);
+  assert.equal(m.status.hidden, true, 'status disappears once the Pack is current');
+});
+
+test('VALIDATION-STATUS-UI Editor: every validation outcome keeps its original toast copy and tone; a busy Editor never validates', async () => {
+  const mods = await freshModules();
+  initFixture(mods.StateStore, mkCase(), stalePackFixture());
+  const outcomes = [
+    [{ validationComplete: true, summary: {} }, 'Load Plan validated. No cargo changes were needed.', 'success'],
+    [{ validationComplete: false, summary: {} }, 'Some cargo could not be validated and remains flagged.', 'warning'],
+    [{ validationComplete: true, summary: { staged: 2 } }, 'Load Plan validated. Affected cargo could not rest safely and was moved to staging.', 'warning'],
+    [{ validationComplete: true, summary: { repaired: 1 } }, 'Load Plan validated. Cargo was adjusted to match current Handling Rules.', 'info'],
+    [{ validationComplete: true, summary: { adjusted: 1 } }, 'Load Plan validated. Cargo was adjusted to match current Handling Rules.', 'info'],
+    [null, 'Validation failed. Please try again.', 'error'],
+  ];
+  for (const [result, message, tone] of outcomes) {
+    const m = mountEditorStatus(mods);
+    m.ctx.PackLibrary.validateLoadPlan = () => result;
+    fireOn(m.validateBtn, 'click');
+    assert.deepEqual(m.toasts, [{ message, tone }], `outcome ${JSON.stringify(result)}`);
+  }
+  const busy = mountEditorStatus(mods);
+  busy.busy.value = true;
+  fireOn(busy.validateBtn, 'click');
+  assert.equal(busy.calls.validate.length, 0, 'editorMutationBlocked() still gates the action');
+  assert.deepEqual(busy.toasts, []);
+});
+
+test('VALIDATION-STATUS-UI Editor: Escape and an outside press close the panel, a press inside does not, and document listeners never leak', async () => {
+  const mods = await freshModules();
+  initFixture(mods.StateStore, mkCase(), stalePackFixture());
+  const m = mountEditorStatus(mods);
+  m.api.renderHandlingRulesStatus(mods.PackLibrary.getById('pack-active'));
+  assert.equal(m.doc.listeners.length, 0, 'nothing is registered while the panel is closed');
+
+  fireOn(m.statusBtn, 'click');
+  assert.deepEqual(m.doc.listeners.map(l => `${l.type}:${l.capture}`).sort(), ['keydown:true', 'pointerdown:true'],
+    'exactly two capture-phase listeners exist only while open');
+
+  // A press INSIDE the status area (icon or panel) leaves it open.
+  fireOnDocument(m.doc, 'pointerdown', { target: m.validateBtn });
+  fireOnDocument(m.doc, 'pointerdown', { target: m.statusBtn });
+  assert.equal(m.api.isOpen(), true);
+  // A press OUTSIDE closes it (capture phase, so the 3D canvas cannot swallow it).
+  fireOnDocument(m.doc, 'pointerdown', { target: new StatusFakeNode() });
+  assert.equal(m.api.isOpen(), false);
+  assert.equal(m.doc.listeners.length, 0);
+
+  // Escape closes, stops the event, and returns focus to the icon when focus was inside the panel.
+  fireOn(m.statusBtn, 'click');
+  m.doc.activeElement = m.validateBtn;
+  const esc = fireOnDocument(m.doc, 'keydown', { key: 'Escape' });
+  assert.equal(esc.stopped, true);
+  assert.equal(m.api.isOpen(), false);
+  assert.equal(m.doc.activeElement, m.statusBtn, 'keyboard focus returns to the icon');
+  // Other keys do nothing.
+  fireOn(m.statusBtn, 'click');
+  fireOnDocument(m.doc, 'keydown', { key: 'Tab' });
+  assert.equal(m.api.isOpen(), true);
+  fireOn(m.statusBtn, 'click');
+
+  // Many re-renders and open/close cycles: the listener count returns to zero every time.
+  for (let i = 0; i < 5; i += 1) {
+    m.api.renderHandlingRulesStatus(mods.PackLibrary.getById('pack-active'));
+    fireOn(m.statusBtn, 'click');
+    m.api.setValidationPopoverOpen(true); // already open: must not register a second pair
+    assert.equal(m.doc.listeners.length, 2);
+    fireOn(m.statusBtn, 'click');
+    assert.equal(m.doc.listeners.length, 0);
+  }
+});
+
+test('VALIDATION-STATUS-UI Editor: the panel closes when the Pack becomes current, switches, or the Editor is re-entered', async () => {
+  const mods = await freshModules();
+  const caseA = mkCase();
+  initFixture(mods.StateStore, caseA, stalePackFixture());
+  const m = mountEditorStatus(mods);
+  const stale = mods.PackLibrary.getById('pack-active');
+
+  m.api.renderHandlingRulesStatus(stale);
+  fireOn(m.statusBtn, 'click');
+  assert.equal(m.api.isOpen(), true);
+  m.api.renderHandlingRulesStatus(stale); // an unrelated re-render keeps it open
+  assert.equal(m.api.isOpen(), true);
+
+  m.api.renderHandlingRulesStatus({ ...stale, handlingRulesValidatedSignature: mods.PackLibrary.buildHandlingRulesValiditySignature(stale, [caseA]) });
+  assert.equal(m.api.isOpen(), false, 'no longer stale: closed');
+  assert.equal(m.status.hidden, true);
+  assert.equal(m.doc.listeners.length, 0);
+
+  fireOn(m.statusBtn, 'click');
+  assert.equal(m.api.isOpen(), true);
+  m.api.renderHandlingRulesStatus({ ...stale, id: 'another-pack' });
+  assert.equal(m.api.isOpen(), false, 'a different Load Plan renders: closed');
+  assert.equal(m.doc.listeners.length, 0);
+
+  // Entering the Editor always starts closed.
+  assert.match(editorSource, /function onActivated\(\) \{\s*\/\/[^\n]*\n\s*setValidationPopoverOpen\(false\);/);
+});
+
+test('VALIDATION-STATUS-UI Load Plans: the status icon is compact, short-labelled, and contained (click and keyboard)', () => {
+  const fnFrom = packsSource.indexOf('function createPackValidationStatus(');
+  const fnTo = packsSource.indexOf('function createPackNotesButton(', fnFrom);
+  assert.ok(fnFrom >= 0 && fnTo > fnFrom);
+  const makeEl = () => {
+    const el = { attrs: {}, listeners: {}, className: '', tabIndex: -1, innerHTML: '' };
+    el.setAttribute = (k, v) => { el.attrs[k] = String(v); };
+    el.addEventListener = (type, fn) => { (el.listeners[type] ||= []).push(fn); };
+    return el;
+  };
+  const build = runInNewContext(`(${packsSource.slice(fnFrom, fnTo).trim()})`, { document: { createElement: makeEl } });
+
+  for (const [opts, expectedClass] of [[undefined, 'tp3d-validation-status'], [{ inline: true }, 'tp3d-validation-status tp3d-validation-status--inline']]) {
+    const el = build(opts);
+    assert.equal(el.className, expectedClass);
+    assert.equal(el.attrs['data-tooltip'], 'Validation required', 'hover/focus text is ONLY the short label');
+    assert.equal(el.attrs['aria-label'], 'Validation required');
+    assert.equal(el.attrs.role, 'img', 'a status, not a button');
+    assert.equal(el.attrs['data-pack-status'], 'validation');
+    assert.equal(el.tabIndex, 0, 'focusable so the label is reachable by keyboard');
+    assert.match(el.innerHTML, /fa-triangle-exclamation/);
+    assert.match(el.innerHTML, /aria-hidden="true"/);
+    assert.doesNotMatch(el.attrs['data-tooltip'], /[.,;:]|Handling Rules|Case/, 'no long sentence in the generic tooltip');
+    // Neither a click nor Enter/Space can reach the card/row handlers (open, select, Notes, overflow).
+    for (const type of ['click', 'keydown']) {
+      assert.equal(el.listeners[type].length, 1);
+      const ev = { stopPropagation() { this.stopped = true; } };
+      el.listeners[type][0](ev);
+      assert.equal(ev.stopped, true, `${type} must stop propagation`);
+    }
+    assert.equal(el.listeners.click.length + el.listeners.keydown.length, 2, 'and it performs no action of its own');
+  }
+});
+
+test('VALIDATION-STATUS-UI Load Plans Grid: stale Pack gets the icon between selection and Notes; no chip, no long tooltip; the card ignores it', () => {
+  const grid = packsSource.slice(packsSource.indexOf('function renderGridView(packs) {'), packsSource.indexOf('function buildPreview('));
+  assert.ok(grid.length > 500);
+  assert.doesNotMatch(grid, /badge--warning|validationBadge|Validation required/, 'the old chip is gone from the Grid');
+  const cluster = grid.slice(grid.indexOf("actions.className = 'card-head-actions'"), grid.indexOf('head.appendChild(titleWrap)'));
+  const iSel = cluster.indexOf('actions.appendChild(selectCb)');
+  const iStatus = cluster.indexOf('actions.appendChild(createPackValidationStatus())');
+  const iNotes = cluster.indexOf('actions.appendChild(createPackNotesButton(pack))');
+  const iKebab = cluster.indexOf('actions.appendChild(kebabBtn)');
+  assert.ok(iSel >= 0 && iSel < iStatus && iStatus < iNotes && iNotes < iKebab, 'order: [ checkbox ] [ warning ] [ Notes ] [ ⋮ ]');
+  assert.match(cluster, /if \(PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)\) \{\s*actions\.appendChild\(createPackValidationStatus\(\)\);\s*\}/,
+    'shown only when the existing authority says the Load Plan is stale');
+  // The whole-card click handler skips the status (in addition to the status stopping propagation itself).
+  const cardClick = grid.slice(grid.indexOf("card.addEventListener('click'"), grid.indexOf('openPack(pack.id);'));
+  assert.match(cardClick, /targetEl\.closest\('\[data-pack-status\]'\)/);
+});
+
+test('VALIDATION-STATUS-UI Load Plans List: stale Pack gets the same icon beside the title; no chip and no new column', () => {
+  const list = packsSource.slice(packsSource.indexOf('function renderListView(packs) {'), packsSource.indexOf('function renderGridView(packs) {'));
+  assert.ok(list.length > 500);
+  assert.doesNotMatch(list, /badge--warning|validationBadge|Validation required/, 'the old chip is gone from the List');
+  assert.match(list, /if \(PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)\) \{\s*title\.appendChild\(createPackValidationStatus\(\{ inline: true \}\)\);\s*\}/);
+  assert.equal((list.match(/\btr\.appendChild\(/g) || []).length, 12, 'the row keeps its existing 12 cells — no new column, no structure change');
+  assert.equal((list.match(/createElement\('td'\)/g) || []).length, 12);
+});
+
+test('VALIDATION-STATUS-UI Scope: no long generic tooltip, no Case-level warning, and the compact styles exist', () => {
+  assert.equal((packsSource.match(/Validation required/g) || []).length, 2, 'only the icon builder carries the label (aria-label + tooltip)');
+  assert.doesNotMatch(packsSource, /Handling Rules changed since|referenced Case’s Handling Rules|last validated/, 'the long explanation lives only in the Editor panel');
+  assert.doesNotMatch(casesSource, /isHandlingRulesValidationRequired|Validation required|createPackValidationStatus|data-pack-status/,
+    'no Case-level validation status exists or is implied');
+  const status = mainCss.match(/\.tp3d-validation-status\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(status, /color:\s*var\(--warning, #f59e0b\);/, 'amber warning semantic');
+  assert.doesNotMatch(status, /\bborder\s*:|background/, 'a compact icon: no chip fill and no border');
+  assert.match(mainCss, /\.tp3d-validation-status--inline\s*\{/);
+  const editorBtn = mainCss.match(/\.tp3d-editor-validation-status__btn\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(editorBtn, /width:\s*32px;[\s\S]*height:\s*32px;/, 'same general scale as the removed info icon');
+  assert.match(editorBtn, /color:\s*var\(--warning, #f59e0b\);/);
 });

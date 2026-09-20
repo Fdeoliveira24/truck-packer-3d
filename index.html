@@ -807,16 +807,6 @@
 
               <div class="panel canvas-wrap">
                 <div id="viewport"></div>
-                <div class="tp3d-handling-rules-banner" id="editor-handling-rules-banner" hidden>
-                  <span class="tp3d-handling-rules-banner__text" id="editor-handling-rules-banner-text"></span>
-                  <button
-                    class="btn btn-primary"
-                    id="editor-handling-rules-validate-btn"
-                    type="button"
-                  >
-                    Validate Load Plan
-                  </button>
-                </div>
                 <div class="viewport-toolbar" id="viewport-toolbar">
                   <button class="toolbar-btn" id="btn-editor-left" type="button" data-tooltip="Toggle case browser">
                     <i class="fa-solid fa-boxes-stacked"></i>
@@ -848,16 +838,41 @@
                     PDF
                   </button>
                 </div>
-                <button
-                  class="viewport-hint-icon"
-                  id="viewport-hint-icon"
-                  type="button"
-                  aria-label="Editor tips"
-                  aria-expanded="false"
-                  data-tooltip="Click to select. Drag to move. Shift+Click for multi-select. Scroll to zoom."
-                >
-                  <i class="fa-solid fa-circle-info"></i>
-                </button>
+                <div class="tp3d-editor-validation-status" id="editor-validation-status" hidden>
+                  <button
+                    class="tp3d-editor-validation-status__btn"
+                    id="editor-validation-status-btn"
+                    type="button"
+                    aria-label="Validation required"
+                    aria-expanded="false"
+                    aria-controls="editor-validation-popover"
+                    data-tooltip="Validation required"
+                  >
+                    <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+                  </button>
+                  <div
+                    class="tp3d-editor-validation-popover"
+                    id="editor-validation-popover"
+                    role="dialog"
+                    aria-modal="false"
+                    aria-labelledby="editor-validation-popover-title"
+                    hidden
+                  >
+                    <div class="tp3d-editor-validation-popover__title" id="editor-validation-popover-title">
+                      Validation required
+                    </div>
+                    <p class="tp3d-editor-validation-popover__body">
+                      Handling Rules changed since this Load Plan was last validated.
+                    </p>
+                    <button
+                      class="btn btn-primary tp3d-editor-validation-popover__action"
+                      id="editor-handling-rules-validate-btn"
+                      type="button"
+                    >
+                      Validate Load Plan
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div class="panel right" id="editor-right">

@@ -395,6 +395,27 @@ export function createPacksScreen({
       });
     }
 
+    // Compact status icon for a Load Plan whose Handling Rules validity is stale
+    // (PackLibrary.isHandlingRulesValidationRequired). A STATUS, not an action: it does
+    // not validate, open the Load Plan, toggle selection, or open Notes/overflow — the
+    // same click/keydown containment as the Notes button. The tooltip is deliberately
+    // just the short label; the explanation and the Validate action live only in the Editor.
+    function createPackValidationStatus({ inline = false } = {}) {
+      const status = document.createElement('span');
+      status.className = inline
+        ? 'tp3d-validation-status tp3d-validation-status--inline'
+        : 'tp3d-validation-status';
+      status.setAttribute('data-pack-status', 'validation');
+      status.setAttribute('role', 'img');
+      status.setAttribute('aria-label', 'Validation required');
+      status.setAttribute('data-tooltip', 'Validation required');
+      status.tabIndex = 0;
+      status.innerHTML = '<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>';
+      status.addEventListener('keydown', ev => ev.stopPropagation());
+      status.addEventListener('click', ev => ev.stopPropagation());
+      return status;
+    }
+
     function createPackNotesButton(pack) {
       const title = pack.title || 'Untitled Load Plan';
       const hasNotes = Boolean(String(pack.notes || '').trim());
@@ -1555,14 +1576,7 @@ export function createPacksScreen({
         });
 
         if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
-          const validationBadge = document.createElement('div');
-          validationBadge.className = 'badge badge--warning';
-          validationBadge.textContent = 'Validation required';
-          validationBadge.setAttribute(
-            'data-tooltip',
-            'A referenced Case’s Handling Rules changed since this Load Plan was last validated.'
-          );
-          titleWrap.appendChild(validationBadge);
+          title.appendChild(createPackValidationStatus({ inline: true }));
         }
 
         const stats = PackLibrary.computeStats(pack);
@@ -1715,7 +1729,8 @@ export function createPacksScreen({
             (
               targetEl.closest('[data-pack-menu]') ||
               targetEl.closest('[data-pack-select]') ||
-              targetEl.closest('[data-pack-notes]')
+              targetEl.closest('[data-pack-notes]') ||
+              targetEl.closest('[data-pack-status]')
             )
           ) {
             return;
@@ -1753,17 +1768,6 @@ export function createPacksScreen({
 
         const badgesWrap = document.createElement('div');
         badgesWrap.className = 'pack-meta-badges';
-
-        if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
-          const validationBadge = document.createElement('div');
-          validationBadge.className = 'badge badge--warning';
-          validationBadge.textContent = 'Validation required';
-          validationBadge.setAttribute(
-            'data-tooltip',
-            'A referenced Case’s Handling Rules changed since this Load Plan was last validated.'
-          );
-          badgesWrap.appendChild(validationBadge);
-        }
 
         if (badgePrefs.showTruckDims !== false) {
           const truck = document.createElement('div');
@@ -1873,6 +1877,9 @@ export function createPacksScreen({
         actions.className = 'card-head-actions';
         actions.classList.add('tp3d-packs-card-head-actions');
         actions.appendChild(selectCb);
+        if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
+          actions.appendChild(createPackValidationStatus());
+        }
         if (badgePrefs.showNotes !== false) actions.appendChild(createPackNotesButton(pack));
         actions.appendChild(kebabBtn);
 

@@ -101,6 +101,15 @@ function createCheckRow(doc, text, checked, help = '') {
   return { row, input };
 }
 
+// Quiet section caption for the grouped New/Edit Case layout. Layout only: it
+// spans the modal grid and carries no field, handler, or value. The visible
+// uppercase treatment comes from CSS, so the text stays sentence-cased here.
+function createSectionCaption(doc, text) {
+  const caption = doc.createElement('div');
+  caption.className = 'tp3d-cases-modal-caption tp3d-grid-span-full';
+  caption.textContent = text;
+  return caption;
+}
 
 export function formatCaseModalNumber(value, unit) {
   const n = Number(value);
@@ -209,8 +218,13 @@ export function openCaseModal({
   const catWrap = doc.createElement('div');
   catWrap.className = 'field';
   catWrap.classList.add('tp3d-grid-span-full');
+  // Layout only: lets the existing category selector row and the new-category
+  // creator row sit inline as one Category control area (see main.css).
+  catWrap.classList.add('tp3d-cases-category-controls');
+  // The Category label doubles as the section caption (same quiet treatment as
+  // Identity / Dimensions & Weight / Instructions), so no extra heading is added.
   const catLabel = doc.createElement('div');
-  catLabel.className = 'label';
+  catLabel.className = 'label tp3d-cases-modal-caption';
   catLabel.textContent = 'Category';
   const catRow = doc.createElement('div');
   catRow.classList.add('tp3d-cases-cat-row');
@@ -226,6 +240,7 @@ export function openCaseModal({
   const catSelect = doc.createElement('select');
   catSelect.className = 'select';
   catSelect.classList.add('tp3d-flex-1');
+  catSelect.setAttribute('aria-label', 'Category');
   let catOptions = [];
   const getCategoryOptions = () => {
     const options = CategoryService.listWithCounts(CaseLibrary.getCases());
@@ -287,10 +302,12 @@ export function openCaseModal({
   newCatName.type = 'text';
   newCatName.className = 'input';
   newCatName.placeholder = 'Add New Category Name';
+  newCatName.setAttribute('aria-label', 'New category name');
   const newCatSave = doc.createElement('button');
   newCatSave.type = 'button';
   newCatSave.className = 'btn btn-sm btn-primary';
   newCatSave.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
+  newCatSave.setAttribute('aria-label', 'Add category');
   catCreateRow.appendChild(newCatColorSwatch);
   catCreateRow.appendChild(newCatName);
   catCreateRow.appendChild(newCatSave);
@@ -454,15 +471,20 @@ export function openCaseModal({
   notesWrap.appendChild(notesLabel);
   notesWrap.appendChild(notes);
 
+  // Grouped layout, identical for New and Edit: Identity, Category, Dimensions &
+  // Weight, Handling Rules (its own collapsible summary is the caption), Instructions.
+  content.appendChild(createSectionCaption(doc, 'Identity'));
   content.appendChild(fName.wrap);
   content.appendChild(fItemCode.wrap);
   content.appendChild(fMfg.wrap);
   content.appendChild(catWrap);
+  content.appendChild(createSectionCaption(doc, 'Dimensions & Weight'));
   content.appendChild(fL.wrap);
   content.appendChild(fW.wrap);
   content.appendChild(fH.wrap);
   content.appendChild(fWeight.wrap);
   content.appendChild(handling);
+  content.appendChild(createSectionCaption(doc, 'Instructions'));
   content.appendChild(notesWrap);
 
   UIComponents.showModal({

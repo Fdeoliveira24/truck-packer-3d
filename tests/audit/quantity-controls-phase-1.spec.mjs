@@ -405,10 +405,11 @@ test('Requirement 5: Enter commits the direct-entry value', async () => {
   assert.match(block, /if \(ev\.key === 'Enter'\) \{\s*ev\.preventDefault\(\);\s*commitDraft\(parseDirectEntry\(\)\);/);
 });
 
-test('Requirement 6: blur commits the direct-entry value', async () => {
+test('Requirement 6: blur commits the direct-entry value (except when focus is heading to + Add / Unstage — see P1-B Q1/Q2)', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');
-  assert.match(block, /input\.addEventListener\('blur', \(\) => \{\s*commitDraft\(parseDirectEntry\(\)\);/);
+  const blur = extractFunctionBlock(block, "input.addEventListener('blur', ev => {", '\n      });');
+  assert.match(blur, /if \(toAction\) return;\s*commitDraft\(parseDirectEntry\(\)\);/, 'every other blur still commits/reverts exactly as before');
 });
 
 test('Requirement 7: Escape restores the prior valid value', async () => {
@@ -2310,4 +2311,1161 @@ test('P1-A R14-R17: every staged-only authority preserves signature state and in
         `${operation.name}/${signature.name}: floating packed transform and Max Capacity metadata must not change`);
     }
   }
+});
+
+// ---------------------------------------------------------------------------
+// P1-B commit 1 — strict, all-or-nothing staged Add
+// ---------------------------------------------------------------------------
+
+function trackPackWrites(StateStore) {
+  let writes = 0;
+  const unsubscribe = StateStore.subscribe(changes => {
+    if (changes.packLibrary) writes++;
+  });
+  return { count: () => writes, stop: unsubscribe };
+}
+
+// A single enormous pre-existing instance. With rect truck 120x60 and a 10x10x10
+// Case the staging grid is 6 columns wide, rows start at z=42 and repeat every
+// 22. `fromZ` is where the blocker's footprint begins: everything at or beyond it
+// is unplaceable, everything before it stays free.
+function stagingBlockerInstance(fromZ) {
+  const width = 1e9;
+  return outsideInstance({
+    id: 'staging-blocker',
+    transform: {
+      position: { x: 60, y: 5, z: fromZ + width / 2 },
+      rotation: { x: 0, y: 0, z: 0 },
+      scale: { x: 1, y: 1, z: 1 },
+    },
+    orientedDims: { length: 1e6, width, height: 1e6 },
+  });
+}
+
+test('P1-B A1: addInstancesToStaging accepts whole quantities 1, N, and the 10,000 maximum', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  for (const count of [1, 7, 10000]) {
+    StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+    const result = PackLibrary.addInstancesToStaging('pack-1', 'case-a', count);
+    assert.equal(result.reason, 'ok', `count ${count}`);
+    assert.equal(result.requestedCount, count);
+    assert.equal(result.addedCount, count, 'a successful Add adds exactly the requested count');
+    assert.equal(result.createdInstanceIds.length, count);
+    assert.equal(new Set(result.createdInstanceIds).size, count, 'created ids are unique');
+    assert.equal(PackLibrary.getById('pack-1').cases.length, count);
+    assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, count);
+  }
+});
+
+test('P1-B A2: strict count contract rejects everything except a whole number 1..10000, with zero writes', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const invalidCounts = [
+    0, -1, -7, 0.5, 1.9, 2.5, 10001, 1e9, NaN, Infinity, -Infinity,
+    '5', '', ' ', 'abc', true, false, null, undefined, [5], [], {}, { valueOf: () => 3 },
+  ];
+  for (const count of invalidCounts) {
+    StateStore.init({
+      caseLibrary: [baseCase()],
+      packLibrary: [basePack({ cases: [insideInstance()], lastEdited: 12345 })],
+      folderLibrary: [],
+      preferences: {},
+    });
+    const before = StateStore.snapshot();
+    const writes = trackPackWrites(StateStore);
+    const first = PackLibrary.addInstancesToStaging('pack-1', 'case-a', count);
+    const second = PackLibrary.addInstancesToStaging('pack-1', 'case-a', count);
+    writes.stop();
+
+    const label = `count=${typeof count === 'object' ? JSON.stringify(count) : String(count)}`;
+    assert.equal(first.reason, 'invalid-count', label);
+    assert.equal(first.addedCount, 0, label);
+    assert.deepEqual(first.createdInstanceIds, [], label);
+    assert.equal(first.pack, null, label);
+    assert.notStrictEqual(first.createdInstanceIds, second.createdInstanceIds,
+      `${label}: failure arrays must be fresh, never shared mutable state`);
+    assert.equal(writes.count(), 0, `${label}: no Pack write`);
+    assert.deepEqual(StateStore.snapshot(), before, `${label}: state byte-identical (lastEdited untouched)`);
+    assert.equal(StateStore.undo(), false, `${label}: no history entry`);
+  }
+});
+
+test('P1-B A3: missing Pack and missing Case report their own reason and never write', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+  const writes = trackPackWrites(StateStore);
+
+  const noPack = PackLibrary.addInstancesToStaging('missing-pack', 'case-a', 3);
+  assert.equal(noPack.reason, 'pack-not-found');
+  for (const caseId of ['missing-case', '', null, undefined]) {
+    const noCase = PackLibrary.addInstancesToStaging('pack-1', caseId, 3);
+    assert.equal(noCase.reason, 'case-not-found', `caseId=${String(caseId)}`);
+    assert.equal(noCase.addedCount, 0);
+    assert.deepEqual(noCase.createdInstanceIds, []);
+    assert.equal(noCase.pack, null);
+  }
+  writes.stop();
+
+  assert.equal(noPack.addedCount, 0);
+  assert.deepEqual(noPack.createdInstanceIds, []);
+  assert.equal(noPack.pack, null);
+  assert.equal(writes.count(), 0);
+  assert.deepEqual(StateStore.snapshot(), before);
+  assert.equal(StateStore.undo(), false);
+});
+
+test('P1-B A4: placement-incomplete is all-or-nothing — a partial batch is never published', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  // Row 0 (6 columns) is free; the blocker begins at z=60, so row 1 onwards is
+  // unplaceable. Requesting 10 could only ever place 6 before the search gives up.
+  const blocked = [
+    { name: 'partially blocked (6 placeable, 10 requested)', fromZ: 60, requested: 10 },
+    { name: 'fully blocked (0 placeable)', fromZ: -5e8, requested: 3 },
+  ];
+  for (const scenario of blocked) {
+    const cases = [stagingBlockerInstance(scenario.fromZ)];
+    StateStore.init({
+      caseLibrary: [baseCase()],
+      packLibrary: [basePack({ cases, lastEdited: 12345 })],
+      folderLibrary: [],
+      preferences: {},
+    });
+    const before = StateStore.snapshot();
+    const writes = trackPackWrites(StateStore);
+    const result = PackLibrary.addInstancesToStaging('pack-1', 'case-a', scenario.requested);
+    writes.stop();
+
+    assert.equal(result.reason, 'placement-incomplete', scenario.name);
+    assert.equal(result.requestedCount, scenario.requested, scenario.name);
+    assert.equal(result.addedCount, 0, `${scenario.name}: no partial count is exposed`);
+    assert.deepEqual(result.createdInstanceIds, [], scenario.name);
+    assert.equal(result.pack, null, scenario.name);
+    assert.equal(writes.count(), 0, `${scenario.name}: ZERO Pack writes`);
+    assert.deepEqual(StateStore.snapshot(), before, `${scenario.name}: Pack, lastEdited and stats untouched`);
+    assert.equal(PackLibrary.getById('pack-1').lastEdited, 12345, `${scenario.name}: lastEdited not bumped`);
+    assert.equal(StateStore.undo(), false, `${scenario.name}: ZERO history entries`);
+  }
+
+  // Positive control: the very same partially-blocked fixture does place a full
+  // batch that fits, so the failure above is the all-or-nothing rule, not a bad fixture.
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [basePack({ cases: [stagingBlockerInstance(60)] })],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const fits = PackLibrary.addInstancesToStaging('pack-1', 'case-a', 6);
+  assert.equal(fits.reason, 'ok');
+  assert.equal(fits.addedCount, 6);
+  assert.equal(PackLibrary.getById('pack-1').cases.length, 7);
+});
+
+test('P1-B A5: a successful Add is exactly one Pack write and one Undo/Redo step', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+  const writes = trackPackWrites(StateStore);
+  const result = PackLibrary.addInstancesToStaging('pack-1', 'case-a', 5);
+  writes.stop();
+
+  assert.equal(result.reason, 'ok');
+  assert.equal(writes.count(), 1, 'one Pack write for the whole batch');
+  assert.equal(result.createdInstanceIds.length, result.requestedCount);
+  const createdInPack = PackLibrary.getById('pack-1').cases.map(inst => inst.id);
+  assert.deepEqual([...createdInPack].sort(), [...result.createdInstanceIds].sort());
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getById('pack-1').cases.length, 0, 'one Undo removes the whole batch');
+  assert.equal(StateStore.undo(), false, 'the batch was a single history step');
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), createdInPack,
+    'one Redo restores the whole batch');
+});
+
+test('P1-B A6: every Add result carries the same reason/count/ids/pack shape', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack()], folderLibrary: [], preferences: {} });
+  const shape = ['addedCount', 'createdInstanceIds', 'pack', 'reason', 'requestedCount'];
+  const results = [
+    PackLibrary.addInstancesToStaging('pack-1', 'case-a', 2),
+    PackLibrary.addInstancesToStaging('pack-1', 'case-a', 0),
+    PackLibrary.addInstancesToStaging('missing-pack', 'case-a', 1),
+    PackLibrary.addInstancesToStaging('pack-1', 'missing-case', 1),
+  ];
+  for (const result of results) assert.deepEqual(Object.keys(result).sort(), shape);
+  assert.deepEqual(results.map(result => result.reason), ['ok', 'invalid-count', 'pack-not-found', 'case-not-found']);
+  assert.ok(results[0].pack && Array.isArray(results[0].pack.cases), 'ok carries the updated Pack');
+});
+
+test('P1-B A7: the service source no longer coerces, truncates, or clamps count', async () => {
+  const src = await fs.readFile(packLibraryUrl, 'utf8');
+  const block = extractFunctionBlock(src, 'export function addInstancesToStaging(packId, caseId, count) {', '\n}');
+  assert.match(block, /typeof count !== 'number'/);
+  assert.match(block, /!Number\.isInteger\(count\)/);
+  assert.match(block, /count < 1 \|\| count > BULK_ADD_MAX_QUANTITY/);
+  assert.doesNotMatch(block, /Number\(count\)|Math\.trunc\(|Math\.min\(BULK_ADD_MAX_QUANTITY/,
+    'no silent coercion, fraction truncation, or clamping at the command authority');
+  assert.doesNotMatch(src, /EMPTY_BULK_ADD_RESULT/, 'no shared frozen result object with a shared mutable array');
+  const guard = block.indexOf('newInstances.length !== requestedCount');
+  const write = block.indexOf('update(packId');
+  assert.ok(guard > 0 && write > guard, 'the all-or-nothing guard must run before the single update()');
+});
+
+test('P1-B A8: Add failure feedback maps each service reason to its copy and tone', async () => {
+  const { getStagingAddFailureFeedback } = await import(editorScreenPath.href);
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'invalid-count' }),
+    { message: 'Enter a whole quantity from 1 to 10,000.', tone: 'warning' });
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'pack-not-found' }),
+    { message: 'Create or open a load plan first', tone: 'warning' });
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'case-not-found' }),
+    { message: 'This case no longer exists.', tone: 'error' });
+  assert.deepEqual(getStagingAddFailureFeedback({ reason: 'placement-incomplete' }),
+    { message: "Couldn't place the full quantity in staging. Nothing was added.", tone: 'warning' });
+  assert.equal(getStagingAddFailureFeedback(null).tone, 'error', 'an unexpected result still gives feedback');
+});
+
+test('P1-B A9: the Add click reads the live input, restores the requested Qty on failure, and never writes on invalid input', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');
+  const click = extractFunctionBlock(block, "addBtn.addEventListener('click', () => {", '\n      });');
+
+  // Live input authority: busy guard first, then parse the visible value, then act.
+  const guard = click.indexOf('editorMutationBlocked()');
+  const parse = click.indexOf('readLiveQty()');
+  const service = click.indexOf('PackLibrary.addInstancesToStaging(packId, c.id, qty)');
+  assert.ok(guard >= 0 && parse > guard && service > parse,
+    'editorMutationBlocked() -> readLiveQty() -> addInstancesToStaging()');
+  assert.match(click, /const qty = readLiveQty\(\);\s*if \(qty === null\) return;/,
+    'an invalid visible value stops before any mutation');
+  const live = extractFunctionBlock(block, 'const readLiveQty = () => {', '\n      };');
+  assert.match(live, /const n = parseDirectEntry\(\);/);
+  assert.match(live, /n === null \|\| n > CASE_QTY_MAX/);
+  assert.match(live, /revertInput\(\);\s*UIComponents\.showToast\(STAGING_QTY_INVALID_MESSAGE, 'warning'\);\s*return null;/);
+  assert.match(live, /commitDraft\(n\);\s*return n;/, 'a valid value is committed to the draft and used exactly');
+
+  // Failure: feedback, no selection write, draft restored (also when the service throws).
+  assert.match(click, /if \(!result \|\| result\.reason !== 'ok'\) \{\s*const feedback = getStagingAddFailureFeedback\(result\);\s*UIComponents\.showToast\(feedback\.message, feedback\.tone\);\s*return;/);
+  assert.match(click, /finally \{[\s\S]*?if \(!added\) setCaseQtyDraft\(c\.id, qty\);/);
+  const failureBranch = click.slice(click.indexOf("result.reason !== 'ok'"), click.indexOf('added = true;'));
+  assert.doesNotMatch(failureBranch, /StateStore\.set|selectedInstanceIds/, 'failure never touches selection');
+
+  // Success semantics are unchanged: Add 1 selects the new instance, Add N preserves selection.
+  assert.match(click, /added = true;\s*if \(result\.addedCount === 1\) \{\s*StateStore\.set\(\{ selectedInstanceIds: result\.createdInstanceIds \}, \{ skipHistory: true \}\);/);
+  assert.match(click, /'Case added to staging\.'/);
+  assert.match(click, /`Added \$\{result\.addedCount\} items to staging\.`/);
+  assert.match(click, /UIComponents\.showToast\(message, 'success'\);/);
+  assert.doesNotMatch(click, /removeInstances|removeCaseInstancesFromStaging/, 'Add never removes anything');
+});
+
+// ---------------------------------------------------------------------------
+// P1-B commit 2 — staged-only Qty Unstage control (segmented with + Add)
+// ---------------------------------------------------------------------------
+
+function qtyRowBlock(src) {
+  return extractFunctionBlock(src, 'function buildCaseQtyAddRow(c, pack) {', '\n      return section;\n    }');
+}
+
+test('P1-B R1: Unstage is offered only when the Case has physically staged cargo (counts.staged > 0), never from eligibility logic', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+
+  assert.match(block, /let removeBtn = null;\s*if \(counts\.staged > 0\) \{\s*removeBtn = document\.createElement\('button'\);/);
+  const created = block.indexOf("removeBtn = document.createElement('button')");
+  const gate = block.indexOf('if (counts.staged > 0) {');
+  const appended = block.indexOf('actions.appendChild(removeBtn);');
+  assert.ok(gate >= 0 && created > gate && appended > created, 'the button is created and appended only inside the staged gate');
+  assert.match(block, /if \(removeBtn\) \{\s*removeBtn\.addEventListener\('click'/, 'the handler only exists with the button');
+  // The Editor must not re-derive which staged instances are removable.
+  assert.doesNotMatch(block, /hasActiveGroup|groupId|\.hidden\b|classifyPhysicalPlacement|createPhysicalPlacementClassifier|eligibleInstances/);
+
+  const { StateStore, PackLibrary } = await loadModules();
+  const cases = {
+    'packed only': { cases: [insideInstance({ id: 'p1' })], staged: 0 },
+    'hidden staged only': { cases: [outsideInstance({ id: 'h1', hidden: true })], staged: 0 },
+    'visible staged': { cases: [outsideInstance({ id: 's1' })], staged: 1 },
+    'grouped staged only': { cases: [outsideInstance({ id: 'g1', groupId: 'group-1' })], staged: 1 },
+  };
+  for (const [name, fixture] of Object.entries(cases)) {
+    StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: fixture.cases })], folderLibrary: [], preferences: {} });
+    assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, fixture.staged, name);
+  }
+  // staged > 0 but nothing removable: the button appears, the service alone rejects.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: cases['grouped staged only'].cases })], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+  const shortage = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', 1);
+  assert.equal(shortage.reason, 'insufficient-eligible');
+  assert.equal(shortage.eligibleCount, 0);
+  assert.deepEqual(StateStore.snapshot(), before);
+});
+
+test('P1-B R2: Unstage is the neutral LEFT segment of one [ Unstage | + Add ] control beside the Qty stepper, above the readout', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const css = await fs.readFile(new URL('../../styles/main.css', import.meta.url), 'utf8');
+  const block = qtyRowBlock(src);
+
+  // Row = [stepper][actions]; Unstage is appended to the actions group BEFORE Add (left segment).
+  assert.match(block, /stepper\.className = 'tp3d-editor-case-qty-stepper';\s*row\.appendChild\(stepper\);/);
+  assert.match(block, /actions\.className = 'tp3d-editor-case-qty-actions';\s*row\.appendChild\(actions\);/);
+  const unstageAt = block.indexOf('actions.appendChild(removeBtn);');
+  const addAt = block.indexOf('actions.appendChild(addBtn);');
+  const rowAt = block.indexOf('section.appendChild(row);');
+  const readoutAt = block.indexOf('section.appendChild(readout);');
+  assert.ok(unstageAt > 0 && addAt > unstageAt, 'Unstage precedes + Add inside the actions group');
+  assert.ok(rowAt > addAt && readoutAt > rowAt, 'row (with the segmented control) -> readout inside the existing .tp3d-editor-case-qty grid');
+  assert.doesNotMatch(block, /section\.appendChild\(removeBtn\)/, 'no standalone button beneath the row');
+
+  // Neutral, text-only Unstage: not red, not primary, no icon, no inline style.
+  assert.match(block, /removeBtn\.className = 'btn btn-sm tp3d-editor-case-qty-unstage';/);
+  assert.match(block, /removeBtn\.textContent = 'Unstage';/, 'text only: no icon');
+  assert.match(block, /actions\.classList\.add\('tp3d-editor-case-qty-actions--segmented'\);/);
+  const unstageSetup = block.slice(block.indexOf("removeBtn = document.createElement('button')"), unstageAt);
+  assert.doesNotMatch(unstageSetup, /btn-danger|btn-primary|fa-|<i\b|innerHTML|\.style\./, 'neutral: not red, not primary, no icon, no inline style');
+  assert.doesNotMatch(src, /'Remove'/, 'the visible staged-removal label is no longer "Remove"');
+
+  // Add is untouched and stays the primary action with the exact "+ Add" label.
+  assert.match(block, /addBtn\.className = 'btn btn-primary btn-sm tp3d-editor-btn-add';/);
+  assert.match(block, /addBtn\.innerHTML = '<i class="fa-solid fa-plus"><\/i> Add';/);
+  assert.doesNotMatch(block, /Add \$\{/);
+  assert.doesNotMatch(block, /counts\.hidden/, 'no hidden count in the readout');
+
+  // CSS contract (structure, not pixel values): the old standalone-button rule is gone.
+  assert.doesNotMatch(css, /tp3d-editor-case-qty-remove/, 'the rejected standalone Remove styling is removed');
+  const unstageRule = css.match(/\.tp3d-editor-case-qty-unstage\s*\{([^}]*)\}/);
+  assert.ok(unstageRule, '.tp3d-editor-case-qty-unstage must be defined in main.css');
+  assert.doesNotMatch(unstageRule[1], /--error|btn-danger|239,\s*68,\s*68|red|--accent|255,\s*159,\s*28/, 'Unstage is neutral: no danger or accent colour');
+  assert.match(css, /\.tp3d-editor-case-qty-actions--segmented > \.tp3d-editor-case-qty-unstage\s*\{[^}]*border-radius:[^}]*0 0/);
+  assert.match(css, /\.tp3d-editor-case-qty-actions--segmented > \.tp3d-editor-btn-add\s*\{[^}]*border-radius:\s*0 /);
+  // Narrow reflow is CSS only: the row wraps, the stepper never shrinks, and the joined
+  // control spans the row (stays text) under a container query on the card's own width.
+  assert.match(css, /\.tp3d-editor-case-qty-row\s*\{[^}]*flex-wrap:\s*wrap;/);
+  assert.match(css, /\.tp3d-editor-case-qty-stepper\s*\{[^}]*flex:\s*0 0 auto;/);
+  assert.match(css, /\.tp3d-editor-case-qty\s*\{[^}]*container-type:\s*inline-size;/);
+  // The section's single column may never outgrow the card (an auto track would size to the Qty field's intrinsic width).
+  assert.match(css, /\.tp3d-editor-case-qty\s*\{[^}]*grid-template-columns:\s*minmax\(0, 1fr\);/);
+  // Narrow cards: the stepper fills its row with equal-width −/+ and a proportionally wider field.
+  const narrow = css.match(/@container \(max-width: \d+px\)\s*\{([\s\S]*?)\n\}/);
+  assert.ok(narrow, 'the narrow container query exists');
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper\s*\{[^}]*flex:\s*1 1 0;/);
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper > \.tp3d-editor-case-qty-btn\s*\{[^}]*flex:\s*1 1 0;/);
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-stepper > \.tp3d-editor-case-qty-input\s*\{[^}]*flex:\s*1\.4 1 0;/);
+  // BOTH action states take the full second row — the Unstage | + Add pair AND a lone + Add — so the
+  // card keeps one shape as staged cargo appears. The rule must target the base actions group, never
+  // only the --segmented modifier (that scoping left a lone Add beside the stepper, compressing it).
+  // The action group must be NON-SHRINKABLE and a guaranteed full row. A shrinkable `flex: 1 1 100%` group
+  // is not enough: it is the shape that let a lone + Add sit beside the stepper at ~67px.
+  const actionsRule = narrow[1].match(/\.tp3d-editor-case-qty-actions\s*\{([^}]*)\}/);
+  assert.ok(actionsRule, 'the narrow query styles the base actions group');
+  const flexShorthand = actionsRule[1].match(/(?:^|[;\s])flex:\s*(\S+)\s+(\S+)\s+(\S+)\s*;/);
+  const flexShrink = flexShorthand ? flexShorthand[2] : (actionsRule[1].match(/flex-shrink:\s*(\S+);/) || [])[1];
+  const flexBasis = flexShorthand ? flexShorthand[3] : (actionsRule[1].match(/flex-basis:\s*(\S+);/) || [])[1];
+  assert.equal(flexShrink, '0', 'the narrow action group must not shrink into space beside the stepper');
+  assert.equal(flexBasis, '100%', 'and it must claim the whole row');
+  assert.match(actionsRule[1], /\bwidth:\s*100%;/, 'full width is stated, not left to line-breaking');
+  assert.match(actionsRule[1], /min-width:\s*0;/, 'the group can never overflow the card via its min-content');
+  assert.match(actionsRule[1], /margin-left:\s*0;/, 'the wide-layout right-alignment margin is reset');
+  assert.match(narrow[1], /\.tp3d-editor-case-qty-actions > \.btn\s*\{[^}]*flex:\s*1 1 0;[^}]*justify-content:\s*center;/);
+  assert.doesNotMatch(narrow[1], /--segmented/, 'the two-row rules are not limited to the segmented (staged) state');
+  // The threshold is content-derived (documented in main.css), not a magic number: it must at least cover the
+  // ~308px Case Browser container the audit identified, where the compact stepper used to remain.
+  const threshold = Number(css.match(/@container \(max-width: (\d+)px\)/)[1]);
+  assert.ok(threshold >= 308, `the narrow container query (${threshold}px) must cover the ~308px container`);
+});
+
+// Minimal DOM double so the REAL buildCaseQtyAddRow can be rendered for both card states.
+function createFakeDom() {
+  const makeTextNode = text => ({ isText: true, children: [], get textContent() { return text; } });
+  const makeElement = tagName => {
+    const el = {
+      tagName,
+      children: [],
+      dataset: {},
+      attributes: {},
+      classSet: new Set(),
+      _text: '',
+      get className() { return [...this.classSet].join(' '); },
+      set className(value) { this.classSet = new Set(String(value).split(/\s+/).filter(Boolean)); },
+      classList: { add: (...names) => names.forEach(n => el.classSet.add(n)) },
+      listeners: {},
+      appendChild(child) { el.children.push(child); return child; },
+      setAttribute(name, value) { el.attributes[name] = String(value); },
+      addEventListener(type, fn) { (el.listeners[type] ||= []).push(fn); },
+      focus() {},
+      blur() {},
+      get textContent() { return el.children.length ? el.children.map(c => c.textContent).join('') : el._text; },
+      set textContent(value) { el._text = String(value); el.children = []; },
+      set innerHTML(value) { el._innerHTML = String(value); el._text = ''; },
+    };
+    return el;
+  };
+  return { createElement: makeElement, createTextNode: makeTextNode };
+}
+
+async function renderQtyRow(counts) {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const source = `${qtyRowBlock(src)}\n      return section;\n    }`;
+  const { runInNewContext } = await import('node:vm');
+  const build = runInNewContext(`(${source})`, {
+    document: createFakeDom(),
+    PackLibrary: { getCaseInstanceCounts: () => counts },
+    CASE_QTY_MIN: 1,
+    CASE_QTY_MAX: 10000,
+    getCaseQtyDraft: () => 1,
+    setCaseQtyDraft: () => {},
+    String,
+  });
+  const section = build({ id: 'case-a', name: 'A-Test-03' }, { id: 'pack-1' });
+  const [row, readout] = section.children;
+  const [stepper, actions] = row.children;
+  return { section, row, readout, stepper, actions };
+}
+
+function collectNodes(node, out = []) {
+  out.push(node);
+  (node.children || []).forEach(child => collectNodes(child, out));
+  return out;
+}
+
+test('P1-B R2b: staged > 0 renders the segmented [ Unstage | + Add ] control and a semibold "N staged" span; wording is unchanged', async () => {
+  const { row, readout, stepper, actions } = await renderQtyRow({ inLoad: 15, inTruck: 12, staged: 3 });
+
+  assert.deepEqual(stepper.children.map(c => c.textContent || c.tagName), ['Qty', '−', 'input', '+'], 'Qty stepper is unchanged and stays one group');
+  assert.equal(row.children.length, 2, 'row = stepper + one actions group');
+  assert.ok(actions.classSet.has('tp3d-editor-case-qty-actions--segmented'));
+  assert.equal(actions.children.length, 2);
+  const [unstage, add] = actions.children;
+
+  assert.equal(unstage.textContent, 'Unstage', 'label now says Unstage, not Remove');
+  assert.equal(unstage.attributes['aria-label'], 'Unstage for A-Test-03');
+  assert.equal(unstage.title, 'Removes staged cases only. Packed, hidden, or grouped cases are not affected.');
+  assert.equal(unstage.dataset.qtyRole, 'remove', 'internal focus-restore role token is unchanged');
+  assert.ok(unstage.classSet.has('btn') && !unstage.classSet.has('btn-primary') && !unstage.classSet.has('btn-danger'), 'Unstage stays neutral');
+  assert.ok(add.classSet.has('btn-primary'), 'Add remains the orange primary action');
+  assert.equal(add._innerHTML, '<i class="fa-solid fa-plus"></i> Add');
+
+  // Visible wording is exactly "N in load · N in truck · N staged"; only "3 staged" is emphasised.
+  assert.equal(readout.textContent, '15 in load · 12 in truck · 3 staged');
+  const emphasised = collectNodes(readout).filter(n => n.classSet && n.classSet.has('tp3d-editor-case-qty-readout-staged'));
+  assert.equal(emphasised.length, 1, 'one dedicated staged span');
+  assert.equal(emphasised[0].textContent, '3 staged');
+  assert.equal(readout.children.length, 2, 'plain lead-in text node + the staged span, nothing else');
+  assert.doesNotMatch(readout.textContent, /hidden/i, 'no hidden-count addition');
+  assert.doesNotMatch(collectNodes(readout.children[0]).map(n => n.textContent).join(''), /staged/, 'the rest of the readout is not emphasised');
+});
+
+test('P1-B R2c: staged = 0 renders only "+ Add" — no Unstage, no empty or disabled half — and an unemphasised readout', async () => {
+  const { row, readout, stepper, actions } = await renderQtyRow({ inLoad: 12, inTruck: 12, staged: 0 });
+
+  assert.equal(row.children.length, 2);
+  assert.equal(actions.children.length, 1, 'only the Add action');
+  assert.equal(actions.classSet.has('tp3d-editor-case-qty-actions--segmented'), false, 'no segmented shape around a lone Add');
+  assert.ok(actions.children[0].classSet.has('btn-primary'));
+  assert.equal(actions.children[0].attributes['aria-label'], 'Add to staging for A-Test-03');
+  const everything = [...collectNodes(stepper), ...collectNodes(actions)];
+  assert.equal(everything.some(n => n.textContent === 'Unstage' || (n.classSet && n.classSet.has('tp3d-editor-case-qty-unstage'))), false, 'no Unstage element of any kind');
+  assert.equal(everything.some(n => n.attributes && 'disabled' in n.attributes), false, 'no disabled ghost segment');
+
+  assert.equal(readout.textContent, '12 in load · 12 in truck · 0 staged');
+  assert.equal(collectNodes(readout).some(n => n.classSet && n.classSet.has('tp3d-editor-case-qty-readout-staged')), false, '0 staged keeps the normal secondary weight');
+});
+
+// ---------------------------------------------------------------------------
+// P1-B browser-defect fixes — blur/click order and duplicate Add clicks.
+//
+// These run the REAL buildCaseQtyAddRow against the REAL PackLibrary/StateStore,
+// but the DOM is a hand-written double: they replay the browser's event ORDER
+// (blur before click) and rebuild the card by hand where the app does it via a
+// StateStore subscriber. They prove the handler logic, NOT real double-click
+// browser behavior — that stays a browser-acceptance check.
+// ---------------------------------------------------------------------------
+
+function fire(el, type, extra = {}) {
+  (el.listeners[type] || []).forEach(fn => fn({ type, target: el, relatedTarget: null, preventDefault() {}, ...extra }));
+}
+
+async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const source = `${qtyRowBlock(src)}\n      return section;\n    }`;
+  const { runInNewContext } = await import('node:vm');
+  const editor = await import(editorScreenPath.href);
+  const drafts = new Map();
+  const toasts = [];
+  const busy = { value: false };
+  const MIN = 1;
+  const MAX = 10000;
+  const build = runInNewContext(`(${source})`, {
+    document: createFakeDom(),
+    PackLibrary,
+    StateStore,
+    UIComponents: { showToast: (message, tone) => toasts.push({ message, tone }) },
+    InteractionManager: { setSelection() {} },
+    CASE_QTY_MIN: MIN,
+    CASE_QTY_MAX: MAX,
+    STAGING_QTY_INVALID_MESSAGE: 'Enter a whole quantity from 1 to 10,000.',
+    getCaseQtyDraft: id => (Number.isFinite(drafts.get(id)) ? drafts.get(id) : MIN),
+    setCaseQtyDraft: (id, value) => {
+      const clamped = Math.min(MAX, Math.max(MIN, Math.trunc(value)));
+      drafts.set(id, clamped);
+      return clamped;
+    },
+    editorMutationBlocked: () => busy.value,
+    pruneSelectionAfterRemoval: editor.pruneSelectionAfterRemoval,
+    getStagingAddFailureFeedback: editor.getStagingAddFailureFeedback,
+    getStagingRemoveFeedback: editor.getStagingRemoveFeedback,
+    stagingActionGuard: guard,
+    STAGING_ACTION_KIND: editor.STAGING_ACTION_KIND,
+  });
+  // Equivalent of the app's synchronous StateStore-driven re-render: a brand new card.
+  const mount = (caseRecord = { id: 'case-a', name: 'A-Test-03' }) => {
+    const section = build(caseRecord, PackLibrary.getById('pack-1'));
+    const [row, readout] = section.children;
+    const [stepper, actions] = row.children;
+    const [, minusBtn, input, plusBtn] = stepper.children;
+    const addBtn = actions.children[actions.children.length - 1];
+    const unstageBtn = actions.children.length === 2 ? actions.children[0] : null;
+    return { section, readout, input, minusBtn, plusBtn, addBtn, unstageBtn };
+  };
+  return { mount, drafts, toasts, busy };
+}
+
+const INVALID_QTY_MESSAGE = 'Enter a whole quantity from 1 to 10,000.';
+
+test('P1-B Q1: blur toward + Add or Unstage does NOT pre-commit or revert the live Qty value', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
+  const card = h.mount();
+  assert.ok(card.unstageBtn, 'staged cargo exists, so Unstage is rendered');
+
+  for (const [name, target] of [['+ Add', card.addBtn], ['Unstage', card.unstageBtn]]) {
+    card.input.value = '1.5';
+    fire(card.input, 'blur', { relatedTarget: target });
+    assert.equal(card.input.value, '1.5', `blur toward ${name} must leave the fractional value for the click to validate`);
+    assert.equal(h.drafts.size, 0, `blur toward ${name} must not commit or revert the draft`);
+    card.input.value = '7';
+    fire(card.input, 'blur', { relatedTarget: target });
+    assert.equal(h.drafts.size, 0, `a valid live value is also left for the click (${name})`);
+  }
+  assert.equal(h.toasts.length, 0, 'the blur itself never warns');
+});
+
+test('P1-B Q2: browsers that do not focus a button on click (relatedTarget null) are covered by the pointerdown press flag', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
+  const card = h.mount();
+
+  for (const button of [card.addBtn, card.unstageBtn]) {
+    card.input.value = '1.5';
+    fire(button, 'pointerdown');
+    fire(card.input, 'blur', { relatedTarget: null }); // Safari/Firefox on macOS
+    assert.equal(card.input.value, '1.5', 'press on the action button defers to its click handler');
+    assert.equal(h.drafts.size, 0);
+  }
+  // The flag is consumed by that blur: it can never leak into a later unrelated blur.
+  card.input.value = '1.5';
+  fire(card.input, 'blur', { relatedTarget: null });
+  assert.equal(card.input.value, '1', 'the next ordinary blur reverts as before');
+  // ...and a press that never produced a blur is cleared when the input regains focus.
+  fire(card.addBtn, 'pointerdown');
+  fire(card.input, 'focus');
+  card.input.value = '1.5';
+  fire(card.input, 'blur', { relatedTarget: null });
+  assert.equal(card.input.value, '1', 'a stale press flag cannot suppress a later normal blur');
+});
+
+test('P1-B Q3: unrelated blur commits and reverts exactly as before — including with no staged cargo (no Unstage button)', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  for (const [name, cases] of [['staged > 0', [outsideInstance({ id: 's1' })]], ['staged = 0', []]]) {
+    StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases })], folderLibrary: [], preferences: {} });
+    const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
+    const card = h.mount();
+    assert.equal(Boolean(card.unstageBtn), name === 'staged > 0');
+
+    // relatedTarget null must NOT be mistaken for the (absent) Unstage button.
+    for (const invalid of ['1.5', '0', '-3', '', 'abc']) {
+      card.input.value = invalid;
+      fire(card.input, 'blur', { relatedTarget: null });
+      assert.equal(card.input.value, '1', `${name}: invalid "${invalid}" reverts on an ordinary blur`);
+    }
+    card.input.value = '7';
+    fire(card.input, 'blur', { relatedTarget: card.plusBtn });
+    assert.equal(h.drafts.get('case-a'), 7, `${name}: a valid value commits when focus goes to an unrelated control`);
+    assert.equal(card.input.value, '7');
+  }
+});
+
+test('P1-B Q4: a fractional visible Qty reaches readLiveQty on Add and Unstage — warning, no Pack write, no history, field restored', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
+  const before = StateStore.snapshot();
+  const writes = trackPackWrites(StateStore);
+
+  for (const [name, pick] of [['+ Add', c => c.addBtn], ['Unstage', c => c.unstageBtn]]) {
+    const card = h.mount();
+    card.input.value = '1.5';
+    // Browser order: pressing the button blurs the input FIRST, then click fires.
+    fire(card.input, 'blur', { relatedTarget: pick(card) });
+    fire(pick(card), 'click');
+    assert.deepEqual(h.toasts.at(-1), { message: INVALID_QTY_MESSAGE, tone: 'warning' }, `${name}: warns instead of acting on 1`);
+    assert.equal(card.input.value, '1', `${name}: field restored to the prior valid draft`);
+  }
+  writes.stop();
+
+  assert.equal(writes.count(), 0, 'no Pack write for either rejected action');
+  assert.deepEqual(StateStore.snapshot(), before, 'nothing else changed');
+  assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, 2, 'no instance was added or removed');
+  assert.equal(StateStore.undo(), false, 'no history entry was created');
+});
+
+test('P1-B Q5: a second Add click on the REBUILT card inside the duplicate window is suppressed — +5 once, one write, one Undo', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard } = await import(editorScreenPath.href);
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [] })], folderLibrary: [], preferences: {} });
+  const clock = { t: 1000 };
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
+  const writes = trackPackWrites(StateStore);
+
+  let card = h.mount();
+  card.input.value = '5';
+  fire(card.input, 'blur', { relatedTarget: card.addBtn });
+  fire(card.addBtn, 'click'); // first click: Add(5)
+  assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, 5);
+  assert.equal(h.drafts.get('case-a'), 1, 'Qty reset to 1, exactly as the rebuilt card will show');
+
+  card = h.mount(); // the synchronous re-render replaced the card and its Add button
+  assert.equal(card.input.value, '1');
+  clock.t += 120; // real double-click spacing
+  fire(card.addBtn, 'click'); // second physical click lands on the NEW button
+  writes.stop();
+
+  assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, 5, 'not Add(5) + Add(1)');
+  assert.equal(writes.count(), 1, 'one Pack write');
+  assert.equal(h.toasts.filter(t => t.tone === 'success').length, 1, 'one success action');
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, 0, 'one Undo removes the whole +5');
+  assert.equal(StateStore.undo(), false, 'and there is no second Undo step');
+});
+
+test('P1-B Q6: ordinary single Add is unchanged; Add never suppresses Unstage, a retry after failure, or Add after the window', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_DUPLICATE_CLICK_MS } = await import(editorScreenPath.href);
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [] })], folderLibrary: [], preferences: {} });
+  const clock = { t: 5000 };
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
+  const staged = () => PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged;
+
+  // G: a single Add of the committed Qty behaves exactly as before.
+  let card = h.mount();
+  card.input.value = '5';
+  fire(card.addBtn, 'click');
+  assert.equal(staged(), 5);
+  assert.deepEqual(h.toasts.at(-1), { message: 'Added 5 items to staging.', tone: 'success' });
+
+  // Unstage right after Add is not blocked (the guard is Add-only).
+  card = h.mount();
+  fire(card.unstageBtn, 'click');
+  assert.equal(staged(), 4, 'Unstage 1 inside the Add window still runs');
+
+  // A normal Add after the window has elapsed is not blocked (boundary is exclusive).
+  clock.t += STAGING_ACTION_DUPLICATE_CLICK_MS;
+  card = h.mount();
+  fire(card.addBtn, 'click');
+  assert.equal(staged(), 5, 'Add after the window adds normally');
+
+  // A REJECTED Add never arms the window: an immediate retry is processed (and rejected) again.
+  const ghost = { id: 'ghost-case', name: 'Ghost' };
+  const errorsBefore = h.toasts.filter(t => t.tone === 'error').length;
+  fire(h.mount(ghost).addBtn, 'click');
+  fire(h.mount(ghost).addBtn, 'click');
+  assert.equal(h.toasts.filter(t => t.tone === 'error').length, errorsBefore + 2, 'a failed Add does not suppress the retry');
+
+});
+
+test('P1-B Q7: ONE guard is wired at the actual Add and Unstage click boundaries (own kind each), armed only on success, and stays in-memory', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const addClick = extractFunctionBlock(block, "addBtn.addEventListener('click', () => {", '\n      });');
+  const removeClick = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
+
+  for (const [name, click, kind, other, flag] of [
+    ['Add', addClick, 'ADD', 'UNSTAGE', 'added = true;'],
+    ['Unstage', removeClick, 'UNSTAGE', 'ADD', 'removed = true;'],
+  ]) {
+    const busy = click.indexOf('editorMutationBlocked()');
+    const dup = click.indexOf(`stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.${kind}, packId, c.id)`);
+    const live = click.indexOf('readLiveQty()');
+    assert.ok(busy >= 0 && dup > busy && live > dup, `${name}: busy guard -> duplicate check -> live-Qty validation -> service`);
+    const okAt = click.indexOf("result.reason !== 'ok'");
+    const recordAt = click.indexOf(`stagingActionGuard.recordSuccess(STAGING_ACTION_KIND.${kind}, packId, c.id);`);
+    assert.ok(okAt > 0 && recordAt > okAt && recordAt < click.indexOf(flag), `${name}: armed only after a successful result`);
+    assert.equal((click.match(/stagingActionGuard\./g) || []).length, 2, `${name}: exactly one check and one arm`);
+    assert.doesNotMatch(click, new RegExp(`STAGING_ACTION_KIND\\.${other}`), `${name} uses only its own kind`);
+  }
+
+  // One implementation, held beside the drafts (outside the replaced card), no duplicated timing logic.
+  assert.equal((src.match(/= createStagingActionDuplicateGuard\(\);/g) || []).length, 1, 'a single screen-scoped guard instance');
+  assert.doesNotMatch(src, /createStagingAddDuplicateGuard|stagingAddGuard|STAGING_ADD_DUPLICATE/, 'the Add-only guard is fully generalized away');
+  assert.doesNotMatch(block, /performance\.now|Date\.now|setTimeout/, 'the card builder contains no timing logic of its own');
+  const guardSrc = extractFunctionBlock(src, 'export function createStagingActionDuplicateGuard({', '\n}');
+  assert.doesNotMatch(guardSrc, /StateStore|localStorage|sessionStorage|OperationLifecycle|setTimeout|await |async |Promise/,
+    'no persistence, history, lifecycle kind, timers, or async locking');
+});
+
+test('P1-B Q8: the guard is keyed by kind + Pack + Case; a success arms exactly that key for the short window', async () => {
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_KIND: K, STAGING_ACTION_DUPLICATE_CLICK_MS: WINDOW } = await import(editorScreenPath.href);
+  assert.equal(WINDOW, 400, 'the same short window Add already used');
+  assert.deepEqual({ ...K }, { ADD: 'add', UNSTAGE: 'unstage' });
+
+  const clock = { t: 10 };
+  const fresh = () => createStagingActionDuplicateGuard({ now: () => clock.t });
+  for (const [kind, otherKind] of [[K.UNSTAGE, K.ADD], [K.ADD, K.UNSTAGE]]) {
+    const guard = fresh();
+    assert.equal(guard.isDuplicate(kind, 'pack-1', 'case-a'), false, 'nothing is armed initially');
+    guard.recordSuccess(kind, 'pack-1', 'case-a');
+    assert.equal(guard.isDuplicate(kind, 'pack-1', 'case-a'), true, 'one success arms its own key');
+    assert.equal(guard.isDuplicate(otherKind, 'pack-1', 'case-a'), false, 'Add and Unstage keys are independent');
+    assert.equal(guard.isDuplicate(kind, 'pack-1', 'case-b'), false, 'a different Case is independent');
+    assert.equal(guard.isDuplicate(kind, 'pack-2', 'case-a'), false, 'a different Pack is independent');
+  }
+
+  const guard = fresh();
+  guard.recordSuccess(K.UNSTAGE, 'pack-1', 'case-a');
+  clock.t += WINDOW - 1;
+  assert.equal(guard.isDuplicate(K.UNSTAGE, 'pack-1', 'case-a'), true, 'still inside the window');
+  clock.t += 1;
+  assert.equal(guard.isDuplicate(K.UNSTAGE, 'pack-1', 'case-a'), false, 'the window is exclusive: an action after it proceeds normally');
+
+  // Ids that merely CONTAIN separator-like characters can never collide across fields.
+  const collide = fresh();
+  collide.recordSuccess(K.ADD, 'p:1', 'c');
+  assert.equal(collide.isDuplicate(K.ADD, 'p', '1:c'), false);
+  assert.equal(collide.isDuplicate(K.ADD, 'p:1', 'c'), true);
+});
+
+// The exact browser-confirmed baseline: 15 in load · 12 in truck · 3 staged.
+function fifteenTwelveThreeFixture(extraCases = []) {
+  const packed = Array.from({ length: 12 }, (_, i) => insideInstance({ id: `packed-${i + 1}` }));
+  const staged = Array.from({ length: 3 }, (_, i) => outsideInstance({ id: `staged-${i + 1}` }));
+  return { caseLibrary: [baseCase(), ...extraCases], packLibrary: [basePack({ cases: [...packed, ...staged] })], folderLibrary: [], preferences: {} };
+}
+
+test('P1-B Q9: replay of the confirmed Unstage double-click — 15/12/3, Qty 2 -> exactly 13/12/1, one toast, one write, one Undo', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard } = await import(editorScreenPath.href);
+  StateStore.init(fifteenTwelveThreeFixture());
+  const counts = () => {
+    const c = PackLibrary.getCaseInstanceCounts('pack-1', 'case-a');
+    return `${c.inLoad}/${c.inTruck}/${c.staged}`;
+  };
+  assert.equal(counts(), '15/12/3');
+
+  const clock = { t: 1000 };
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
+  const writes = trackPackWrites(StateStore);
+
+  let card = h.mount();
+  card.input.value = '2';
+  fire(card.input, 'blur', { relatedTarget: card.unstageBtn }); // browser order: blur, then click
+  fire(card.unstageBtn, 'click'); // first physical click: Unstage(2)
+  assert.equal(counts(), '13/12/1', 'an ordinary single Unstage is unchanged');
+  assert.equal(h.drafts.get('case-a'), 1, 'Qty reset to 1');
+
+  card = h.mount(); // the synchronous re-render replaced the card
+  assert.ok(card.unstageBtn, 'staged is still 1, so the NEW card has an Unstage button for the second click to land on');
+  assert.equal(card.input.value, '1');
+  clock.t += 120; // real double-click spacing
+  fire(card.unstageBtn, 'click'); // second physical click on the new button
+  writes.stop();
+
+  assert.equal(counts(), '13/12/1', 'not Unstage(2) + Unstage(1) = 12/12/0');
+  assert.equal(writes.count(), 1, 'one Pack write');
+  assert.deepEqual(h.toasts.filter(t => t.tone === 'info'), [{ message: 'Removed 2 cases from staging.', tone: 'info' }], 'exactly one info toast');
+  assert.equal(StateStore.undo(), true);
+  assert.equal(counts(), '15/12/3', 'one Undo restores the baseline');
+  assert.equal(StateStore.undo(), false, 'no second Undo step');
+});
+
+test('P1-B Q10: only a SUCCESSFUL Unstage arms the guard; shortage, invalid, and failed Unstage never do', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_KIND: K } = await import(editorScreenPath.href);
+  const clock = { t: 1000 };
+  const newGuard = () => createStagingActionDuplicateGuard({ now: () => clock.t });
+  const staged = () => PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged;
+  const armed = guard => guard.isDuplicate(K.UNSTAGE, 'pack-1', 'case-a');
+
+  // Shortage (asks for 5, only 2 eligible): warning, nothing armed, the immediate corrected retry runs.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })], folderLibrary: [], preferences: {} });
+  let guard = newGuard();
+  let h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  let card = h.mount();
+  card.input.value = '5';
+  fire(card.unstageBtn, 'click');
+  assert.equal(h.toasts.at(-1).tone, 'warning');
+  assert.match(h.toasts.at(-1).message, /Only 2 can be removed from staging\. Nothing was removed\./);
+  assert.equal(armed(guard), false, 'a shortage does not arm the guard');
+  card.input.value = '2';
+  fire(card.unstageBtn, 'click');
+  assert.equal(staged(), 0, 'the immediate corrected Unstage proceeds');
+  assert.equal(armed(guard), true, 'and that success does arm it');
+
+  // Zero eligible (staged but grouped): warning, nothing armed, an immediate retry is processed again.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 'g1', groupId: 'group-1' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  card = h.mount();
+  fire(card.unstageBtn, 'click');
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(h.toasts.filter(t => /No cases can be removed from staging/.test(t.message)).length, 2, 'both attempts were processed');
+  assert.equal(armed(guard), false);
+
+  // Invalid visible Qty: warning, nothing armed, an immediate valid Unstage runs.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  card = h.mount();
+  card.input.value = '1.5';
+  fire(card.input, 'blur', { relatedTarget: card.unstageBtn });
+  fire(card.unstageBtn, 'click');
+  assert.deepEqual(h.toasts.at(-1), { message: INVALID_QTY_MESSAGE, tone: 'warning' });
+  assert.equal(armed(guard), false, 'an invalid Qty does not arm the guard');
+  assert.equal(card.input.value, '1');
+  fire(card.unstageBtn, 'click');
+  assert.equal(staged(), 1, 'the immediate valid Unstage proceeds');
+
+  // Failed service result: the Case is deleted AFTER the card rendered, so the real service answers
+  // 'case-not-found'. Error, nothing armed, and an immediate retry is processed again (not suppressed).
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  card = h.mount();
+  assert.ok(card.unstageBtn);
+  StateStore.set({ caseLibrary: [] }, { skipHistory: true });
+  fire(card.unstageBtn, 'click');
+  fire(card.unstageBtn, 'click');
+  assert.deepEqual(h.toasts.filter(t => t.tone === 'error').map(t => t.message), ['This case no longer exists.', 'This case no longer exists.'],
+    'a failed Unstage is processed again, not suppressed');
+  assert.equal(armed(guard), false);
+
+  // A throwing service call never arms it either.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  const throwing = {
+    getById: (...args) => PackLibrary.getById(...args),
+    getCaseInstanceCounts: (...args) => PackLibrary.getCaseInstanceCounts(...args),
+    removeCaseInstancesFromStaging: () => { throw new Error('boom'); },
+  };
+  h = await createQtyRowHarness({ PackLibrary: throwing, StateStore, guard });
+  card = h.mount();
+  assert.throws(() => fire(card.unstageBtn, 'click'), /boom/);
+  assert.equal(armed(guard), false, 'an exception does not arm the guard');
+  assert.equal(h.drafts.get('case-a'), 1, 'and the requested Qty is preserved');
+});
+
+test('P1-B Q11: Add and Unstage never suppress each other, nor other Cases; an Unstage after the window proceeds normally', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_DUPLICATE_CLICK_MS: WINDOW } = await import(editorScreenPath.href);
+  const caseB = baseCase({ id: 'case-b', name: 'Case B' });
+  StateStore.init({
+    caseLibrary: [baseCase(), caseB],
+    packLibrary: [basePack({ cases: [
+      outsideInstance({ id: 'a1' }), outsideInstance({ id: 'a2' }), outsideInstance({ id: 'a3' }),
+      outsideInstance({ id: 'b1', caseId: 'case-b' }), outsideInstance({ id: 'b2', caseId: 'case-b' }),
+    ] })],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const stagedOf = id => PackLibrary.getCaseInstanceCounts('pack-1', id).staged;
+  const clock = { t: 1000 };
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
+  const asB = { id: 'case-b', name: 'Case B' };
+
+  // Add success, then an IMMEDIATE Unstage on the same Case is not blocked...
+  fire(h.mount().addBtn, 'click');
+  assert.equal(stagedOf('case-a'), 4);
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 3, 'Unstage right after Add proceeds');
+  // ...and Unstage success, then an immediate Add is not blocked.
+  fire(h.mount().addBtn, 'click');
+  assert.equal(stagedOf('case-a'), 4, 'Add right after Unstage proceeds');
+
+  // Unstage on one Case does not block Unstage (or Add) on another Case.
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 3);
+  fire(h.mount(asB).unstageBtn, 'click');
+  assert.equal(stagedOf('case-b'), 1, 'a different Case is independent');
+  fire(h.mount(asB).addBtn, 'click');
+  assert.equal(stagedOf('case-b'), 2);
+
+  // Same-Case duplicate inside the window is suppressed; the same action after the window is not.
+  fire(h.mount().unstageBtn, 'click'); // arms the unstage key for case-a
+  assert.equal(stagedOf('case-a'), 2);
+  clock.t += WINDOW - 1;
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 2, 'inside the window: suppressed');
+  clock.t += 1;
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 1, 'after the window: a deliberate Unstage proceeds normally');
+});
+
+test('P1-B Q12: actionPressPending is one-shot — a cancelled press, an early-return click, and a consumed press never leave it stale', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_KIND: K } = await import(editorScreenPath.href);
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })], folderLibrary: [], preferences: {} });
+  const clock = { t: 1000 };
+  const guard = createStagingActionDuplicateGuard({ now: () => clock.t });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  const before = StateStore.snapshot();
+  const writes = trackPackWrites(StateStore);
+
+  // An unrelated blur (no relatedTarget) with an invalid value: it must revert exactly as before.
+  const unrelatedBlur = card => {
+    card.input.value = '1.5';
+    fire(card.input, 'blur', { relatedTarget: null });
+    return card.input.value;
+  };
+
+  for (const [name, button, kind] of [['+ Add', 'addBtn', K.ADD], ['Unstage', 'unstageBtn', K.UNSTAGE]]) {
+    // (a) The intended path still works: pointerdown protects the invalid live value through the
+    //     blur, and the CLICK (readLiveQty) owns validation — warning, restore, no write.
+    let card = h.mount();
+    card.input.value = '1.5';
+    fire(card[button], 'pointerdown');
+    fire(card.input, 'blur', { relatedTarget: null }); // Safari/Firefox: the button took no focus
+    assert.equal(card.input.value, '1.5', `${name}: protected through the intended blur`);
+    fire(card[button], 'click');
+    assert.deepEqual(h.toasts.at(-1), { message: INVALID_QTY_MESSAGE, tone: 'warning' }, `${name}: the click owns validation`);
+    assert.equal(card.input.value, '1', `${name}: field restored to the prior valid draft`);
+
+    // (b) A cancelled/interrupted press (touch scroll, system cancel): the input stays focused, so
+    //     neither blur nor click ever consumes the flag. It must not survive the cancel.
+    card = h.mount();
+    fire(card[button], 'pointerdown');
+    fire(card[button], 'pointercancel');
+    assert.equal(unrelatedBlur(card), '1', `${name}: after pointercancel a later unrelated blur reverts normally`);
+
+    // (c) A click whose handler returns EARLY — busy — must not leave the flag behind.
+    card = h.mount();
+    h.busy.value = true;
+    fire(card[button], 'pointerdown');
+    fire(card[button], 'click');
+    h.busy.value = false;
+    assert.equal(unrelatedBlur(card), '1', `${name}: a busy early return leaves no stale flag`);
+
+    // (d) ...nor a duplicate-click early return.
+    card = h.mount();
+    guard.recordSuccess(kind, 'pack-1', 'case-a');
+    fire(card[button], 'pointerdown');
+    fire(card[button], 'click');
+    assert.equal(unrelatedBlur(card), '1', `${name}: a duplicate-guard early return leaves no stale flag`);
+    clock.t += 1000;
+
+    // (e) One-shot: the protected blur consumes the flag; the next blur has no press behind it.
+    card = h.mount();
+    fire(card[button], 'pointerdown');
+    card.input.value = '1.5';
+    fire(card.input, 'blur', { relatedTarget: null });
+    assert.equal(card.input.value, '1.5', `${name}: first blur protected`);
+    assert.equal(unrelatedBlur(card), '1', `${name}: the second blur is ordinary and reverts`);
+
+    // (f) A press that never reached a blur is cleared when the input regains focus.
+    card = h.mount();
+    fire(card[button], 'pointerdown');
+    fire(card.input, 'focus');
+    assert.equal(unrelatedBlur(card), '1', `${name}: refocusing the input clears a leftover press`);
+  }
+  writes.stop();
+
+  assert.equal(writes.count(), 0, 'none of these paths wrote to the Pack');
+  assert.deepEqual(StateStore.snapshot(), before, 'and nothing else changed');
+  assert.equal(StateStore.undo(), false, 'no history entry');
+});
+
+test('P1-B Q13: keyboard focus movement is unchanged; the press-flag listeners are local, ordered before the click handlers, and never global', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard } = await import(editorScreenPath.href);
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard() });
+
+  // Keyboard: Tab from the input to Add/Unstage delivers relatedTarget with NO pointer events at all.
+  for (const button of ['addBtn', 'unstageBtn']) {
+    const card = h.mount();
+    card.input.value = '1.5';
+    fire(card.input, 'blur', { relatedTarget: card[button] });
+    assert.equal(card.input.value, '1.5', `${button}: Tab toward the action defers to its click`);
+    fire(card[button], 'click'); // Enter / Space activate the focused button
+    assert.deepEqual(h.toasts.at(-1), { message: INVALID_QTY_MESSAGE, tone: 'warning' });
+    assert.equal(card.input.value, '1');
+  }
+  // Tab to an unrelated control still commits/reverts, as before.
+  const card = h.mount();
+  card.input.value = '7';
+  fire(card.input, 'blur', { relatedTarget: card.plusBtn });
+  assert.equal(h.drafts.get('case-a'), 7);
+  card.input.value = '1.5';
+  fire(card.input, 'blur', { relatedTarget: card.minusBtn });
+  assert.equal(card.input.value, '7', 'an invalid value reverts to the committed draft');
+
+  // Structure: listeners are registered on this card's own elements, the click-clear BEFORE each action's own click handler.
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const clearOnClick = block.indexOf("button.addEventListener('click', clearActionPress);");
+  const addClickAt = block.indexOf("addBtn.addEventListener('click', () => {");
+  const removeClickAt = block.indexOf("removeBtn.addEventListener('click', () => {");
+  assert.ok(clearOnClick > 0 && clearOnClick < addClickAt && clearOnClick < removeClickAt,
+    'the flag is cleared before either action handler can return early');
+  assert.match(block, /button\.addEventListener\('pointerdown', markActionPress\);\s*button\.addEventListener\('pointercancel', clearActionPress\);/);
+  assert.match(block, /input\.addEventListener\('focus', clearActionPress\);/);
+  assert.doesNotMatch(block, /(?:document|window)\.addEventListener|setTimeout|setInterval|requestAnimationFrame|StateStore\.set\(\{ ?actionPress/,
+    'no global listeners, timers, or persisted state for the press flag');
+});
+
+test('P1-B R3: Unstage accessibility — input names both actions, Unstage has its own name and help text, Add and steppers keep theirs', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+
+  assert.match(block, /input\.setAttribute\('aria-label', `Quantity to add or remove for \$\{c\.name\}`\);/);
+  assert.doesNotMatch(src, /Quantity to add for/);
+  assert.match(block, /removeBtn\.setAttribute\('aria-label', `Unstage for \$\{c\.name\}`\);/);
+  assert.doesNotMatch(block, /Remove from staging for/, 'the old visible-verb accessible name is gone');
+  assert.match(block, /removeBtn\.title = 'Removes staged cases only\. Packed, hidden, or grouped cases are not affected\.';/);
+  assert.match(block, /minusBtn\.setAttribute\('aria-label', `Decrease quantity for \$\{c\.name\}`\);/);
+  assert.match(block, /plusBtn\.setAttribute\('aria-label', `Increase quantity for \$\{c\.name\}`\);/);
+  assert.match(block, /addBtn\.setAttribute\('aria-label', `Add to staging for \$\{c\.name\}`\);/);
+  // Names are static: no dynamic Qty in any aria-label.
+  const ariaLabels = block.match(/setAttribute\('aria-label', `[^`]*`\)/g) || [];
+  assert.equal(ariaLabels.length, 5);
+  for (const label of ariaLabels) assert.doesNotMatch(label, /qty|getCaseQtyDraft|input\.value/i);
+  // Remove carries the role attribute the focus-restore selector keys on.
+  assert.match(block, /removeBtn\.dataset\.caseId = c\.id;\s*removeBtn\.dataset\.qtyRole = 'remove';/);
+  // Input keyboard behavior is unchanged: Enter commits only, Escape reverts and blurs.
+  assert.match(block, /if \(ev\.key === 'Enter'\) \{\s*ev\.preventDefault\(\);\s*commitDraft\(parseDirectEntry\(\)\);\s*\} else if \(ev\.key === 'Escape'\) \{\s*ev\.preventDefault\(\);\s*revertInput\(\);\s*input\.blur\(\);/);
+});
+
+test('P1-B R4: the Remove click is busy-guarded, reads the live input, and calls ONLY the staged-removal service authority', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const click = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
+
+  const guard = click.indexOf('editorMutationBlocked()');
+  const parse = click.indexOf('readLiveQty()');
+  const service = click.indexOf('PackLibrary.removeCaseInstancesFromStaging(packId, c.id, qty)');
+  assert.ok(guard >= 0 && parse > guard && service > parse, 'editorMutationBlocked() -> readLiveQty() -> removeCaseInstancesFromStaging()');
+  assert.match(click, /const qty = readLiveQty\(\);\s*if \(qty === null\) return;/, 'an invalid visible value stops before any mutation');
+
+  // The caller only ever hands the service (packId, caseId, count): it targets no instance ids,
+  // so packed cargo can never be named, and there is no fallback to any other removal path.
+  assert.equal((click.match(/PackLibrary\./g) || []).length, 1, 'exactly one PackLibrary call');
+  assert.doesNotMatch(block, /removeInstances|deleteInstancesWithFeedback|deleteSelection|PackLibrary\.update\(/);
+  // The Add click is untouched by Remove.
+  const addClick = extractFunctionBlock(block, "addBtn.addEventListener('click', () => {", '\n      });');
+  assert.doesNotMatch(addClick, /removeCaseInstancesFromStaging|pruneSelectionAfterRemoval/);
+  // Successful removal renders through the normal StateStore subscriber, not by hand.
+  assert.doesNotMatch(click, /render\(|renderCaseBrowser|capturePackPreview|CaseScene\.sync/);
+});
+
+test('P1-B R5: Remove resets the draft only on success; a shortage or failure preserves Qty and mutates nothing else', async () => {
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const click = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
+
+  assert.match(click, /setCaseQtyDraft\(c\.id, CASE_QTY_MIN\);\s*const result = PackLibrary\.removeCaseInstancesFromStaging/,
+    'success reset is staged before the synchronous re-render, like Add');
+  assert.match(click, /finally \{[\s\S]*?if \(!removed\) setCaseQtyDraft\(c\.id, qty\);/, 'any non-ok result (or a throw) restores the requested Qty');
+  const failure = click.slice(click.indexOf("result.reason !== 'ok'"), click.indexOf('removed = true;'));
+  assert.match(failure, /UIComponents\.showToast\(feedback\.message, feedback\.tone\);\s*return;/);
+  assert.doesNotMatch(failure, /StateStore\.set|InteractionManager|setSelection|selectedInstanceIds|PackLibrary/, 'a rejected Remove makes no selection write and no fallback mutation');
+});
+
+test('P1-B R6: Qty Remove feedback maps each service reason to its copy and tone', async () => {
+  const { getStagingRemoveFeedback } = await import(editorScreenPath.href);
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'ok', removedCount: 1 }), { message: 'Removed 1 case from staging.', tone: 'info' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'ok', removedCount: 5 }), { message: 'Removed 5 cases from staging.', tone: 'info' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 3 }),
+    { message: 'Only 3 can be removed from staging. Nothing was removed.', tone: 'warning' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 0 }),
+    { message: 'No cases can be removed from staging. Nothing was removed.', tone: 'warning' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'pack-not-found' }), { message: 'Create or open a load plan first', tone: 'warning' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'case-not-found' }), { message: 'This case no longer exists.', tone: 'error' });
+  assert.deepEqual(getStagingRemoveFeedback({ reason: 'invalid-count' }), { message: 'Enter a whole quantity from 1 to 10,000.', tone: 'warning' });
+  assert.equal(getStagingRemoveFeedback(null).tone, 'error');
+
+  const every = [
+    getStagingRemoveFeedback({ reason: 'ok', removedCount: 2 }),
+    getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 1 }),
+    getStagingRemoveFeedback({ reason: 'insufficient-eligible', eligibleCount: 0 }),
+    getStagingRemoveFeedback(null),
+  ].map(f => f.message).join(' ');
+  assert.doesNotMatch(every, /newest|oldest|last added|latest/i, 'removal order is never described as newest/oldest');
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  assert.doesNotMatch(src, /newest|oldest|last added/i);
+});
+
+test('P1-B R7: pruneSelectionAfterRemoval drops only the removed ids and reports "no write" when none were selected', async () => {
+  const { pruneSelectionAfterRemoval } = await import(editorScreenPath.href);
+  assert.deepEqual(pruneSelectionAfterRemoval(['a', 'b', 'c'], ['b']), ['a', 'c'], 'only the removed id leaves the selection');
+  assert.deepEqual(pruneSelectionAfterRemoval(['keep-1', 'gone', 'keep-2'], ['gone', 'other']), ['keep-1', 'keep-2'], 'unrelated selected ids are preserved in order');
+  assert.deepEqual(pruneSelectionAfterRemoval(['stale-unrelated', 'a'], ['a']), ['stale-unrelated'], 'unrelated stale ids are left alone, not opportunistically pruned');
+  assert.deepEqual(pruneSelectionAfterRemoval(['a', 'b'], ['a', 'b']), [], 'all selected removed yields an empty selection (a write), not "no write"');
+  assert.equal(pruneSelectionAfterRemoval(['a', 'b'], ['x', 'y']), null, 'removed ids were not selected: no selection write');
+  assert.equal(pruneSelectionAfterRemoval([], ['x']), null);
+  assert.equal(pruneSelectionAfterRemoval(['a'], []), null);
+  assert.equal(pruneSelectionAfterRemoval(undefined, undefined), null);
+  const input = ['a', 'b', 'c'];
+  pruneSelectionAfterRemoval(input, ['b']);
+  assert.deepEqual(input, ['a', 'b', 'c'], 'the caller-supplied selection array is never mutated');
+
+  const src = await fs.readFile(editorScreenPath, 'utf8');
+  const block = qtyRowBlock(src);
+  const click = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
+  assert.match(click, /const nextSelection = pruneSelectionAfterRemoval\(\s*StateStore\.get\('selectedInstanceIds'\),\s*result\.removedInstanceIds\s*\);\s*if \(nextSelection\) InteractionManager\.setSelection\(nextSelection\);/);
+  assert.doesNotMatch(click, /selectedInstanceIds:\s*\[\]|setSelection\(\[\]\)/, 'Qty Remove never clears the whole selection');
+  // Only one raw selection write exists in the row, and it belongs to Add 1 (Requirement 20).
+  assert.equal((block.match(/StateStore\.set\(\{ selectedInstanceIds:/g) || []).length, 1);
+  // The shared selection authority writes through skipHistory and keeps the 3D scene in sync.
+  const interactionSrc = extractFunctionBlock(src, 'function setSelection(nextIds) {', '\n    }');
+  assert.match(interactionSrc, /StateStore\.set\(\{ selectedInstanceIds: ids \}, \{ skipHistory: true \}\);\s*CaseScene\.setSelected\(ids\);/);
+});
+
+test('P1-B R8: one successful Qty Remove is exactly one Pack write and one Undo/Redo step; selection is history-free', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { pruneSelectionAfterRemoval } = await import(editorScreenPath.href);
+  const cases = [
+    outsideInstance({ id: 'e1' }),
+    outsideInstance({ id: 'e2' }),
+    outsideInstance({ id: 'e3' }),
+    insideInstance({ id: 'packed-1' }),
+    outsideInstance({ id: 'hidden-1', hidden: true }),
+    outsideInstance({ id: 'grouped-1', groupId: 'group-1' }),
+  ];
+  StateStore.init({
+    caseLibrary: [baseCase()],
+    packLibrary: [basePack({ cases })],
+    folderLibrary: [],
+    preferences: {},
+    selectedInstanceIds: ['e3', 'packed-1', 'unrelated-stale'],
+  });
+  const writes = trackPackWrites(StateStore);
+  const result = PackLibrary.removeCaseInstancesFromStaging('pack-1', 'case-a', 2);
+  // The caller's selection follow-up, exactly as the click handler performs it.
+  const next = pruneSelectionAfterRemoval(StateStore.get('selectedInstanceIds'), result.removedInstanceIds);
+  StateStore.set({ selectedInstanceIds: next }, { skipHistory: true });
+  writes.stop();
+
+  assert.equal(result.reason, 'ok');
+  assert.equal(writes.count(), 1, 'one Pack write; the selection follow-up is not a Pack write');
+  assert.deepEqual(result.removedInstanceIds, ['e3', 'e2']);
+  assert.deepEqual(StateStore.get('selectedInstanceIds'), ['packed-1', 'unrelated-stale']);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), ['e1', 'packed-1', 'hidden-1', 'grouped-1'],
+    'packed, hidden, and grouped cargo are untouched');
+
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getById('pack-1').cases.length, cases.length, 'one Undo restores the whole removal');
+  assert.equal(StateStore.undo(), false, 'the selection write created no history entry');
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(PackLibrary.getById('pack-1').cases.map(inst => inst.id), ['e1', 'packed-1', 'hidden-1', 'grouped-1']);
 });

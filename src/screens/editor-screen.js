@@ -33,6 +33,82 @@ export function resetEditorCaseQtyDrafts(caseQtyDrafts) {
   caseQtyDrafts.clear();
 }
 
+const STAGING_QTY_INVALID_MESSAGE = 'Enter a whole quantity from 1 to 10,000.';
+const NO_LOAD_PLAN_MESSAGE = 'Create or open a load plan first';
+const CASE_MISSING_MESSAGE = 'This case no longer exists.';
+
+// Maps a non-ok PackLibrary.addInstancesToStaging() result to its user feedback.
+// The service owns the reason; this only chooses copy and toast tone.
+export function getStagingAddFailureFeedback(result) {
+  const reason = result && result.reason;
+  if (reason === 'invalid-count') return { message: STAGING_QTY_INVALID_MESSAGE, tone: 'warning' };
+  if (reason === 'pack-not-found') return { message: NO_LOAD_PLAN_MESSAGE, tone: 'warning' };
+  if (reason === 'case-not-found') return { message: CASE_MISSING_MESSAGE, tone: 'error' };
+  if (reason === 'placement-incomplete') {
+    return { message: "Couldn't place the full quantity in staging. Nothing was added.", tone: 'warning' };
+  }
+  return { message: 'Add failed. Please try again.', tone: 'error' };
+}
+
+// Maps a PackLibrary.removeCaseInstancesFromStaging() result to its user
+// feedback. Shortage is all-or-nothing, so its copy always says nothing was
+// removed; eligibleCount comes from the service, never recomputed in the Editor.
+export function getStagingRemoveFeedback(result) {
+  const reason = result && result.reason;
+  if (reason === 'ok') {
+    return { message: `Removed ${caseCountText(result.removedCount)} from staging.`, tone: 'info' };
+  }
+  if (reason === 'insufficient-eligible') {
+    return result.eligibleCount > 0
+      ? { message: `Only ${result.eligibleCount} can be removed from staging. Nothing was removed.`, tone: 'warning' }
+      : { message: 'No cases can be removed from staging. Nothing was removed.', tone: 'warning' };
+  }
+  if (reason === 'invalid-count') return { message: STAGING_QTY_INVALID_MESSAGE, tone: 'warning' };
+  if (reason === 'pack-not-found') return { message: NO_LOAD_PLAN_MESSAGE, tone: 'warning' };
+  if (reason === 'case-not-found') return { message: CASE_MISSING_MESSAGE, tone: 'error' };
+  return { message: 'Remove failed. Please try again.', tone: 'error' };
+}
+
+// Selection after a Qty Remove: drop ONLY the removed ids and keep every other
+// selected id (including any unrelated stale one) exactly as it was. Returns
+// null when none of the removed ids were selected, meaning "make no selection
+// write". Qty Remove is not explicit Delete, which clears the whole selection.
+export function pruneSelectionAfterRemoval(selectedIds, removedIds) {
+  const selected = Array.isArray(selectedIds) ? selectedIds : [];
+  const removed = new Set(Array.isArray(removedIds) ? removedIds : []);
+  if (!selected.length || !removed.size) return null;
+  if (!selected.some(id => removed.has(id))) return null;
+  return selected.filter(id => !removed.has(id));
+}
+
+// Duplicate-click suppression for the staging actions "+ Add" and "Unstage". A
+// physical double-click delivers its second click to the button the FIRST click's
+// synchronous re-render just built, after Qty has already reset to 1 — so it would
+// act a second, unintended time (Add(5)+Add(1), Unstage(2)+Unstage(1)).
+// This remembers only the most recent SUCCESSFUL action, keyed by kind + Pack +
+// Case, in memory: no persistence, no StateStore/history, no lifecycle kind,
+// nothing async. It lives outside the card DOM, so it survives the card being
+// replaced. Each kind, Pack, and Case is independent, and the window is short so
+// a deliberate follow-up action is unaffected.
+export const STAGING_ACTION_DUPLICATE_CLICK_MS = 400;
+export const STAGING_ACTION_KIND = Object.freeze({ ADD: 'add', UNSTAGE: 'unstage' });
+
+export function createStagingActionDuplicateGuard({
+  windowMs = STAGING_ACTION_DUPLICATE_CLICK_MS,
+  now = () => performance.now(),
+} = {}) {
+  let last = null;
+  const keyOf = (kind, packId, caseId) => JSON.stringify([kind, packId, caseId]);
+  return {
+    isDuplicate(kind, packId, caseId) {
+      return last !== null && last.key === keyOf(kind, packId, caseId) && now() - last.at < windowMs;
+    },
+    recordSuccess(kind, packId, caseId) {
+      last = { key: keyOf(kind, packId, caseId), at: now() };
+    },
+  };
+}
+
 function getDeleteFinalSelection(result) {
   return result && Array.isArray(result.finalSelectionIds) ? result.finalSelectionIds : [];
 }
@@ -3589,6 +3665,9 @@ export function createEditorScreen({
     // Pack/Case. Survives same-workspace re-renders, Pack changes and navigation;
     // resetWorkspaceState clears it only when workspace scope changes.
     const caseQtyDrafts = new Map();
+    // Ephemeral, in-memory only (see createStagingActionDuplicateGuard). Held here,
+    // beside the drafts, so it outlives the Case Browser card that Add/Unstage rebuild.
+    const stagingActionGuard = createStagingActionDuplicateGuard();
     const CASE_QTY_MIN = 1;
     const CASE_QTY_MAX = 10000;
     function getCaseQtyDraft(caseId) {
@@ -4639,7 +4718,12 @@ export function createEditorScreen({
      * written to the Pack/Case/StateStore/localStorage. Clicking "+ Add"
      * creates exactly the drafted Qty as new staged physical instances via
      * PackLibrary.addInstancesToStaging() (one atomic Pack update, one Undo
-     * step), then resets the draft back to 1.
+     * step). A full success resets the draft back to 1; any failure leaves the
+     * Pack untouched and preserves the requested Qty.
+     *
+     * While the Case has staged cargo, "Unstage" joins "+ Add" as the left
+     * segment of one segmented action control (Unstage | + Add). It removes the
+     * chosen Qty from staging only, via PackLibrary.removeCaseInstancesFromStaging().
      */
     function buildCaseQtyAddRow(c, pack) {
       const packId = pack.id;
@@ -4651,10 +4735,20 @@ export function createEditorScreen({
       const row = document.createElement('div');
       row.className = 'tp3d-editor-case-qty-row';
 
+      // Two groups so a narrow card can wrap the action control beneath the
+      // stepper without ever splitting "Qty [−] [N] [+]" (see main.css).
+      const stepper = document.createElement('div');
+      stepper.className = 'tp3d-editor-case-qty-stepper';
+      row.appendChild(stepper);
+
+      const actions = document.createElement('div');
+      actions.className = 'tp3d-editor-case-qty-actions';
+      row.appendChild(actions);
+
       const label = document.createElement('span');
       label.className = 'tp3d-editor-case-qty-label';
       label.textContent = 'Qty';
-      row.appendChild(label);
+      stepper.appendChild(label);
 
       const minusBtn = document.createElement('button');
       minusBtn.type = 'button';
@@ -4663,7 +4757,7 @@ export function createEditorScreen({
       minusBtn.setAttribute('aria-label', `Decrease quantity for ${c.name}`);
       minusBtn.dataset.caseId = c.id;
       minusBtn.dataset.qtyRole = 'minus';
-      row.appendChild(minusBtn);
+      stepper.appendChild(minusBtn);
 
       const input = document.createElement('input');
       input.type = 'number';
@@ -4673,10 +4767,10 @@ export function createEditorScreen({
       input.step = '1';
       input.inputMode = 'numeric';
       input.value = String(getCaseQtyDraft(c.id));
-      input.setAttribute('aria-label', `Quantity to add for ${c.name}`);
+      input.setAttribute('aria-label', `Quantity to add or remove for ${c.name}`);
       input.dataset.caseId = c.id;
       input.dataset.qtyRole = 'input';
-      row.appendChild(input);
+      stepper.appendChild(input);
 
       const plusBtn = document.createElement('button');
       plusBtn.type = 'button';
@@ -4685,7 +4779,28 @@ export function createEditorScreen({
       plusBtn.setAttribute('aria-label', `Increase quantity for ${c.name}`);
       plusBtn.dataset.caseId = c.id;
       plusBtn.dataset.qtyRole = 'plus';
-      row.appendChild(plusBtn);
+      stepper.appendChild(plusBtn);
+
+      // Unstage is offered only when this Case has physically staged cargo at all
+      // (counts.staged is the readout's own figure). That is NOT an eligibility
+      // check: whether any staged instance is actually removable stays entirely
+      // with PackLibrary.removeCaseInstancesFromStaging(). With no staged cargo
+      // nothing is rendered here — "+ Add" stands alone, no empty/disabled half.
+      // It is the LEFT segment, so it is appended before "+ Add".
+      let removeBtn = null;
+      if (counts.staged > 0) {
+        removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'btn btn-sm tp3d-editor-case-qty-unstage';
+        removeBtn.textContent = 'Unstage';
+        removeBtn.title = 'Removes staged cases only. Packed, hidden, or grouped cases are not affected.';
+        removeBtn.setAttribute('aria-label', `Unstage for ${c.name}`);
+        // qtyRole is the internal focus-restore key — intentionally left as 'remove'.
+        removeBtn.dataset.caseId = c.id;
+        removeBtn.dataset.qtyRole = 'remove';
+        actions.classList.add('tp3d-editor-case-qty-actions--segmented');
+        actions.appendChild(removeBtn);
+      }
 
       const addBtn = document.createElement('button');
       addBtn.type = 'button';
@@ -4695,11 +4810,24 @@ export function createEditorScreen({
       addBtn.setAttribute('aria-label', `Add to staging for ${c.name}`);
       addBtn.dataset.caseId = c.id;
       addBtn.dataset.qtyRole = 'add';
-      row.appendChild(addBtn);
+      actions.appendChild(addBtn);
 
+      // Visible wording is unchanged: "N in load · N in truck · N staged". Only
+      // the "N staged" fragment gets its own span (semibold) while staged cargo
+      // exists, so it reads as the count the adjacent Unstage acts on.
       const readout = document.createElement('div');
       readout.className = 'tp3d-editor-case-qty-readout';
-      readout.textContent = `${counts.inLoad} in load · ${counts.inTruck} in truck · ${counts.staged} staged`;
+      readout.appendChild(
+        document.createTextNode(`${counts.inLoad} in load · ${counts.inTruck} in truck · `)
+      );
+      if (counts.staged > 0) {
+        const stagedEmphasis = document.createElement('span');
+        stagedEmphasis.className = 'tp3d-editor-case-qty-readout-staged';
+        stagedEmphasis.textContent = `${counts.staged} staged`;
+        readout.appendChild(stagedEmphasis);
+      } else {
+        readout.appendChild(document.createTextNode(`${counts.staged} staged`));
+      }
 
       section.appendChild(row);
       section.appendChild(readout);
@@ -4728,6 +4856,21 @@ export function createEditorScreen({
         input.value = String(getCaseQtyDraft(c.id));
       };
 
+      // Add acts on what is VISIBLY in the input, even if the user never blurred
+      // it or pressed Enter. Returns the committed whole quantity, or null (after
+      // reverting the field to the last valid draft and warning) when the visible
+      // value is not a whole number from CASE_QTY_MIN to CASE_QTY_MAX.
+      const readLiveQty = () => {
+        const n = parseDirectEntry();
+        if (n === null || n > CASE_QTY_MAX) {
+          revertInput();
+          UIComponents.showToast(STAGING_QTY_INVALID_MESSAGE, 'warning');
+          return null;
+        }
+        commitDraft(n);
+        return n;
+      };
+
       minusBtn.addEventListener('click', () => {
         commitDraft(getCaseQtyDraft(c.id) - 1);
       });
@@ -4746,17 +4889,56 @@ export function createEditorScreen({
           input.blur();
         }
       });
-      input.addEventListener('blur', () => {
+      // Add and Unstage validate the LIVE input in their own click handler
+      // (readLiveQty). Moving focus from the Qty input to either of them must not
+      // pre-commit or revert that value first: the blur that precedes the click
+      // would otherwise swap an invalid entry such as 1.5 for the previous draft,
+      // and the click would then act on the restored value. relatedTarget names
+      // the button where the browser focuses it on press (Chrome, Tab); the
+      // pointerdown flag covers browsers that do not focus a button on click
+      // (relatedTarget === null). Every other blur is unchanged.
+      //
+      // The flag is one-shot and strictly local to this card's listeners. It is
+      // consumed by the next blur, and cleared if that press never reaches one:
+      // pointercancel (a touch scroll or system interruption leaves the input
+      // focused with no blur and no click), click (registered BEFORE each action's
+      // own click listener, so it runs even when that handler returns early — busy,
+      // duplicate, invalid Qty), and the input regaining focus.
+      let actionPressPending = false;
+      const markActionPress = () => {
+        actionPressPending = true;
+      };
+      const clearActionPress = () => {
+        actionPressPending = false;
+      };
+      [addBtn, removeBtn].forEach(button => {
+        if (!button) return; // removeBtn is null with no staged cargo
+        button.addEventListener('pointerdown', markActionPress);
+        button.addEventListener('pointercancel', clearActionPress);
+        button.addEventListener('click', clearActionPress);
+      });
+      input.addEventListener('focus', clearActionPress);
+      input.addEventListener('blur', ev => {
+        // removeBtn is null with no staged cargo: never match a null relatedTarget to it.
+        const next = ev.relatedTarget;
+        const toAction = actionPressPending || (Boolean(next) && (next === addBtn || next === removeBtn));
+        actionPressPending = false;
+        if (toAction) return;
         commitDraft(parseDirectEntry());
       });
 
       addBtn.addEventListener('click', () => {
         if (editorMutationBlocked()) return;
-        const qty = getCaseQtyDraft(c.id);
+        // The second click of a physical double-click lands on the button the first
+        // click's synchronous re-render just created, with Qty already reset: ignore it.
+        if (stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.ADD, packId, c.id)) return;
+        const qty = readLiveQty();
+        if (qty === null) return;
         minusBtn.disabled = true;
         plusBtn.disabled = true;
         input.disabled = true;
         addBtn.disabled = true;
+        let added = false;
         try {
           // Reset the draft BEFORE the mutating call: addInstancesToStaging's
           // Pack update triggers a synchronous StateStore-driven re-render
@@ -4767,7 +4949,14 @@ export function createEditorScreen({
           // Resolves the latest Pack/Case internally at call time — never
           // trusts a stale render-time reference.
           const result = PackLibrary.addInstancesToStaging(packId, c.id, qty);
-          if (!result || result.addedCount <= 0) return;
+          if (!result || result.reason !== 'ok') {
+            const feedback = getStagingAddFailureFeedback(result);
+            UIComponents.showToast(feedback.message, feedback.tone);
+            return;
+          }
+          // Only a completed Add arms the duplicate-click window; a rejected one never does.
+          stagingActionGuard.recordSuccess(STAGING_ACTION_KIND.ADD, packId, c.id);
+          added = true;
           if (result.addedCount === 1) {
             StateStore.set({ selectedInstanceIds: result.createdInstanceIds }, { skipHistory: true });
           }
@@ -4776,12 +4965,55 @@ export function createEditorScreen({
             : `Added ${result.addedCount} items to staging.`;
           UIComponents.showToast(message, 'success');
         } finally {
+          // A failed Add writes nothing to the Pack, so no re-render replaced this
+          // card and the visible input still shows the requested Qty: put the
+          // pre-call draft back so it matches (also covers a throw).
+          if (!added) setCaseQtyDraft(c.id, qty);
           minusBtn.disabled = false;
           plusBtn.disabled = false;
           input.disabled = false;
           addBtn.disabled = false;
         }
       });
+
+      if (removeBtn) {
+        removeBtn.addEventListener('click', () => {
+          if (editorMutationBlocked()) return;
+          // Same double-click mechanism as Add: the second click lands on the Unstage
+          // button the first click's synchronous re-render just created, Qty already reset.
+          if (stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.UNSTAGE, packId, c.id)) return;
+          const qty = readLiveQty();
+          if (qty === null) return;
+          let removed = false;
+          try {
+            // Same ordering as Add: a successful removal re-renders this card
+            // synchronously from caseQtyDrafts, so the reset must already be in place.
+            setCaseQtyDraft(c.id, CASE_QTY_MIN);
+            const result = PackLibrary.removeCaseInstancesFromStaging(packId, c.id, qty);
+            const feedback = getStagingRemoveFeedback(result);
+            if (!result || result.reason !== 'ok') {
+              UIComponents.showToast(feedback.message, feedback.tone);
+              return;
+            }
+            // Only a completed Unstage arms the duplicate-click window; a shortage,
+            // invalid, or failed one never does.
+            stagingActionGuard.recordSuccess(STAGING_ACTION_KIND.UNSTAGE, packId, c.id);
+            removed = true;
+            // Qty Unstage is not explicit Delete: drop only the removed ids from the
+            // selection, and make no selection write at all if none were selected.
+            const nextSelection = pruneSelectionAfterRemoval(
+              StateStore.get('selectedInstanceIds'),
+              result.removedInstanceIds
+            );
+            if (nextSelection) InteractionManager.setSelection(nextSelection);
+            UIComponents.showToast(feedback.message, feedback.tone);
+          } finally {
+            // A rejected Unstage writes nothing to the Pack, so no re-render replaced
+            // this card: restore the requested Qty so the field and draft match.
+            if (!removed) setCaseQtyDraft(c.id, qty);
+          }
+        });
+      }
 
       return section;
     }

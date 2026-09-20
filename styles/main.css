@@ -5192,13 +5192,17 @@ body.modal-open {
   align-items: center;
 }
 
+/* Category color swatch: a true square (equal width/height) with the same soft
+   8px corner. 36px matches the Category row's control height. Shared by the
+   Case modal, Manage Categories, and the Editor Set Category picker. */
 .tp3d-cases-cat-swatch {
   position: relative;
   display: inline-flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  width: 44px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: 8px;
   border: 1px solid var(--border-subtle);
   overflow: hidden;
@@ -5219,10 +5223,86 @@ body.modal-open {
 
 .tp3d-cases-new-category-row {
   display: grid;
-  grid-template-columns: 44px minmax(0, 1fr) auto;
+  grid-template-columns: 36px minmax(0, 1fr) auto;
   gap: 8px;
   align-items: center;
   margin-top: 8px;
+}
+
+/* New/Edit Case modal: the Category field keeps its label (the section caption),
+   existing selector row and new-category creator row (all inside the same .field
+   grid) but lays the two control rows out inline as ONE Category area:
+   [swatch][existing ▼] | [swatch][new name][+ Add]. A hairline divides the two
+   logical groups; the creator gets the wider column so its placeholder stays
+   readable. Stacks below 600px, where the two groups would get too narrow. */
+.tp3d-cases-category-controls {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.85fr);
+  column-gap: var(--space-3);
+  align-items: center;
+  margin-top: var(--space-2);
+}
+
+.tp3d-cases-category-controls > .label {
+  grid-column: 1 / -1;
+}
+
+/* Every control in the Category row shares the swatch's 36px height so the row
+   reads as one aligned line (scoped here; global .input/.select/.btn untouched). */
+.tp3d-cases-category-controls .select,
+.tp3d-cases-category-controls .input,
+.tp3d-cases-category-controls .btn {
+  box-sizing: border-box;
+  height: 36px;
+}
+
+.tp3d-cases-category-controls > .tp3d-cases-new-category-row {
+  margin-top: 0;
+  padding-left: var(--space-3);
+  border-left: 1px solid var(--border-subtle);
+}
+
+@media (max-width: 600px) {
+  .tp3d-cases-category-controls {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  /* Stacked: [swatch][existing ▼] / dashed rule / [swatch][name] / [+ Add]
+     full width. The divider turns horizontal and the name keeps its own row. */
+  .tp3d-cases-category-controls > .tp3d-cases-new-category-row {
+    grid-template-columns: 36px minmax(0, 1fr);
+    margin-top: 0;
+    padding-top: var(--space-3);
+    padding-left: 0;
+    border-top: 1px dashed var(--border-subtle);
+    border-left: 0;
+  }
+
+  .tp3d-cases-category-controls > .tp3d-cases-new-category-row > .btn {
+    grid-column: 1 / -1;
+    justify-content: center;
+  }
+}
+
+/* Quiet section captions for the grouped New/Edit Case layout (Identity,
+   Category, Dimensions & Weight, Handling Rules, Instructions). The Handling
+   Rules caption is its own collapsible <summary>, so that control is unchanged. */
+.tp3d-cases-modal-caption,
+.tp3d-cases-handling > summary {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-secondary);
+}
+
+/* Section rhythm inside the flat modal grid: extra air above each caption, and
+   the negative bottom margin tucks it back toward the fields it introduces. */
+.tp3d-cases-modal-grid-2col > .tp3d-cases-modal-caption {
+  margin: var(--space-2) 0 -6px;
+}
+
+.tp3d-cases-modal-grid-2col > .tp3d-cases-modal-caption:first-child {
+  margin-top: 0;
 }
 
 .tp3d-cases-flip-row {
@@ -5233,11 +5313,14 @@ body.modal-open {
   flex-wrap: wrap;
 }
 
+/* Typography (size/weight/case/colour) comes from the shared caption rule above. */
 .tp3d-cases-handling > summary {
   cursor: pointer;
-  font-weight: 600;
-  font-size: var(--text-sm);
   padding: 4px 0;
+}
+
+.tp3d-cases-handling {
+  margin-top: var(--space-2);
 }
 
 .tp3d-cases-handling > .field,
@@ -5651,19 +5734,56 @@ body.modal-open {
 /* Quantity Controls — Case Browser Qty stepper + Add row */
 .tp3d-editor-case-qty {
   display: grid;
+
+  /* minmax(0, 1fr), not the implicit auto track: the row must never grow past the
+     card just because the Qty field's intrinsic width is wider than the space. */
+  grid-template-columns: minmax(0, 1fr);
   gap: 4px;
   padding-top: 8px;
   border-top: 1px solid var(--border-subtle);
+
+  /* The action control reflows by the card's own width (the editor column is
+     only minmax(272px, 20%) wide), not by the viewport. */
+  container-type: inline-size;
+
+  /* One control height for the whole row: −, the Qty field, +, and Unstage | + Add
+     share it, so the row reads as a single even rhythm. It is the height the
+     segmented control already renders at. */
+  --tp3d-qty-control-height: 30px;
 }
 
+/* Two groups: the Qty stepper and the action control. Wide enough, they share
+   one line; otherwise the action control wraps beneath the stepper. */
 .tp3d-editor-case-qty-row {
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 6px;
+}
+
+/* "Qty [−] [N] [+]" is one unit: it never splits, shrinks, or wraps apart. */
+.tp3d-editor-case-qty-stepper {
+  display: flex;
+  flex: 0 0 auto;
   align-items: center;
   gap: 6px;
 }
 
-/* .tp3d-editor-btn-add reuses its existing margin-left: auto to sit at the
-   end of this row, same as it previously did in the card header. */
+/* Sits at the end of the row (or right-aligned beneath the stepper if it
+   wraps), as "+ Add" did on its own before Unstage existed. */
+.tp3d-editor-case-qty-actions {
+  display: flex;
+  align-items: stretch;
+  margin-left: auto;
+}
+
+.tp3d-editor-case-qty-actions > .tp3d-editor-btn-add {
+  margin-left: 0;
+}
+
+.tp3d-editor-case-qty-actions > .btn {
+  height: var(--tp3d-qty-control-height);
+}
 
 .tp3d-editor-case-qty-label {
   font-size: var(--text-xs);
@@ -5672,18 +5792,26 @@ body.modal-open {
   margin-right: 2px;
 }
 
+/* − and + are matching squares at the shared row height, so they mirror each
+   other around the Qty field. */
 .tp3d-editor-case-qty-btn {
-  padding: 2px 8px;
+  flex: 0 0 auto;
+  width: var(--tp3d-qty-control-height);
+  height: var(--tp3d-qty-control-height);
+  padding: 0;
   font-size: var(--text-sm);
-  line-height: 1.2;
-  min-width: 28px;
+  line-height: 1;
   justify-content: center;
 }
 
+/* Same height as the buttons either side. The 60px width keeps the whole
+   [−][field][+] group at the same 120px it always was, so the narrow-card wrap
+   point below is unchanged. */
 .tp3d-editor-case-qty-input {
-  width: 64px;
+  width: 60px;
+  height: var(--tp3d-qty-control-height);
   flex: 0 0 auto;
-  padding: 4px 6px;
+  padding: 0 6px;
   text-align: center;
 }
 
@@ -5699,9 +5827,101 @@ body.modal-open {
   -moz-appearance: textfield;
 }
 
+/* Staged-only Unstage: the neutral left segment of one joined action control,
+   [ Unstage | + Add ]. Same compact padding as .tp3d-editor-btn-add so both
+   segments share one height, and no danger colour — it is the counterpart of
+   Add, not a Delete. */
+.tp3d-editor-case-qty-unstage {
+  padding: 6px 10px;
+  background: var(--bg-primary);
+}
+
+.tp3d-editor-case-qty-unstage:hover {
+  background: var(--bg-hover);
+}
+
+/* One outer shape: square inner edges, the shared .btn radius on the outside,
+   and a single hairline between the segments (Unstage's own right border; Add
+   drops its left border). The hover lift/shadow is off so the halves stay flush. */
+.tp3d-editor-case-qty-actions--segmented > .btn,
+.tp3d-editor-case-qty-actions--segmented > .btn:hover,
+.tp3d-editor-case-qty-actions--segmented > .btn:active {
+  transform: none;
+  box-shadow: none;
+}
+
+.tp3d-editor-case-qty-actions--segmented > .tp3d-editor-case-qty-unstage {
+  border-radius: var(--radius-sm) 0 0 var(--radius-sm);
+}
+
+.tp3d-editor-case-qty-actions--segmented > .tp3d-editor-btn-add {
+  border-left-width: 0;
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+}
+
+.tp3d-editor-case-qty-actions--segmented > .btn:focus-visible {
+  position: relative;
+  z-index: 1;
+}
+
+/* Narrow card: a stable TWO-ROW layout whether or not the Case has staged cargo.
+   Row 1 is the Qty stepper filling the row (− and + equal width, the Qty field
+   proportionally wider); row 2 is the action control at full width — the
+   Unstage | + Add pair splitting it evenly, or a lone + Add spanning it — so the
+   card does not change shape when the first item is staged. Labels stay text and
+   nothing overflows.
+   Threshold: the compact single row needs the Qty label + gap (21 + 8) and the
+   30/60/30 stepper with its 6px gaps (132) = 161px, plus the widest action
+   control, Unstage | + Add (128px) = 289px. It stays inline only while at least
+   ~24px of clear space still separates the two groups (four times the 6px inner
+   gap; less reads as one crammed run) with ~7px spare for font metrics:
+   289 + 24 + 7 = 320px. This is measured on the card's own container, not the
+   viewport, so it holds wherever the Case Browser column is resized. */
+@container (max-width: 320px) {
+  .tp3d-editor-case-qty-stepper {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .tp3d-editor-case-qty-stepper > .tp3d-editor-case-qty-btn {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+
+  .tp3d-editor-case-qty-stepper > .tp3d-editor-case-qty-input {
+    flex: 1.4 1 0;
+    width: auto;
+    min-width: 0;
+    padding: 0;
+  }
+
+  /* Guaranteed own row in BOTH states: non-shrinkable, full-width, so a lone
+     + Add can never be squeezed onto the stepper's line (and no engine-specific
+     line-breaking is relied on). */
+  .tp3d-editor-case-qty-actions {
+    flex: 0 0 100%;
+    width: 100%;
+    min-width: 0;
+    margin-left: 0;
+  }
+
+  .tp3d-editor-case-qty-actions > .btn {
+    flex: 1 1 0;
+    justify-content: center;
+  }
+}
+
 .tp3d-editor-case-qty-readout {
   font-size: var(--text-xs);
   color: var(--text-secondary);
+}
+
+/* Only the staged figure is emphasised (weight, not the accent colour), tying
+   the count to the Unstage action that changes it. */
+.tp3d-editor-case-qty-readout-staged {
+  font-weight: var(--font-semibold);
+  color: var(--text-primary);
 }
 
 .tp3d-editor-case-qty-empty-message {

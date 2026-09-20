@@ -2781,7 +2781,8 @@ async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
     pruneSelectionAfterRemoval: editor.pruneSelectionAfterRemoval,
     getStagingAddFailureFeedback: editor.getStagingAddFailureFeedback,
     getStagingRemoveFeedback: editor.getStagingRemoveFeedback,
-    stagingAddGuard: guard,
+    stagingActionGuard: guard,
+    STAGING_ACTION_KIND: editor.STAGING_ACTION_KIND,
   });
   // Equivalent of the app's synchronous StateStore-driven re-render: a brand new card.
   const mount = (caseRecord = { id: 'case-a', name: 'A-Test-03' }) => {
@@ -2801,7 +2802,7 @@ const INVALID_QTY_MESSAGE = 'Enter a whole quantity from 1 to 10,000.';
 test('P1-B Q1: blur toward + Add or Unstage does NOT pre-commit or revert the live Qty value', async () => {
   const { StateStore, PackLibrary } = await loadModules();
   StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
-  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingAddDuplicateGuard() });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
   const card = h.mount();
   assert.ok(card.unstageBtn, 'staged cargo exists, so Unstage is rendered');
 
@@ -2820,7 +2821,7 @@ test('P1-B Q1: blur toward + Add or Unstage does NOT pre-commit or revert the li
 test('P1-B Q2: browsers that do not focus a button on click (relatedTarget null) are covered by the pointerdown press flag', async () => {
   const { StateStore, PackLibrary } = await loadModules();
   StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
-  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingAddDuplicateGuard() });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
   const card = h.mount();
 
   for (const button of [card.addBtn, card.unstageBtn]) {
@@ -2846,7 +2847,7 @@ test('P1-B Q3: unrelated blur commits and reverts exactly as before — includin
   const { StateStore, PackLibrary } = await loadModules();
   for (const [name, cases] of [['staged > 0', [outsideInstance({ id: 's1' })]], ['staged = 0', []]]) {
     StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases })], folderLibrary: [], preferences: {} });
-    const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingAddDuplicateGuard() });
+    const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
     const card = h.mount();
     assert.equal(Boolean(card.unstageBtn), name === 'staged > 0');
 
@@ -2871,7 +2872,7 @@ test('P1-B Q4: a fractional visible Qty reaches readLiveQty on Add and Unstage �
     folderLibrary: [],
     preferences: {},
   });
-  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingAddDuplicateGuard() });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: (await import(editorScreenPath.href)).createStagingActionDuplicateGuard() });
   const before = StateStore.snapshot();
   const writes = trackPackWrites(StateStore);
 
@@ -2894,10 +2895,10 @@ test('P1-B Q4: a fractional visible Qty reaches readLiveQty on Add and Unstage �
 
 test('P1-B Q5: a second Add click on the REBUILT card inside the duplicate window is suppressed — +5 once, one write, one Undo', async () => {
   const { StateStore, PackLibrary } = await loadModules();
-  const { createStagingAddDuplicateGuard } = await import(editorScreenPath.href);
+  const { createStagingActionDuplicateGuard } = await import(editorScreenPath.href);
   StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [] })], folderLibrary: [], preferences: {} });
   const clock = { t: 1000 };
-  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingAddDuplicateGuard({ now: () => clock.t }) });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
   const writes = trackPackWrites(StateStore);
 
   let card = h.mount();
@@ -2921,12 +2922,12 @@ test('P1-B Q5: a second Add click on the REBUILT card inside the duplicate windo
   assert.equal(StateStore.undo(), false, 'and there is no second Undo step');
 });
 
-test('P1-B Q6: ordinary single Add is unchanged; the guard never blocks Unstage, other Cases, a retry after failure, or Add after the window', async () => {
+test('P1-B Q6: ordinary single Add is unchanged; Add never suppresses Unstage, a retry after failure, or Add after the window', async () => {
   const { StateStore, PackLibrary } = await loadModules();
-  const { createStagingAddDuplicateGuard, STAGING_ADD_DUPLICATE_CLICK_MS } = await import(editorScreenPath.href);
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_DUPLICATE_CLICK_MS } = await import(editorScreenPath.href);
   StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [] })], folderLibrary: [], preferences: {} });
   const clock = { t: 5000 };
-  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingAddDuplicateGuard({ now: () => clock.t }) });
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
   const staged = () => PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged;
 
   // G: a single Add of the committed Qty behaves exactly as before.
@@ -2942,7 +2943,7 @@ test('P1-B Q6: ordinary single Add is unchanged; the guard never blocks Unstage,
   assert.equal(staged(), 4, 'Unstage 1 inside the Add window still runs');
 
   // A normal Add after the window has elapsed is not blocked (boundary is exclusive).
-  clock.t += STAGING_ADD_DUPLICATE_CLICK_MS;
+  clock.t += STAGING_ACTION_DUPLICATE_CLICK_MS;
   card = h.mount();
   fire(card.addBtn, 'click');
   assert.equal(staged(), 5, 'Add after the window adds normally');
@@ -2954,38 +2955,232 @@ test('P1-B Q6: ordinary single Add is unchanged; the guard never blocks Unstage,
   fire(h.mount(ghost).addBtn, 'click');
   assert.equal(h.toasts.filter(t => t.tone === 'error').length, errorsBefore + 2, 'a failed Add does not suppress the retry');
 
-  // The guard is keyed by Pack + Case and only remembers the latest success.
-  const guard = createStagingAddDuplicateGuard({ now: () => clock.t });
-  guard.recordSuccess('pack-1', 'case-a');
-  assert.equal(guard.isDuplicate('pack-1', 'case-a'), true);
-  assert.equal(guard.isDuplicate('pack-1', 'case-b'), false, 'another Case is not suppressed');
-  assert.equal(guard.isDuplicate('pack-2', 'case-a'), false, 'another Pack is not suppressed');
-  clock.t += STAGING_ADD_DUPLICATE_CLICK_MS - 1;
-  assert.equal(guard.isDuplicate('pack-1', 'case-a'), true, 'still inside the window');
-  clock.t += 1;
-  assert.equal(guard.isDuplicate('pack-1', 'case-a'), false, 'expired');
 });
 
-test('P1-B Q7: duplicate suppression is wired at the actual Add click boundary, is Add-only, and is in-memory only', async () => {
+test('P1-B Q7: ONE guard is wired at the actual Add and Unstage click boundaries (own kind each), armed only on success, and stays in-memory', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = qtyRowBlock(src);
   const addClick = extractFunctionBlock(block, "addBtn.addEventListener('click', () => {", '\n      });');
   const removeClick = extractFunctionBlock(block, "removeBtn.addEventListener('click', () => {", '\n        });');
 
-  const busy = addClick.indexOf('editorMutationBlocked()');
-  const dup = addClick.indexOf('stagingAddGuard.isDuplicate(packId, c.id)');
-  const live = addClick.indexOf('readLiveQty()');
-  assert.ok(busy >= 0 && dup > busy && live > dup, 'busy guard -> duplicate check -> live-Qty validation -> service');
-  const okAt = addClick.indexOf("result.reason !== 'ok'");
-  const recordAt = addClick.indexOf('stagingAddGuard.recordSuccess(packId, c.id);');
-  assert.ok(okAt > 0 && recordAt > okAt && recordAt < addClick.indexOf('added = true;'), 'armed only after a successful Add');
-  assert.doesNotMatch(removeClick, /stagingAddGuard/, 'Unstage is never guarded');
+  for (const [name, click, kind, other, flag] of [
+    ['Add', addClick, 'ADD', 'UNSTAGE', 'added = true;'],
+    ['Unstage', removeClick, 'UNSTAGE', 'ADD', 'removed = true;'],
+  ]) {
+    const busy = click.indexOf('editorMutationBlocked()');
+    const dup = click.indexOf(`stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.${kind}, packId, c.id)`);
+    const live = click.indexOf('readLiveQty()');
+    assert.ok(busy >= 0 && dup > busy && live > dup, `${name}: busy guard -> duplicate check -> live-Qty validation -> service`);
+    const okAt = click.indexOf("result.reason !== 'ok'");
+    const recordAt = click.indexOf(`stagingActionGuard.recordSuccess(STAGING_ACTION_KIND.${kind}, packId, c.id);`);
+    assert.ok(okAt > 0 && recordAt > okAt && recordAt < click.indexOf(flag), `${name}: armed only after a successful result`);
+    assert.equal((click.match(/stagingActionGuard\./g) || []).length, 2, `${name}: exactly one check and one arm`);
+    assert.doesNotMatch(click, new RegExp(`STAGING_ACTION_KIND\\.${other}`), `${name} uses only its own kind`);
+  }
 
-  // The guard lives beside the drafts (outside the replaced card) and stays ephemeral.
-  assert.match(src, /const stagingAddGuard = createStagingAddDuplicateGuard\(\);/);
-  const guardSrc = extractFunctionBlock(src, 'export function createStagingAddDuplicateGuard({', '\n}');
+  // One implementation, held beside the drafts (outside the replaced card), no duplicated timing logic.
+  assert.equal((src.match(/= createStagingActionDuplicateGuard\(\);/g) || []).length, 1, 'a single screen-scoped guard instance');
+  assert.doesNotMatch(src, /createStagingAddDuplicateGuard|stagingAddGuard|STAGING_ADD_DUPLICATE/, 'the Add-only guard is fully generalized away');
+  assert.doesNotMatch(block, /performance\.now|Date\.now|setTimeout/, 'the card builder contains no timing logic of its own');
+  const guardSrc = extractFunctionBlock(src, 'export function createStagingActionDuplicateGuard({', '\n}');
   assert.doesNotMatch(guardSrc, /StateStore|localStorage|sessionStorage|OperationLifecycle|setTimeout|await |async |Promise/,
     'no persistence, history, lifecycle kind, timers, or async locking');
+});
+
+test('P1-B Q8: the guard is keyed by kind + Pack + Case; a success arms exactly that key for the short window', async () => {
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_KIND: K, STAGING_ACTION_DUPLICATE_CLICK_MS: WINDOW } = await import(editorScreenPath.href);
+  assert.equal(WINDOW, 400, 'the same short window Add already used');
+  assert.deepEqual({ ...K }, { ADD: 'add', UNSTAGE: 'unstage' });
+
+  const clock = { t: 10 };
+  const fresh = () => createStagingActionDuplicateGuard({ now: () => clock.t });
+  for (const [kind, otherKind] of [[K.UNSTAGE, K.ADD], [K.ADD, K.UNSTAGE]]) {
+    const guard = fresh();
+    assert.equal(guard.isDuplicate(kind, 'pack-1', 'case-a'), false, 'nothing is armed initially');
+    guard.recordSuccess(kind, 'pack-1', 'case-a');
+    assert.equal(guard.isDuplicate(kind, 'pack-1', 'case-a'), true, 'one success arms its own key');
+    assert.equal(guard.isDuplicate(otherKind, 'pack-1', 'case-a'), false, 'Add and Unstage keys are independent');
+    assert.equal(guard.isDuplicate(kind, 'pack-1', 'case-b'), false, 'a different Case is independent');
+    assert.equal(guard.isDuplicate(kind, 'pack-2', 'case-a'), false, 'a different Pack is independent');
+  }
+
+  const guard = fresh();
+  guard.recordSuccess(K.UNSTAGE, 'pack-1', 'case-a');
+  clock.t += WINDOW - 1;
+  assert.equal(guard.isDuplicate(K.UNSTAGE, 'pack-1', 'case-a'), true, 'still inside the window');
+  clock.t += 1;
+  assert.equal(guard.isDuplicate(K.UNSTAGE, 'pack-1', 'case-a'), false, 'the window is exclusive: an action after it proceeds normally');
+
+  // Ids that merely CONTAIN separator-like characters can never collide across fields.
+  const collide = fresh();
+  collide.recordSuccess(K.ADD, 'p:1', 'c');
+  assert.equal(collide.isDuplicate(K.ADD, 'p', '1:c'), false);
+  assert.equal(collide.isDuplicate(K.ADD, 'p:1', 'c'), true);
+});
+
+// The exact browser-confirmed baseline: 15 in load · 12 in truck · 3 staged.
+function fifteenTwelveThreeFixture(extraCases = []) {
+  const packed = Array.from({ length: 12 }, (_, i) => insideInstance({ id: `packed-${i + 1}` }));
+  const staged = Array.from({ length: 3 }, (_, i) => outsideInstance({ id: `staged-${i + 1}` }));
+  return { caseLibrary: [baseCase(), ...extraCases], packLibrary: [basePack({ cases: [...packed, ...staged] })], folderLibrary: [], preferences: {} };
+}
+
+test('P1-B Q9: replay of the confirmed Unstage double-click — 15/12/3, Qty 2 -> exactly 13/12/1, one toast, one write, one Undo', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard } = await import(editorScreenPath.href);
+  StateStore.init(fifteenTwelveThreeFixture());
+  const counts = () => {
+    const c = PackLibrary.getCaseInstanceCounts('pack-1', 'case-a');
+    return `${c.inLoad}/${c.inTruck}/${c.staged}`;
+  };
+  assert.equal(counts(), '15/12/3');
+
+  const clock = { t: 1000 };
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
+  const writes = trackPackWrites(StateStore);
+
+  let card = h.mount();
+  card.input.value = '2';
+  fire(card.input, 'blur', { relatedTarget: card.unstageBtn }); // browser order: blur, then click
+  fire(card.unstageBtn, 'click'); // first physical click: Unstage(2)
+  assert.equal(counts(), '13/12/1', 'an ordinary single Unstage is unchanged');
+  assert.equal(h.drafts.get('case-a'), 1, 'Qty reset to 1');
+
+  card = h.mount(); // the synchronous re-render replaced the card
+  assert.ok(card.unstageBtn, 'staged is still 1, so the NEW card has an Unstage button for the second click to land on');
+  assert.equal(card.input.value, '1');
+  clock.t += 120; // real double-click spacing
+  fire(card.unstageBtn, 'click'); // second physical click on the new button
+  writes.stop();
+
+  assert.equal(counts(), '13/12/1', 'not Unstage(2) + Unstage(1) = 12/12/0');
+  assert.equal(writes.count(), 1, 'one Pack write');
+  assert.deepEqual(h.toasts.filter(t => t.tone === 'info'), [{ message: 'Removed 2 cases from staging.', tone: 'info' }], 'exactly one info toast');
+  assert.equal(StateStore.undo(), true);
+  assert.equal(counts(), '15/12/3', 'one Undo restores the baseline');
+  assert.equal(StateStore.undo(), false, 'no second Undo step');
+});
+
+test('P1-B Q10: only a SUCCESSFUL Unstage arms the guard; shortage, invalid, and failed Unstage never do', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_KIND: K } = await import(editorScreenPath.href);
+  const clock = { t: 1000 };
+  const newGuard = () => createStagingActionDuplicateGuard({ now: () => clock.t });
+  const staged = () => PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged;
+  const armed = guard => guard.isDuplicate(K.UNSTAGE, 'pack-1', 'case-a');
+
+  // Shortage (asks for 5, only 2 eligible): warning, nothing armed, the immediate corrected retry runs.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })], folderLibrary: [], preferences: {} });
+  let guard = newGuard();
+  let h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  let card = h.mount();
+  card.input.value = '5';
+  fire(card.unstageBtn, 'click');
+  assert.equal(h.toasts.at(-1).tone, 'warning');
+  assert.match(h.toasts.at(-1).message, /Only 2 can be removed from staging\. Nothing was removed\./);
+  assert.equal(armed(guard), false, 'a shortage does not arm the guard');
+  card.input.value = '2';
+  fire(card.unstageBtn, 'click');
+  assert.equal(staged(), 0, 'the immediate corrected Unstage proceeds');
+  assert.equal(armed(guard), true, 'and that success does arm it');
+
+  // Zero eligible (staged but grouped): warning, nothing armed, an immediate retry is processed again.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 'g1', groupId: 'group-1' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  card = h.mount();
+  fire(card.unstageBtn, 'click');
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(h.toasts.filter(t => /No cases can be removed from staging/.test(t.message)).length, 2, 'both attempts were processed');
+  assert.equal(armed(guard), false);
+
+  // Invalid visible Qty: warning, nothing armed, an immediate valid Unstage runs.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' }), outsideInstance({ id: 's2' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  card = h.mount();
+  card.input.value = '1.5';
+  fire(card.input, 'blur', { relatedTarget: card.unstageBtn });
+  fire(card.unstageBtn, 'click');
+  assert.deepEqual(h.toasts.at(-1), { message: INVALID_QTY_MESSAGE, tone: 'warning' });
+  assert.equal(armed(guard), false, 'an invalid Qty does not arm the guard');
+  assert.equal(card.input.value, '1');
+  fire(card.unstageBtn, 'click');
+  assert.equal(staged(), 1, 'the immediate valid Unstage proceeds');
+
+  // Failed service result: the Case is deleted AFTER the card rendered, so the real service answers
+  // 'case-not-found'. Error, nothing armed, and an immediate retry is processed again (not suppressed).
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  h = await createQtyRowHarness({ PackLibrary, StateStore, guard });
+  card = h.mount();
+  assert.ok(card.unstageBtn);
+  StateStore.set({ caseLibrary: [] }, { skipHistory: true });
+  fire(card.unstageBtn, 'click');
+  fire(card.unstageBtn, 'click');
+  assert.deepEqual(h.toasts.filter(t => t.tone === 'error').map(t => t.message), ['This case no longer exists.', 'This case no longer exists.'],
+    'a failed Unstage is processed again, not suppressed');
+  assert.equal(armed(guard), false);
+
+  // A throwing service call never arms it either.
+  StateStore.init({ caseLibrary: [baseCase()], packLibrary: [basePack({ cases: [outsideInstance({ id: 's1' })] })], folderLibrary: [], preferences: {} });
+  guard = newGuard();
+  const throwing = {
+    getById: (...args) => PackLibrary.getById(...args),
+    getCaseInstanceCounts: (...args) => PackLibrary.getCaseInstanceCounts(...args),
+    removeCaseInstancesFromStaging: () => { throw new Error('boom'); },
+  };
+  h = await createQtyRowHarness({ PackLibrary: throwing, StateStore, guard });
+  card = h.mount();
+  assert.throws(() => fire(card.unstageBtn, 'click'), /boom/);
+  assert.equal(armed(guard), false, 'an exception does not arm the guard');
+  assert.equal(h.drafts.get('case-a'), 1, 'and the requested Qty is preserved');
+});
+
+test('P1-B Q11: Add and Unstage never suppress each other, nor other Cases; an Unstage after the window proceeds normally', async () => {
+  const { StateStore, PackLibrary } = await loadModules();
+  const { createStagingActionDuplicateGuard, STAGING_ACTION_DUPLICATE_CLICK_MS: WINDOW } = await import(editorScreenPath.href);
+  const caseB = baseCase({ id: 'case-b', name: 'Case B' });
+  StateStore.init({
+    caseLibrary: [baseCase(), caseB],
+    packLibrary: [basePack({ cases: [
+      outsideInstance({ id: 'a1' }), outsideInstance({ id: 'a2' }), outsideInstance({ id: 'a3' }),
+      outsideInstance({ id: 'b1', caseId: 'case-b' }), outsideInstance({ id: 'b2', caseId: 'case-b' }),
+    ] })],
+    folderLibrary: [],
+    preferences: {},
+  });
+  const stagedOf = id => PackLibrary.getCaseInstanceCounts('pack-1', id).staged;
+  const clock = { t: 1000 };
+  const h = await createQtyRowHarness({ PackLibrary, StateStore, guard: createStagingActionDuplicateGuard({ now: () => clock.t }) });
+  const asB = { id: 'case-b', name: 'Case B' };
+
+  // Add success, then an IMMEDIATE Unstage on the same Case is not blocked...
+  fire(h.mount().addBtn, 'click');
+  assert.equal(stagedOf('case-a'), 4);
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 3, 'Unstage right after Add proceeds');
+  // ...and Unstage success, then an immediate Add is not blocked.
+  fire(h.mount().addBtn, 'click');
+  assert.equal(stagedOf('case-a'), 4, 'Add right after Unstage proceeds');
+
+  // Unstage on one Case does not block Unstage (or Add) on another Case.
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 3);
+  fire(h.mount(asB).unstageBtn, 'click');
+  assert.equal(stagedOf('case-b'), 1, 'a different Case is independent');
+  fire(h.mount(asB).addBtn, 'click');
+  assert.equal(stagedOf('case-b'), 2);
+
+  // Same-Case duplicate inside the window is suppressed; the same action after the window is not.
+  fire(h.mount().unstageBtn, 'click'); // arms the unstage key for case-a
+  assert.equal(stagedOf('case-a'), 2);
+  clock.t += WINDOW - 1;
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 2, 'inside the window: suppressed');
+  clock.t += 1;
+  fire(h.mount().unstageBtn, 'click');
+  assert.equal(stagedOf('case-a'), 1, 'after the window: a deliberate Unstage proceeds normally');
 });
 
 test('P1-B R3: Unstage accessibility — input names both actions, Unstage has its own name and help text, Add and steppers keep theirs', async () => {

@@ -81,27 +81,30 @@ export function pruneSelectionAfterRemoval(selectedIds, removedIds) {
   return selected.filter(id => !removed.has(id));
 }
 
-// Duplicate-click suppression for "+ Add". A physical double-click delivers its
-// second click to the button the FIRST click's synchronous re-render just built,
-// after Qty has already reset to 1 — so it would add a second, unintended batch.
-// This remembers only the most recent SUCCESSFUL Add (Pack + Case) in memory: no
-// persistence, no StateStore/history, no lifecycle kind, nothing async. It lives
-// outside the card DOM, so it survives the card being replaced. It never guards
-// Unstage, and the window is short so a deliberate second Add is unaffected.
-export const STAGING_ADD_DUPLICATE_CLICK_MS = 400;
+// Duplicate-click suppression for the staging actions "+ Add" and "Unstage". A
+// physical double-click delivers its second click to the button the FIRST click's
+// synchronous re-render just built, after Qty has already reset to 1 — so it would
+// act a second, unintended time (Add(5)+Add(1), Unstage(2)+Unstage(1)).
+// This remembers only the most recent SUCCESSFUL action, keyed by kind + Pack +
+// Case, in memory: no persistence, no StateStore/history, no lifecycle kind,
+// nothing async. It lives outside the card DOM, so it survives the card being
+// replaced. Each kind, Pack, and Case is independent, and the window is short so
+// a deliberate follow-up action is unaffected.
+export const STAGING_ACTION_DUPLICATE_CLICK_MS = 400;
+export const STAGING_ACTION_KIND = Object.freeze({ ADD: 'add', UNSTAGE: 'unstage' });
 
-export function createStagingAddDuplicateGuard({
-  windowMs = STAGING_ADD_DUPLICATE_CLICK_MS,
+export function createStagingActionDuplicateGuard({
+  windowMs = STAGING_ACTION_DUPLICATE_CLICK_MS,
   now = () => performance.now(),
 } = {}) {
   let last = null;
-  const keyOf = (packId, caseId) => JSON.stringify([packId, caseId]);
+  const keyOf = (kind, packId, caseId) => JSON.stringify([kind, packId, caseId]);
   return {
-    isDuplicate(packId, caseId) {
-      return last !== null && last.key === keyOf(packId, caseId) && now() - last.at < windowMs;
+    isDuplicate(kind, packId, caseId) {
+      return last !== null && last.key === keyOf(kind, packId, caseId) && now() - last.at < windowMs;
     },
-    recordSuccess(packId, caseId) {
-      last = { key: keyOf(packId, caseId), at: now() };
+    recordSuccess(kind, packId, caseId) {
+      last = { key: keyOf(kind, packId, caseId), at: now() };
     },
   };
 }
@@ -3662,9 +3665,9 @@ export function createEditorScreen({
     // Pack/Case. Survives same-workspace re-renders, Pack changes and navigation;
     // resetWorkspaceState clears it only when workspace scope changes.
     const caseQtyDrafts = new Map();
-    // Ephemeral, in-memory only (see createStagingAddDuplicateGuard). Held here,
-    // beside the drafts, so it outlives the Case Browser card the Add rebuilds.
-    const stagingAddGuard = createStagingAddDuplicateGuard();
+    // Ephemeral, in-memory only (see createStagingActionDuplicateGuard). Held here,
+    // beside the drafts, so it outlives the Case Browser card that Add/Unstage rebuild.
+    const stagingActionGuard = createStagingActionDuplicateGuard();
     const CASE_QTY_MIN = 1;
     const CASE_QTY_MAX = 10000;
     function getCaseQtyDraft(caseId) {
@@ -4916,7 +4919,7 @@ export function createEditorScreen({
         if (editorMutationBlocked()) return;
         // The second click of a physical double-click lands on the button the first
         // click's synchronous re-render just created, with Qty already reset: ignore it.
-        if (stagingAddGuard.isDuplicate(packId, c.id)) return;
+        if (stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.ADD, packId, c.id)) return;
         const qty = readLiveQty();
         if (qty === null) return;
         minusBtn.disabled = true;
@@ -4940,7 +4943,7 @@ export function createEditorScreen({
             return;
           }
           // Only a completed Add arms the duplicate-click window; a rejected one never does.
-          stagingAddGuard.recordSuccess(packId, c.id);
+          stagingActionGuard.recordSuccess(STAGING_ACTION_KIND.ADD, packId, c.id);
           added = true;
           if (result.addedCount === 1) {
             StateStore.set({ selectedInstanceIds: result.createdInstanceIds }, { skipHistory: true });
@@ -4964,6 +4967,9 @@ export function createEditorScreen({
       if (removeBtn) {
         removeBtn.addEventListener('click', () => {
           if (editorMutationBlocked()) return;
+          // Same double-click mechanism as Add: the second click lands on the Unstage
+          // button the first click's synchronous re-render just created, Qty already reset.
+          if (stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.UNSTAGE, packId, c.id)) return;
           const qty = readLiveQty();
           if (qty === null) return;
           let removed = false;
@@ -4977,6 +4983,9 @@ export function createEditorScreen({
               UIComponents.showToast(feedback.message, feedback.tone);
               return;
             }
+            // Only a completed Unstage arms the duplicate-click window; a shortage,
+            // invalid, or failed one never does.
+            stagingActionGuard.recordSuccess(STAGING_ACTION_KIND.UNSTAGE, packId, c.id);
             removed = true;
             // Qty Unstage is not explicit Delete: drop only the removed ids from the
             // selection, and make no selection write at all if none were selected.

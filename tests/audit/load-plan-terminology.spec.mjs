@@ -120,8 +120,8 @@ test('LOAD-PLAN-TERM-3 empty, filtered-empty and search copy say load plans', as
   assert.match(html, /Create your first load plan to start planning\./,
     'the empty-library helper text must say load plan');
   assert.match(html, /No matching load plans/, 'the filtered-empty state must say No matching load plans');
-  assert.match(html, /aria-label="Select all visible load plans"/,
-    'the select-all checkbox accessible name must say load plans');
+  assert.match(html, /aria-label="Select all matching Load Plans"/,
+    'the select-all checkbox accessible name must say load plans, and matching (it spans every filtered record, not just the visible page)');
 
   assert.match(packs, /No matching load plans for/, 'the keyed filtered-empty message must say load plans');
 });

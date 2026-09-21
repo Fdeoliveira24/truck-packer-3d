@@ -782,27 +782,27 @@ test('MANAGEMENT-NOTES Grid/List controls preserve ownership, placement, accessi
       'button clicks cannot open the card/row, toggle selection, or open overflow');
   }
 
+  // The trailing Grid cluster is Notes then overflow. Selection now LEADS the title in
+  // the header (see the MANAGEMENT-CARD-UX tests), so it is no longer part of the cluster.
   const caseGridActions = casesSource.slice(
-    casesSource.indexOf("actions.className = 'card-head-actions tp3d-cases-card-head-actions'"),
-    casesSource.indexOf("const head = document.createElement('div')", casesSource.indexOf("actions.className = 'card-head-actions tp3d-cases-card-head-actions'"))
+    casesSource.indexOf("actions.className = 'card-head-actions tp3d-management-card-actions'"),
+    casesSource.indexOf("const head = document.createElement('div')", casesSource.indexOf("actions.className = 'card-head-actions tp3d-management-card-actions'"))
   );
   assert.ok(
-    caseGridActions.indexOf('actions.appendChild(selectCb)') <
-      caseGridActions.indexOf('actions.appendChild(createCaseNotesButton(c))') &&
+    caseGridActions.indexOf('actions.appendChild(createCaseNotesButton(c))') >= 0 &&
       caseGridActions.indexOf('actions.appendChild(createCaseNotesButton(c))') <
       caseGridActions.indexOf('actions.appendChild(kebabBtn)'),
-    'Case Grid action order is selection, Notes, overflow'
+    'Case Grid trailing action order is Notes, overflow'
   );
   const packGridActions = packsSource.slice(
-    packsSource.indexOf("actions.className = 'card-head-actions'"),
-    packsSource.indexOf('head.appendChild(titleWrap)', packsSource.indexOf("actions.className = 'card-head-actions'"))
+    packsSource.indexOf("actions.className = 'card-head-actions tp3d-management-card-actions'"),
+    packsSource.indexOf('head.appendChild(selectCb)', packsSource.indexOf("actions.className = 'card-head-actions tp3d-management-card-actions'"))
   );
   assert.ok(
-    packGridActions.indexOf('actions.appendChild(selectCb)') <
-      packGridActions.indexOf('actions.appendChild(createPackNotesButton(pack))') &&
+    packGridActions.indexOf('actions.appendChild(createPackNotesButton(pack))') >= 0 &&
       packGridActions.indexOf('actions.appendChild(createPackNotesButton(pack))') <
       packGridActions.indexOf('actions.appendChild(kebabBtn)'),
-    'Load Plan Grid action order is selection, Notes, overflow'
+    'Load Plan Grid trailing action order is Notes, overflow (the stale warning precedes Notes)'
   );
 
   const caseHeader = html.match(/<th[^>]*data-column="notes"[^>]*>Notes<\/th>/)?.[0] || '';
@@ -1488,4 +1488,273 @@ test('BUSINESS-IDENTITY-PHASE1 additive fields survive canonical App JSON import
   assert.equal(exported.data.caseLibrary[0].itemCode, 'CASE-EXPORT');
   assert.equal(exported.data.packLibrary[0].loadPlanNumber, 'PLAN-EXPORT');
   assert.equal(exported.data.packLibrary[0].customerReference, 'CUSTOMER-EXPORT');
+});
+
+// ---------------------------------------------------------------------------
+// P1-C management cards & selection UX (Cases + Load Plans)
+// ---------------------------------------------------------------------------
+
+const TABLE_FOOTER_PATH = new URL('../../src/ui/table-footer.js', import.meta.url);
+
+function sliceBetween(source, startMarker, endMarker) {
+  const start = source.indexOf(startMarker);
+  assert.ok(start >= 0, `missing marker: ${startMarker}`);
+  const end = source.indexOf(endMarker, start + startMarker.length);
+  assert.ok(end > start, `missing end marker: ${endMarker}`);
+  return source.slice(start, end);
+}
+
+function cssRuleBody(css, selector) {
+  const at = css.indexOf(`${selector} {`);
+  assert.ok(at >= 0, `missing CSS rule: ${selector}`);
+  return css.slice(css.indexOf('{', at) + 1, css.indexOf('}', at));
+}
+
+async function readManagementSources() {
+  const [html, casesSource, packsSource, cssSource] = await Promise.all([
+    fs.readFile(INDEX_PATH, 'utf8'),
+    fs.readFile(CASES_SCREEN_PATH, 'utf8'),
+    fs.readFile(PACKS_SCREEN_PATH, 'utf8'),
+    fs.readFile(MAIN_CSS_PATH, 'utf8'),
+  ]);
+  return {
+    html,
+    casesSource,
+    packsSource,
+    cssSource,
+    caseGrid: sliceBetween(casesSource, 'function renderGridView(', 'function renderFilters('),
+    caseList: sliceBetween(casesSource, 'casePageMeta.slice.forEach(c => {', 'function applyListColumnVisibility('),
+    packGrid: sliceBetween(packsSource, 'function renderGridView(packs) {', 'function buildPreview('),
+    packList: sliceBetween(packsSource, 'function renderListView(packs) {', 'function applyListColumnVisibility('),
+  };
+}
+
+test('MANAGEMENT-CARD-UX Cases Grid header: checkbox leads the title, Notes + overflow trail, nothing is absolutely positioned', async () => {
+  const { caseGrid, casesSource, cssSource } = await readManagementSources();
+  const build = sliceBetween(caseGrid, "const actions = document.createElement('div')", 'card.appendChild(head)');
+
+  assert.match(build, /actions\.className = 'card-head-actions tp3d-management-card-actions'/);
+  assert.match(build, /head\.className = 'card-head tp3d-management-card-head'/);
+  assert.doesNotMatch(build, /actions\.appendChild\(selectCb\)/,
+    'the checkbox is no longer inside the trailing action cluster');
+  assert.ok(
+    build.indexOf('head.appendChild(selectCb)') < build.indexOf('head.appendChild(title)') &&
+      build.indexOf('head.appendChild(title)') < build.indexOf('head.appendChild(actions)'),
+    'header order: [ checkbox ] title [ actions ]'
+  );
+  assert.ok(
+    build.indexOf('actions.appendChild(createCaseNotesButton(c))') <
+      build.indexOf('actions.appendChild(kebabBtn)'),
+    'trailing cluster: Notes then overflow'
+  );
+  assert.match(build, /if \(badgePrefs\.showNotes !== false\) actions\.appendChild\(createCaseNotesButton\(c\)\)/,
+    'the Notes display preference still controls the Grid action');
+  assert.doesNotMatch(caseGrid, /card\.appendChild\(actions\)/,
+    'actions live in the header, not as a separate absolutely-positioned card child');
+  assert.doesNotMatch(casesSource, /tp3d-cases-card-head/, 'the old Cases-only header hooks are gone');
+  assert.doesNotMatch(cssSource, /\.tp3d-cases-card-head/, 'the old Cases-only header CSS is gone');
+  const notesButton = sliceBetween(casesSource, 'function createCaseNotesButton(', 'function initCasesUI(');
+  assert.match(notesButton, /fa-regular fa-file-lines/, 'Notes keeps its document icon');
+  assert.doesNotMatch(notesButton, /fa-pen|fa-pencil|fa-edit/, 'the Notes control is not replaced by a pencil/edit icon');
+});
+
+test('MANAGEMENT-CARD-UX Load Plans Grid header: checkbox leads the title; warning, Notes, overflow trail; warning only when stale', async () => {
+  const { packGrid, packsSource } = await readManagementSources();
+  const build = sliceBetween(packGrid, "const actions = document.createElement('div')", 'if (badgesWrap.children.length)');
+
+  assert.match(build, /actions\.className = 'card-head-actions tp3d-management-card-actions'/);
+  assert.doesNotMatch(build, /actions\.appendChild\(selectCb\)/,
+    'the checkbox is no longer inside the trailing action cluster');
+  assert.ok(
+    build.indexOf('head.appendChild(selectCb)') < build.indexOf('head.appendChild(titleWrap)') &&
+      build.indexOf('head.appendChild(titleWrap)') < build.indexOf('head.appendChild(actions)'),
+    'header order: [ checkbox ] titleWrap [ actions ]'
+  );
+  const iStatus = build.indexOf('actions.appendChild(createPackValidationStatus())');
+  const iNotes = build.indexOf('actions.appendChild(createPackNotesButton(pack))');
+  const iKebab = build.indexOf('actions.appendChild(kebabBtn)');
+  assert.ok(iStatus >= 0 && iStatus < iNotes && iNotes < iKebab,
+    'trailing cluster: [ warning ] [ Notes ] [ overflow ]');
+  assert.match(build, /if \(PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)\) \{\s*actions\.appendChild\(createPackValidationStatus\(\)\);\s*\}/,
+    'the warning is still gated by the existing stale authority, so a current Load Plan has none');
+  assert.equal((packGrid.match(/createPackValidationStatus\(/g) || []).length, 1,
+    'exactly one warning creation site in the Grid, and it is the gated one');
+  assert.doesNotMatch(packsSource, /tp3d-packs-card-head/, 'the old Load Plan header hooks are gone');
+  assert.match(packGrid, /data-pack-status/, 'the card click still ignores the status icon');
+});
+
+test('MANAGEMENT-CARD-UX card Enter only activates from the card itself, never from descendant controls', async () => {
+  const { caseGrid, packGrid } = await readManagementSources();
+  for (const [label, grid, open] of [
+    ['Cases', caseGrid, 'openCaseModal(c)'],
+    ['Load Plans', packGrid, 'openPack(pack.id)'],
+  ]) {
+    const handler = sliceBetween(grid, "'keydown',", `${open};`);
+    assert.match(handler, /if \(ev\.target !== card\) return;/, `${label}: descendant events are ignored`);
+    assert.ok(
+      handler.indexOf('ev.target !== card') < handler.indexOf("ev.key === 'Enter'"),
+      `${label}: the target guard runs before the Enter check`
+    );
+    assert.match(handler, /if \(ev\.key === 'Enter'\)/, `${label}: Enter on the card itself still opens the record`);
+  }
+});
+
+test('MANAGEMENT-CARD-UX every icon-only kebab has an item-specific accessible name (Grid and List)', async () => {
+  const { caseGrid, caseList, packGrid, packList } = await readManagementSources();
+  const caseLabel = "`More actions for ${c.name || 'Case'}`";
+  const packLabel = "`More actions for ${pack.title || 'Untitled Load Plan'}`";
+
+  assert.ok(caseGrid.includes(`kebabBtn.setAttribute('aria-label', ${caseLabel})`), 'Cases Grid kebab');
+  assert.ok(caseList.includes(`btn.setAttribute('aria-label', ${caseLabel})`), 'Cases List kebab');
+  assert.ok(packGrid.includes(`kebabBtn.setAttribute('aria-label', ${packLabel})`), 'Load Plans Grid kebab');
+  assert.ok(packList.includes(`kebabBtn.setAttribute('aria-label', ${packLabel})`), 'Load Plans List kebab');
+
+  for (const [label, source] of [['Cases Grid', caseGrid], ['Cases List', caseList], ['Load Plans Grid', packGrid], ['Load Plans List', packList]]) {
+    assert.match(source, /tp3d-management-more-btn/, `${label}: kebab uses the shared management-action class`);
+    assert.match(source, /fa-ellipsis-vertical" aria-hidden="true"/, `${label}: the glyph is hidden from assistive tech`);
+    assert.doesNotMatch(source, /More actions['"`]\)/, `${label}: no generic, non-specific kebab name`);
+  }
+  assert.doesNotMatch(caseGrid + packGrid, /kebabBtn\.setAttribute\('data-tooltip'/, 'no generic tooltip is added to the kebab');
+});
+
+test('MANAGEMENT-CARD-UX List views keep their table structure: dedicated checkbox column, no Grid restructuring, shared selected class', async () => {
+  const { caseList, packList } = await readManagementSources();
+
+  assert.ok(caseList.indexOf('tr.appendChild(tdSelect)') >= 0 &&
+    caseList.indexOf('tr.appendChild(tdSelect)') < caseList.indexOf('tr.appendChild(tdName)'),
+    'Cases List keeps its dedicated leading checkbox column');
+  assert.equal((caseList.match(/\btr\.appendChild\(/g) || []).length, 13, 'Cases List keeps its 13 cells - no new column');
+  assert.ok(packList.indexOf('tr.appendChild(tdCheck)') >= 0 &&
+    packList.indexOf('tr.appendChild(tdCheck)') < packList.indexOf('tr.appendChild(tdTitle)'),
+    'Load Plans List keeps its dedicated leading checkbox column');
+  assert.equal((packList.match(/\btr\.appendChild\(/g) || []).length, 12, 'Load Plans List keeps its 12 cells - no new column');
+
+  for (const [label, list] of [['Cases List', caseList], ['Load Plans List', packList]]) {
+    assert.doesNotMatch(list, /tp3d-management-card-head|tp3d-management-card-actions|head\.appendChild/,
+      `${label}: no Grid header restructuring leaked into the table`);
+  }
+  assert.ok(caseList.includes("tr.classList.toggle('selected', selectedIds.has(c.id))"),
+    'Cases List rows carry the same selected class the Load Plans List and both Grids use');
+  assert.match(packList, /if \(isSelected\) tr\.classList\.add\('selected'\)/);
+  assert.match(packList, /tr\.classList\.toggle\('selected', selectedIds\.has\(pack\.id\)\)/);
+  assert.match(packList, /title\.appendChild\(createPackValidationStatus\(\{ inline: true \}\)\)/,
+    'the Load Plans List warning stays inline beside the title');
+});
+
+test('MANAGEMENT-CARD-UX select-all copy says "matching" and the shared footer helper stays generic', async () => {
+  const { html, casesSource, packsSource } = await readManagementSources();
+  const footerSource = await fs.readFile(TABLE_FOOTER_PATH, 'utf8');
+
+  assert.match(html, /id="cases-select-all"[^>]*aria-label="Select all matching Cases"/);
+  assert.match(html, /id="packs-select-all"[^>]*aria-label="Select all matching Load Plans"/);
+  assert.doesNotMatch(html, /Select all visible/, 'nothing implies select-all is limited to the visible rows');
+  assert.match(casesSource, /selectAllAriaLabel: 'Select all matching Cases'/);
+  assert.match(packsSource, /selectAllAriaLabel: 'Select all matching Load Plans'/);
+  assert.doesNotMatch(footerSource, /\b(cases|load plans?|packs?)\b/i,
+    'the generic footer helper never hard-codes Cases / Load Plans terminology');
+  assert.match(footerSource, /selectAllAriaLabel = 'Select all matching rows'/);
+  assert.match(footerSource, /selectAllInput\.setAttribute\('aria-label', selectAllAriaLabel\)/);
+  assert.match(footerSource, /selectAllLabel\.textContent = 'Select all'/, 'the visible label stays the short generic one');
+
+  // Selection SEMANTICS are unchanged: select-all still spans every matching record, not the page slice.
+  const caseSelectAll = sliceBetween(casesSource, 'function applySelectAllFiltered(', 'function updateSelectionUI(');
+  assert.match(caseSelectAll, /filteredCases\.map\(c => c\.id\)/);
+  assert.doesNotMatch(caseSelectAll, /slice|pageIndex|lastVisibleIds|casePageMeta/);
+  const packSelectAll = sliceBetween(packsSource, 'function applySelectAllFiltered(', 'function updateBulkActions(');
+  assert.match(packSelectAll, /filteredPacks\.map\(p => p\.id\)/);
+  assert.doesNotMatch(packSelectAll, /slice|pageIndex|packsListState|getPageMeta/);
+  assert.match(casesSource, /onSelectAllToggle: applySelectAllFiltered/);
+  assert.match(packsSource, /onSelectAllToggle: applySelectAllFiltered/);
+});
+
+test('MANAGEMENT-CARD-UX shared footer helper applies the caller-provided select-all label and a generic default', async () => {
+  const realDocument = globalThis.document;
+  const fakeElement = tag => {
+    const attrs = {};
+    const el = {
+      tagName: String(tag).toUpperCase(),
+      attrs,
+      children: [],
+      className: '',
+      textContent: '',
+      classList: { add() {}, remove() {}, toggle() {}, contains: () => false },
+      setAttribute(name, value) { attrs[name] = String(value); },
+      getAttribute(name) { return name in attrs ? attrs[name] : null; },
+      appendChild(child) { el.children.push(child); return child; },
+      addEventListener() {},
+      removeEventListener() {},
+      remove() {},
+    };
+    return el;
+  };
+  const findCheckbox = el => (el.type === 'checkbox' ? el : el.children.map(findCheckbox).find(Boolean));
+  globalThis.document = { createElement: fakeElement };
+  try {
+    const { createTableFooter } = await import('../../src/ui/table-footer.js');
+    const custom = fakeElement('div');
+    createTableFooter({ mountEl: custom, selectAllAriaLabel: 'Select all matching Cases' });
+    assert.equal(findCheckbox(custom).getAttribute('aria-label'), 'Select all matching Cases');
+
+    const fallback = fakeElement('div');
+    createTableFooter({ mountEl: fallback });
+    assert.equal(findCheckbox(fallback).getAttribute('aria-label'), 'Select all matching rows',
+      'the generic default no longer implies "visible" rows');
+  } finally {
+    if (realDocument === undefined) delete globalThis.document;
+    else globalThis.document = realDocument;
+  }
+});
+
+test('MANAGEMENT-CARD-UX CSS: flexible title, fixed controls, one shared selected tint, quiet kebab with no layout shift', async () => {
+  const { cssSource } = await readManagementSources();
+
+  // Header layout: no absolute positioning, no compensating padding, title shrinks first.
+  const head = cssRuleBody(cssSource, '.tp3d-management-card-head');
+  assert.match(head, /display:\s*flex;/);
+  assert.match(head, /min-width:\s*0;/);
+  assert.doesNotMatch(head, /position:|padding-right/);
+  const headCheckbox = cssRuleBody(cssSource, ".tp3d-management-card-head > input[type='checkbox']");
+  assert.match(headCheckbox, /flex:\s*0 0 auto;/, 'the leading checkbox never shrinks');
+  const title = cssRuleBody(cssSource, '.tp3d-management-card-head h3');
+  assert.match(title, /flex:\s*1;/);
+  assert.match(title, /min-width:\s*0;/, 'the title can shrink below its content width');
+  assert.match(title, /overflow:\s*hidden;/);
+  assert.match(title, /text-overflow:\s*ellipsis;/);
+  assert.match(title, /margin:\s*0;/, 'no stray margin pushes the title off the shared centre line');
+  const actions = cssRuleBody(cssSource, '.tp3d-management-card-actions');
+  assert.match(actions, /flex:\s*0 0 auto;/, 'the trailing controls never shrink');
+  assert.match(actions, /margin-left:\s*auto;/);
+  assert.doesNotMatch(actions, /position:/);
+  assert.doesNotMatch(cssSource, /padding-right:\s*96px/, 'the old compensating padding is gone');
+  const more = cssRuleBody(cssSource, '.tp3d-management-card-actions .tp3d-management-more-btn');
+  assert.match(more, /width:\s*32px;/);
+  assert.match(more, /height:\s*32px;/);
+
+  // Warning shares the 32px slot; the glyph itself is not enlarged.
+  const status = cssRuleBody(cssSource, '.tp3d-validation-status');
+  assert.match(status, /flex:\s*0 0 32px;/);
+  assert.match(status, /width:\s*32px;/);
+  assert.match(status, /height:\s*32px;/);
+  assert.match(status, /font-size:\s*var\(--text-sm\);/, 'the triangle glyph size is unchanged');
+
+  // One selected tint for Grid cards and List rows; no border / outline / glow / resize.
+  const cardSelected = cssRuleBody(cssSource, '.pack-card.selected');
+  const rowSelected = cssRuleBody(cssSource, '.table-wrap tbody tr.selected td');
+  assert.match(cardSelected, /var\(--accent-primary-12\)/);
+  assert.match(rowSelected, /var\(--accent-primary-12\)/);
+  for (const [name, body] of [['card', cardSelected], ['row', rowSelected]]) {
+    assert.doesNotMatch(body, /border|outline|box-shadow|width|height|padding|margin|transform/,
+      `selected ${name}: no border, outline, glow or size change`);
+    assert.doesNotMatch(body, /error|danger|239, 68, 68|red/i, `selected ${name}: never a destructive treatment`);
+  }
+
+  // Kebab / Notes: transparent border at rest (from .btn-ghost), boundary only on hover / focus-visible.
+  assert.match(cssRuleBody(cssSource, '.btn-ghost'), /border-color:\s*transparent;/, 'no permanent border at rest');
+  const boundary = cssSource.match(/\.tp3d-management-notes-btn:hover,\s*\.tp3d-management-more-btn:hover,\s*\.tp3d-management-notes-btn:focus-visible,\s*\.tp3d-management-more-btn:focus-visible\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(boundary, /border-color:\s*var\(--border-subtle\);/);
+  assert.match(boundary, /background:\s*var\(--bg-hover\);/);
+  assert.doesNotMatch(boundary, /width|height|padding|margin|transform|border:|border-width/,
+    'hover / focus only recolour, so idle -> hover -> focus never shifts layout');
+  assert.match(cssSource, /\.tp3d-management-notes-btn:focus-visible,\s*\.tp3d-management-more-btn:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-primary\);/,
+    'keyboard focus keeps a clear ring');
 });

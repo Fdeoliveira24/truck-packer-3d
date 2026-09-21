@@ -5071,21 +5071,6 @@ body.modal-open {
   text-overflow: ellipsis;
 }
 
-.tp3d-packs-card-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-}
-
-.tp3d-packs-card-head-actions {
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: var(--space-1);
-  margin-left: auto;
-}
-
 /* Load-plan "needs review" STATUS on a Load Plan (Grid header actions and List
    title): a compact warning icon — no chip, no border. It is a status, not an action.
    It rests in normal text colour (the same visual weight as the Notes / kebab
@@ -5095,9 +5080,13 @@ body.modal-open {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  flex: 0 0 28px;
-  width: 28px;
-  height: 28px;
+
+  /* 32px slot, matching the Notes / overflow controls so all three share one
+     centre line in the Grid header. Only the interaction slot grows; the glyph
+     size below is unchanged. */
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
   border-radius: var(--radius-sm);
   color: var(--text-primary);
   font-size: var(--text-sm);
@@ -5169,34 +5158,6 @@ body.modal-open {
   margin-left: var(--space-2);
   vertical-align: middle;
   font-size: var(--text-xs);
-}
-
-.tp3d-cases-card-head {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  margin-bottom: var(--space-2);
-  padding-right: 96px;
-}
-
-.tp3d-cases-card-head h3 {
-  margin: 0;
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.tp3d-cases-card-head-actions {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  display: flex;
-  align-items: center;
-  flex: 0 0 auto;
-  gap: var(--space-1);
-  margin-left: auto;
 }
 
 .tp3d-packs-modal-grid {
@@ -5272,6 +5233,83 @@ body.modal-open {
   top: 4px;
   right: 4px;
   margin: 0;
+}
+
+/* Management Grid card header (Cases + Load Plans):
+     [ select ]  title ------------------- [ warning ] [ Notes ] [ ⋮ ]
+   The checkbox leads and never shrinks, the title takes the flexible middle and
+   truncates first, and the action cluster is fixed on the right. Nothing is
+   absolutely positioned, so a long title can never sit under or push out a control. */
+.tp3d-management-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+  margin-bottom: var(--space-2);
+}
+
+.tp3d-management-card-head > input[type='checkbox'] {
+  flex: 0 0 auto;
+  margin: 0;
+}
+
+/* Descendant (not child) selector: the Load Plan title sits inside its title wrapper.
+   This also outranks the generic `.pack-card h3` bottom margin, which would otherwise
+   push the title text off the centre line shared with the controls. */
+.tp3d-management-card-head h3 {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tp3d-management-card-actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: var(--space-1);
+  margin-left: auto;
+}
+
+/* Overflow "⋮" control (Grid and List). Fixed 32px slot in the Grid header, matching
+   the Notes control; the List keeps its existing button size. */
+.tp3d-management-card-actions .tp3d-management-more-btn {
+  flex: 0 0 32px;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  justify-content: center;
+}
+
+/* Quiet at rest, with the control boundary shown only on hover or keyboard focus.
+   .btn-ghost already carries a transparent 1px border, so idle / hover / focus never
+   change the box and nothing shifts. */
+.tp3d-management-notes-btn:hover,
+.tp3d-management-more-btn:hover,
+.tp3d-management-notes-btn:focus-visible,
+.tp3d-management-more-btn:focus-visible {
+  border-color: var(--border-subtle);
+  background: var(--bg-hover);
+}
+
+.tp3d-management-notes-btn:focus-visible,
+.tp3d-management-more-btn:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Selected management record: ONE subtle warm tint shared by Cases and Load Plans,
+   Grid cards and List rows. The checkbox is the explicit selection signal, so there is
+   no border, outline, glow or size change. On cards the tint is layered over the card
+   surface rather than replacing it, so the card keeps its opaque background. */
+.pack-card.selected {
+  background-image: linear-gradient(var(--accent-primary-12), var(--accent-primary-12));
+}
+
+.table-wrap tbody tr.selected td {
+  background: var(--accent-primary-12);
 }
 
 .tp3d-management-notes-col {

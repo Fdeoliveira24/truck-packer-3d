@@ -1111,8 +1111,15 @@ function packStatusRegion() {
   return packsSource.slice(from, to);
 }
 
+function packScreenChangeCleanupRegion() {
+  const from = packsSource.indexOf('function initToolbarDropdownCoordinator()');
+  const to = packsSource.indexOf('\n    function applyFiltersVisibility()', from);
+  assert.ok(from >= 0 && to > from);
+  return packsSource.slice(from, to);
+}
+
 // Mounts that REAL source against a small fake DOM/window (viewport vw x vh, 186x56 card).
-function mountPackStatus({ vw = 1000, vh = 800 } = {}) {
+function mountPackStatus({ vw = 1000, vh = 800, stateStore = null } = {}) {
   const body = { children: [], appendChild(el) { this.children.push(el); el.isConnected = true; } };
   const win = {
     listeners: [],
@@ -1138,9 +1145,23 @@ function mountPackStatus({ vw = 1000, vh = 800 } = {}) {
     documentElement: { clientWidth: vw, clientHeight: vh },
     getElementById: id => body.children.find(el => el.id === id) || null,
   };
+  let dropdownCloseCount = 0;
+  const UIComponents = {
+    registerDropdownSurface() {},
+    closeAllDropdowns() { dropdownCloseCount += 1; },
+  };
+  const PreferencesManager = { get: () => ({ packsFiltersVisible: false }) };
+  const screenCleanup = stateStore
+    ? `
+let toolbarDropdownCoordinatorInitialized = false;
+const btnFiltersToggle = null;
+function setFiltersVisible() {}
+${packScreenChangeCleanupRegion()}
+initToolbarDropdownCoordinator();`
+    : '';
   const api = runInNewContext(
-    `(function () {\n${packStatusRegion()}\nreturn { createPackValidationStatus, hidePackStatusCard, current: () => packStatusCardAnchor };\n})()`,
-    { document, window: win }
+    `(function () {\n${packStatusRegion()}\n${screenCleanup}\nreturn { createPackValidationStatus, hidePackStatusCard, current: () => packStatusCardAnchor };\n})()`,
+    { document, window: win, StateStore: stateStore, UIComponents, PreferencesManager }
   );
   const place = (el, left, top, w = 28, h = 28) => { el.rect = { left, top, right: left + w, bottom: top + h }; return el; };
   const card = () => body.children.find(el => el.id === 'tp3d-pack-status-card');
@@ -1148,6 +1169,7 @@ function mountPackStatus({ vw = 1000, vh = 800 } = {}) {
     api, body, win, card, place,
     visible: () => Boolean(card() && card().classes.has('is-visible')),
     windowListeners: () => win.listeners.map(l => `${l.type}:${l.capture}`).sort(),
+    dropdownCloseCount: () => dropdownCloseCount,
   };
 }
 
@@ -1303,6 +1325,39 @@ test('VALIDATION-STATUS-UI Load Plans: the card follows scroll/resize, hides whe
   }
   assert.match(packsSource, /function render\(modeOverride\) \{\s*\/\/[^\n]*\n\s*\/\/[^\n]*\n\s*hidePackStatusCard\(\);/,
     'the rebuild replaces every icon, so render() drops the shared card first');
+});
+
+test('VALIDATION-STATUS-UI Load Plans: screen changes hide the card, clear its anchor, and remove listeners without accumulation', async () => {
+  const StateStore = await import(`${stateStorePath.href}?packs-status-exit=${Date.now()}-${Math.random()}`);
+  StateStore.init({
+    currentScreen: 'packs', currentPackId: null, selectedInstanceIds: [],
+    caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {},
+  });
+  const m = mountPackStatus({ stateStore: StateStore });
+  const status = m.place(m.api.createPackValidationStatus(), 500, 300);
+
+  fireOn(status, 'pointerenter');
+  assert.equal(m.visible(), true);
+  assert.deepEqual(m.windowListeners(), ['resize:false', 'scroll:true']);
+
+  StateStore.set({ currentScreen: 'editor' }, { skipHistory: true });
+  assert.equal(m.dropdownCloseCount(), 1, 'the existing screen-change cleanup still closes dropdowns');
+  assert.equal(m.visible(), false, 'leaving Load Plans hides the body-level card');
+  assert.equal(m.api.current(), null, 'screen exit clears the shared card anchor');
+  assert.deepEqual(m.windowListeners(), [], 'screen exit removes both temporary window listeners');
+
+  StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
+  assert.equal(m.visible(), false, 're-entering Load Plans begins with the card closed');
+  assert.deepEqual(m.windowListeners(), []);
+  fireOn(status, 'pointerleave');
+  fireOn(status, 'pointerenter');
+  assert.equal(m.visible(), true, 'the status card still opens normally after re-entry');
+  assert.deepEqual(m.windowListeners(), ['resize:false', 'scroll:true'], 're-entry registers only one listener pair');
+
+  StateStore.set({ currentScreen: 'cases' }, { skipHistory: true });
+  assert.equal(m.visible(), false);
+  assert.equal(m.api.current(), null);
+  assert.deepEqual(m.windowListeners(), [], 'a later exit removes the pair again without accumulation');
 });
 
 test('VALIDATION-STATUS-UI Load Plans: the card sits above the icon (Grid end-aligned, List start-aligned), flips below only without room, and stays inside the viewport', () => {

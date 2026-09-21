@@ -709,6 +709,7 @@ export function createPacksScreen({
       StateStore.subscribe(changes => {
         if (changes && Object.prototype.hasOwnProperty.call(changes, 'currentScreen')) {
           UIComponents.closeAllDropdowns();
+          hidePackStatusCard();
         }
       });
     }

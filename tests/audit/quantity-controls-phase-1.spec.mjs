@@ -1837,11 +1837,10 @@ test('Cases Grid metadata follows the canonical Quantity, Dimensions, Volume, We
     'card.appendChild(head)',
     'card.appendChild(identityChips)',
     'card.appendChild(meta)',
-    'card.appendChild(actions)',
   ].map(statement => cardAppendBlock.indexOf(statement));
   assert.ok(cardAppendIndexes.every(index => index >= 0));
   assert.deepEqual(cardAppendIndexes, [...cardAppendIndexes].sort((a, b) => a - b),
-    'Grid DOM order must keep Name, identity, metadata, then Notes/actions');
+    'Grid DOM order must keep header, identity, then canonical metadata');
 });
 
 test('Handling and Quantity defaults are independent and legacy-compatible: both default true, neither toggle affects the other via defaults/normalization', async () => {

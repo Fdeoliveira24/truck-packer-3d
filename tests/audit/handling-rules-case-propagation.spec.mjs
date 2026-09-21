@@ -1394,16 +1394,22 @@ test('VALIDATION-STATUS-UI Load Plans: the card sits above the icon (Grid end-al
   assert.equal(m.win.listeners.length, 0);
 });
 
-test('VALIDATION-STATUS-UI Load Plans Grid: stale Pack gets the icon between selection and Notes; no chip, no long tooltip; the card ignores it', () => {
+test('VALIDATION-STATUS-UI Load Plans Grid: stale Pack gets the icon between the title and Notes; no chip, no long tooltip; the card ignores it', () => {
   const grid = packsSource.slice(packsSource.indexOf('function renderGridView(packs) {'), packsSource.indexOf('function buildPreview('));
   assert.ok(grid.length > 500);
   assert.doesNotMatch(grid, /badge--warning|validationBadge|Validation required/, 'the old chip is gone from the Grid');
-  const cluster = grid.slice(grid.indexOf("actions.className = 'card-head-actions'"), grid.indexOf('head.appendChild(titleWrap)'));
+  // P1-C: selection now LEADS the title in the header; only the warning, Notes and overflow trail.
+  const cluster = grid.slice(grid.indexOf("actions.className = 'card-head-actions tp3d-management-card-actions'"), grid.indexOf('head.appendChild(selectCb)'));
   const iSel = cluster.indexOf('actions.appendChild(selectCb)');
   const iStatus = cluster.indexOf('actions.appendChild(createPackValidationStatus())');
   const iNotes = cluster.indexOf('actions.appendChild(createPackNotesButton(pack))');
   const iKebab = cluster.indexOf('actions.appendChild(kebabBtn)');
-  assert.ok(iSel >= 0 && iSel < iStatus && iStatus < iNotes && iNotes < iKebab, 'order: [ checkbox ] [ warning ] [ Notes ] [ ⋮ ]');
+  assert.equal(iSel, -1, 'the checkbox is no longer in the trailing cluster');
+  assert.ok(iStatus >= 0 && iStatus < iNotes && iNotes < iKebab, 'trailing order: [ warning ] [ Notes ] [ ⋮ ]');
+  const iHeadSel = grid.indexOf('head.appendChild(selectCb)');
+  const iHeadTitle = grid.indexOf('head.appendChild(titleWrap)');
+  const iHeadActions = grid.indexOf('head.appendChild(actions)');
+  assert.ok(iHeadSel >= 0 && iHeadSel < iHeadTitle && iHeadTitle < iHeadActions, 'header order: [ checkbox ] title [ warning / Notes / ⋮ ]');
   assert.match(cluster, /if \(PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)\) \{\s*actions\.appendChild\(createPackValidationStatus\(\)\);\s*\}/,
     'shown only when the existing authority says the Load Plan is stale');
   // The whole-card click handler skips the status (in addition to the status stopping propagation itself).

@@ -541,6 +541,9 @@ export function createCasesScreen({
       casesFooterMountEl = mountEl;
       casesFooterController = createTableFooter({
         mountEl,
+        // Select-all applies to every Case matching the current search/filters, on
+        // all pages, not just the rows visible on this page.
+        selectAllAriaLabel: 'Select all matching Cases',
         onPageChange: ({ pageIndex: nextIndex, rowsPerPage }) => {
           if (typeof rowsPerPage === 'number') casesListState.rowsPerPage = rowsPerPage;
           casesListState.pageIndex = nextIndex;
@@ -673,6 +676,9 @@ export function createCasesScreen({
         card.addEventListener(
           'keydown',
           /** @param {KeyboardEvent} ev */ ev => {
+            // Only the focused card itself opens the Case; Enter on the checkbox, Notes
+            // or overflow controls must never also activate the card.
+            if (ev.target !== card) return;
             if (ev.key === 'Enter') openCaseModal(c);
           }
         );
@@ -767,10 +773,11 @@ export function createCasesScreen({
         });
 
         const kebabBtn = document.createElement('button');
-        kebabBtn.className = 'btn btn-ghost';
+        kebabBtn.className = 'btn btn-ghost tp3d-management-more-btn';
         kebabBtn.type = 'button';
         kebabBtn.setAttribute('data-case-menu', '1');
-        kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+        kebabBtn.setAttribute('aria-label', `More actions for ${c.name || 'Case'}`);
+        kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>';
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(kebabBtn, [
@@ -794,22 +801,24 @@ export function createCasesScreen({
           ]);
         });
 
+        // Header: [ select ] title ---------- [ Notes ] [ ⋮ ]. The checkbox leads the
+        // title; only Notes and overflow trail. Nothing is absolutely positioned.
         const actions = document.createElement('div');
-        actions.className = 'card-head-actions tp3d-cases-card-head-actions';
-        actions.appendChild(selectCb);
+        actions.className = 'card-head-actions tp3d-management-card-actions';
         if (badgePrefs.showNotes !== false) actions.appendChild(createCaseNotesButton(c));
         actions.appendChild(kebabBtn);
 
         const head = document.createElement('div');
-        head.className = 'card-head tp3d-cases-card-head';
+        head.className = 'card-head tp3d-management-card-head';
+        head.appendChild(selectCb);
         head.appendChild(title);
+        head.appendChild(actions);
 
         if (badgesWrap.children.length) meta.appendChild(badgesWrap);
 
         card.appendChild(head);
         if (identityChips.children.length) card.appendChild(identityChips);
         card.appendChild(meta);
-        card.appendChild(actions);
         gridEl.appendChild(card);
       });
     }
@@ -981,6 +990,10 @@ export function createCasesScreen({
 
       casePageMeta.slice.forEach(c => {
         const tr = document.createElement('tr');
+        // Same selected class the Load Plans List and both Grids use, so one CSS
+        // tint covers every management surface. selectedIds stays the only source
+        // of truth; the change handler below re-renders, which re-derives this.
+        tr.classList.toggle('selected', selectedIds.has(c.id));
 
         const tdSelect = document.createElement('td');
         tdSelect.classList.add('tp3d-cases-td-select');
@@ -1098,8 +1111,9 @@ export function createCasesScreen({
         tdActions.className = 'col-actions';
         const btn = document.createElement('button');
         btn.type = 'button';
-        btn.className = 'btn btn-ghost';
-        btn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+        btn.className = 'btn btn-ghost tp3d-management-more-btn';
+        btn.setAttribute('aria-label', `More actions for ${c.name || 'Case'}`);
+        btn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>';
         btn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(btn, [

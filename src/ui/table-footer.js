@@ -38,7 +38,15 @@ function createButton(iconClass, label) {
 }
 
 export function createTableFooter(options = {}) {
-  const { mountEl, onPageChange = () => {}, onRowsPerPageChange = () => {}, onSelectAllToggle = () => {} } = options;
+  const {
+    mountEl,
+    onPageChange = () => {},
+    onRowsPerPageChange = () => {},
+    onSelectAllToggle = () => {},
+    // Callers name their own records; select-all always spans every matching
+    // record across pages, so the generic fallback says "matching", not "visible".
+    selectAllAriaLabel = 'Select all matching rows',
+  } = options;
   if (!mountEl) {
     return {
       setState: () => {},
@@ -57,7 +65,7 @@ export function createTableFooter(options = {}) {
   const selectAllWrap = document.createElement('span');
   const selectAllInput = document.createElement('input');
   selectAllInput.type = 'checkbox';
-  selectAllInput.setAttribute('aria-label', 'Select all rows');
+  selectAllInput.setAttribute('aria-label', selectAllAriaLabel);
   selectAllWrap.appendChild(selectAllInput);
   const selectAllLabel = document.createElement('span');
   selectAllLabel.className = 'tf-label';

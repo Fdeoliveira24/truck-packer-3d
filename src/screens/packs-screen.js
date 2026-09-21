@@ -1306,6 +1306,9 @@ export function createPacksScreen({
       footerMountEl = mountEl;
       footerController = createTableFooter({
         mountEl,
+        // Select-all applies to every Load Plan matching the current search/filters,
+        // on all pages, not just the rows visible on this page.
+        selectAllAriaLabel: 'Select all matching Load Plans',
         onPageChange: ({ pageIndex: nextIndex, rowsPerPage }) => {
           if (typeof rowsPerPage === 'number') {
             packsListState.rowsPerPage = rowsPerPage;
@@ -1742,9 +1745,10 @@ export function createPacksScreen({
         const tdActions = document.createElement('td');
         tdActions.className = 'col-actions';
         const kebabBtn = document.createElement('button');
-        kebabBtn.className = 'btn btn-ghost';
+        kebabBtn.className = 'btn btn-ghost tp3d-management-more-btn';
         kebabBtn.type = 'button';
-        kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+        kebabBtn.setAttribute('aria-label', `More actions for ${pack.title || 'Untitled Load Plan'}`);
+        kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>';
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(kebabBtn, [
@@ -1854,6 +1858,9 @@ export function createPacksScreen({
         card.addEventListener(
           'keydown',
           /** @param {KeyboardEvent} ev */ ev => {
+            // Only the focused card itself opens the Load Plan; Enter on the checkbox,
+            // warning, Notes or overflow controls must never also activate the card.
+            if (ev.target !== card) return;
             if (ev.key === 'Enter') openPack(pack.id);
           }
         );
@@ -1866,8 +1873,7 @@ export function createPacksScreen({
         title.classList.add('tp3d-packs-card-title-truncate');
 
         const head = document.createElement('div');
-        head.className = 'card-head';
-        head.classList.add('tp3d-packs-card-head');
+        head.className = 'card-head tp3d-management-card-head';
 
         const titleWrap = document.createElement('div');
         titleWrap.className = 'tp3d-packs-titlewrap tp3d-flex-1';
@@ -1941,10 +1947,11 @@ export function createPacksScreen({
           syncFooterState();
         });
         const kebabBtn = document.createElement('button');
-        kebabBtn.className = 'btn btn-ghost';
+        kebabBtn.className = 'btn btn-ghost tp3d-management-more-btn';
         kebabBtn.type = 'button';
         kebabBtn.setAttribute('data-pack-menu', '1');
-        kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical"></i>';
+        kebabBtn.setAttribute('aria-label', `More actions for ${pack.title || 'Untitled Load Plan'}`);
+        kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>';
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.openDropdown(kebabBtn, [
@@ -1987,16 +1994,18 @@ export function createPacksScreen({
           ]);
         });
 
+        // Header: [ select ] title -------- [ warning ] [ Notes ] [ ⋮ ]. The checkbox
+        // leads the title; the informational warning (only when the Load Plan needs
+        // review), Notes and overflow trail.
         const actions = document.createElement('div');
-        actions.className = 'card-head-actions';
-        actions.classList.add('tp3d-packs-card-head-actions');
-        actions.appendChild(selectCb);
+        actions.className = 'card-head-actions tp3d-management-card-actions';
         if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
           actions.appendChild(createPackValidationStatus());
         }
         if (badgePrefs.showNotes !== false) actions.appendChild(createPackNotesButton(pack));
         actions.appendChild(kebabBtn);
 
+        head.appendChild(selectCb);
         head.appendChild(titleWrap);
         head.appendChild(actions);
 

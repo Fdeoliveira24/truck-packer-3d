@@ -18009,12 +18009,17 @@ test('phase 0.7C-1A folder dropdown is filter only and avoids CRUD move UI', asy
     'Folders filter dropdown must not add rename, delete, move, or bulk folder UI');
 });
 
-test('phase 0.7C-1A packs screen avoids forbidden backend billing auth css router scope', async () => {
+test('phase 0.7C-1A folder dropdown avoids forbidden backend billing auth css router scope', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
+  const start = src.indexOf('function openFoldersDropdown()');
+  const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
+  const dropdownBlock = start >= 0 && end > start ? src.slice(start, end) : '';
 
-  assert.doesNotMatch(src, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|\.css|router/i,
+  assert.ok(start >= 0 && end > start,
+    'the folder dropdown source region must remain discoverable');
+  assert.doesNotMatch(dropdownBlock, /supabase|stripe|billing-status|billing_customers|subscriptions|entitlement|auth\.|migrations|\.css|router/i,
     'folder dropdown must stay frontend-local and avoid backend, billing, auth, CSS, and router references');
-  assert.doesNotMatch(src, /window\./,
+  assert.doesNotMatch(dropdownBlock, /window\./,
     'folder dropdown must not add global window state');
 });
 

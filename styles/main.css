@@ -1047,15 +1047,6 @@ textarea:focus {
   color: #3a2a00;
 }
 
-/* Generic warning-toned badge (e.g. Handling Rules "Validation required").
-   Same color tokens as .tp3d-autopack-results__stale-badge, reused here
-   generically rather than duplicating that component-scoped class name. */
-.badge--warning {
-  border-color: rgb(245, 158, 11, 0.35);
-  background: rgb(245, 158, 11, 0.16);
-  color: var(--warning, #f59e0b);
-}
-
 /* Sidebar upgrade notice */
 .tp3d-sidebar-upgrade-wrap {
   margin: 0 var(--space-3) var(--space-3);
@@ -4014,101 +4005,130 @@ body.modal-open {
   }
 }
 
-.viewport-hint-icon {
+/* Load-plan "needs review" STATUS for the actively-displayed Editor Pack (a stale
+   Handling Rules check): one small warning button in the viewport's bottom-left
+   corner (the corner is empty when the Pack is current) that toggles a compact
+   panel opening upward, so it never covers the top toolbar or a large part of the
+   scene. Shown only when PackLibrary.isHandlingRulesValidationRequired() is true —
+   never merely because the Editor opened.
+   The button rests in normal text colour and turns amber only on hover, keyboard
+   focus, or while its panel is open. Hover/focus also shows a short informational
+   status card (pure CSS, hidden while the panel is open so two messages never
+   overlap).
+   The wrapper is a transparent, click-through layer covering the canvas that is a
+   size container, so the panel and the status card can be capped to the canvas's own
+   width (cqw). When the side panels squeeze the canvas (~900px) they shrink and wrap
+   instead of being clipped by .canvas-wrap { overflow: hidden }, which would hide
+   the Check Load Plan button. */
+.tp3d-editor-validation-status {
   position: absolute;
-  left: 14px;
+  inset: 0;
+  z-index: 12;
+  pointer-events: none;
+  container-type: inline-size;
+}
+
+.tp3d-editor-validation-status[hidden] {
+  display: none;
+}
+
+.tp3d-editor-validation-status__btn {
+  position: absolute;
   bottom: 14px;
-  top: auto;
-  right: auto;
-  width: 32px;
-  height: 32px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 50%;
-  background: var(--bg-elevated);
-  color: var(--text-secondary);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
+  left: 14px;
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: var(--shadow-sm);
-  transition: background 0.15s, border-color 0.15s, color 0.15s, box-shadow 0.15s;
-  z-index: 12;
+  width: 32px;
+  height: 32px;
   padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: var(--shadow-sm);
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s,
+    color 0.15s;
 }
 
-.viewport-hint-icon:hover {
-  border-color: var(--border-strong);
+.tp3d-editor-validation-status__btn:hover,
+.tp3d-editor-validation-status__btn:focus-visible,
+.tp3d-editor-validation-status__btn[aria-expanded='true'] {
+  border-color: var(--warning, #f59e0b);
   background: var(--bg-hover);
-  color: var(--text-primary);
+  color: var(--warning, #f59e0b);
   box-shadow: var(--shadow-md);
 }
 
-.viewport-hint-icon:focus-visible {
+.tp3d-editor-validation-status__btn:focus-visible {
   outline: 2px solid var(--accent-primary);
   outline-offset: 2px;
 }
 
-.viewport-hint-icon[data-tooltip]::after {
-  top: auto;
-  bottom: calc(100% + 8px);
-  left: 0;
-  transform: none;
-  width: min(300px, calc(100vw - 36px));
-  white-space: normal;
-  text-align: left;
-  line-height: 1.35;
+/* Short hover/focus status card above the icon, capped to the canvas width.
+   Suppressed while the panel is open (aria-expanded) so the two never overlap. */
+.tp3d-editor-validation-status .tp3d-editor-validation-hint {
+  position: absolute;
+  bottom: calc(14px + 32px + 8px);
+  left: 14px;
+  max-width: min(220px, calc(100cqw - 28px));
+  visibility: hidden;
+  opacity: 0;
 }
 
-.viewport-hint-icon[data-tooltip]::before {
-  top: auto;
-  bottom: calc(100% + 3px);
-  left: 9px;
-  transform: none;
-  border: 5px solid transparent;
-  border-top-color: var(--text-primary);
-  border-bottom: 0;
-}
-
-.viewport-hint-icon.is-open::before,
-.viewport-hint-icon.is-open::after {
+.tp3d-editor-validation-status__btn:is(:hover, :focus-visible):not([aria-expanded='true']) ~ .tp3d-editor-validation-hint {
+  visibility: visible;
   opacity: 1;
 }
 
-/* Handling Rules "Validation required" warning for the actively-displayed
-   Editor Pack. Same overlay treatment as .viewport-toolbar (absolute inside
-   the relatively-positioned .canvas-wrap), positioned below the toolbar's
-   normal desktop footprint so the two never overlap. Never appears merely
-   because the Editor opened — only when PackLibrary.isHandlingRulesValidationRequired()
-   is true for this Pack. */
-.tp3d-handling-rules-banner {
+.tp3d-editor-validation-popover {
   position: absolute;
-  top: 132px;
-  left: 12px;
-  right: 12px;
-  z-index: 5;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3, 12px);
-  padding: 8px 14px;
-  border-radius: 10px;
-  background: rgb(245, 158, 11, 0.16);
-  border: 1px solid rgb(245, 158, 11, 0.35);
-  color: var(--warning, #f59e0b);
-  font-size: var(--text-sm);
-  font-weight: var(--font-semibold);
-  box-shadow: var(--shadow-md);
+  bottom: calc(14px + 32px + 8px);
+  left: 14px;
+  display: grid;
+  gap: 6px;
+  width: max-content;
+  min-width: min(220px, calc(100cqw - 28px));
+  max-width: min(260px, calc(100cqw - 28px));
+  padding: 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  pointer-events: auto;
 }
 
-.tp3d-handling-rules-banner[hidden] {
+.tp3d-editor-validation-popover[hidden] {
   display: none;
 }
 
-.tp3d-handling-rules-banner__text {
-  flex: 1;
-  min-width: 0;
+.tp3d-editor-validation-popover__title {
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-editor-validation-popover__body {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+.tp3d-editor-validation-popover__action {
+  justify-self: end;
+  max-width: 100%;
+  margin-top: 4px;
+  padding: 6px 10px;
+  white-space: normal;
+  text-align: center;
 }
 
 .viewport-toolbar {
@@ -5064,6 +5084,91 @@ body.modal-open {
   flex: 0 0 auto;
   gap: var(--space-1);
   margin-left: auto;
+}
+
+/* Load-plan "needs review" STATUS on a Load Plan (Grid header actions and List
+   title): a compact warning icon — no chip, no border. It is a status, not an action.
+   It rests in normal text colour (the same visual weight as the Notes / kebab
+   controls) and turns amber only on hover or keyboard focus, when the shared
+   floating status card below is shown. */
+.tp3d-validation-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: 1;
+  cursor: default;
+  transition: color 0.15s;
+}
+
+.tp3d-validation-status:hover,
+.tp3d-validation-status:focus-visible {
+  color: var(--warning, #f59e0b);
+}
+
+.tp3d-validation-status:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Small informational status card shared by the Load Plans icons (one fixed element
+   positioned from JS) and the Editor icon (CSS-only). Restrained elevated surface;
+   never captures the pointer. */
+.tp3d-status-card {
+  display: grid;
+  gap: 2px;
+  width: max-content;
+  max-width: 220px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  text-align: left;
+  pointer-events: none;
+}
+
+.tp3d-status-card__title {
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  line-height: var(--leading-normal);
+}
+
+.tp3d-status-card__body {
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-normal);
+}
+
+/* Load Plans: fixed so no scrolling ancestor can clip it; positioned by JS. */
+.tp3d-status-card--floating {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 32000;
+  visibility: hidden;
+  opacity: 0;
+}
+
+.tp3d-status-card--floating.is-visible {
+  visibility: visible;
+  opacity: 1;
+}
+
+/* List: sits inline right after the Load Plan title text. */
+.tp3d-validation-status--inline {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-left: var(--space-2);
+  vertical-align: middle;
+  font-size: var(--text-xs);
 }
 
 .tp3d-cases-card-head {
@@ -7086,7 +7191,7 @@ body.modal-open {
 ================================== */
 
 /* Any element with a data-tooltip attribute gets a simple above-centered tooltip.
-   More-specific selectors (.tp3d-editor-info-icon, .viewport-hint-icon) override
+   More-specific selectors (.tp3d-editor-info-icon) override
    position/sizing below, so this only activates for buttons that previously had
    no tooltip styling at all (Packs/Cases toolbar buttons, etc.). */
 
@@ -7154,15 +7259,12 @@ body.modal-open {
 /* ================================
    Tooltips — Editor overrides
 ================================== */
-.tp3d-editor-info-icon[data-tooltip],
-.viewport-hint-icon[data-tooltip] {
+.tp3d-editor-info-icon[data-tooltip] {
   position: relative;
 }
 
 .tp3d-editor-info-icon[data-tooltip]::before,
-.tp3d-editor-info-icon[data-tooltip]::after,
-.viewport-hint-icon[data-tooltip]::before,
-.viewport-hint-icon[data-tooltip]::after {
+.tp3d-editor-info-icon[data-tooltip]::after {
   position: absolute;
   left: 50%;
   pointer-events: none;
@@ -7171,8 +7273,7 @@ body.modal-open {
   z-index: 32000;
 }
 
-.tp3d-editor-info-icon[data-tooltip]::after,
-.viewport-hint-icon[data-tooltip]::after {
+.tp3d-editor-info-icon[data-tooltip]::after {
   content: attr(data-tooltip);
   top: auto;
   bottom: calc(100% + 10px);
@@ -7192,8 +7293,7 @@ body.modal-open {
   overflow-wrap: break-word;
 }
 
-.tp3d-editor-info-icon[data-tooltip]::before,
-.viewport-hint-icon[data-tooltip]::before {
+.tp3d-editor-info-icon[data-tooltip]::before {
   content: '';
   top: auto;
   bottom: calc(100% + 4px);
@@ -7204,9 +7304,7 @@ body.modal-open {
 }
 
 .tp3d-editor-info-icon[data-tooltip]:hover::before,
-.tp3d-editor-info-icon[data-tooltip]:hover::after,
-.viewport-hint-icon[data-tooltip]:hover::before,
-.viewport-hint-icon[data-tooltip]:hover::after {
+.tp3d-editor-info-icon[data-tooltip]:hover::after {
   opacity: 1;
 }
 
@@ -7215,41 +7313,13 @@ body.modal-open {
 .tp3d-editor-info-icon[data-tooltip]:focus-visible::before,
 .tp3d-editor-info-icon[data-tooltip]:focus-visible::after,
 .tp3d-editor-info-icon[data-tooltip]:focus-within::before,
-.tp3d-editor-info-icon[data-tooltip]:focus-within::after,
-.viewport-hint-icon[data-tooltip]:focus::before,
-.viewport-hint-icon[data-tooltip]:focus::after,
-.viewport-hint-icon[data-tooltip]:focus-visible::before,
-.viewport-hint-icon[data-tooltip]:focus-visible::after,
-.viewport-hint-icon[data-tooltip]:focus-within::before,
-.viewport-hint-icon[data-tooltip]:focus-within::after {
+.tp3d-editor-info-icon[data-tooltip]:focus-within::after {
   opacity: 1;
 }
 
 .tp3d-editor-info-icon[data-tooltip='']::before,
-.tp3d-editor-info-icon[data-tooltip='']::after,
-.viewport-hint-icon[data-tooltip='']::before,
-.viewport-hint-icon[data-tooltip='']::after {
+.tp3d-editor-info-icon[data-tooltip='']::after {
   display: none;
-}
-
-/* Keep viewport hint icon anchored in the canvas (generic tooltip rule sets relative). */
-.viewport-hint-icon[data-tooltip] {
-  position: absolute;
-}
-
-#screen-editor .viewport-hint-icon[data-tooltip]::after {
-  left: 0;
-  right: auto;
-  transform: none;
-  width: max-content;
-  min-width: 0;
-  max-width: min(280px, calc(100vw - 24px));
-}
-
-#screen-editor .viewport-hint-icon[data-tooltip]::before {
-  left: 10px;
-  right: auto;
-  transform: none;
 }
 
 /* Final override: keep editor help-tooltips beside their trigger icon. */

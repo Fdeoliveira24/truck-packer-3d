@@ -807,16 +807,6 @@
 
               <div class="panel canvas-wrap">
                 <div id="viewport"></div>
-                <div class="tp3d-handling-rules-banner" id="editor-handling-rules-banner" hidden>
-                  <span class="tp3d-handling-rules-banner__text" id="editor-handling-rules-banner-text"></span>
-                  <button
-                    class="btn btn-primary"
-                    id="editor-handling-rules-validate-btn"
-                    type="button"
-                  >
-                    Validate Load Plan
-                  </button>
-                </div>
                 <div class="viewport-toolbar" id="viewport-toolbar">
                   <button class="toolbar-btn" id="btn-editor-left" type="button" data-tooltip="Toggle case browser">
                     <i class="fa-solid fa-boxes-stacked"></i>
@@ -848,16 +838,46 @@
                     PDF
                   </button>
                 </div>
-                <button
-                  class="viewport-hint-icon"
-                  id="viewport-hint-icon"
-                  type="button"
-                  aria-label="Editor tips"
-                  aria-expanded="false"
-                  data-tooltip="Click to select. Drag to move. Shift+Click for multi-select. Scroll to zoom."
-                >
-                  <i class="fa-solid fa-circle-info"></i>
-                </button>
+                <div class="tp3d-editor-validation-status" id="editor-validation-status" hidden>
+                  <button
+                    class="tp3d-editor-validation-status__btn"
+                    id="editor-validation-status-btn"
+                    type="button"
+                    aria-label="Load plan needs review"
+                    aria-expanded="false"
+                    aria-controls="editor-validation-popover"
+                    aria-describedby="editor-validation-hint-body"
+                  >
+                    <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+                  </button>
+                  <div class="tp3d-status-card tp3d-editor-validation-hint" id="editor-validation-hint" role="tooltip">
+                    <span class="tp3d-status-card__title">Load plan needs review</span>
+                    <span class="tp3d-status-card__body" id="editor-validation-hint-body">Loading rules have changed.</span>
+                  </div>
+                  <div
+                    class="tp3d-editor-validation-popover"
+                    id="editor-validation-popover"
+                    role="dialog"
+                    aria-modal="false"
+                    aria-labelledby="editor-validation-popover-title"
+                    hidden
+                  >
+                    <div class="tp3d-editor-validation-popover__title" id="editor-validation-popover-title">
+                      Load plan needs review
+                    </div>
+                    <p class="tp3d-editor-validation-popover__body">
+                      A case’s loading rules changed after this plan was last checked. Review the plan to make sure the
+                      cargo still follows the latest rules.
+                    </p>
+                    <button
+                      class="btn btn-primary tp3d-editor-validation-popover__action"
+                      id="editor-handling-rules-validate-btn"
+                      type="button"
+                    >
+                      Check Load Plan
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <div class="panel right" id="editor-right">

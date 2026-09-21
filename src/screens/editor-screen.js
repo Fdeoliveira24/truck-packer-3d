@@ -3571,34 +3571,105 @@ export function createEditorScreen({
     const btnShare = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-share'));
     const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
-    const viewportHintBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('viewport-hint-icon'));
-    const handlingRulesBannerEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-handling-rules-banner'));
-    const handlingRulesBannerTextEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-handling-rules-banner-text'));
+    const validationStatusEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-validation-status'));
+    const validationStatusBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('editor-validation-status-btn'));
+    const validationPopoverEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-validation-popover'));
     const handlingRulesValidateBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('editor-handling-rules-validate-btn'));
     let packNotesButton = null;
 
-    // Renders the "Validation required" banner for the actively-displayed Pack.
-    // Never mutates cargo on its own — opening/rendering the Editor must never
-    // move cargo; only the explicit Validate Load Plan click below does that.
-    function renderHandlingRulesBanner(pack) {
-      if (!handlingRulesBannerEl) return;
+    // Handling Rules validation STATUS: a compact warning icon plus a small anchored
+    // panel. Presentation only — PackLibrary.isHandlingRulesValidationRequired() is
+    // still the sole authority for "stale", and only the explicit "Check Load Plan"
+    // click below mutates cargo. Rendering the icon and opening the panel never move
+    // cargo. (The hover/focus status card is pure CSS and shares no state with the panel.)
+    let validationPopoverOpen = false;
+    let validationPopoverPackId = null;
+
+    // Document listeners exist ONLY while the panel is open (added on open, removed
+    // on close), so nothing accumulates across Editor re-renders. Capture phase so a
+    // press on the 3D canvas still dismisses it even if the scene stops propagation.
+    function onValidationPopoverPointerDown(ev) {
+      if (!(ev.target instanceof Node)) return;
+      if (validationStatusEl && validationStatusEl.contains(ev.target)) return;
+      setValidationPopoverOpen(false);
+    }
+
+    function onValidationPopoverKeydown(ev) {
+      if (ev.key !== 'Escape') return;
+      ev.stopPropagation();
+      setValidationPopoverOpen(false, { restoreFocus: true });
+    }
+
+    function setValidationPopoverOpen(open, { restoreFocus = false } = {}) {
+      if (!validationStatusBtn || !validationPopoverEl) return;
+      const next = Boolean(open);
+      if (next === validationPopoverOpen) return;
+      const focusInside = Boolean(
+        validationStatusEl && document.activeElement && validationStatusEl.contains(document.activeElement)
+      );
+      validationPopoverOpen = next;
+      validationPopoverEl.hidden = !next;
+      validationStatusBtn.setAttribute('aria-expanded', next ? 'true' : 'false');
+      if (next) {
+        document.addEventListener('pointerdown', onValidationPopoverPointerDown, true);
+        document.addEventListener('keydown', onValidationPopoverKeydown, true);
+        return;
+      }
+      document.removeEventListener('pointerdown', onValidationPopoverPointerDown, true);
+      document.removeEventListener('keydown', onValidationPopoverKeydown, true);
+      validationPopoverPackId = null;
+      if (restoreFocus && focusInside) validationStatusBtn.focus();
+    }
+
+    // Shows the compact warning only while the actively-displayed Pack requires
+    // validation; otherwise hides it and closes the panel (also on a Pack switch).
+    function renderHandlingRulesStatus(pack) {
+      if (!validationStatusEl) return;
       const stale = Boolean(pack) &&
         PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases());
-      handlingRulesBannerEl.hidden = !stale;
-      if (stale && handlingRulesBannerTextEl) {
-        handlingRulesBannerTextEl.textContent =
-          'Handling Rules changed. Validate this Load Plan before relying on its placement.';
+      validationStatusEl.hidden = !stale;
+      if (!stale || (validationPopoverOpen && validationPopoverPackId !== pack.id)) {
+        setValidationPopoverOpen(false);
       }
+    }
+
+    function focusAfterValidationAction() {
+      if (validationStatusEl && !validationStatusEl.hidden && validationStatusBtn && !validationStatusBtn.disabled) {
+        validationStatusBtn.focus();
+        return;
+      }
+      const toolbarTarget = [btnAutopack, btnLeft, btnRight]
+        .find(btn => btn && !btn.hidden && !btn.disabled);
+      if (toolbarTarget) toolbarTarget.focus();
+    }
+
+    if (validationStatusBtn) {
+      validationStatusBtn.addEventListener('click', () => {
+        // Informational only: opening the panel never validates or mutates cargo.
+        validationPopoverPackId = StateStore.get('currentPackId');
+        setValidationPopoverOpen(!validationPopoverOpen);
+      });
     }
 
     if (handlingRulesValidateBtn) {
       handlingRulesValidateBtn.addEventListener('click', () => {
-        if (editorMutationBlocked()) return;
+        // Do not return focus to the status before validation: a successful render
+        // hides it. Focus a visible destination only after the resulting state renders.
+        setValidationPopoverOpen(false);
+        if (editorMutationBlocked()) {
+          focusAfterValidationAction();
+          return;
+        }
         const packId = StateStore.get('currentPackId');
-        if (!packId) return;
+        if (!packId) {
+          focusAfterValidationAction();
+          return;
+        }
         const result = PackLibrary.validateLoadPlan(packId, CaseLibrary.getCases());
         if (!result) {
           UIComponents.showToast('Validation failed. Please try again.', 'error');
+          render();
+          focusAfterValidationAction();
           return;
         }
         const summary = result.summary || {};
@@ -3616,6 +3687,7 @@ export function createEditorScreen({
         }
         UIComponents.showToast(message, tone);
         render();
+        focusAfterValidationAction();
       });
     }
 
@@ -3686,7 +3758,6 @@ export function createEditorScreen({
     const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
     let showCaseFilters = false;
     let caseBrowserGroupBy = 'category';
-    let viewportHintOpen = false;
     let sceneHostResizeObserver = null;
     // Pending (uncommitted) truck geometry edited via the preset/shape dropdowns.
     // The committed truck stays pack.truck and the scene keeps rendering it until the
@@ -3702,13 +3773,6 @@ export function createEditorScreen({
     function clearPendingTruck() {
       pendingTruck = null;
     }
-    function setViewportHintOpen(open) {
-      if (!viewportHintBtn) return;
-      viewportHintOpen = Boolean(open);
-      viewportHintBtn.classList.toggle('is-open', viewportHintOpen);
-      viewportHintBtn.setAttribute('aria-expanded', viewportHintOpen ? 'true' : 'false');
-    }
-
     function getAutoPackResultsHost() {
       return viewportEl ? viewportEl.closest('.canvas-wrap') : null;
     }
@@ -4284,30 +4348,6 @@ export function createEditorScreen({
           );
         });
       }
-      if (viewportHintBtn) {
-        viewportHintBtn.addEventListener('click', ev => {
-          ev.stopPropagation();
-          setViewportHintOpen(!viewportHintOpen);
-        });
-        viewportHintBtn.addEventListener('keydown', ev => {
-          if (ev.key === 'Escape') {
-            setViewportHintOpen(false);
-            ev.stopPropagation();
-            return;
-          }
-          if (ev.key === 'Enter' || ev.key === ' ') {
-            ev.preventDefault();
-            setViewportHintOpen(!viewportHintOpen);
-          }
-        });
-        document.addEventListener('click', ev => {
-          if (!viewportHintOpen) return;
-          if (!(ev.target instanceof Node)) return;
-          if (viewportHintBtn.contains(ev.target)) return;
-          setViewportHintOpen(false);
-        });
-      }
-
       const handleViewportChange = Utils.debounce(() => {
         if (StateStore.get('currentScreen') === 'editor') onActivated();
       }, 160);
@@ -4334,7 +4374,10 @@ export function createEditorScreen({
     }
 
     function render() {
-      if (StateStore.get('currentScreen') !== 'editor') return;
+      if (StateStore.get('currentScreen') !== 'editor') {
+        setValidationPopoverOpen(false);
+        return;
+      }
       ensureScene();
 
       const packId = StateStore.get('currentPackId');
@@ -4348,7 +4391,7 @@ export function createEditorScreen({
         renderCaseBrowser();
         renderInspectorNoPack();
         renderAutoPackResultsPanel(null);
-        renderHandlingRulesBanner(null);
+        renderHandlingRulesStatus(null);
         SceneManager.resize();
         return;
       }
@@ -4361,7 +4404,7 @@ export function createEditorScreen({
       renderCaseBrowser();
       renderInspector(pack);
       renderAutoPackResultsPanel(pack);
-      renderHandlingRulesBanner(pack);
+      renderHandlingRulesStatus(pack);
       SceneManager.resize();
     }
 
@@ -4381,6 +4424,8 @@ export function createEditorScreen({
     }
 
     function onActivated() {
+      // Entering (or re-entering) the Editor always starts with the status panel closed.
+      setValidationPopoverOpen(false);
       if (!supportsWebGL || !viewportEl) return;
       ensureScene();
       scheduleEditorSceneLayoutSync();

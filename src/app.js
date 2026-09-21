@@ -6965,7 +6965,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           prevScreen = nextScreen;
 
           AppShell.renderShell();
-          if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
+          EditorUI.render();
         }
 
         if (changes.caseLibrary || changes.packLibrary || changes.folderLibrary || changes._undo || changes._redo || changes._replace) {

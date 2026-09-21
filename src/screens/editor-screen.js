@@ -3633,6 +3633,16 @@ export function createEditorScreen({
       }
     }
 
+    function focusAfterValidationAction() {
+      if (validationStatusEl && !validationStatusEl.hidden && validationStatusBtn && !validationStatusBtn.disabled) {
+        validationStatusBtn.focus();
+        return;
+      }
+      const toolbarTarget = [btnAutopack, btnLeft, btnRight]
+        .find(btn => btn && !btn.hidden && !btn.disabled);
+      if (toolbarTarget) toolbarTarget.focus();
+    }
+
     if (validationStatusBtn) {
       validationStatusBtn.addEventListener('click', () => {
         // Informational only: opening the panel never validates or mutates cargo.
@@ -3641,20 +3651,25 @@ export function createEditorScreen({
       });
     }
 
-    // The panel closes as soon as the explicit action is taken; the toast below
-    // reports the result and render() hides the icon if the Pack is now current.
-    if (handlingRulesValidateBtn) {
-      handlingRulesValidateBtn.addEventListener('click', () => setValidationPopoverOpen(false, { restoreFocus: true }));
-    }
-
     if (handlingRulesValidateBtn) {
       handlingRulesValidateBtn.addEventListener('click', () => {
-        if (editorMutationBlocked()) return;
+        // Do not return focus to the status before validation: a successful render
+        // hides it. Focus a visible destination only after the resulting state renders.
+        setValidationPopoverOpen(false);
+        if (editorMutationBlocked()) {
+          focusAfterValidationAction();
+          return;
+        }
         const packId = StateStore.get('currentPackId');
-        if (!packId) return;
+        if (!packId) {
+          focusAfterValidationAction();
+          return;
+        }
         const result = PackLibrary.validateLoadPlan(packId, CaseLibrary.getCases());
         if (!result) {
           UIComponents.showToast('Validation failed. Please try again.', 'error');
+          render();
+          focusAfterValidationAction();
           return;
         }
         const summary = result.summary || {};
@@ -3672,6 +3687,7 @@ export function createEditorScreen({
         }
         UIComponents.showToast(message, tone);
         render();
+        focusAfterValidationAction();
       });
     }
 
@@ -4358,7 +4374,10 @@ export function createEditorScreen({
     }
 
     function render() {
-      if (StateStore.get('currentScreen') !== 'editor') return;
+      if (StateStore.get('currentScreen') !== 'editor') {
+        setValidationPopoverOpen(false);
+        return;
+      }
       ensureScene();
 
       const packId = StateStore.get('currentPackId');

@@ -496,7 +496,10 @@ export function createPacksScreen({
       status.setAttribute('aria-describedby', PACK_STATUS_CARD_BODY_ID);
       status.tabIndex = 0;
       status.innerHTML = '<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>';
-      status.addEventListener('keydown', ev => ev.stopPropagation());
+      status.addEventListener('keydown', ev => {
+        if (ev.key === 'Enter' || ev.key === ' ') ev.preventDefault();
+        ev.stopPropagation();
+      });
       status.addEventListener('click', ev => ev.stopPropagation());
 
       // Visible while hovered OR keyboard/touch-focused — one card either way, never two.
@@ -518,7 +521,7 @@ export function createPacksScreen({
         pressType = '';
         sync();
       });
-      status.addEventListener('blur', () => { focused = false; sync(); });
+      status.addEventListener('blur', () => { focused = false; pressType = ''; sync(); });
       ensurePackStatusCard();
       return status;
     }

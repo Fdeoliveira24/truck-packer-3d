@@ -1977,11 +1977,114 @@ test('CASE-DELETION UI: both Cases-screen delete paths delegate to the single or
   const single = casesSource.slice(casesSource.indexOf('async function deleteCase(caseId) {'), casesSource.indexOf('// Import Cases dialog extracted'));
   const bulk = casesSource.slice(casesSource.indexOf('async function bulkDeleteSelected() {'), casesSource.indexOf('function initTableHeaders() {'));
   assert.ok(single.length > 200 && bulk.length > 200);
-  assert.match(single, /PackLibrary\.commitCaseDeletion\(\[caseId\]\)/);
-  assert.match(bulk, /PackLibrary\.commitCaseDeletion\(ids\)/);
+  assert.match(single, /try\s*\{\s*result = PackLibrary\.commitCaseDeletion\(\[caseId\]\)/, 'single delete calls commitCaseDeletion inside try/catch');
+  assert.match(bulk, /try\s*\{\s*result = PackLibrary\.commitCaseDeletion\(ids\)/, 'bulk delete calls commitCaseDeletion inside try/catch');
   for (const body of [single, bulk]) {
     assert.doesNotMatch(body, /StateStore\.set|computeStats|nextPackLibrary/, 'no ad-hoc per-screen Pack rebuilding remains');
   }
   assert.match(single, /Deleting it will remove those items\. Cargo that depended on them for support may be repositioned or moved to staging\./);
   assert.match(single, /UIComponents\.showToast\('Case deleted', 'info'\)/);
+});
+
+// --- Behavioral harness: execute the exact production deleteCase/bulkDeleteSelected
+// closures (via vm.runInNewContext, same technique as HANDLING-RULES-P0A above) against
+// mocked dependencies, so failure/no-op/success feedback is proven at runtime rather
+// than only by source-text regex. ---
+function makeToastSpy() {
+  const calls = [];
+  return { calls, showToast: (message, type) => calls.push({ message, type }) };
+}
+
+function buildDeleteCase({ caseData = { id: 'case-1', name: 'Case A' }, packs = [], confirmResult = true, mutationBlocked = false, commitCaseDeletion }) {
+  const toast = makeToastSpy();
+  const errors = [];
+  const src = casesSource.slice(casesSource.indexOf('async function deleteCase(caseId) {'), casesSource.indexOf('// Import Cases dialog extracted')).trim();
+  const context = {
+    CaseLibrary: { getById: () => caseData },
+    PackLibrary: { getPacks: () => packs, commitCaseDeletion },
+    UIComponents: { confirm: async () => confirmResult, showToast: toast.showToast },
+    mutationBlockedWhileBusy: () => mutationBlocked,
+    console: { error: (...args) => errors.push(args) },
+  };
+  const deleteCase = runInNewContext(`(${src})`, context);
+  return { deleteCase, toast, errors };
+}
+
+function buildBulkDelete({ selected = ['a', 'b'], confirmResult = true, mutationBlocked = false, commitCaseDeletion }) {
+  const toast = makeToastSpy();
+  const errors = [];
+  const calls = { clearSelection: 0, render: 0 };
+  const src = casesSource.slice(casesSource.indexOf('async function bulkDeleteSelected() {'), casesSource.indexOf('function initTableHeaders() {')).trim();
+  const context = {
+    selectedIds: new Set(selected),
+    PackLibrary: { commitCaseDeletion },
+    UIComponents: { confirm: async () => confirmResult, showToast: toast.showToast },
+    mutationBlockedWhileBusy: () => mutationBlocked,
+    clearSelection: () => { calls.clearSelection += 1; },
+    render: () => { calls.render += 1; },
+    console: { error: (...args) => errors.push(args) },
+  };
+  const bulkDeleteSelected = runInNewContext(`(${src})`, context);
+  return { bulkDeleteSelected, toast, errors, calls };
+}
+
+test('CASE-DELETION UI-ERR single: a thrown preparation failure produces error feedback, never success, and is logged not swallowed', async () => {
+  const { deleteCase, toast, errors } = buildDeleteCase({ commitCaseDeletion: () => { throw new Error('boom'); } });
+  await deleteCase('case-1');
+  assert.equal(toast.calls.length, 1, 'exactly one toast is shown');
+  assert.equal(toast.calls[0].type, 'error');
+  assert.match(toast.calls[0].message, /Couldn't delete this case\. Nothing was changed\./);
+  assert.doesNotMatch(toast.calls[0].message, /boom/, 'internal error detail is not exposed to the user');
+  assert.equal(errors.length, 1, 'the failure is logged for diagnostics');
+});
+
+test('CASE-DELETION UI-NOOP single: zero deletedCaseIds does not produce "Case deleted"', async () => {
+  const { deleteCase, toast } = buildDeleteCase({ commitCaseDeletion: () => ({ deletedCaseIds: [] }) });
+  await deleteCase('case-1');
+  assert.deepEqual(toast.calls, [{ message: 'Case was already removed.', type: 'warning' }]);
+});
+
+test('CASE-DELETION UI-OK single: an actual successful result still shows "Case deleted"', async () => {
+  const { deleteCase, toast } = buildDeleteCase({ commitCaseDeletion: () => ({ deletedCaseIds: ['case-1'] }) });
+  await deleteCase('case-1');
+  assert.deepEqual(toast.calls, [{ message: 'Case deleted', type: 'info' }]);
+});
+
+test('CASE-DELETION UI-ERR bulk: a thrown preparation failure produces error feedback and does not clear selection as a fake success', async () => {
+  const { bulkDeleteSelected, toast, errors, calls } = buildBulkDelete({
+    selected: ['a', 'b'],
+    commitCaseDeletion: () => { throw new Error('boom'); },
+  });
+  await bulkDeleteSelected();
+  assert.equal(toast.calls.length, 1);
+  assert.equal(toast.calls[0].type, 'error');
+  assert.match(toast.calls[0].message, /Couldn't delete the selected cases\. Nothing was changed\./);
+  assert.doesNotMatch(toast.calls[0].message, /boom/, 'internal error detail is not exposed to the user');
+  assert.equal(calls.clearSelection, 0, 'selection is not cleared as a fake success');
+  assert.equal(calls.render, 0);
+  assert.equal(errors.length, 1);
+});
+
+test('CASE-DELETION UI-NOOP bulk: zero deletedCaseIds is not reported as success and selection/UI state is preserved for retry', async () => {
+  const { bulkDeleteSelected, toast, calls } = buildBulkDelete({
+    selected: ['a', 'b'],
+    commitCaseDeletion: () => ({ deletedCaseIds: [] }),
+  });
+  await bulkDeleteSelected();
+  assert.equal(toast.calls.length, 1);
+  assert.equal(toast.calls[0].type, 'warning');
+  assert.doesNotMatch(toast.calls[0].message, /Deleted 0/);
+  assert.equal(calls.clearSelection, 0, 'selection is preserved so the user can understand/retry');
+  assert.equal(calls.render, 0);
+});
+
+test('CASE-DELETION UI-COUNT bulk: success feedback and cleanup use the actual deletedCaseIds count, not the originally selected count', async () => {
+  const { bulkDeleteSelected, toast, calls } = buildBulkDelete({
+    selected: ['a', 'b', 'c'],
+    commitCaseDeletion: () => ({ deletedCaseIds: ['a', 'b'] }),
+  });
+  await bulkDeleteSelected();
+  assert.deepEqual(toast.calls, [{ message: 'Deleted 2 case(s).', type: 'info' }]);
+  assert.equal(calls.clearSelection, 1, 'a real successful deletion still clears the selection');
+  assert.equal(calls.render, 1);
 });

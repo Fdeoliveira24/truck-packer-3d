@@ -411,10 +411,24 @@ export function createCasesScreen({
       if (!ok) return;
       if (mutationBlockedWhileBusy()) return;
 
-      PackLibrary.commitCaseDeletion(ids);
+      let result;
+      try {
+        result = PackLibrary.commitCaseDeletion(ids);
+      } catch (err) {
+        console.error('[Cases] Bulk case deletion failed:', err);
+        UIComponents.showToast("Couldn't delete the selected cases. Nothing was changed.", 'error');
+        return;
+      }
+
+      const deletedCount = result.deletedCaseIds.length;
+      if (!deletedCount) {
+        UIComponents.showToast('Selected cases were already removed.', 'warning');
+        return;
+      }
+
       clearSelection();
       render();
-      UIComponents.showToast(`Deleted ${count} case(s).`, 'info');
+      UIComponents.showToast(`Deleted ${deletedCount} case(s).`, 'info');
     }
 
     function initTableHeaders() {
@@ -1559,7 +1573,20 @@ export function createCasesScreen({
       if (!ok) return;
       if (mutationBlockedWhileBusy()) return;
 
-      PackLibrary.commitCaseDeletion([caseId]);
+      let result;
+      try {
+        result = PackLibrary.commitCaseDeletion([caseId]);
+      } catch (err) {
+        console.error('[Cases] Case deletion failed:', err);
+        UIComponents.showToast("Couldn't delete this case. Nothing was changed.", 'error');
+        return;
+      }
+
+      if (!result.deletedCaseIds.length) {
+        UIComponents.showToast('Case was already removed.', 'warning');
+        return;
+      }
+
       UIComponents.showToast('Case deleted', 'info');
     }
 

@@ -1558,7 +1558,7 @@ test('CASE-DELETION B: a staged-only Case is removed without revalidating unrela
   const caseO = mkCase({ id: 'case-o' });
   const library = [caseS, caseO];
   const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 });
-  const signature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [other] }, library);
+  const signature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [other], truck: RECT_TRUCK }, library);
   const pack = deletionPack('pack-b', [
     other,
     mkInst('staged-1', 'case-s', { x: 200, y: 5, z: 0 }, 'staged'),
@@ -1604,7 +1604,7 @@ test('CASE-DELETION C: a packed floor item with no dependents is removed, remain
   const library = [caseF, caseO];
   const floorItem = mkInst('floor', 'case-f', { x: 20, y: 5, z: 0 });
   const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 });
-  const priorSignature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [floorItem, other] }, library);
+  const priorSignature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [floorItem, other], truck: RECT_TRUCK }, library);
   seedDeletion(StateStore, { cases: library, packs: [deletionPack('pack-c', [floorItem, other], { handlingRulesValidatedSignature: priorSignature })] });
 
   const result = PackLibrary.commitCaseDeletion(['case-f']);
@@ -1724,7 +1724,7 @@ test('CASE-DELETION F: an already-signed Pack gets its signature re-stamped agai
   const library = [caseS, caseT];
   const base = mkInst('base', 'case-s', { x: 60, y: 5, z: 0 });
   const top = mkInst('top', 'case-t', { x: 60, y: 15, z: 0 });
-  const priorSignature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [base, top] }, library);
+  const priorSignature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [base, top], truck: RECT_TRUCK }, library);
   seedDeletion(StateStore, { cases: library, packs: [deletionPack('pack-f', [base, top], { handlingRulesValidatedSignature: priorSignature })] });
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(StateStore.get('packLibrary')[0], library), false, 'fixture starts current');
 
@@ -1892,7 +1892,7 @@ test('CASE-DELETION J2: incomplete validation whose stored signature coincidenta
     mkInst('B', 'case-o', { x: 60, y: 5, z: 0 }),
     mkInst('ghost', 'case-missing', { x: 90, y: 5, z: 0 }),
   ];
-  const coincidental = PackLibrary.buildHandlingRulesValiditySignature({ cases: cases.filter(i => i.id !== 'A') }, nextLibrary);
+  const coincidental = PackLibrary.buildHandlingRulesValiditySignature({ cases: cases.filter(i => i.id !== 'A'), truck: RECT_TRUCK }, nextLibrary);
   seedDeletion(StateStore, { cases: [caseS, caseO], packs: [deletionPack('pack-j2', cases, { handlingRulesValidatedSignature: coincidental })] });
 
   PackLibrary.commitCaseDeletion(['case-s']);
@@ -2087,4 +2087,273 @@ test('CASE-DELETION UI-COUNT bulk: success feedback and cleanup use the actual d
   assert.deepEqual(toast.calls, [{ message: 'Deleted 2 case(s).', type: 'info' }]);
   assert.equal(calls.clearSelection, 1, 'a real successful deletion still clears the selection');
   assert.equal(calls.render, 1);
+});
+
+// ============================================================================
+// HANDLING RULES — PHYSICAL/STORED PLACEMENT PARITY
+//
+// buildHandlingRulesValiditySignature()/commitCaseHandlingRuleChange()/
+// commitCaseDeletion() now share one active-load membership authority:
+//   - placement === 'staged' is NEVER a member, regardless of physical pose;
+//   - a non-staged instance participates only when it physically occupies
+//     usable truck geometry (containment only — support/collision/rear
+//     retention/orientation legality remain a separate revalidation concern);
+//   - a non-staged instance that cannot be safely classified (missing Case,
+//     missing/malformed position or dimensions) is conservatively ACTIVE.
+// ============================================================================
+
+test('HANDLING-RULES MEMBERSHIP four-case matrix: explicit staged state always wins; physical containment governs the rest', async () => {
+  const { PackLibrary } = await freshModules();
+  const caseInside = mkCase({ id: 'case-inside' });
+  const caseOutside = mkCase({ id: 'case-outside' });
+  const caseStagedOutside = mkCase({ id: 'case-staged-outside' });
+  const caseStagedInside = mkCase({ id: 'case-staged-inside' });
+  const library = [caseInside, caseOutside, caseStagedOutside, caseStagedInside];
+  const cases = [
+    mkInst('a', 'case-inside', { x: 20, y: 5, z: 0 }, 'packed'), // 1: stored packed + physically inside
+    mkInst('b', 'case-outside', { x: 500, y: 5, z: 0 }, 'packed'), // 2: stored packed + physically outside
+    mkInst('c', 'case-staged-outside', { x: 500, y: 5, z: 20 }, 'staged'), // 3: stored staged + physically outside
+    mkInst('d', 'case-staged-inside', { x: 40, y: 5, z: 0 }, 'staged'), // 4: stored staged + physically inside
+  ];
+  const pack = deletionPack('pack-matrix', cases);
+
+  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
+
+  assert.match(signature, /case-inside:/, 'A: stored packed + physically inside participates');
+  assert.doesNotMatch(signature, /case-outside:/, 'B: stored packed + physically outside is excluded');
+  assert.doesNotMatch(signature, /case-staged-outside:/, 'C: stored staged + physically outside is excluded');
+  assert.doesNotMatch(signature, /case-staged-inside:/, 'D: stored staged + physically inside is STILL excluded — explicit staged always wins over physical geometry');
+});
+
+test('HANDLING-RULES MEMBERSHIP: hidden active packed cargo still participates; groupId is irrelevant', async () => {
+  const { PackLibrary } = await freshModules();
+  const caseHidden = mkCase({ id: 'case-hidden' });
+  const caseGrouped = mkCase({ id: 'case-grouped' });
+  const library = [caseHidden, caseGrouped];
+  const hiddenActive = { ...mkInst('hidden-1', 'case-hidden', { x: 20, y: 5, z: 0 }, 'packed'), hidden: true };
+  const groupedActive = { ...mkInst('grouped-1', 'case-grouped', { x: 40, y: 5, z: 0 }, 'packed'), groupId: 'group-x' };
+  const pack = deletionPack('pack-hidden-group', [hiddenActive, groupedActive]);
+
+  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
+
+  assert.match(signature, /case-hidden:/, 'hidden packed cargo remains physical cargo and still participates');
+  assert.match(signature, /case-grouped:/, 'groupId does not affect membership');
+});
+
+test('HANDLING-RULES MEMBERSHIP: a missing Case definition on non-staged cargo is conservatively represented as caseId:missing', async () => {
+  const { PackLibrary } = await freshModules();
+  const caseO = mkCase({ id: 'case-o' });
+  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
+  const missingCasePacked = mkInst('ghost', 'case-does-not-exist', { x: 500, y: 5, z: 0 }, 'packed');
+  const missingCaseStaged = mkInst('staged-ghost', 'case-also-missing', { x: 20, y: 5, z: 0 }, 'staged');
+  const pack = deletionPack('pack-missing', [other, missingCasePacked, missingCaseStaged]);
+
+  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseO]);
+
+  assert.match(signature, /case-does-not-exist:missing/, 'a non-staged instance with a missing Case is conservatively active, not silently excluded');
+  assert.doesNotMatch(signature, /case-also-missing/, 'explicit staged state still wins exclusion even for an unresolved Case');
+});
+
+test('HANDLING-RULES MEMBERSHIP: malformed/missing position or dimensions on non-staged cargo is conservatively active — never invents origin geometry', async () => {
+  const { PackLibrary } = await freshModules();
+  const caseMalformedPos = mkCase({ id: 'case-malformed-pos' });
+  const caseNoTransform = mkCase({ id: 'case-no-transform' });
+  const caseBadDims = mkCase({ id: 'case-bad-dims', dimensions: { length: 0, width: 10, height: 10 } });
+  const library = [caseMalformedPos, caseNoTransform, caseBadDims];
+
+  const malformedPos = mkInst('malformed-pos', 'case-malformed-pos', { x: Number.NaN, y: 5, z: 0 }, 'packed');
+  const noTransform = { ...mkInst('no-transform', 'case-no-transform', { x: 0, y: 0, z: 0 }, 'packed'), transform: undefined };
+  const badDims = mkInst('bad-dims', 'case-bad-dims', { x: 20, y: 5, z: 0 }, 'packed');
+  const pack = deletionPack('pack-malformed', [malformedPos, noTransform, badDims]);
+
+  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
+
+  assert.match(signature, /case-malformed-pos:/, 'a malformed (NaN) position never falls back to the origin; it stays conservatively active');
+  assert.match(signature, /case-no-transform:/, 'a missing transform/position is conservatively active');
+  assert.match(signature, /case-bad-dims:/, 'malformed Case dimensions are conservatively active — full geometry is required before a physical classification is trusted');
+});
+
+const WHEEL_TRUCK = {
+  length: 120, width: 60, height: 60, shapeMode: 'wheelWells',
+  shapeConfig: { wellHeight: 20, wellWidth: 12, wellLength: 40, wellOffsetFromRear: 40 },
+};
+
+test('HANDLING-RULES MEMBERSHIP stays Wheel-Well shape-aware: a legal resting-on-the-well placement participates; a position inside the blocked well body does not', async () => {
+  const { PackLibrary } = await freshModules();
+  const caseOnWell = mkCase({ id: 'case-on-well' });
+  const caseInWell = mkCase({ id: 'case-in-well' });
+  const library = [caseOnWell, caseInWell];
+  // Resting exactly on top of the left wheel well (bottom y === wellHeight):
+  // only the Wheel-Well-aware zone/union authority includes this, not a plain
+  // full-rectangle containment check.
+  const onWell = mkInst('on-well', 'case-on-well', { x: 60, y: 25, z: -24 }, 'packed');
+  // Physically inside the blocked wheel-well body itself (below wellHeight,
+  // within the well's side strip) — never a legal usable position.
+  const inWell = mkInst('in-well', 'case-in-well', { x: 60, y: 10, z: -24 }, 'packed');
+  const pack = { id: 'pack-wheel', title: 'Wheel', truck: WHEEL_TRUCK, cases: [onWell, inWell], stats: {} };
+
+  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
+
+  assert.match(signature, /case-on-well:/, 'a legal Wheel-Well-aware resting placement participates');
+  assert.doesNotMatch(signature, /case-in-well:/, 'a position physically inside the blocked wheel-well body is excluded');
+});
+
+const FRONT_BONUS_TRUCK = {
+  length: 120, width: 60, height: 60, shapeMode: 'frontBonus',
+  shapeConfig: { bonusLength: 30, bonusHeight: 24 },
+};
+
+test('HANDLING-RULES MEMBERSHIP stays Front-Overhang shape-aware: a legal raised-deck placement participates; a cab-void placement does not', async () => {
+  const { PackLibrary } = await freshModules();
+  const caseOnDeck = mkCase({ id: 'case-on-deck' });
+  const caseCabVoid = mkCase({ id: 'case-cab-void' });
+  const library = [caseOnDeck, caseCabVoid];
+  // Resting on the raised over-cab deck (x beyond truck.length, y >= bonusHeight).
+  const onDeck = mkInst('on-deck', 'case-on-deck', { x: 135, y: 30, z: 0 }, 'packed');
+  // Inside the cab void beneath the deck — a structurally blocked volume.
+  const cabVoid = mkInst('cab-void', 'case-cab-void', { x: 135, y: 10, z: 0 }, 'packed');
+  const pack = { id: 'pack-front', title: 'Front', truck: FRONT_BONUS_TRUCK, cases: [onDeck, cabVoid], stats: {} };
+
+  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
+
+  assert.match(signature, /case-on-deck:/, 'a legal raised-deck Front Overhang placement participates');
+  assert.doesNotMatch(signature, /case-cab-void:/, 'a cab-void/blocked placement never becomes active membership');
+});
+
+test('HANDLING-RULES CASE-EDIT PARITY A: a Case referenced only by stored-packed, physically-outside cargo does not mark the Pack affected', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a' });
+  const ghostOutside = mkInst('ghost', 'case-a', { x: 500, y: 5, z: 0 }, 'packed');
+  const pack = deletionPack('pack-outside', [ghostOutside]); // no stored signature: legacy/unsigned
+  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+
+  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(after, before, 'an unaffected Pack is the identical, untouched object — no cargo movement');
+  assert.equal('handlingRulesValidatedSignature' in after, false, 'no false stale flag is invented for physically-outside ghost cargo');
+});
+
+test('HANDLING-RULES CASE-EDIT PARITY B: a Case referenced by genuinely active physical cargo still marks the Pack affected', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a' });
+  const activeInside = mkInst('active', 'case-a', { x: 20, y: 5, z: 0 }, 'packed');
+  const pack = deletionPack('pack-active', [activeInside]);
+  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+
+  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.notEqual(after, before, 'a genuinely affected Pack is updated exactly as before this fix');
+  assert.equal('handlingRulesValidatedSignature' in after, true, 'the Pack is baselined so it correctly reports Validation required');
+});
+
+test('HANDLING-RULES CASE-EDIT PARITY C: a Case referenced only by explicit staged-inside cargo leaves the Pack unaffected', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a' });
+  const stagedInside = mkInst('staged-inside', 'case-a', { x: 20, y: 5, z: 0 }, 'staged');
+  const pack = deletionPack('pack-staged-inside', [stagedInside]);
+  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+
+  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(after, before, 'explicit staged state wins even though the saved pose sits inside the truck');
+  assert.equal('handlingRulesValidatedSignature' in after, false);
+});
+
+test('HANDLING-RULES CASE-EDIT PARITY D: hidden active packed cargo still marks the Pack affected', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a' });
+  const hiddenActive = { ...mkInst('hidden-active', 'case-a', { x: 20, y: 5, z: 0 }, 'packed'), hidden: true };
+  const pack = deletionPack('pack-hidden', [hiddenActive]);
+  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+
+  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.notEqual(after, before, 'hidden packed cargo remains physical cargo and still affects the Pack');
+  assert.equal('handlingRulesValidatedSignature' in after, true);
+});
+
+test('HANDLING-RULES CASE-DELETION PARITY A: a stored-packed but physically-outside target takes the staged-only fast path', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const library = [caseS, caseO];
+  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
+  const ghostOutside = mkInst('ghost', 'case-s', { x: 500, y: 5, z: 0 }, 'packed'); // stored packed, physically outside
+  const signature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [other], truck: RECT_TRUCK }, library);
+  const pack = deletionPack('pack-parity-a', [other, ghostOutside], { handlingRulesValidatedSignature: signature });
+  seedDeletion(StateStore, { cases: library, packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+  const watch = watchStateWrites(StateStore);
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+  watch.off();
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.deepEqual(after.cases.map(i => i.id), ['other']);
+  assert.equal(after.cases[0], before.cases[0], 'unrelated packed cargo is never revalidated/moved');
+  assert.equal(after.handlingRulesValidatedSignature, signature, 'the prior signature is preserved exactly — no unnecessary revalidation from an outside ghost');
+  assert.deepEqual(result.packImpacts, [{ packId: 'pack-parity-a', removedInstanceCount: 1, revalidated: false, validationComplete: null, repositionedCount: 0, stagedCount: 0 }]);
+  assert.equal(watch.writes.length, 1);
+  assert.equal(StateStore.undo(), true);
+  assert.equal(StateStore.undo(), false, 'the staged-only deletion remains exactly one history step');
+});
+
+test('HANDLING-RULES CASE-DELETION PARITY B: an explicit staged-inside target still takes the staged-only fast path', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const library = [caseS, caseO];
+  const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 }, 'packed');
+  const stagedInside = mkInst('staged-inside', 'case-s', { x: 20, y: 5, z: 0 }, 'staged'); // stored staged, physically inside
+  const signature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [other], truck: RECT_TRUCK }, library);
+  const pack = deletionPack('pack-parity-b', [other, stagedInside], { handlingRulesValidatedSignature: signature });
+  seedDeletion(StateStore, { cases: library, packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(after.cases[0], before.cases[0], 'unrelated packed cargo is never revalidated/moved');
+  assert.equal(after.handlingRulesValidatedSignature, signature, 'staged-inside removal never invalidates a signature it never contributed to');
+  assert.deepEqual(result.packImpacts, [{ packId: 'pack-parity-b', removedInstanceCount: 1, revalidated: false, validationComplete: null, repositionedCount: 0, stagedCount: 0 }]);
+});
+
+test('HANDLING-RULES CASE-DELETION PARITY C: deleting genuinely active physical cargo keeps the existing full revalidation behavior', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const activeInside = mkInst('active', 'case-s', { x: 20, y: 5, z: 0 }, 'packed');
+  const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 }, 'packed');
+  const pack = deletionPack('pack-parity-c', [activeInside, other]);
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  assert.deepEqual(result.packImpacts, [{ packId: 'pack-parity-c', removedInstanceCount: 1, revalidated: true, validationComplete: true, repositionedCount: 0, stagedCount: 0 }]);
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, StateStore.get('caseLibrary')));
+});
+
+test('HANDLING-RULES CASE-DELETION PARITY D: an unresolved non-staged target does not take the unsafe staged-only fast path', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
+  // Non-staged, malformed position: cannot be safely classified => conservative.
+  const malformedTarget = mkInst('malformed', 'case-s', { x: Number.NaN, y: 5, z: 0 }, 'packed');
+  const pack = deletionPack('pack-parity-d', [other, malformedTarget]);
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const impact = result.packImpacts.find(i => i.packId === 'pack-parity-d');
+  assert.equal(impact.revalidated, true, 'an unresolved non-staged target forces full revalidation rather than an unsafe staged-only assumption');
 });

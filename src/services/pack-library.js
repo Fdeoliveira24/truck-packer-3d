@@ -2088,6 +2088,118 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
   return { case: nextCase, category, packImpact };
 }
 
+// Atomic Case Deletion orchestration (single or bulk). Removes the Case
+// definition(s) AND every instance referencing them (packed, staged, hidden,
+// grouped or not) from every Load Plan, repairs/stages any remaining cargo
+// that physically depended on the removed cargo, and publishes Case Library +
+// Pack Library through exactly one StateStore.set() so one Undo/Redo covers the
+// whole deletion. The full next state is built BEFORE publishing: an
+// unexpected throw leaves the store untouched.
+//
+// Unlike commitCaseHandlingRuleChange (where the Case still exists and unseen
+// Packs' cargo is deliberately left alone), deletion is an already-confirmed,
+// destructive, cross-Pack operation, so every affected Pack is repaired even
+// when it is not the Pack open in the Editor. Per Pack:
+//   - no target instance: the original object is returned untouched;
+//   - target instances all staged: they are removed and stats/lastEdited
+//     refreshed, but no cargo is revalidated and the stored signature is kept
+//     exactly (a staged instance is never a support/obstacle, so its removal
+//     cannot change packed validity and must not create a false stale state);
+//   - any physical (non-staged) target instance: the remaining Pack goes
+//     through the canonical whole-Pack revalidation against the NEXT Case
+//     Library. Only a COMPLETE revalidation stamps a fresh signature (this
+//     also closes the legacy-unsigned hole); an incomplete one is persisted
+//     as non-current so the Pack reports "Validation required".
+export function commitCaseDeletion(caseIds) {
+  const oldCaseLibrary = CaseLibrary.getCases();
+  const requested = new Set((Array.isArray(caseIds) ? caseIds : [caseIds]).filter(id => id != null));
+  const deletedCaseIds = oldCaseLibrary
+    .filter(c => c && requested.has(c.id))
+    .map(c => c.id);
+  const result = { deletedCaseIds, removedInstanceCount: 0, packImpacts: [] };
+  if (!deletedCaseIds.length) return result;
+
+  const deletedSet = new Set(deletedCaseIds);
+  const nextCaseLibrary = oldCaseLibrary.filter(c => !(c && deletedSet.has(c.id)));
+  const now = Date.now();
+  const packs = getPacks();
+
+  const nextPacks = packs.map(p => {
+    const cases = Array.isArray(p && p.cases) ? p.cases : [];
+    const targets = cases.filter(inst => inst && deletedSet.has(inst.caseId));
+    if (!targets.length) return p;
+
+    const remaining = cases.filter(inst => !(inst && deletedSet.has(inst.caseId)));
+    const impact = {
+      packId: p.id,
+      removedInstanceCount: targets.length,
+      revalidated: false,
+      validationComplete: null,
+      repositionedCount: 0,
+      stagedCount: 0,
+    };
+    result.removedInstanceCount += targets.length;
+    result.packImpacts.push(impact);
+
+    // Same physical-cargo definition the reconcile engine uses: only an
+    // explicitly staged instance is exempt from being packed cargo/support.
+    if (!targets.some(inst => inst.placement !== 'staged')) {
+      const stagedOnly = { ...p, cases: remaining, lastEdited: now };
+      stagedOnly.stats = computeStats(stagedOnly, nextCaseLibrary);
+      return stagedOnly;
+    }
+
+    const revalidation = revalidateManualPlacements({ ...p, cases: remaining }, nextCaseLibrary, {
+      repairDependents: true,
+      preserveStagedPositions: true,
+    });
+    const next = { ...revalidation.pack, lastEdited: now };
+    next.stats = computeStats(next, nextCaseLibrary);
+
+    const previousSignature = p.handlingRulesValidatedSignature;
+    const currentSignature = buildHandlingRulesValiditySignature(next, nextCaseLibrary);
+    if (revalidation.validationComplete === true) {
+      next.handlingRulesValidatedSignature = currentSignature;
+    } else if (!previousSignature || previousSignature === currentSignature) {
+      // Same non-current marker updateCasesWithManualRevalidation uses: a
+      // legacy/unsigned or coincidentally-current Pack must never look
+      // certified after an unresolved validation.
+      next.handlingRulesValidatedSignature = 'v1:incomplete';
+    } else {
+      next.handlingRulesValidatedSignature = previousSignature;
+    }
+
+    impact.revalidated = true;
+    impact.validationComplete = revalidation.validationComplete === true;
+    // A vertical snap is reported as "adjusted", a local re-settle as
+    // "repaired"; either way the cargo was repositioned but kept packed.
+    impact.repositionedCount = (revalidation.adjustedIds || []).length + (revalidation.repairedIds || []).length;
+    impact.stagedCount = (revalidation.stagedIds || []).length;
+    return next;
+  });
+
+  const setPatch = { caseLibrary: nextCaseLibrary };
+  if (result.packImpacts.length) {
+    setPatch.packLibrary = nextPacks;
+
+    // selectedInstanceIds is transient (not part of the Undo history slice) and
+    // screen navigation does not clear it, so deleted instances of the Pack open
+    // in the Editor would otherwise linger in a multi-selection. Prune only IDs
+    // that no longer exist in that Pack, inside the same single write.
+    const selected = StateStore.get('selectedInstanceIds');
+    const currentPackId = StateStore.get('currentPackId');
+    const currentPack = currentPackId ? nextPacks.find(p => p && p.id === currentPackId) : null;
+    if (currentPack && Array.isArray(selected) && selected.length) {
+      const surviving = new Set((currentPack.cases || []).filter(Boolean).map(inst => inst.id));
+      const keptSelection = selected.filter(id => surviving.has(id));
+      if (keptSelection.length !== selected.length) setPatch.selectedInstanceIds = keptSelection;
+    }
+  }
+
+  StateStore.set(setPatch);
+  return result;
+}
+
 // Completeness concerns packed placements only; staged integrity diagnostics
 // remain available without preventing certification of understood truck cargo.
 export function getPackedReconciliationCompleteness(pack, reconciliation, failedIds = []) {

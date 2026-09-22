@@ -1474,3 +1474,617 @@ test('VALIDATION-STATUS-UI Scope: Load Plans icon is black at rest and amber onl
   assert.match(mainCss, /\[data-tooltip\]::after\s*\{[^}]*content:\s*attr\(data-tooltip\);/);
   assert.match(mainCss, /\.tp3d-editor-info-icon\[data-tooltip\]::after/);
 });
+
+// ============================================================================
+// CASE-DELETION: PackLibrary.commitCaseDeletion — Load Plan integrity when a
+// Case definition (single or bulk) is deleted. Deleted instances must vanish
+// from every Pack; remaining cargo that physically depended on removed packed
+// cargo must be repaired/staged through the canonical revalidation; and no Pack
+// may be left silently "current" after an unvalidated packed change. One
+// confirmed deletion is exactly one StateStore.set() / one Undo step.
+// ============================================================================
+
+function seedDeletion(StateStore, { cases, packs, currentScreen = 'cases', currentPackId = null, selectedInstanceIds = [] }) {
+  StateStore.init({
+    currentScreen, currentPackId, selectedInstanceIds,
+    caseLibrary: cases, packLibrary: packs, folderLibrary: [], preferences: {},
+  });
+}
+
+function watchStateWrites(StateStore) {
+  const writes = [];
+  const off = StateStore.subscribe(changes => writes.push(Object.keys(changes).sort()));
+  return { writes, off };
+}
+
+function deletionPack(id, cases, extra = {}) {
+  return { id, title: id, truck: RECT_TRUCK, cases, lastEdited: 123, stats: {}, ...extra };
+}
+
+function assertNoOrphanCaseIds(StateStore, ...deletedIds) {
+  const remaining = new Set(StateStore.get('caseLibrary').map(c => c.id));
+  for (const pack of StateStore.get('packLibrary')) {
+    for (const inst of pack.cases) {
+      for (const id of deletedIds) assert.notEqual(inst.caseId, id, `no instance in ${pack.id} may still reference deleted Case ${id}`);
+    }
+  }
+  for (const id of deletedIds) assert.equal(remaining.has(id), false, `Case ${id} must be gone from the Case Library`);
+}
+
+// The persisted result must be a fixed point of the canonical validator: nothing
+// left to adjust, stage or fail — i.e. no floating / invalid packed cargo.
+function assertPersistedPackIsValid(PackLibrary, pack, caseLibrary, message) {
+  const again = PackLibrary.revalidateManualPlacements(pack, caseLibrary, { repairDependents: true, preserveStagedPositions: true });
+  assert.equal(again.validationComplete, true, `${message}: validation must be complete`);
+  assert.deepEqual(again.summary, { adjusted: 0, repaired: 0, staged: 0, failed: 0 }, `${message}: nothing may need further adjustment`);
+}
+
+test('CASE-DELETION A: an unused Case is deleted with no Pack change and exactly one atomic write', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a' });
+  const caseUnused = mkCase({ id: 'case-unused' });
+  const pack = deletionPack('pack-1', [mkInst('a1', 'case-a', { x: 60, y: 5, z: 0 })]);
+  seedDeletion(StateStore, { cases: [caseA, caseUnused], packs: [pack] });
+  const packsBefore = StateStore.get('packLibrary');
+  const watch = watchStateWrites(StateStore);
+
+  const result = PackLibrary.commitCaseDeletion(['case-unused']);
+  watch.off();
+
+  assert.deepEqual(result, { deletedCaseIds: ['case-unused'], removedInstanceCount: 0, packImpacts: [] });
+  assert.deepEqual(StateStore.get('caseLibrary').map(c => c.id), ['case-a']);
+  assert.equal(StateStore.get('packLibrary'), packsBefore, 'the Pack Library must be the very same array — no Pack touched');
+  assert.equal(watch.writes.length, 1, 'exactly one StateStore write');
+  assert.deepEqual(watch.writes[0], ['caseLibrary']);
+});
+
+test('CASE-DELETION A2: an id that is not in the Case Library is a complete no-op (no write, no history)', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a' });
+  seedDeletion(StateStore, { cases: [caseA], packs: [deletionPack('pack-1', [mkInst('a1', 'case-a', { x: 60, y: 5, z: 0 })])] });
+  const watch = watchStateWrites(StateStore);
+
+  const result = PackLibrary.commitCaseDeletion(['does-not-exist']);
+  watch.off();
+
+  assert.deepEqual(result, { deletedCaseIds: [], removedInstanceCount: 0, packImpacts: [] });
+  assert.equal(watch.writes.length, 0);
+  assert.equal(StateStore.undo(), false, 'no history entry may be created');
+});
+
+test('CASE-DELETION B: a staged-only Case is removed without revalidating unrelated packed cargo and the signature is preserved exactly', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const library = [caseS, caseO];
+  const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 });
+  const signature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [other] }, library);
+  const pack = deletionPack('pack-b', [
+    other,
+    mkInst('staged-1', 'case-s', { x: 200, y: 5, z: 0 }, 'staged'),
+    { ...mkInst('staged-hidden', 'case-s', { x: 200, y: 5, z: 20 }, 'staged'), hidden: true },
+  ], { handlingRulesValidatedSignature: signature });
+  seedDeletion(StateStore, { cases: library, packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.deepEqual(after.cases.map(i => i.id), ['other']);
+  assert.equal(after.cases[0], before.cases[0], 'unrelated packed cargo must be the identical object (never revalidated/moved)');
+  assert.equal(after.handlingRulesValidatedSignature, signature, 'the stored signature is preserved exactly');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false, 'a staged-only deletion must not create a false stale state');
+  assert.equal(after.stats.totalCases, 1, 'stats are recomputed against the final Pack');
+  assert.ok(after.lastEdited > 123, 'lastEdited is refreshed for a Pack whose cargo changed');
+  assert.deepEqual(result.packImpacts, [{ packId: 'pack-b', removedInstanceCount: 2, revalidated: false, validationComplete: null, repositionedCount: 0, stagedCount: 0 }]);
+  assertNoOrphanCaseIds(StateStore, 'case-s');
+});
+
+test('CASE-DELETION B2: a legacy unsigned Pack affected only by staged instances stays unsigned and is not made stale', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const pack = deletionPack('pack-legacy', [
+    mkInst('other', 'case-o', { x: 60, y: 5, z: 0 }),
+    mkInst('staged-1', 'case-s', { x: 200, y: 5, z: 0 }, 'staged'),
+  ]);
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
+
+  PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal('handlingRulesValidatedSignature' in after, false, 'no signature may be invented for a staged-only deletion');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
+});
+
+test('CASE-DELETION C: a packed floor item with no dependents is removed, remaining cargo stays valid, and a fresh current signature is persisted', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseF = mkCase({ id: 'case-f' });
+  const caseO = mkCase({ id: 'case-o' });
+  const library = [caseF, caseO];
+  const floorItem = mkInst('floor', 'case-f', { x: 20, y: 5, z: 0 });
+  const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 });
+  const priorSignature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [floorItem, other] }, library);
+  seedDeletion(StateStore, { cases: library, packs: [deletionPack('pack-c', [floorItem, other], { handlingRulesValidatedSignature: priorSignature })] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-f']);
+
+  const after = StateStore.get('packLibrary')[0];
+  const nextLibrary = StateStore.get('caseLibrary');
+  assert.deepEqual(after.cases.map(i => i.id), ['other']);
+  assert.equal(after.cases[0].placement, 'packed');
+  assert.deepEqual(after.cases[0].transform.position, { x: 60, y: 5, z: 0 }, 'a valid remaining item does not move');
+  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, nextLibrary));
+  assert.notEqual(after.handlingRulesValidatedSignature, priorSignature, 'the deleted Case no longer contributes to the signature');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), false);
+  assert.equal(after.stats.totalCases, 1);
+  assert.ok(after.lastEdited > 123);
+  assert.deepEqual(result.packImpacts, [{ packId: 'pack-c', removedInstanceCount: 1, revalidated: true, validationComplete: true, repositionedCount: 0, stagedCount: 0 }]);
+});
+
+test('CASE-DELETION D1: deleting a support Case re-settles the dependent above it — never left floating', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const pack = deletionPack('pack-d1', [
+    mkInst('base', 'case-s', { x: 60, y: 5, z: 0 }),
+    mkInst('top', 'case-t', { x: 60, y: 15, z: 0 }),
+  ]);
+  seedDeletion(StateStore, { cases: [caseS, caseT], packs: [pack] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  const top = after.cases.find(i => i.id === 'top');
+  assert.equal(after.cases.some(i => i.id === 'base'), false);
+  assert.equal(top.placement, 'packed', 'a dependent that can legally settle stays packed');
+  assert.equal(top.transform.position.y, 5, 'it drops onto the floor instead of floating at the old stack height (y=15)');
+  assertPersistedPackIsValid(PackLibrary, after, StateStore.get('caseLibrary'), 'D1');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
+  assert.equal(result.packImpacts[0].repositionedCount, 1);
+  assert.equal(result.packImpacts[0].stagedCount, 0);
+});
+
+test('CASE-DELETION D2: a dependent that can no longer be legally supported anywhere moves to staging instead of staying packed', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  // 30-long dependent on two 10-long supports (67% >= MIN_SUPPORT_FRACTION 0.5).
+  // Deleting one leaves 33%, and the 30-long floor cannot host it beside the survivor.
+  const truck = { length: 30, width: 10, height: 30, shapeMode: 'rect' };
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const caseW = mkCase({ id: 'case-w', dimensions: { length: 30, width: 10, height: 10 }, volume: 3000 });
+  const pack = { ...deletionPack('pack-d2', [
+    mkInst('A', 'case-s', { x: 5, y: 5, z: 0 }),
+    mkInst('B', 'case-o', { x: 15, y: 5, z: 0 }),
+    mkInst('D', 'case-w', { x: 15, y: 15, z: 0 }),
+  ]), truck };
+  seedDeletion(StateStore, { cases: [caseS, caseO, caseW], packs: [pack] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  const byId = new Map(after.cases.map(i => [i.id, i]));
+  assert.equal(byId.has('A'), false);
+  assert.equal(byId.get('D').placement, 'staged', 'the unsupportable dependent is staged, never left packed/floating');
+  assert.equal(byId.get('B').placement, 'packed', 'unrelated packed cargo stays packed');
+  assert.deepEqual(byId.get('B').transform.position, { x: 15, y: 5, z: 0 });
+  assertPersistedPackIsValid(PackLibrary, after, StateStore.get('caseLibrary'), 'D2');
+  assert.equal(result.packImpacts[0].stagedCount, 1);
+  assert.equal(result.packImpacts[0].validationComplete, true);
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false,
+    'a completed validation that staged the dependent is a certified, current result');
+});
+
+test('CASE-DELETION E1: a legacy UNSIGNED Pack with a deleted packed instance receives a fresh signature once whole-Pack validation completes', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const pack = deletionPack('pack-e1', [
+    mkInst('base', 'case-s', { x: 60, y: 5, z: 0 }),
+    mkInst('top', 'case-t', { x: 60, y: 15, z: 0 }),
+  ]);
+  assert.equal('handlingRulesValidatedSignature' in pack, false, 'fixture is legacy/unsigned');
+  seedDeletion(StateStore, { cases: [caseS, caseT], packs: [pack] });
+
+  PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, StateStore.get('caseLibrary')));
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
+});
+
+test('CASE-DELETION E2: a legacy UNSIGNED Pack whose validation is incomplete cannot look current', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  // 'ghost' is a packed instance whose Case definition is already missing: the
+  // whole-Pack validation can never complete.
+  const pack = deletionPack('pack-e2', [
+    mkInst('A', 'case-s', { x: 20, y: 5, z: 0 }),
+    mkInst('B', 'case-o', { x: 60, y: 5, z: 0 }),
+    mkInst('ghost', 'case-missing', { x: 90, y: 5, z: 0 }),
+  ]);
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(result.packImpacts[0].validationComplete, false);
+  assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete', 'uses the existing non-current marker');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true,
+    'the Pack must report review required');
+  assert.deepEqual(after.cases.map(i => i.id), ['B', 'ghost'], 'the safest result is still committed: deleted instance gone, the rest preserved');
+  assertNoOrphanCaseIds(StateStore, 'case-s');
+});
+
+test('CASE-DELETION F: an already-signed Pack gets its signature re-stamped against the next Case Library', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const library = [caseS, caseT];
+  const base = mkInst('base', 'case-s', { x: 60, y: 5, z: 0 });
+  const top = mkInst('top', 'case-t', { x: 60, y: 15, z: 0 });
+  const priorSignature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [base, top] }, library);
+  seedDeletion(StateStore, { cases: library, packs: [deletionPack('pack-f', [base, top], { handlingRulesValidatedSignature: priorSignature })] });
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(StateStore.get('packLibrary')[0], library), false, 'fixture starts current');
+
+  PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  const nextLibrary = StateStore.get('caseLibrary');
+  assert.notEqual(after.handlingRulesValidatedSignature, priorSignature);
+  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, nextLibrary));
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), false);
+});
+
+test('CASE-DELETION G: one Case in several Load Plans — every affected Pack is processed, the unaffected Pack is the identical object, no orphan ids remain', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const caseO = mkCase({ id: 'case-o' });
+  const packedPack = deletionPack('pack-packed', [
+    mkInst('base', 'case-s', { x: 60, y: 5, z: 0 }),
+    mkInst('top', 'case-t', { x: 60, y: 15, z: 0 }),
+  ]);
+  const stagedPack = deletionPack('pack-staged', [
+    mkInst('o', 'case-o', { x: 60, y: 5, z: 0 }),
+    mkInst('s-staged', 'case-s', { x: 200, y: 5, z: 0 }, 'staged'),
+  ]);
+  const untouchedPack = deletionPack('pack-untouched', [mkInst('u', 'case-o', { x: 30, y: 5, z: 0 })]);
+  seedDeletion(StateStore, { cases: [caseS, caseT, caseO], packs: [packedPack, stagedPack, untouchedPack] });
+  const before = StateStore.get('packLibrary');
+  const watch = watchStateWrites(StateStore);
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+  watch.off();
+
+  const after = StateStore.get('packLibrary');
+  assert.equal(after[2], before[2], 'a Pack without the Case is returned as the identical object');
+  assert.equal(after[2].lastEdited, 123, 'no timestamp churn for an unaffected Pack');
+  assert.ok(after[0].lastEdited > 123 && after[1].lastEdited > 123, 'both affected Packs are updated');
+  assert.equal(after[0].cases.find(i => i.id === 'top').transform.position.y, 5);
+  assert.deepEqual(after[1].cases.map(i => i.id), ['o']);
+  assert.deepEqual(result.packImpacts.map(i => i.packId), ['pack-packed', 'pack-staged']);
+  assert.equal(result.removedInstanceCount, 2);
+  assertNoOrphanCaseIds(StateStore, 'case-s');
+  assert.equal(watch.writes.length, 1, 'all Packs + the Case Library publish in a single write');
+});
+
+test('CASE-DELETION G2: bulk deletion of several Cases is one write and revalidates against the FINAL Case Library', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const caseT = mkCase({ id: 'case-t' });
+  const pack = deletionPack('pack-bulk', [
+    mkInst('base', 'case-s', { x: 60, y: 5, z: 0 }),
+    mkInst('top', 'case-t', { x: 60, y: 15, z: 0 }),
+    mkInst('o1', 'case-o', { x: 20, y: 5, z: 0 }),
+  ]);
+  seedDeletion(StateStore, { cases: [caseS, caseO, caseT], packs: [pack] });
+  const watch = watchStateWrites(StateStore);
+
+  const result = PackLibrary.commitCaseDeletion(['case-s', 'case-o']);
+  watch.off();
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.deepEqual(result.deletedCaseIds, ['case-s', 'case-o']);
+  assert.deepEqual(StateStore.get('caseLibrary').map(c => c.id), ['case-t']);
+  assert.deepEqual(after.cases.map(i => i.id), ['top']);
+  assert.equal(after.cases[0].transform.position.y, 5);
+  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, StateStore.get('caseLibrary')));
+  assert.equal(result.packImpacts.length, 1, 'a Pack hit by several deleted Cases is revalidated once, not once per Case');
+  assertNoOrphanCaseIds(StateStore, 'case-s', 'case-o');
+  assert.equal(watch.writes.length, 1);
+});
+
+test('CASE-DELETION H: packed + staged + hidden + grouped target instances all go; only the physical packed impact drives repair; other groups are left alone', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const caseO = mkCase({ id: 'case-o' });
+  const pack = deletionPack('pack-h', [
+    mkInst('s-packed', 'case-s', { x: 60, y: 5, z: 0 }),
+    { ...mkInst('s-hidden-packed', 'case-s', { x: 20, y: 5, z: 0 }), hidden: true },
+    mkInst('s-staged', 'case-s', { x: 200, y: 5, z: 0 }, 'staged'),
+    { ...mkInst('s-staged-hidden', 'case-s', { x: 200, y: 5, z: 20 }, 'staged'), hidden: true },
+    { ...mkInst('s-staged-grouped', 'case-s', { x: 200, y: 5, z: -20 }, 'staged'), groupId: 'g1' },
+    mkInst('dependent', 'case-t', { x: 60, y: 15, z: 0 }),
+    { ...mkInst('keeper', 'case-o', { x: 200, y: 5, z: 40 }, 'staged'), groupId: 'g1' },
+  ]);
+  seedDeletion(StateStore, { cases: [caseS, caseT, caseO], packs: [pack] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  const byId = new Map(after.cases.map(i => [i.id, i]));
+  assert.deepEqual([...byId.keys()].sort(), ['dependent', 'keeper']);
+  assert.equal(byId.get('dependent').placement, 'packed');
+  assert.equal(byId.get('dependent').transform.position.y, 5, 'the dependent above the packed target settles');
+  assert.equal(byId.get('keeper').groupId, 'g1', 'groupId is instance-local: a surviving group member is untouched (no group registry to clean)');
+  assert.equal(result.packImpacts[0].removedInstanceCount, 5);
+  assert.equal(result.packImpacts[0].revalidated, true, 'a physical (packed/hidden-packed) target instance triggers whole-Pack revalidation');
+  assertNoOrphanCaseIds(StateStore, 'case-s');
+  assertPersistedPackIsValid(PackLibrary, after, StateStore.get('caseLibrary'), 'H');
+});
+
+test('CASE-DELETION I: one deletion is one history action — Undo restores Case + Pack effects together, Redo re-applies them', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const caseO = mkCase({ id: 'case-o' });
+  const packedPack = deletionPack('pack-i1', [
+    mkInst('base', 'case-s', { x: 60, y: 5, z: 0 }),
+    mkInst('top', 'case-t', { x: 60, y: 15, z: 0 }),
+  ], { handlingRulesValidatedSignature: 'v1:case-s:any:1:0:0|case-t:any:1:0:0' });
+  const stagedPack = deletionPack('pack-i2', [
+    mkInst('o', 'case-o', { x: 60, y: 5, z: 0 }),
+    mkInst('s-staged', 'case-s', { x: 200, y: 5, z: 0 }, 'staged'),
+  ]);
+  seedDeletion(StateStore, { cases: [caseS, caseT, caseO], packs: [packedPack, stagedPack] });
+  const beforeCases = StateStore.get('caseLibrary');
+  const beforePacks = StateStore.get('packLibrary');
+
+  PackLibrary.commitCaseDeletion(['case-s']);
+  const afterCases = StateStore.get('caseLibrary');
+  const afterPacks = StateStore.get('packLibrary');
+  assert.notDeepEqual(afterCases, beforeCases);
+  assert.notDeepEqual(afterPacks, beforePacks);
+
+  assert.equal(StateStore.undo(), true, 'a single Undo reverts the whole deletion');
+  assert.deepEqual(StateStore.get('caseLibrary'), beforeCases, 'Undo restores the deleted Case');
+  assert.deepEqual(StateStore.get('packLibrary'), beforePacks, 'Undo restores removed instances, repaired/staged cargo, signatures, stats and timestamps together');
+  assert.equal(StateStore.undo(), false, 'there is no second history entry to undo');
+
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(StateStore.get('caseLibrary'), afterCases, 'Redo re-applies the Case deletion');
+  assert.deepEqual(StateStore.get('packLibrary'), afterPacks, 'Redo re-applies the identical final Pack state');
+  assert.equal(StateStore.redo(), false);
+});
+
+test('CASE-DELETION J1: incomplete validation with a previously-current signature keeps a signature that cannot equal the current one', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const library = [caseS, caseO];
+  const cases = [
+    mkInst('A', 'case-s', { x: 20, y: 5, z: 0 }),
+    mkInst('B', 'case-o', { x: 60, y: 5, z: 0 }),
+    mkInst('ghost', 'case-missing', { x: 90, y: 5, z: 0 }),
+  ];
+  const priorSignature = PackLibrary.buildHandlingRulesValiditySignature({ cases }, library);
+  seedDeletion(StateStore, { cases: library, packs: [deletionPack('pack-j1', cases, { handlingRulesValidatedSignature: priorSignature })] });
+
+  PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  const nextLibrary = StateStore.get('caseLibrary');
+  assert.notEqual(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, nextLibrary));
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), true, 'never stamped current after an unresolved validation');
+});
+
+test('CASE-DELETION J2: incomplete validation whose stored signature coincidentally equals the new one is downgraded to the non-current marker', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const nextLibrary = [caseO];
+  const cases = [
+    mkInst('A', 'case-s', { x: 20, y: 5, z: 0 }),
+    mkInst('B', 'case-o', { x: 60, y: 5, z: 0 }),
+    mkInst('ghost', 'case-missing', { x: 90, y: 5, z: 0 }),
+  ];
+  const coincidental = PackLibrary.buildHandlingRulesValiditySignature({ cases: cases.filter(i => i.id !== 'A') }, nextLibrary);
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [deletionPack('pack-j2', cases, { handlingRulesValidatedSignature: coincidental })] });
+
+  PackLibrary.commitCaseDeletion(['case-s']);
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
+});
+
+test('CASE-DELETION L: preparation failure publishes nothing — no partial Case deletion, no Pack mutated beforehand, no history entry', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const good = deletionPack('pack-good', [
+    mkInst('base', 'case-s', { x: 60, y: 5, z: 0 }),
+    mkInst('top', 'case-t', { x: 60, y: 15, z: 0 }),
+  ]);
+  seedDeletion(StateStore, { cases: [caseS, caseT], packs: [good] });
+  // Second Pack throws when its instance is inspected — AFTER the first Pack has
+  // already been fully prepared (Packs are prepared in order).
+  const poisoned = mkInst('poison', 'case-t', { x: 60, y: 5, z: 0 });
+  Object.defineProperty(poisoned, 'caseId', { enumerable: true, get() { throw new Error('boom'); } });
+  StateStore.set({ packLibrary: [...StateStore.get('packLibrary'), deletionPack('pack-poison', [poisoned])] }, { skipHistory: true, skipNotify: true });
+  const casesBefore = StateStore.get('caseLibrary');
+  const packsBefore = StateStore.get('packLibrary');
+  const watch = watchStateWrites(StateStore);
+
+  assert.throws(() => PackLibrary.commitCaseDeletion(['case-s']), /boom/);
+  watch.off();
+
+  assert.equal(StateStore.get('caseLibrary'), casesBefore, 'the Case Library is untouched');
+  assert.equal(StateStore.get('packLibrary'), packsBefore, 'the Pack Library is untouched');
+  assert.equal(packsBefore[0].cases.length, 2, 'the already-prepared first Pack was never published');
+  assert.equal(watch.writes.length, 0, 'nothing was published');
+  assert.equal(StateStore.undo(), false, 'no history entry was created');
+});
+
+test('CASE-DELETION K1: deleted instances are pruned from the open Pack selection inside the same write; surviving ids (even repaired/staged ones) stay selected', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseT = mkCase({ id: 'case-t' });
+  const caseO = mkCase({ id: 'case-o' });
+  const pack = deletionPack('pack-k', [
+    mkInst('base', 'case-s', { x: 60, y: 5, z: 0 }),
+    mkInst('top', 'case-t', { x: 60, y: 15, z: 0 }),
+    mkInst('keep', 'case-o', { x: 20, y: 5, z: 0 }),
+  ]);
+  seedDeletion(StateStore, {
+    cases: [caseS, caseT, caseO], packs: [pack],
+    currentPackId: 'pack-k', selectedInstanceIds: ['base', 'top', 'keep'],
+  });
+  const watch = watchStateWrites(StateStore);
+
+  PackLibrary.commitCaseDeletion(['case-s']);
+  watch.off();
+
+  assert.deepEqual(StateStore.get('selectedInstanceIds'), ['top', 'keep'], 'only the removed id is pruned; unrelated selection is preserved in order');
+  assert.equal(watch.writes.length, 1, 'selection pruning rides the same single write');
+  assert.deepEqual(watch.writes[0], ['caseLibrary', 'packLibrary', 'selectedInstanceIds']);
+  assert.equal(StateStore.undo(), true);
+  assert.equal(StateStore.undo(), false, 'selection is transient and adds no history entry');
+});
+
+test('CASE-DELETION K2: selection is left exactly as-is when it does not reference removed instances, or when no Pack is open', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const openPack = deletionPack('pack-open', [mkInst('o1', 'case-o', { x: 20, y: 5, z: 0 })]);
+  const otherPack = deletionPack('pack-other', [mkInst('s1', 'case-s', { x: 60, y: 5, z: 0 })]);
+
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [openPack, otherPack], currentPackId: 'pack-open', selectedInstanceIds: ['o1'] });
+  const selectionBefore = StateStore.get('selectedInstanceIds');
+  PackLibrary.commitCaseDeletion(['case-s']);
+  assert.equal(StateStore.get('selectedInstanceIds'), selectionBefore, 'open Pack unaffected: selection is the identical array');
+
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [openPack, otherPack], currentPackId: null, selectedInstanceIds: ['s1'] });
+  PackLibrary.commitCaseDeletion(['case-s']);
+  assert.deepEqual(StateStore.get('selectedInstanceIds'), ['s1'], 'with no open Pack there is nothing to prune against');
+});
+
+test('CASE-DELETION UI: both Cases-screen delete paths delegate to the single orchestration, keep the toast, and warn about dependent cargo', () => {
+  const single = casesSource.slice(casesSource.indexOf('async function deleteCase(caseId) {'), casesSource.indexOf('// Import Cases dialog extracted'));
+  const bulk = casesSource.slice(casesSource.indexOf('async function bulkDeleteSelected() {'), casesSource.indexOf('function initTableHeaders() {'));
+  assert.ok(single.length > 200 && bulk.length > 200);
+  assert.match(single, /try\s*\{\s*result = PackLibrary\.commitCaseDeletion\(\[caseId\]\)/, 'single delete calls commitCaseDeletion inside try/catch');
+  assert.match(bulk, /try\s*\{\s*result = PackLibrary\.commitCaseDeletion\(ids\)/, 'bulk delete calls commitCaseDeletion inside try/catch');
+  for (const body of [single, bulk]) {
+    assert.doesNotMatch(body, /StateStore\.set|computeStats|nextPackLibrary/, 'no ad-hoc per-screen Pack rebuilding remains');
+  }
+  assert.match(single, /Deleting it will remove those items\. Cargo that depended on them for support may be repositioned or moved to staging\./);
+  assert.match(single, /UIComponents\.showToast\('Case deleted', 'info'\)/);
+});
+
+// --- Behavioral harness: execute the exact production deleteCase/bulkDeleteSelected
+// closures (via vm.runInNewContext, same technique as HANDLING-RULES-P0A above) against
+// mocked dependencies, so failure/no-op/success feedback is proven at runtime rather
+// than only by source-text regex. ---
+function makeToastSpy() {
+  const calls = [];
+  return { calls, showToast: (message, type) => calls.push({ message, type }) };
+}
+
+function buildDeleteCase({ caseData = { id: 'case-1', name: 'Case A' }, packs = [], confirmResult = true, mutationBlocked = false, commitCaseDeletion }) {
+  const toast = makeToastSpy();
+  const errors = [];
+  const src = casesSource.slice(casesSource.indexOf('async function deleteCase(caseId) {'), casesSource.indexOf('// Import Cases dialog extracted')).trim();
+  const context = {
+    CaseLibrary: { getById: () => caseData },
+    PackLibrary: { getPacks: () => packs, commitCaseDeletion },
+    UIComponents: { confirm: async () => confirmResult, showToast: toast.showToast },
+    mutationBlockedWhileBusy: () => mutationBlocked,
+    console: { error: (...args) => errors.push(args) },
+  };
+  const deleteCase = runInNewContext(`(${src})`, context);
+  return { deleteCase, toast, errors };
+}
+
+function buildBulkDelete({ selected = ['a', 'b'], confirmResult = true, mutationBlocked = false, commitCaseDeletion }) {
+  const toast = makeToastSpy();
+  const errors = [];
+  const calls = { clearSelection: 0, render: 0 };
+  const src = casesSource.slice(casesSource.indexOf('async function bulkDeleteSelected() {'), casesSource.indexOf('function initTableHeaders() {')).trim();
+  const context = {
+    selectedIds: new Set(selected),
+    PackLibrary: { commitCaseDeletion },
+    UIComponents: { confirm: async () => confirmResult, showToast: toast.showToast },
+    mutationBlockedWhileBusy: () => mutationBlocked,
+    clearSelection: () => { calls.clearSelection += 1; },
+    render: () => { calls.render += 1; },
+    console: { error: (...args) => errors.push(args) },
+  };
+  const bulkDeleteSelected = runInNewContext(`(${src})`, context);
+  return { bulkDeleteSelected, toast, errors, calls };
+}
+
+test('CASE-DELETION UI-ERR single: a thrown preparation failure produces error feedback, never success, and is logged not swallowed', async () => {
+  const { deleteCase, toast, errors } = buildDeleteCase({ commitCaseDeletion: () => { throw new Error('boom'); } });
+  await deleteCase('case-1');
+  assert.equal(toast.calls.length, 1, 'exactly one toast is shown');
+  assert.equal(toast.calls[0].type, 'error');
+  assert.match(toast.calls[0].message, /Couldn't delete this case\. Nothing was changed\./);
+  assert.doesNotMatch(toast.calls[0].message, /boom/, 'internal error detail is not exposed to the user');
+  assert.equal(errors.length, 1, 'the failure is logged for diagnostics');
+});
+
+test('CASE-DELETION UI-NOOP single: zero deletedCaseIds does not produce "Case deleted"', async () => {
+  const { deleteCase, toast } = buildDeleteCase({ commitCaseDeletion: () => ({ deletedCaseIds: [] }) });
+  await deleteCase('case-1');
+  assert.deepEqual(toast.calls, [{ message: 'Case was already removed.', type: 'warning' }]);
+});
+
+test('CASE-DELETION UI-OK single: an actual successful result still shows "Case deleted"', async () => {
+  const { deleteCase, toast } = buildDeleteCase({ commitCaseDeletion: () => ({ deletedCaseIds: ['case-1'] }) });
+  await deleteCase('case-1');
+  assert.deepEqual(toast.calls, [{ message: 'Case deleted', type: 'info' }]);
+});
+
+test('CASE-DELETION UI-ERR bulk: a thrown preparation failure produces error feedback and does not clear selection as a fake success', async () => {
+  const { bulkDeleteSelected, toast, errors, calls } = buildBulkDelete({
+    selected: ['a', 'b'],
+    commitCaseDeletion: () => { throw new Error('boom'); },
+  });
+  await bulkDeleteSelected();
+  assert.equal(toast.calls.length, 1);
+  assert.equal(toast.calls[0].type, 'error');
+  assert.match(toast.calls[0].message, /Couldn't delete the selected cases\. Nothing was changed\./);
+  assert.doesNotMatch(toast.calls[0].message, /boom/, 'internal error detail is not exposed to the user');
+  assert.equal(calls.clearSelection, 0, 'selection is not cleared as a fake success');
+  assert.equal(calls.render, 0);
+  assert.equal(errors.length, 1);
+});
+
+test('CASE-DELETION UI-NOOP bulk: zero deletedCaseIds is not reported as success and selection/UI state is preserved for retry', async () => {
+  const { bulkDeleteSelected, toast, calls } = buildBulkDelete({
+    selected: ['a', 'b'],
+    commitCaseDeletion: () => ({ deletedCaseIds: [] }),
+  });
+  await bulkDeleteSelected();
+  assert.equal(toast.calls.length, 1);
+  assert.equal(toast.calls[0].type, 'warning');
+  assert.doesNotMatch(toast.calls[0].message, /Deleted 0/);
+  assert.equal(calls.clearSelection, 0, 'selection is preserved so the user can understand/retry');
+  assert.equal(calls.render, 0);
+});
+
+test('CASE-DELETION UI-COUNT bulk: success feedback and cleanup use the actual deletedCaseIds count, not the originally selected count', async () => {
+  const { bulkDeleteSelected, toast, calls } = buildBulkDelete({
+    selected: ['a', 'b', 'c'],
+    commitCaseDeletion: () => ({ deletedCaseIds: ['a', 'b'] }),
+  });
+  await bulkDeleteSelected();
+  assert.deepEqual(toast.calls, [{ message: 'Deleted 2 case(s).', type: 'info' }]);
+  assert.equal(calls.clearSelection, 1, 'a real successful deletion still clears the selection');
+  assert.equal(calls.render, 1);
+});

@@ -411,21 +411,24 @@ export function createCasesScreen({
       if (!ok) return;
       if (mutationBlockedWhileBusy()) return;
 
-      const idSet = new Set(ids);
-      const nextCaseLibrary = CaseLibrary.getCases().filter(c => !idSet.has(c.id));
-      const nextPackLibrary = PackLibrary.getPacks().map(p => {
-        const prevCases = Array.isArray(p.cases) ? p.cases : [];
-        const nextCases = prevCases.filter(i => !idSet.has(i.caseId));
-        if (nextCases.length === prevCases.length) return p;
-        const next = { ...p, cases: nextCases, lastEdited: Date.now() };
-        next.stats = PackLibrary.computeStats(next);
-        return next;
-      });
+      let result;
+      try {
+        result = PackLibrary.commitCaseDeletion(ids);
+      } catch (err) {
+        console.error('[Cases] Bulk case deletion failed:', err);
+        UIComponents.showToast("Couldn't delete the selected cases. Nothing was changed.", 'error');
+        return;
+      }
 
-      StateStore.set({ caseLibrary: nextCaseLibrary, packLibrary: nextPackLibrary });
+      const deletedCount = result.deletedCaseIds.length;
+      if (!deletedCount) {
+        UIComponents.showToast('Selected cases were already removed.', 'warning');
+        return;
+      }
+
       clearSelection();
       render();
-      UIComponents.showToast(`Deleted ${count} case(s).`, 'info');
+      UIComponents.showToast(`Deleted ${deletedCount} case(s).`, 'info');
     }
 
     function initTableHeaders() {
@@ -1559,7 +1562,7 @@ export function createCasesScreen({
       if (mutationBlockedWhileBusy()) return;
       const packsUsing = PackLibrary.getPacks().filter(p => (p.cases || []).some(i => i.caseId === caseId));
       const msg = packsUsing.length
-        ? `This case is used in ${packsUsing.length} load plan(s). Deleting it will remove it from those load plans.`
+        ? `This case is used in ${packsUsing.length} load plan(s). Deleting it will remove those items. Cargo that depended on them for support may be repositioned or moved to staging.`
         : 'This cannot be undone.';
       const ok = await UIComponents.confirm({
         title: `Delete "${caseData.name}"?`,
@@ -1570,16 +1573,20 @@ export function createCasesScreen({
       if (!ok) return;
       if (mutationBlockedWhileBusy()) return;
 
-      const nextCaseLibrary = CaseLibrary.getCases().filter(c => c.id !== caseId);
-      const nextPackLibrary = PackLibrary.getPacks().map(p => {
-        const nextCases = (p.cases || []).filter(i => i.caseId !== caseId);
-        if (nextCases.length === (p.cases || []).length) return p;
-        const next = { ...p, cases: nextCases, lastEdited: Date.now() };
-        next.stats = PackLibrary.computeStats(next);
-        return next;
-      });
+      let result;
+      try {
+        result = PackLibrary.commitCaseDeletion([caseId]);
+      } catch (err) {
+        console.error('[Cases] Case deletion failed:', err);
+        UIComponents.showToast("Couldn't delete this case. Nothing was changed.", 'error');
+        return;
+      }
 
-      StateStore.set({ caseLibrary: nextCaseLibrary, packLibrary: nextPackLibrary });
+      if (!result.deletedCaseIds.length) {
+        UIComponents.showToast('Case was already removed.', 'warning');
+        return;
+      }
+
       UIComponents.showToast('Case deleted', 'info');
     }
 

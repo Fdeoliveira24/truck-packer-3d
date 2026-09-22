@@ -25015,9 +25015,9 @@ test('APP-STABILIZATION-PHASE3 Packs and Cases re-check guarded mutation commit 
     'case create/edit entry and modal commit share the guard');
   assert.match(casesSrc, /ImportCasesDialog\.open\(\{ beforeMutate \}\)/,
     'case import receives a commit-time lifecycle callback');
-  assert.match(casesSrc, /async function bulkDeleteSelected\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*StateStore\.set/,
+  assert.match(casesSrc, /async function bulkDeleteSelected\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.commitCaseDeletion/,
     'bulk case delete checks both before and after confirmation');
-  assert.match(casesSrc, /async function deleteCase\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*StateStore\.set/,
+  assert.match(casesSrc, /async function deleteCase\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.commitCaseDeletion/,
     'single case delete checks both before and after confirmation');
   assert.match(casesSrc, /!mutationBlockedWhileBusy\(\{ notify: false \}\)[\s\S]*CategoryService\.resetToDefaultIfNoCases/,
     'render-time empty-category normalization cannot mutate while busy');

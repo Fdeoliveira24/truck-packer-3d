@@ -1448,10 +1448,15 @@ test('VALIDATION-STATUS-UI Scope: old technical copy is gone, the locked copy is
     'no Case-level validation status exists or is implied');
 });
 
-test('VALIDATION-STATUS-UI Scope: Load Plans icon is black at rest and amber only on hover/keyboard focus; the shared card is a restrained token-based surface; the global tooltip system is untouched', () => {
+test('VALIDATION-STATUS-UI Scope: Load Plans icon is amber (warning color) at rest and on hover/keyboard focus, since the free Font Awesome build has no outline warning glyph to lighten its weight instead; the shared card is a restrained token-based surface; the global tooltip system is untouched', () => {
+  // PR #58 polish pass (2026-09): superseded the prior "black at rest, amber
+  // only on hover" contract this test asserted — fa-regular
+  // fa-triangle-exclamation is Pro-only on the FA 6.5.1 free build this
+  // project loads (verified live: renders as a missing glyph), so instead of
+  // swapping to a differently-shaped icon, the existing solid triangle stays
+  // permanently in its warning color to read as attention-worthy at rest.
   const status = mainCss.match(/\.tp3d-validation-status\s*\{([^}]*)\}/)?.[1] || '';
-  assert.match(status, /color:\s*var\(--text-primary\);/, 'RESTING: normal primary text colour, like the Notes / kebab controls');
-  assert.doesNotMatch(status, /--warning|#f59e0b/, 'never permanently amber');
+  assert.match(status, /color:\s*var\(--warning, #f59e0b\);/, 'RESTING: the icon is amber (warning color) at rest, not just on hover/focus');
   assert.doesNotMatch(status, /\bborder\s*:|background/, 'a compact icon: no chip fill and no border');
   assert.match(mainCss, /\.tp3d-validation-status:hover,\s*\.tp3d-validation-status:focus-visible\s*\{\s*color:\s*var\(--warning, #f59e0b\);\s*\}/,
     'HOVER and FOCUS-VISIBLE: amber via the existing warning token');

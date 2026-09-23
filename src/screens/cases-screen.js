@@ -147,6 +147,62 @@ export function createCasesScreen({
       });
     }
 
+    // The "+N" control that discloses Handling Rules hidden by the Grid/List
+    // compact summary. It is a real button (native Enter/Space activation)
+    // that exposes the hidden labels through its aria-label and opens the
+    // existing read-only dropdown pattern (status rows, no onClick) rather
+    // than a new popover component. No hover tooltip — the dropdown is the
+    // single, click/keyboard-accessible way to see the hidden labels.
+    function createCaseHandlingMoreButton(caseItem, hiddenLabels) {
+      const caseName = caseItem.name || 'Case';
+      const more = document.createElement('button');
+      more.type = 'button';
+      more.className = 'badge tp3d-handling-chip tp3d-handling-chip-more';
+      more.textContent = `+${hiddenLabels.length}`;
+      more.setAttribute('data-case-handling-more', '1');
+      more.setAttribute(
+        'aria-label',
+        `Show ${hiddenLabels.length} more handling rule${hiddenLabels.length === 1 ? '' : 's'} for ${caseName}: ${hiddenLabels.join(', ')}`
+      );
+      // No keydown stopPropagation here (unlike Notes/overflow): the Grid
+      // card's own keydown handler already ignores every target except the
+      // card itself (`if (ev.target !== card) return;`), so containment is
+      // covered without it — and swallowing keydown here would also block
+      // Escape from ever reaching the dropdown coordinator while this button
+      // (not a dropdown item) keeps keyboard focus, breaking Escape-to-close.
+      more.addEventListener('click', ev => {
+        ev.stopPropagation();
+        UIComponents.openDropdown(
+          more,
+          [
+            { type: 'header', label: 'Handling Rules' },
+            ...hiddenLabels.map(label => ({ label, status: true })),
+          ],
+          { manageTriggerState: true }
+        );
+      });
+      return more;
+    }
+
+    // Shared by Cases Grid cards and List rows so both surfaces compress a long
+    // Handling Rule chain the same way. `summary` must already be the array
+    // returned by the shared getCaseHandlingSummary() — this helper only
+    // decides how many of ITS entries render as inline chips; it never
+    // recomputes or reorders the rule set itself.
+    function renderCaseHandlingChips(caseItem, summary, container, chipTag) {
+      const visible = summary.slice(0, 2);
+      const hidden = summary.slice(2);
+      visible.forEach(label => {
+        const chipEl = document.createElement(chipTag);
+        chipEl.className = 'badge tp3d-handling-chip';
+        chipEl.textContent = label;
+        container.appendChild(chipEl);
+      });
+      if (hidden.length > 0) {
+        container.appendChild(createCaseHandlingMoreButton(caseItem, hidden));
+      }
+    }
+
     function createCaseNotesButton(caseItem) {
       const caseName = caseItem.name || 'Case';
       const hasNotes = Boolean(String(caseItem.notes || '').trim());
@@ -669,7 +725,8 @@ export function createCasesScreen({
             (
               targetEl.closest('[data-case-menu]') ||
               targetEl.closest('[data-case-select]') ||
-              targetEl.closest('[data-case-notes]')
+              targetEl.closest('[data-case-notes]') ||
+              targetEl.closest('[data-case-handling-more]')
             )
           ) {
             return;
@@ -751,13 +808,10 @@ export function createCasesScreen({
         }
 
         if (badgePrefs.showHandling !== false) {
-          // Active non-default AutoPack handling rules (shared single source).
-          getCaseHandlingSummary(c).forEach(label => {
-            const ruleChip = document.createElement('div');
-            ruleChip.className = 'badge tp3d-handling-chip';
-            ruleChip.textContent = label;
-            badgesWrap.appendChild(ruleChip);
-          });
+          // Active non-default AutoPack handling rules (shared single source),
+          // compressed to two inline chips plus a "+N" control so a long rule
+          // chain cannot dominate the card.
+          renderCaseHandlingChips(c, getCaseHandlingSummary(c), badgesWrap, 'div');
         }
 
         const selectCb = document.createElement('input');
@@ -1087,16 +1141,14 @@ export function createCasesScreen({
         tr.appendChild(tdCat);
 
         const tdHandling = document.createElement('td');
+        tdHandling.className = 'tp3d-cases-handling-cell';
         const handlingSummary = getCaseHandlingSummary(c);
         if (handlingSummary.length === 0) {
           tdHandling.textContent = '—';
         } else {
-          handlingSummary.forEach(label => {
-            const ruleChip = document.createElement('span');
-            ruleChip.className = 'badge tp3d-handling-chip';
-            ruleChip.textContent = label;
-            tdHandling.appendChild(ruleChip);
-          });
+          // Same two-chip-plus-"+N" compression as the Grid, from the same
+          // shared summary order.
+          renderCaseHandlingChips(c, handlingSummary, tdHandling, 'span');
         }
         if (badgePrefs.showHandling === false) {
           tdHandling.style.display = 'none';

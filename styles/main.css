@@ -5513,6 +5513,45 @@ body.modal-open {
   border: 1px dashed var(--border, #d1d5db);
 }
 
+/* "+N" Handling Rules disclosure control (Cases Grid + List). It carries the
+   same .badge pill look as an ordinary chip, reset for native <button> chrome
+   so it earns real keyboard/focus behavior instead of just a styled span.
+   Only font-family/weight/line-height are reset here (never the `font`
+   shorthand): that shorthand also resets font-size, and since this rule is
+   declared after .badge in the cascade it would win at equal specificity and
+   silently override .badge's --text-xs, making the "+N" label render at the
+   ambient body size instead of matching its sibling chips. */
+.tp3d-handling-chip-more {
+  appearance: none;
+  -webkit-appearance: none;
+  font-family: inherit;
+  font-size: var(--text-xs);
+  font-weight: var(--font-normal);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tp3d-handling-chip-more:hover,
+.tp3d-handling-chip-more:focus-visible {
+  background: var(--bg-hover);
+  border-color: var(--border-subtle);
+}
+
+.tp3d-handling-chip-more:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+/* Cases List Handling cell: chips (and the "+N" control) inline with a small
+   gap, wrapping only if a narrow viewport forces it, so the compact summary
+   never becomes the row's dominant width/height driver. */
+.tp3d-cases-handling-cell {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+}
+
 .tp3d-editor-handling-rules {
   display: flex;
   flex-direction: column;

@@ -2187,3 +2187,258 @@ test('CASES-CATEGORY-UI Load Plan validation-status keeps the solid warning-tria
   assert.doesNotMatch(editorSource, /Load plan needs review/,
     'editor-screen.js has no equivalent "Load plan needs review" status to update');
 });
+
+// ---------------------------------------------------------------------------
+// CASES-HANDLING-COMPACT — P1: compact Handling Rule summaries in Cases
+// Grid/List. getCaseHandlingSummary() stays the sole semantic authority for
+// which rules are active and in what order; a shared cases-screen.js helper
+// only decides how many of ITS entries render as inline chips before
+// collapsing the rest behind one "+N" control. Editor, Inspector, and Import
+// Cases keep consuming the full, uncompressed summary (out of scope here).
+// ---------------------------------------------------------------------------
+
+test('CASES-HANDLING-COMPACT one shared helper backs Grid and List, and the compression never leaks into case-rule-summary.js', async () => {
+  const { casesSource, caseGrid, caseList } = await readManagementSources();
+  const summarySource = await fs.readFile(
+    new URL('../../src/services/case-rule-summary.js', import.meta.url),
+    'utf8'
+  );
+
+  assert.match(casesSource, /function renderCaseHandlingChips\(caseItem, summary, container, chipTag\) \{/,
+    'one shared compact-render helper backs both surfaces');
+  assert.match(caseGrid, /renderCaseHandlingChips\(c, getCaseHandlingSummary\(c\), badgesWrap, 'div'\);/,
+    'Grid calls the shared helper with the unmodified shared summary');
+  assert.match(caseList, /const handlingSummary = getCaseHandlingSummary\(c\);/,
+    'List computes the summary once, from the shared authority');
+  assert.match(caseList, /renderCaseHandlingChips\(c, handlingSummary, tdHandling, 'span'\);/,
+    'List calls the SAME shared helper with that summary — no independent List-only slicing logic');
+
+  assert.doesNotMatch(
+    summarySource,
+    /slice\(0,\s*2\)|renderCaseHandlingChips|createCaseHandlingMoreButton|tp3d-handling-chip-more/,
+    'case-rule-summary.js keeps returning the complete, unsliced rule set — it knows nothing about the Grid/List compression'
+  );
+});
+
+test('CASES-HANDLING-COMPACT the compact helper only slices the already-computed summary — it never rebuilds rule semantics from raw Case fields', async () => {
+  const { casesSource } = await readManagementSources();
+  const helperBody = sliceBetween(
+    casesSource,
+    'function renderCaseHandlingChips(caseItem, summary, container, chipTag) {',
+    'function createCaseNotesButton('
+  );
+  assert.match(helperBody, /summary\.slice\(0, 2\)/, 'first two entries of the shared summary render inline');
+  assert.match(helperBody, /summary\.slice\(2\)/, 'the remainder collapses behind +N');
+  const rawFieldPattern =
+    /orientationLock|canFlip|noStackOnTop|maxStackCount|isPallet|maxPalletWeight|laneItem|loadPriority/;
+  assert.doesNotMatch(helperBody, rawFieldPattern,
+    'the compact helper consumes getCaseHandlingSummary() strings only — it never reads a raw rule field off the Case');
+
+  const moreButtonBody = sliceBetween(
+    casesSource,
+    'function createCaseHandlingMoreButton(caseItem, hiddenLabels) {',
+    'function renderCaseHandlingChips('
+  );
+  assert.doesNotMatch(moreButtonBody, rawFieldPattern,
+    'the "+N" control only formats already-hidden summary labels — it does not inspect raw rule fields either');
+  assert.doesNotMatch(moreButtonBody, /mustLoadLast|mustUnloadFirst|stopGroup|keepTogetherGroup|hazmatClass/,
+    'reserved/future fields are never surfaced as if they were active enforced Handling Rules');
+});
+
+test('CASES-HANDLING-COMPACT count semantics: 0, 1, 2, 3, and 5+ active rules split the same way getCaseHandlingSummary() orders them', async () => {
+  const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
+  const { getCaseHandlingSummary } = await import(summaryPath.href);
+  const splitOf = summary => ({ visible: summary.slice(0, 2), hidden: summary.slice(2) });
+
+  // A. zero rules — Grid shows no chip, List shows "—" (unchanged elsewhere in this file).
+  assert.deepEqual(getCaseHandlingSummary(baseCase()), []);
+
+  // B. one rule — one visible chip, no +N.
+  let summary = getCaseHandlingSummary(baseCase({ noStackOnTop: true }));
+  assert.deepEqual(splitOf(summary), { visible: ['No top load'], hidden: [] });
+
+  // C. two rules — both visible, no +N.
+  summary = getCaseHandlingSummary(baseCase({ orientationLock: 'upright', noStackOnTop: true }));
+  assert.deepEqual(splitOf(summary), { visible: ['Upright', 'No top load'], hidden: [] });
+
+  // D. three rules — first two visible, exactly +1, third rule discoverable only via +N.
+  summary = getCaseHandlingSummary(
+    baseCase({ orientationLock: 'upright', noStackOnTop: true, maxStackCount: 2 })
+  );
+  const three = splitOf(summary);
+  assert.deepEqual(three.visible, ['Upright', 'No top load']);
+  assert.deepEqual(three.hidden, ['Max 2 on top']);
+
+  // E. many rules (7) — exactly two visible, exactly +5, every hidden label present
+  // and in getCaseHandlingSummary() order, nothing lost.
+  summary = getCaseHandlingSummary(
+    baseCase({
+      orientationLock: 'upright',
+      noStackOnTop: true,
+      maxStackCount: 2,
+      isPallet: true,
+      maxPalletWeight: 2000,
+      laneItem: true,
+      loadPriority: 1,
+    })
+  );
+  assert.equal(summary.length, 7);
+  const many = splitOf(summary);
+  assert.deepEqual(many.visible, ['Upright', 'No top load']);
+  assert.deepEqual(
+    many.hidden,
+    ['Max 2 on top', 'Pallet base', 'Max load warning: 2,000 lb', 'Lane: Always', 'Priority: High'],
+    'all five remaining rules survive behind +5, in shared-summary order'
+  );
+});
+
+test('CASES-HANDLING-COMPACT Grid and List parity: identical Case, identical visible pair, identical hidden count and order', async () => {
+  const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
+  const { getCaseHandlingSummary } = await import(summaryPath.href);
+  const manyRulesCase = baseCase({
+    orientationLock: 'onSide',
+    noStackOnTop: true,
+    maxStackCount: 1,
+    isPallet: true,
+    laneItem: false,
+    loadPriority: -1,
+  });
+
+  // Grid passes getCaseHandlingSummary(c) directly; List computes the identical
+  // call once into `handlingSummary` and passes that — both feed the same
+  // renderCaseHandlingChips(), so parity follows from using one summary call
+  // and one slicing helper rather than two independent implementations.
+  const gridSummary = getCaseHandlingSummary(manyRulesCase);
+  const listSummary = getCaseHandlingSummary(manyRulesCase);
+  assert.deepEqual(gridSummary, listSummary);
+  assert.deepEqual(gridSummary.slice(0, 2), listSummary.slice(0, 2));
+  assert.deepEqual(gridSummary.slice(2), listSummary.slice(2));
+});
+
+test('CASES-HANDLING-COMPACT the "+N" control is a real, fully-labeled, keyboard-safe button that reuses the existing read-only dropdown pattern', async () => {
+  const { casesSource } = await readManagementSources();
+  const moreButtonBody = sliceBetween(
+    casesSource,
+    'function createCaseHandlingMoreButton(caseItem, hiddenLabels) {',
+    'function renderCaseHandlingChips('
+  );
+
+  assert.match(moreButtonBody, /more\.type = 'button';/, 'a native, keyboard-operable control — not a span');
+  assert.match(moreButtonBody, /more\.className = 'badge tp3d-handling-chip tp3d-handling-chip-more';/,
+    'visually a compact badge, clearly related to the other Handling chips');
+  assert.match(moreButtonBody, /more\.setAttribute\('data-case-handling-more', '1'\);/,
+    'stable data attribute the Grid card-click containment can ignore');
+  assert.doesNotMatch(moreButtonBody, /data-tooltip/,
+    'no hover tooltip — the dropdown is the single accessible way to see hidden labels');
+  assert.match(
+    moreButtonBody,
+    /`Show \$\{hiddenLabels\.length\} more handling rule\$\{hiddenLabels\.length === 1 \? '' : 's'\} for \$\{caseName\}: \$\{hiddenLabels\.join\(', '\)\}`/,
+    'the accessible name states the count, the Case, and every hidden label — not merely "+3"'
+  );
+  // Unlike Notes/overflow, +N deliberately has NO keydown stopPropagation: the
+  // Grid card's own keydown handler already ignores every target except the
+  // card itself, and swallowing keydown here would also block Escape from
+  // ever reaching the dropdown coordinator while +N (not a menu item) still
+  // holds focus — which would break the required Escape-to-close behavior.
+  assert.doesNotMatch(moreButtonBody, /more\.addEventListener\('keydown'/,
+    'no keydown listener on +N — it must never swallow Escape while it holds focus with the dropdown open');
+  assert.match(moreButtonBody, /more\.addEventListener\('click', ev => \{\s*ev\.stopPropagation\(\);/,
+    'click cannot also bubble into card-open, selection, Notes, or overflow handlers');
+  assert.match(moreButtonBody, /UIComponents\.openDropdown\(/,
+    'reuses the existing dropdown primitive — no new popover component is introduced');
+  assert.match(moreButtonBody, /\{ type: 'header', label: 'Handling Rules' \}/,
+    'the popover reuses the existing dropdown header pattern');
+  assert.match(moreButtonBody, /\.\.\.hiddenLabels\.map\(label => \(\{ label, status: true \}\)\)/,
+    'hidden rules render as read-only status rows (existing pattern), never as actionable menu items');
+  assert.doesNotMatch(moreButtonBody, /onClick/,
+    'no hidden-rule row can mutate the Case or a Handling Rule — informational only');
+  assert.match(moreButtonBody, /manageTriggerState: true/,
+    'Escape/outside-click stays the existing dropdown behavior, and focus returns to the "+N" control');
+});
+
+test('CASES-HANDLING-COMPACT ui-components.js needed no changes: the read-only status-row dropdown pattern already existed', async () => {
+  const uiComponentsSource = await fs.readFile(UI_COMPONENTS_PATH, 'utf8');
+  assert.doesNotMatch(
+    uiComponentsSource,
+    /tp3d-handling-chip-more|data-case-handling-more|renderCaseHandlingChips|createCaseHandlingMoreButton/,
+    'this feature is implemented entirely in cases-screen.js + styles/main.css'
+  );
+  // The precedent this task relies on: an existing caller already uses
+  // `status: true` read-only rows inside openDropdown() without any special
+  // support code, proving no ui-components.js change was needed here either.
+  assert.match(uiComponentsSource, /item && item\.status === true\) \{/);
+});
+
+test('CASES-HANDLING-COMPACT Grid card-click containment ignores "+N", exactly like the checkbox, Notes, and overflow controls', async () => {
+  const { caseGrid } = await readManagementSources();
+  const containment = sliceBetween(caseGrid, "card.addEventListener('click', ev => {", 'openCaseModal(c);');
+  assert.match(containment, /targetEl\.closest\('\[data-case-menu\]'\)/);
+  assert.match(containment, /targetEl\.closest\('\[data-case-select\]'\)/);
+  assert.match(containment, /targetEl\.closest\('\[data-case-notes\]'\)/);
+  assert.match(containment, /targetEl\.closest\('\[data-case-handling-more\]'\)/,
+    'clicking +N must never also open the Edit Case modal');
+});
+
+test('CASES-HANDLING-COMPACT showHandling still gates the whole compact summary (chips + N), Grid and List, unchanged preference', async () => {
+  const { caseGrid, caseList } = await readManagementSources();
+  const gridHandlingBlock = sliceBetween(
+    caseGrid,
+    'if (badgePrefs.showHandling !== false) {',
+    "const selectCb = document.createElement('input')"
+  );
+  assert.match(gridHandlingBlock, /renderCaseHandlingChips\(c, getCaseHandlingSummary\(c\), badgesWrap, 'div'\);/,
+    'chips and +N are only ever created inside the existing showHandling guard');
+  assert.match(caseList, /if \(badgePrefs\.showHandling === false\) \{\s*tdHandling\.style\.display = 'none';\s*\}/,
+    'List hides the whole compact cell (chips + N) behind the same unchanged preference');
+});
+
+test('CASES-HANDLING-COMPACT Editor and Import Cases are out of scope: they keep consuming the complete, uncompressed summary', async () => {
+  const editorSource = await fs.readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+  const importDialogSource = await fs.readFile(
+    new URL('../../src/ui/overlays/import-cases-dialog.js', import.meta.url),
+    'utf8'
+  );
+  for (const [name, src] of [
+    ['editor-screen.js', editorSource],
+    ['import-cases-dialog.js', importDialogSource],
+  ]) {
+    assert.doesNotMatch(
+      src,
+      /tp3d-handling-chip-more|renderCaseHandlingChips|createCaseHandlingMoreButton|data-case-handling-more/,
+      `${name} is out of scope for this P1 slice and must not reference the Grid/List compression`
+    );
+  }
+});
+
+test('CASES-HANDLING-COMPACT CSS: the "+N" control resets native button chrome onto the .badge look, with a visible focus ring; the List cell stays compact', async () => {
+  const { cssSource } = await readManagementSources();
+  const moreRule = cssRuleBody(cssSource, '.tp3d-handling-chip-more');
+  assert.match(moreRule, /cursor:\s*pointer;/,
+    'a real pointer affordance — this is a control, not a plain badge span');
+  // Regression guard: this rule must reset font-family/weight/line-height
+  // individually, never via the `font` shorthand. That shorthand also resets
+  // font-size, and since this rule is declared after .badge in the cascade it
+  // would win at equal specificity and silently override .badge's --text-xs,
+  // making "+N" render at the ambient body size instead of matching its
+  // sibling chips.
+  assert.doesNotMatch(moreRule, /(?<![-\w])font:\s*inherit/,
+    'must not use the `font` shorthand — it would clobber .badge\'s font-size');
+  assert.match(moreRule, /font-family:\s*inherit;/);
+  assert.match(moreRule, /font-size:\s*var\(--text-xs\);/,
+    'explicitly matches the sibling chips\' font-size rather than trusting cascade order');
+  assert.match(
+    cssSource,
+    /\.tp3d-handling-chip-more:hover,\s*\.tp3d-handling-chip-more:focus-visible\s*\{[^}]*background:\s*var\(--bg-hover\);/
+  );
+  assert.match(
+    cssSource,
+    /\.tp3d-handling-chip-more:focus-visible\s*\{\s*outline:\s*2px solid var\(--accent-primary\);/,
+    'keyboard focus is clearly visible, matching the existing Notes/overflow focus ring'
+  );
+
+  const cell = cssRuleBody(cssSource, '.tp3d-cases-handling-cell');
+  assert.match(cell, /display:\s*flex;/);
+  assert.match(cell, /flex-wrap:\s*wrap;/, 'wraps only as a narrow-viewport fallback — at most 3 elements now, not 6-7');
+  assert.doesNotMatch(cssSource, /\.tp3d-cases-handling-cell\s*\{[^}]*height:\s*\d/,
+    'no forced fixed row height is imposed by this change');
+});

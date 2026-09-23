@@ -5251,6 +5251,12 @@ body.modal-open {
 .tp3d-management-card-head > input[type='checkbox'] {
   flex: 0 0 auto;
   margin: 0;
+
+  /* The shared checkbox's resting border-subtle reads too faint against a
+   * card surface (vs. a table row). Stronger boundary at rest only — checked
+   * state already switches border-color to --accent-primary above and is
+   * untouched; focus-visible keeps the browser's default outline. */
+  border-color: var(--border-strong);
 }
 
 /* Descendant (not child) selector: the Load Plan title sits inside its title wrapper.
@@ -5376,6 +5382,13 @@ body.modal-open {
    default, so the collapsed creator would stay visible until this explicit
    override forces it closed. */
 .tp3d-cases-new-category-row[hidden] {
+  display: none;
+}
+
+/* Same [hidden]-vs-class-display issue as above, for the + New trigger itself
+   (.btn sets `display: inline-flex`): without this it would stay visible
+   while the creator is expanded. */
+.tp3d-cases-new-category-trigger[hidden] {
   display: none;
 }
 

@@ -283,16 +283,21 @@ export function openCaseModal({
 
   // Compact "+ New" trigger: keeps the default Category row to a single line
   // (swatch + select + trigger) instead of always showing the creator fields.
+  // It only ever opens the creator (never closes it) and is hidden while the
+  // creator is expanded, so its "Add new category" accessible name is never
+  // misleading — Cancel is the one explicit close/discard path (Copilot
+  // finding on PR #58: a dual-purpose toggle made the label inaccurate).
   const newCatToggle = doc.createElement('button');
   newCatToggle.type = 'button';
-  newCatToggle.className = 'btn btn-sm btn-ghost';
+  // tp3d-cases-new-category-trigger exists only so [hidden] can be forced past
+  // .btn's own `display: inline-flex` (same author-vs-UA-stylesheet
+  // specificity issue already fixed for .tp3d-cases-new-category-row below —
+  // scoped here rather than on .btn globally to avoid touching every button
+  // in the app).
+  newCatToggle.className = 'btn btn-sm btn-primary tp3d-cases-new-category-trigger';
+  newCatToggle.innerHTML = '<i class="fa-solid fa-plus"></i> New';
   newCatToggle.setAttribute('aria-label', 'Add new category');
   const DEFAULT_NEW_CATEGORY_COLOR = '#ff9f1c';
-  const setNewCatToggleState = expanded => {
-    newCatToggle.innerHTML = expanded ? 'New' : '<i class="fa-solid fa-plus"></i> New';
-    newCatToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-  };
-  setNewCatToggleState(false);
 
   catRow.appendChild(catColorSwatch);
   catRow.appendChild(catSelect);
@@ -326,7 +331,7 @@ export function openCaseModal({
   newCatSave.setAttribute('aria-label', 'Add category');
   const newCatCancel = doc.createElement('button');
   newCatCancel.type = 'button';
-  newCatCancel.className = 'btn btn-sm btn-ghost';
+  newCatCancel.className = 'btn btn-sm';
   newCatCancel.textContent = 'Cancel';
   newCatCancel.setAttribute('aria-label', 'Cancel new category');
   const newCatActions = doc.createElement('div');
@@ -346,24 +351,23 @@ export function openCaseModal({
     newCatColorSwatch.style.background = newCatColor.value;
   };
 
-  // Shared collapse used by Cancel, re-clicking the trigger while open, and a
-  // successful Add — the only difference between callers is where focus lands.
+  // Shared collapse used by Cancel and a successful Add — the only difference
+  // between callers is where focus lands. + New is the only way in; Cancel is
+  // the only way out, so neither control's accessible name/intent ever drifts
+  // from what it currently does.
   /** @param {HTMLElement} [focusEl] */
   const collapseNewCategoryCreator = (focusEl = newCatToggle) => {
     catCreateRow.hidden = true;
+    newCatToggle.hidden = false;
     resetNewCategoryDraft();
-    setNewCatToggleState(false);
     if (focusEl && typeof focusEl.focus === 'function') focusEl.focus();
   };
   const expandNewCategoryCreator = () => {
     catCreateRow.hidden = false;
-    setNewCatToggleState(true);
+    newCatToggle.hidden = true;
     newCatName.focus();
   };
-  newCatToggle.addEventListener('click', () => {
-    if (catCreateRow.hidden) expandNewCategoryCreator();
-    else collapseNewCategoryCreator(newCatToggle);
-  });
+  newCatToggle.addEventListener('click', expandNewCategoryCreator);
   newCatCancel.addEventListener('click', () => collapseNewCategoryCreator(newCatToggle));
 
   newCatSave.addEventListener('click', () => {

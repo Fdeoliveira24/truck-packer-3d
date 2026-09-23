@@ -1937,7 +1937,7 @@ function categoryCreatorRow(config) {
   return config.content.querySelectorAll('.tp3d-cases-new-category-row')[0];
 }
 
-test('CASES-CATEGORY-UI default modal state: the new-category creator is collapsed and + New is a real, accessible button', async () => {
+test('CASES-CATEGORY-UI default modal state: the new-category creator is collapsed, + New is visible with the primary button treatment', async () => {
   StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
   const harness = makeCaseModalHarness();
   const config = openTestCaseModal(harness);
@@ -1945,7 +1945,8 @@ test('CASES-CATEGORY-UI default modal state: the new-category creator is collaps
   const toggle = findButtonByAriaLabel(config.content, 'Add new category');
   assert.ok(toggle, '+ New renders as a real <button> with an accessible name');
   assert.equal(toggle.tagName, 'BUTTON');
-  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.hidden, false, '+ New is visible while collapsed');
+  assert.match(toggle.className, /\bbtn-primary\b/, '+ New uses the brand primary button treatment, not ghost');
   assert.match(toggle.textContent, /New/, 'restrained "+ New" wording, not "Add New Category Name"');
 
   const creator = categoryCreatorRow(config);
@@ -1956,26 +1957,30 @@ test('CASES-CATEGORY-UI default modal state: the new-category creator is collaps
   assert.ok(findInputByAriaLabel(config.content, 'Category color'), 'the selected-category color swatch is preserved');
 });
 
-test('CASES-CATEGORY-UI + New reveals the creator (name/color/Add/Cancel) and moves focus to the new category name field', async () => {
+test('CASES-CATEGORY-UI + New reveals the creator (name/color/Add/Cancel), hides itself, and moves focus to the new category name field', async () => {
   StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
   const harness = makeCaseModalHarness();
   const config = openTestCaseModal(harness);
 
-  findButtonByAriaLabel(config.content, 'Add new category').click();
-
   const toggle = findButtonByAriaLabel(config.content, 'Add new category');
-  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  toggle.click();
+
+  assert.equal(toggle.hidden, true,
+    '+ New hides itself while expanded — Cancel is the only close/discard path (Copilot finding on PR #58)');
   const creator = categoryCreatorRow(config);
   assert.equal(creator.hidden, false, '+ New reveals the creator row');
   assert.ok(findInputByAriaLabel(config.content, 'New category name'), 'category name input is labeled and present');
   assert.ok(findInputByAriaLabel(config.content, 'New category color'), 'new category color input is labeled and present');
   assert.ok(findButtonByAriaLabel(config.content, 'Add category'), 'Add is a real button');
-  assert.ok(findButtonByAriaLabel(config.content, 'Cancel new category'), 'Cancel is a real button');
+  const cancel = findButtonByAriaLabel(config.content, 'Cancel new category');
+  assert.ok(cancel, 'Cancel is a real button');
+  assert.doesNotMatch(cancel.className, /btn-ghost/, 'Cancel uses the normal bordered .btn treatment, not ghost');
+  assert.doesNotMatch(cancel.className, /btn-primary/, 'Cancel is not the primary action');
   assert.equal(findInputByAriaLabel(config.content, 'New category name').focusCount, 1,
     'focus moves to the new category name field on expand');
 });
 
-test('CASES-CATEGORY-UI Cancel collapses the creator, resets its draft, returns focus to + New, and never mutates CategoryService or the selection', async () => {
+test('CASES-CATEGORY-UI Cancel collapses the creator, restores + New, resets its draft, and never mutates CategoryService or the selection', async () => {
   StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
   const before = CategoryService.all();
   const harness = makeCaseModalHarness();
@@ -1996,16 +2001,17 @@ test('CASES-CATEGORY-UI Cancel collapses the creator, resets its draft, returns 
   assert.equal(findInputByAriaLabel(config.content, 'New category color').value, '#ff9f1c',
     'the draft color resets to the default new-category color');
   assert.equal(categoryCreatorRow(config).hidden, true, 'Cancel collapses the creator');
-  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.hidden, false, 'Cancel restores + New');
   assert.equal(toggle.focusCount, 1, 'Cancel returns focus to + New');
 });
 
-test('CASES-CATEGORY-UI Add creates the category through CategoryService.upsert, selects it, updates the swatch, resets the draft, and collapses the creator', async () => {
+test('CASES-CATEGORY-UI Add creates the category through CategoryService.upsert, selects it, updates the swatch, resets the draft, collapses the creator, and restores + New', async () => {
   StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
   const harness = makeCaseModalHarness();
   const config = openTestCaseModal(harness);
 
-  findButtonByAriaLabel(config.content, 'Add new category').click();
+  const toggle = findButtonByAriaLabel(config.content, 'Add new category');
+  toggle.click();
   findInputByAriaLabel(config.content, 'New category name').value = 'Audio Racks';
   findInputByAriaLabel(config.content, 'New category color').value = '#00ff00';
   findButtonByAriaLabel(config.content, 'Add category').click();
@@ -2020,6 +2026,7 @@ test('CASES-CATEGORY-UI Add creates the category through CategoryService.upsert,
     'the selected-category swatch updates to the new color');
   assert.equal(findInputByAriaLabel(config.content, 'New category name').value, '', 'draft name resets');
   assert.equal(categoryCreatorRow(config).hidden, true, 'a successful Add collapses the creator');
+  assert.equal(toggle.hidden, false, 'a successful Add restores + New');
   assert.equal(select.focusCount, 1, 'focus lands on the category select after a successful Add');
   assert.deepEqual(harness.toasts.at(-1), { message: 'Created "Audio Racks"', tone: 'success' },
     'the existing success toast is preserved');
@@ -2032,7 +2039,8 @@ test('CASES-CATEGORY-UI Add with a name that already exists selects the existing
   const harness = makeCaseModalHarness();
   const config = openTestCaseModal(harness);
 
-  findButtonByAriaLabel(config.content, 'Add new category').click();
+  const toggle = findButtonByAriaLabel(config.content, 'Add new category');
+  toggle.click();
   findInputByAriaLabel(config.content, 'New category name').value = 'audio racks';
   findButtonByAriaLabel(config.content, 'Add category').click();
 
@@ -2044,9 +2052,11 @@ test('CASES-CATEGORY-UI Add with a name that already exists selects the existing
   assert.match(harness.toasts.at(-1).message, /already exists/);
   // Documented choice: duplicate resolution is an unresolved input to correct
   // (not a completed action), so — unlike a successful Add — the creator is
-  // left open with the name field refocused rather than collapsed.
+  // left open with the name field refocused rather than collapsed, and + New
+  // stays hidden (Cancel is still the only way out).
   assert.equal(categoryCreatorRow(config).hidden, false,
     'duplicate resolution leaves the creator open so the name can be corrected');
+  assert.equal(toggle.hidden, true, '+ New remains hidden while the creator is still open after a duplicate');
 });
 
 test('CASES-CATEGORY-UI Case Save still resolves the selected category key and color through the unchanged commitCaseHandlingRuleChange() atomic path', async () => {
@@ -2129,4 +2139,51 @@ test('CASES-CATEGORY-UI Editor Case Browser still sources category options from 
   assert.match(browserCatalog, /browserCats/, 'browserCats semantics are untouched');
   assert.match(browserCatalog, /browserManufacturers/, 'Manufacturer grouping/filtering is unaffected');
   assert.match(browserCatalog, /CategoryService\.resetToDefaultIfNoCases\(allCases\)/);
+});
+
+// ---------------------------------------------------------------------------
+// PR #58 polish pass — management-card checkbox contrast and the Load Plan
+// validation-status icon weight (Section 10-11 of the follow-up task).
+// ---------------------------------------------------------------------------
+
+test('MANAGEMENT-CARD-UX shared card-header checkbox has a stronger rest-state border, scoped to the management card, with checked/focus semantics untouched', async () => {
+  const { cssSource } = await readManagementSources();
+
+  const scoped = cssRuleBody(cssSource, ".tp3d-management-card-head > input[type='checkbox']");
+  assert.match(scoped, /border-color:\s*var\(--border-strong\);/, 'the resting boundary is strengthened for the management card checkbox only');
+  assert.doesNotMatch(scoped, /width:|height:|border-width:/, 'dimensions are untouched');
+
+  // The shared checkbox base (used everywhere: forms, filters, table rows) is
+  // untouched — this is a scoped override, not a global checkbox redesign.
+  const base = cssRuleBody(cssSource, "input[type='checkbox']");
+  assert.match(base, /border:\s*1px solid var\(--border-subtle\);/, 'the global checkbox rest border is unchanged everywhere else');
+  const checked = cssRuleBody(cssSource, "input[type='checkbox']:checked");
+  assert.match(checked, /border-color:\s*var\(--accent-primary\);/, 'checked-state appearance is unchanged');
+});
+
+test('CASES-CATEGORY-UI Cases Grid and Load Plans Grid share the same management-card-head checkbox selector (one fix, both surfaces)', async () => {
+  const { casesSource, packsSource } = await readManagementSources();
+  assert.match(casesSource, /head\.className = 'card-head tp3d-management-card-head'/);
+  assert.match(packsSource, /head\.className = 'card-head tp3d-management-card-head'/);
+});
+
+test('CASES-CATEGORY-UI Load Plan validation-status keeps the solid warning-triangle icon (no free-tier outline equivalent), with status semantics unchanged', async () => {
+  const packsSource = await fs.readFile(PACKS_SCREEN_PATH, 'utf8');
+  const block = sliceBetween(packsSource, 'function createPackValidationStatus(', 'status.addEventListener(\'keydown\'');
+
+  // fa-regular fa-triangle-exclamation renders as a missing glyph on the
+  // FA6.5.1 free build this project loads (regular/outline weight is Pro-only
+  // for this icon — verified live). No free-tier outline icon reads as a
+  // warning/exclamation symbol, so the original solid triangle is kept
+  // rather than substituting a differently-shaped icon (e.g. a flag).
+  assert.match(block, /fa-solid fa-triangle-exclamation/, 'the warning-triangle icon is kept — no available free-tier outline equivalent');
+  assert.match(block, /aria-label', 'Load plan needs review'\)/, 'the accessible name is unchanged');
+  assert.match(block, /aria-describedby', PACK_STATUS_CARD_BODY_ID\)/, 'the floating status explanation wiring is unchanged');
+  assert.match(block, /role', 'img'\)/, 'status semantics (not a button) are unchanged');
+
+  // Unrelated destructive/error warning icons elsewhere must not have been
+  // touched by this visual-only change.
+  const editorSource = await fs.readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(editorSource, /Load plan needs review/,
+    'editor-screen.js has no equivalent "Load plan needs review" status to update');
 });

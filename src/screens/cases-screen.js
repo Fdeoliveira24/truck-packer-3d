@@ -745,10 +745,9 @@ export function createCasesScreen({
         }
 
         if (badgePrefs.showCategory !== false) {
-          const cat = document.createElement('div');
-          cat.className = 'badge';
-          cat.textContent = CategoryService.meta(c.category).name;
-          badgesWrap.appendChild(cat);
+          // Same color-dot chip the Cases List uses, so Grid and List read as
+          // one consistent category language (no count added here).
+          badgesWrap.appendChild(categoryChip(c.category));
         }
 
         if (badgePrefs.showHandling !== false) {

@@ -5372,15 +5372,21 @@ body.modal-open {
   margin-top: 8px;
 }
 
-/* New/Edit Case modal: the Category field keeps its label (the section caption),
-   existing selector row and new-category creator row (all inside the same .field
-   grid) but lays the two control rows out inline as ONE Category area:
-   [swatch][existing ▼] | [swatch][new name][+ Add]. A hairline divides the two
-   logical groups; the creator gets the wider column so its placeholder stays
-   readable. Stacks below 600px, where the two groups would get too narrow. */
+/* The class rule above's `display: grid` otherwise outranks the UA [hidden]
+   default, so the collapsed creator would stay visible until this explicit
+   override forces it closed. */
+.tp3d-cases-new-category-row[hidden] {
+  display: none;
+}
+
+/* New/Edit Case modal: the Category field keeps its label (the section caption)
+   and default resting state as one compact line: [swatch][existing ▼][+ New].
+   The new-category creator (its own row, inside the same .field grid) is
+   hidden by default and only appears — full width, below the selector row,
+   divided by a hairline — once + New is clicked. Same single-column shape at
+   every width, so there is no separate mobile stack to maintain. */
 .tp3d-cases-category-controls {
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.85fr);
-  column-gap: var(--space-3);
+  grid-template-columns: minmax(0, 1fr);
   align-items: center;
   margin-top: var(--space-2);
 }
@@ -5399,29 +5405,35 @@ body.modal-open {
 }
 
 .tp3d-cases-category-controls > .tp3d-cases-new-category-row {
-  margin-top: 0;
-  padding-left: var(--space-3);
-  border-left: 1px solid var(--border-subtle);
+  margin-top: var(--space-3);
+  padding-top: var(--space-3);
+  border-top: 1px dashed var(--border-subtle);
+}
+
+.tp3d-cases-new-category-actions {
+  display: flex;
+  gap: var(--space-2);
 }
 
 @media (max-width: 600px) {
-  .tp3d-cases-category-controls {
-    grid-template-columns: minmax(0, 1fr);
+  /* Lets [swatch][select][+ New] wrap instead of overflowing the modal when
+     the select's content width is wide at narrow viewports. */
+  .tp3d-cases-category-controls .tp3d-cases-cat-row {
+    flex-wrap: wrap;
   }
 
-  /* Stacked: [swatch][existing ▼] / dashed rule / [swatch][name] / [+ Add]
-     full width. The divider turns horizontal and the name keeps its own row. */
+  /* [swatch][name] keep their own row; Add/Cancel drop to a full-width row
+     of their own so both stay comfortably reachable at narrow widths. */
   .tp3d-cases-category-controls > .tp3d-cases-new-category-row {
     grid-template-columns: 36px minmax(0, 1fr);
-    margin-top: 0;
-    padding-top: var(--space-3);
-    padding-left: 0;
-    border-top: 1px dashed var(--border-subtle);
-    border-left: 0;
   }
 
-  .tp3d-cases-category-controls > .tp3d-cases-new-category-row > .btn {
+  .tp3d-cases-category-controls > .tp3d-cases-new-category-row .tp3d-cases-new-category-actions {
     grid-column: 1 / -1;
+  }
+
+  .tp3d-cases-new-category-actions > .btn {
+    flex: 1;
     justify-content: center;
   }
 }

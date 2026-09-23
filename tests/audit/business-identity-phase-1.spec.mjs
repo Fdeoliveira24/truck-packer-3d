@@ -8,6 +8,9 @@ import * as StateStore from '../../src/core/state-store.js';
 import * as Storage from '../../src/core/storage.js';
 import * as CaseLibrary from '../../src/services/case-library.js';
 import * as PackLibrary from '../../src/services/pack-library.js';
+import * as CategoryService from '../../src/services/category-service.js';
+import * as Utils from '../../src/core/utils.js';
+import { openCaseModal } from '../../src/ui/overlays/case-modal.js';
 import { createCardDisplayOverlay } from '../../src/ui/overlays/card-display-overlay.js';
 import { createUIComponents } from '../../src/ui/ui-components.js';
 import { findMatchingTrailerPreset, packMatchesSearch } from '../../src/screens/packs-screen.js';
@@ -1757,4 +1760,373 @@ test('MANAGEMENT-CARD-UX CSS: flexible title, fixed controls, one shared selecte
     'hover / focus only recolour, so idle -> hover -> focus never shifts layout');
   assert.match(cssSource, /\.tp3d-management-notes-btn:focus-visible,\s*\.tp3d-management-more-btn:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-primary\);/,
     'keyboard focus keeps a clear ring');
+});
+
+// ---------------------------------------------------------------------------
+// CASES-CATEGORY-UI — P1: compact "+ New" category creator in the Case modal,
+// and Cases Grid category chip parity with Cases List.
+//
+// openCaseModal() takes every dependency (Utils, UIComponents, CategoryService,
+// CaseLibrary, PackLibrary, doc) as an explicit parameter, so — unlike
+// cases-screen.js / editor-screen.js, which reach for the real `document` and
+// have no jsdom harness in this suite — it can be exercised live with a small
+// fake DOM instead of only source-contract assertions.
+// ---------------------------------------------------------------------------
+
+class CategoryUiTestElement {
+  constructor(tagName) {
+    this.tagName = String(tagName || '').toUpperCase();
+    this.children = [];
+    this.parentElement = null;
+    this.attributes = new Map();
+    this.listeners = new Map();
+    this._classNames = new Set();
+    this._textContent = '';
+    this._innerHTML = '';
+    this.hidden = false;
+    this.disabled = false;
+    this.value = '';
+    this.type = '';
+    this.style = {};
+    this.focusCount = 0;
+    this.classList = {
+      add: (...names) => names.filter(Boolean).forEach(name => this._classNames.add(name)),
+      remove: (...names) => names.filter(Boolean).forEach(name => this._classNames.delete(name)),
+      toggle: (name, force) => {
+        const next = force === undefined ? !this._classNames.has(name) : Boolean(force);
+        if (next) this._classNames.add(name);
+        else this._classNames.delete(name);
+        return next;
+      },
+      contains: name => this._classNames.has(name),
+    };
+  }
+
+  get className() {
+    return Array.from(this._classNames).join(' ');
+  }
+
+  set className(value) {
+    this._classNames = new Set(String(value || '').split(/\s+/).filter(Boolean));
+  }
+
+  get textContent() {
+    if (this.children.length) return this.children.map(child => child.textContent).join('');
+    return this._textContent;
+  }
+
+  set textContent(value) {
+    this.children = [];
+    this._innerHTML = '';
+    this._textContent = String(value == null ? '' : value);
+  }
+
+  // case-modal.js only ever assigns innerHTML for icon+label buttons ("+ New",
+  // "+ Add"); a plain tag-stripped textContent view is enough for assertions —
+  // no real child elements need to exist for this markup.
+  get innerHTML() {
+    return this._innerHTML;
+  }
+
+  set innerHTML(value) {
+    this.children = [];
+    this._innerHTML = String(value == null ? '' : value);
+    this._textContent = this._innerHTML.replace(/<[^>]*>/g, '').trim();
+  }
+
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+    if (name === 'id') this.id = String(value);
+  }
+
+  getAttribute(name) {
+    return this.attributes.has(name) ? this.attributes.get(name) : null;
+  }
+
+  addEventListener(type, handler) {
+    const handlers = this.listeners.get(type) || [];
+    handlers.push(handler);
+    this.listeners.set(type, handlers);
+  }
+
+  click() {
+    const event = { target: this, currentTarget: this, preventDefault() {}, stopPropagation() {} };
+    (this.listeners.get('click') || []).forEach(handler => handler(event));
+  }
+
+  // Simulates committing a <select> value the way a real browser would —
+  // needed wherever a test picks a different category than the default and
+  // must exercise the same catSelect 'change' -> updateSwatch() wiring a real
+  // user interaction would trigger (assigning .value alone does not).
+  fireChange() {
+    const event = { target: this, currentTarget: this, preventDefault() {}, stopPropagation() {} };
+    (this.listeners.get('change') || []).forEach(handler => handler(event));
+  }
+
+  focus() {
+    this.focusCount += 1;
+  }
+
+  querySelectorAll(selector) {
+    const isMatch = el => (selector.startsWith('.') ? el.classList.contains(selector.slice(1)) : el.tagName === selector.toUpperCase());
+    const matches = [];
+    const visit = el => {
+      el.children.forEach(child => {
+        if (isMatch(child)) matches.push(child);
+        visit(child);
+      });
+    };
+    visit(this);
+    return matches;
+  }
+
+  querySelector(selector) {
+    return this.querySelectorAll(selector)[0] || null;
+  }
+}
+
+function makeCaseModalHarness() {
+  const toasts = [];
+  let modalConfig = null;
+  return {
+    doc: { createElement: tag => new CategoryUiTestElement(tag) },
+    toasts,
+    UIComponents: {
+      showToast(message, tone) {
+        toasts.push({ message, tone });
+      },
+      showModal(config) {
+        modalConfig = config;
+        return { close() {} };
+      },
+    },
+    PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' } }) },
+    getModalConfig: () => modalConfig,
+  };
+}
+
+function openTestCaseModal(harness, overrides = {}) {
+  openCaseModal({
+    Utils,
+    UIComponents: harness.UIComponents,
+    PreferencesManager: harness.PreferencesManager,
+    CaseLibrary,
+    CategoryService,
+    PackLibrary,
+    doc: harness.doc,
+    ...overrides,
+  });
+  return harness.getModalConfig();
+}
+
+function findButtonByAriaLabel(root, label) {
+  return root.querySelectorAll('button').find(btn => btn.getAttribute('aria-label') === label);
+}
+
+function findInputByAriaLabel(root, label) {
+  return root.querySelectorAll('input').find(el => el.getAttribute('aria-label') === label);
+}
+
+function categoryCreatorRow(config) {
+  return config.content.querySelectorAll('.tp3d-cases-new-category-row')[0];
+}
+
+test('CASES-CATEGORY-UI default modal state: the new-category creator is collapsed and + New is a real, accessible button', async () => {
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const harness = makeCaseModalHarness();
+  const config = openTestCaseModal(harness);
+
+  const toggle = findButtonByAriaLabel(config.content, 'Add new category');
+  assert.ok(toggle, '+ New renders as a real <button> with an accessible name');
+  assert.equal(toggle.tagName, 'BUTTON');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.match(toggle.textContent, /New/, 'restrained "+ New" wording, not "Add New Category Name"');
+
+  const creator = categoryCreatorRow(config);
+  assert.ok(creator, 'the creator row exists in the DOM');
+  assert.equal(creator.hidden, true, 'the creator is collapsed by default');
+  const select = config.content.querySelectorAll('select').find(el => el.getAttribute('aria-label') === 'Category');
+  assert.ok(select, 'the existing category selector is preserved');
+  assert.ok(findInputByAriaLabel(config.content, 'Category color'), 'the selected-category color swatch is preserved');
+});
+
+test('CASES-CATEGORY-UI + New reveals the creator (name/color/Add/Cancel) and moves focus to the new category name field', async () => {
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const harness = makeCaseModalHarness();
+  const config = openTestCaseModal(harness);
+
+  findButtonByAriaLabel(config.content, 'Add new category').click();
+
+  const toggle = findButtonByAriaLabel(config.content, 'Add new category');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'true');
+  const creator = categoryCreatorRow(config);
+  assert.equal(creator.hidden, false, '+ New reveals the creator row');
+  assert.ok(findInputByAriaLabel(config.content, 'New category name'), 'category name input is labeled and present');
+  assert.ok(findInputByAriaLabel(config.content, 'New category color'), 'new category color input is labeled and present');
+  assert.ok(findButtonByAriaLabel(config.content, 'Add category'), 'Add is a real button');
+  assert.ok(findButtonByAriaLabel(config.content, 'Cancel new category'), 'Cancel is a real button');
+  assert.equal(findInputByAriaLabel(config.content, 'New category name').focusCount, 1,
+    'focus moves to the new category name field on expand');
+});
+
+test('CASES-CATEGORY-UI Cancel collapses the creator, resets its draft, returns focus to + New, and never mutates CategoryService or the selection', async () => {
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const before = CategoryService.all();
+  const harness = makeCaseModalHarness();
+  const config = openTestCaseModal(harness);
+
+  const toggle = findButtonByAriaLabel(config.content, 'Add new category');
+  toggle.click();
+  const select = config.content.querySelectorAll('select')[0];
+  const selectedBefore = select.value;
+  findInputByAriaLabel(config.content, 'New category name').value = 'Should Not Persist';
+  findInputByAriaLabel(config.content, 'New category color').value = '#123456';
+
+  findButtonByAriaLabel(config.content, 'Cancel new category').click();
+
+  assert.deepEqual(CategoryService.all(), before, 'Cancel makes no CategoryService write');
+  assert.equal(select.value, selectedBefore, 'the currently selected category is unchanged');
+  assert.equal(findInputByAriaLabel(config.content, 'New category name').value, '', 'the draft name resets');
+  assert.equal(findInputByAriaLabel(config.content, 'New category color').value, '#ff9f1c',
+    'the draft color resets to the default new-category color');
+  assert.equal(categoryCreatorRow(config).hidden, true, 'Cancel collapses the creator');
+  assert.equal(toggle.getAttribute('aria-expanded'), 'false');
+  assert.equal(toggle.focusCount, 1, 'Cancel returns focus to + New');
+});
+
+test('CASES-CATEGORY-UI Add creates the category through CategoryService.upsert, selects it, updates the swatch, resets the draft, and collapses the creator', async () => {
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const harness = makeCaseModalHarness();
+  const config = openTestCaseModal(harness);
+
+  findButtonByAriaLabel(config.content, 'Add new category').click();
+  findInputByAriaLabel(config.content, 'New category name').value = 'Audio Racks';
+  findInputByAriaLabel(config.content, 'New category color').value = '#00ff00';
+  findButtonByAriaLabel(config.content, 'Add category').click();
+
+  const created = CategoryService.all().find(c => c.name === 'Audio Racks');
+  assert.ok(created, 'CategoryService.upsert() remains the category creation authority');
+  assert.equal(created.color, '#00ff00');
+
+  const select = config.content.querySelectorAll('select')[0];
+  assert.equal(select.value, created.key, 'the newly-created category becomes selected');
+  assert.equal(findInputByAriaLabel(config.content, 'Category color').value, '#00ff00',
+    'the selected-category swatch updates to the new color');
+  assert.equal(findInputByAriaLabel(config.content, 'New category name').value, '', 'draft name resets');
+  assert.equal(categoryCreatorRow(config).hidden, true, 'a successful Add collapses the creator');
+  assert.equal(select.focusCount, 1, 'focus lands on the category select after a successful Add');
+  assert.deepEqual(harness.toasts.at(-1), { message: 'Created "Audio Racks"', tone: 'success' },
+    'the existing success toast is preserved');
+});
+
+test('CASES-CATEGORY-UI Add with a name that already exists selects the existing category, warns, and does not create a second one', async () => {
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const existing = CategoryService.upsert({ name: 'Audio Racks', color: '#111111' });
+  const before = CategoryService.all().length;
+  const harness = makeCaseModalHarness();
+  const config = openTestCaseModal(harness);
+
+  findButtonByAriaLabel(config.content, 'Add new category').click();
+  findInputByAriaLabel(config.content, 'New category name').value = 'audio racks';
+  findButtonByAriaLabel(config.content, 'Add category').click();
+
+  assert.equal(CategoryService.all().length, before, 'no duplicate category is created');
+  const select = config.content.querySelectorAll('select')[0];
+  assert.equal(select.value, existing.key, 'the existing category is selected instead');
+  assert.equal(findInputByAriaLabel(config.content, 'Category color').value, '#111111',
+    'the swatch updates to the existing category color');
+  assert.match(harness.toasts.at(-1).message, /already exists/);
+  // Documented choice: duplicate resolution is an unresolved input to correct
+  // (not a completed action), so — unlike a successful Add — the creator is
+  // left open with the name field refocused rather than collapsed.
+  assert.equal(categoryCreatorRow(config).hidden, false,
+    'duplicate resolution leaves the creator open so the name can be corrected');
+});
+
+test('CASES-CATEGORY-UI Case Save still resolves the selected category key and color through the unchanged commitCaseHandlingRuleChange() atomic path', async () => {
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const category = CategoryService.upsert({ name: 'Audio Racks', color: '#3355ff' });
+  const harness = makeCaseModalHarness();
+  let saved = null;
+  const config = openTestCaseModal(harness, { onSaved: c => { saved = c; } });
+
+  const requiredInput = label => {
+    const wrapLabel = config.content.querySelectorAll('div').find(d => d.classList.contains('label') && d.textContent === label);
+    assert.ok(wrapLabel, `missing field label: ${label}`);
+    return wrapLabel.parentElement.children.find(el => el !== wrapLabel && el.tagName === 'INPUT');
+  };
+  requiredInput('Name (required)').value = 'New Case';
+  requiredInput('Length (in) (required)').value = '10';
+  requiredInput('Width (in) (required)').value = '10';
+  requiredInput('Height (in) (required)').value = '10';
+  const select = config.content.querySelectorAll('select')[0];
+  select.value = category.key;
+  select.fireChange(); // commits the pick and syncs the swatch, like a real user selection
+
+  const saveAction = config.actions.find(a => a.label === 'Save');
+  const result = saveAction.onClick();
+
+  assert.notEqual(result, false, 'Save succeeds with valid required fields');
+  assert.ok(saved, 'onSaved fires with the saved Case');
+  assert.equal(saved.category, category.key, 'the selected category key is preserved');
+  assert.equal(saved.color, category.color, 'the selected category color is preserved');
+  assert.equal(CaseLibrary.getById(saved.id).category, category.key,
+    'the Case and category commit through the same atomic PackLibrary.commitCaseHandlingRuleChange() path as before');
+});
+
+test('CASES-CATEGORY-UI Cases Grid category badge reuses the shared categoryChip() helper (color dot + name), matching Cases List, with no count added', async () => {
+  const { casesSource, caseGrid, caseList } = await readManagementSources();
+
+  assert.match(caseGrid, /badgesWrap\.appendChild\(categoryChip\(c\.category\)\)/,
+    'the Grid card renders its category badge through the shared categoryChip() helper');
+  assert.doesNotMatch(caseGrid, /cat\.className = 'badge';\s*\n\s*cat\.textContent = CategoryService\.meta/,
+    'the old plain-badge implementation is gone');
+
+  const chipFn = sliceBetween(casesSource, 'function categoryChip(categoryKey) {', 'function openCaseModal(existing) {');
+  assert.match(chipFn, /dot\.className = 'chip-dot'/, 'the chip renders the color dot');
+  assert.match(chipFn, /dot\.style\.background = meta\.color/, 'the dot uses the shared CategoryService color');
+  assert.match(chipFn, /text\.textContent = meta\.name/, 'the chip renders the shared CategoryService name');
+  assert.doesNotMatch(chipFn, /count/i, 'no count is added to the chip used by Grid/List');
+  assert.match(caseList, /tdCat\.appendChild\(categoryChip\(c\.category\)\)/,
+    'Cases List keeps using the same helper — Grid and List now share one implementation');
+});
+
+test('CASES-CATEGORY-UI Cases Filters keep reading name/color/count from CategoryService.listWithCounts(), unaffected by the modal/Grid changes', async () => {
+  const { casesSource } = await readManagementSources();
+  const filters = sliceBetween(casesSource, 'function renderFilters() {', 'function renderTable(');
+  assert.match(filters, /CategoryService\.listWithCounts\(cases\)/);
+  assert.match(filters, /cat\.color/);
+  assert.match(filters, /cat\.count/);
+  assert.match(filters, /cat\.name/);
+});
+
+test('CASES-CATEGORY-UI category-management popover is untouched by this change (still CategoryService.listWithCounts + upsert/rename/remove)', async () => {
+  const { casesSource } = await readManagementSources();
+  const popover = sliceBetween(casesSource, 'function openCategoriesPopover(anchorEl) {', 'function normalizeCategoryNameKey(');
+  assert.match(popover, /CategoryService\.listWithCounts\(cases\)/);
+  assert.match(popover, /onClick: \(\) => createCategoryAndEdit\(\)/, 'New Category still delegates to the existing creation flow');
+  assert.match(popover, /rightOnClick: \(\) => openEditCategoryModal\(cat\)/);
+
+  const createAndEdit = sliceBetween(casesSource, 'function createCategoryAndEdit() {', 'function openEditCategoryModal(');
+  assert.match(createAndEdit, /CategoryService\.upsert\(/, 'creation still goes through the shared CategoryService authority');
+
+  const editModal = sliceBetween(casesSource, 'function openEditCategoryModal(cat) {', 'function _openCategoryManager(');
+  assert.match(editModal, /CategoryService\.rename\(/);
+  assert.match(editModal, /CategoryService\.remove\(/);
+});
+
+test('CASES-CATEGORY-UI Editor Case Browser still sources category options from CategoryService.listWithCounts(), and Manufacturer grouping is unaffected', async () => {
+  const editorSource = await fs.readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+  const browserCatalog = sliceBetween(editorSource, "let caseBrowserGroupBy = 'category';", 'function makeMiniCategoryChip(categoryKey) {');
+  assert.match(browserCatalog, /CategoryService\.listWithCounts\(allCases\)/,
+    'the Case Browser category grouping/filter options are still sourced from the shared CategoryService authority');
+  assert.match(browserCatalog, /browserCats/, 'browserCats semantics are untouched');
+  assert.match(browserCatalog, /browserManufacturers/, 'Manufacturer grouping/filtering is unaffected');
+  assert.match(browserCatalog, /CategoryService\.resetToDefaultIfNoCases\(allCases\)/);
 });

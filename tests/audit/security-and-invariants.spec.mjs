@@ -7767,10 +7767,19 @@ test('EDITOR Case Browser New Case shortcut uses shared modal without adding to 
     'shared Case modal must persist edited category colors atomically with the Case commit');
   assert.match(modalSrc, /color: categoryColor/,
     'saved case data must use the edited category color');
-  assert.doesNotMatch(modalSrc, /tp3d-cases-new-category-toggle|New category'/,
-    'shared Case modal must not render a redundant New category toggle above the add row');
-  assert.match(modalSrc, /newCatName\.placeholder = 'Add New Category Name'/,
-    'shared Case modal new category row must use clear placeholder copy');
+  // P1 fix/cases-category-ui (2026-09): superseded the always-visible creator
+  // this file previously guarded ("must not render a redundant New category
+  // toggle above the add row", commit b48ddaf) — the always-visible row was
+  // found to consume too much modal space, so the creator is now collapsed by
+  // default behind an explicit, accessible "+ New" disclosure trigger. Full
+  // expand/collapse/Cancel/Add/duplicate behavior is covered in
+  // business-identity-phase-1.spec.mjs (CASES-CATEGORY-UI tests).
+  assert.match(modalSrc, /newCatToggle\.setAttribute\('aria-label', 'Add new category'\)/,
+    'shared Case modal must expose an accessible + New disclosure trigger for the category creator');
+  assert.match(modalSrc, /catCreateRow\.hidden = true/,
+    'the new-category creator must be collapsed by default');
+  assert.match(modalSrc, /newCatName\.placeholder = 'Category name'/,
+    'shared Case modal new category row uses restrained placeholder copy now that the row is opt-in');
   assert.match(modalSrc, /newCatSave\.innerHTML = '<i class="fa-solid fa-plus"><\/i> Add'/,
     'shared Case modal new category row must keep a single explicit + Add action');
   assert.match(modalSrc, /newCatColorSwatch\.classList\.add\('tp3d-cases-cat-swatch'\)[\s\S]*newCatColor\.className = 'tp3d-cases-cat-color-input'/,

@@ -280,13 +280,29 @@ export function openCaseModal({
     catColorSwatch.style.background = normalizeCaseModalColor(catColorInput.value, '#9ca3af');
   });
   updateSwatch();
+
+  // Compact "+ New" trigger: keeps the default Category row to a single line
+  // (swatch + select + trigger) instead of always showing the creator fields.
+  const newCatToggle = doc.createElement('button');
+  newCatToggle.type = 'button';
+  newCatToggle.className = 'btn btn-sm btn-ghost';
+  newCatToggle.setAttribute('aria-label', 'Add new category');
+  const DEFAULT_NEW_CATEGORY_COLOR = '#ff9f1c';
+  const setNewCatToggleState = expanded => {
+    newCatToggle.innerHTML = expanded ? 'New' : '<i class="fa-solid fa-plus"></i> New';
+    newCatToggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  };
+  setNewCatToggleState(false);
+
   catRow.appendChild(catColorSwatch);
   catRow.appendChild(catSelect);
+  catRow.appendChild(newCatToggle);
   catWrap.appendChild(catLabel);
   catWrap.appendChild(catRow);
 
   const catCreateRow = doc.createElement('div');
   catCreateRow.classList.add('tp3d-cases-new-category-row');
+  catCreateRow.hidden = true;
   const newCatColorSwatch = doc.createElement('label');
   newCatColorSwatch.classList.add('tp3d-cases-cat-swatch');
   newCatColorSwatch.setAttribute('aria-label', 'New category color');
@@ -295,25 +311,61 @@ export function openCaseModal({
   newCatColor.type = 'color';
   newCatColor.className = 'tp3d-cases-cat-color-input';
   newCatColor.setAttribute('aria-label', 'New category color');
-  newCatColor.value = '#ff9f1c';
+  newCatColor.value = DEFAULT_NEW_CATEGORY_COLOR;
   newCatColorSwatch.style.background = newCatColor.value;
   newCatColorSwatch.appendChild(newCatColor);
   const newCatName = doc.createElement('input');
   newCatName.type = 'text';
   newCatName.className = 'input';
-  newCatName.placeholder = 'Add New Category Name';
+  newCatName.placeholder = 'Category name';
   newCatName.setAttribute('aria-label', 'New category name');
   const newCatSave = doc.createElement('button');
   newCatSave.type = 'button';
   newCatSave.className = 'btn btn-sm btn-primary';
   newCatSave.innerHTML = '<i class="fa-solid fa-plus"></i> Add';
   newCatSave.setAttribute('aria-label', 'Add category');
+  const newCatCancel = doc.createElement('button');
+  newCatCancel.type = 'button';
+  newCatCancel.className = 'btn btn-sm btn-ghost';
+  newCatCancel.textContent = 'Cancel';
+  newCatCancel.setAttribute('aria-label', 'Cancel new category');
+  const newCatActions = doc.createElement('div');
+  newCatActions.classList.add('tp3d-cases-new-category-actions');
+  newCatActions.appendChild(newCatSave);
+  newCatActions.appendChild(newCatCancel);
   catCreateRow.appendChild(newCatColorSwatch);
   catCreateRow.appendChild(newCatName);
-  catCreateRow.appendChild(newCatSave);
+  catCreateRow.appendChild(newCatActions);
   newCatColor.addEventListener('input', () => {
-    newCatColorSwatch.style.background = normalizeCaseModalColor(newCatColor.value, '#ff9f1c');
+    newCatColorSwatch.style.background = normalizeCaseModalColor(newCatColor.value, DEFAULT_NEW_CATEGORY_COLOR);
   });
+
+  const resetNewCategoryDraft = () => {
+    newCatName.value = '';
+    newCatColor.value = DEFAULT_NEW_CATEGORY_COLOR;
+    newCatColorSwatch.style.background = newCatColor.value;
+  };
+
+  // Shared collapse used by Cancel, re-clicking the trigger while open, and a
+  // successful Add — the only difference between callers is where focus lands.
+  /** @param {HTMLElement} [focusEl] */
+  const collapseNewCategoryCreator = (focusEl = newCatToggle) => {
+    catCreateRow.hidden = true;
+    resetNewCategoryDraft();
+    setNewCatToggleState(false);
+    if (focusEl && typeof focusEl.focus === 'function') focusEl.focus();
+  };
+  const expandNewCategoryCreator = () => {
+    catCreateRow.hidden = false;
+    setNewCatToggleState(true);
+    newCatName.focus();
+  };
+  newCatToggle.addEventListener('click', () => {
+    if (catCreateRow.hidden) expandNewCategoryCreator();
+    else collapseNewCategoryCreator(newCatToggle);
+  });
+  newCatCancel.addEventListener('click', () => collapseNewCategoryCreator(newCatToggle));
+
   newCatSave.addEventListener('click', () => {
     const nextName = String(newCatName.value || '').trim();
     if (!nextName) {
@@ -323,6 +375,8 @@ export function openCaseModal({
     }
     const duplicate = findDuplicateCategory(nextName);
     if (duplicate) {
+      // Left open: this is an unresolved input to correct, not a completed
+      // action, so the draft (and any name edit in progress) stays visible.
       UIComponents.showToast(`Category "${duplicate.name}" already exists. Select it from the list.`, 'warning');
       catSelect.value = duplicate.key;
       updateSwatch();
@@ -333,9 +387,7 @@ export function openCaseModal({
     const next = CategoryService.upsert({ name: nextName, color: newCatColor.value });
     populateCategorySelect(next.key);
     updateSwatch();
-    newCatName.value = '';
-    newCatColor.value = '#ff9f1c';
-    newCatColorSwatch.style.background = newCatColor.value;
+    collapseNewCategoryCreator(catSelect);
     UIComponents.showToast(`Created "${next.name}"`, 'success');
   });
   catWrap.appendChild(catCreateRow);

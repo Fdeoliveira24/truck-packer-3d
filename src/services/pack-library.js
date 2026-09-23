@@ -1985,12 +1985,30 @@ export function hasPlacementAffectingHandlingRuleChange(oldCase, newCase) {
 //   (Wheel Wells / Front Overhang blocked-body) containment authority
 //   getPlacementForAabb already uses for new-instance placement.
 // - A non-staged instance that cannot be safely classified (missing Case
-//   definition, missing/malformed position, or malformed/unresolved
-//   dimensions) is conservatively treated as an ACTIVE member so it is never
-//   silently dropped from Handling Rules coverage. No fallback geometry
-//   (e.g. the origin) is ever invented to force a classification.
+//   definition, missing/malformed position, malformed/unresolved dimensions,
+//   or a Pack whose truck has no usable geometry) is conservatively treated
+//   as an ACTIVE member so it is never silently dropped from Handling Rules
+//   coverage. No fallback geometry (e.g. the origin, or a zero-size truck) is
+//   ever invented to force a classification.
+//
+// getTrailerUsableZones()/getPlacementForAabb() treat a missing/malformed
+// truck as having no usable zones at all, which would otherwise make every
+// non-staged instance classify as physically "outside" — the opposite of
+// conservative. hasUsableTruckGeometry() is checked first so a truck-less or
+// zero/negative/non-finite-dimension Pack never reaches that path.
+function hasUsableTruckGeometry(truck) {
+  if (!truck || typeof truck !== 'object') return false;
+  const length = Number(truck.length);
+  const width = Number(truck.width);
+  const height = Number(truck.height);
+  return Number.isFinite(length) && length > 0 &&
+    Number.isFinite(width) && width > 0 &&
+    Number.isFinite(height) && height > 0;
+}
+
 function createHandlingRulesMembershipClassifier(pack, caseLibrary) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  const truckUsable = hasUsableTruckGeometry(pack && pack.truck);
   return inst => {
     if (!inst || inst.placement === 'staged') return false;
     const caseData = caseMap.get(inst.caseId);
@@ -1999,6 +2017,7 @@ function createHandlingRulesMembershipClassifier(pack, caseLibrary) {
     if (!pos) return true;
     const canonical = getCanonicalInstanceEffectiveDims(inst, caseData);
     if (!canonical.ok) return true;
+    if (!truckUsable) return true;
     const aabb = makeAabb(pos, canonical.dims);
     return getPlacementForAabb(pack, aabb) === 'packed';
   };

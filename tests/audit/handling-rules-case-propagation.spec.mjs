@@ -2173,6 +2173,68 @@ test('HANDLING-RULES MEMBERSHIP: malformed/missing position or dimensions on non
   assert.match(signature, /case-bad-dims:/, 'malformed Case dimensions are conservatively active — full geometry is required before a physical classification is trusted');
 });
 
+// getTrailerUsableZones() returns NO usable zones for a missing/malformed truck
+// (0/negative/non-finite length, width, or height), which would otherwise make
+// getPlacementForAabb() classify every non-staged instance as physically
+// "outside" — silently dropping real cargo from Handling Rules coverage. The
+// membership classifier must treat unresolved truck geometry the same as any
+// other "cannot be safely classified" case: conservatively ACTIVE.
+const UNRESOLVED_TRUCKS = [
+  ['missing truck', undefined],
+  ['empty truck object', {}],
+  ['zero length', { length: 0, width: 60, height: 60 }],
+  ['zero width', { length: 120, width: 0, height: 60 }],
+  ['zero height', { length: 120, width: 60, height: 0 }],
+  ['non-finite length', { length: Number.NaN, width: 60, height: 60 }],
+];
+
+for (const [label, truck] of UNRESOLVED_TRUCKS) {
+  test(`HANDLING-RULES MEMBERSHIP: unresolved truck geometry (${label}) is conservatively active — explicit staged still excluded`, async () => {
+    const { PackLibrary } = await freshModules();
+    const caseActive = mkCase({ id: 'case-active' });
+    const caseStaged = mkCase({ id: 'case-staged' });
+    const library = [caseActive, caseStaged];
+    const active = mkInst('active', 'case-active', { x: 20, y: 5, z: 0 }, 'packed');
+    const staged = mkInst('staged', 'case-staged', { x: 20, y: 5, z: 0 }, 'staged');
+    const pack = deletionPack('pack-unresolved-truck', [active, staged], { truck });
+
+    const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
+
+    assert.match(signature, /case-active:/, `non-staged cargo remains active when truck geometry is unresolved (${label}); no fallback truck is ever invented`);
+    assert.doesNotMatch(signature, /case-staged:/, `explicit staged state still wins exclusion even with unresolved truck geometry (${label})`);
+  });
+}
+
+test('HANDLING-RULES CASE-EDIT PARITY E: a non-staged Case instance with unresolved truck geometry still marks the Pack affected', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a' });
+  const activeUnresolvedTruck = mkInst('active', 'case-a', { x: 20, y: 5, z: 0 }, 'packed');
+  const pack = deletionPack('pack-unresolved-truck-edit', [activeUnresolvedTruck], { truck: {} });
+  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
+  const before = StateStore.get('packLibrary')[0];
+
+  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
+
+  const after = StateStore.get('packLibrary')[0];
+  assert.notEqual(after, before, 'unresolved truck geometry must not exempt non-staged cargo from marking the Pack affected');
+  assert.equal('handlingRulesValidatedSignature' in after, true);
+});
+
+test('HANDLING-RULES CASE-DELETION PARITY E: a non-staged deletion target with unresolved truck geometry does not take the unsafe staged-only fast path', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseS = mkCase({ id: 'case-s' });
+  const caseO = mkCase({ id: 'case-o' });
+  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
+  const targetUnresolvedTruck = mkInst('target', 'case-s', { x: 20, y: 5, z: 0 }, 'packed');
+  const pack = deletionPack('pack-unresolved-truck-delete', [other, targetUnresolvedTruck], { truck: { length: 0, width: 60, height: 60 } });
+  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
+
+  const result = PackLibrary.commitCaseDeletion(['case-s']);
+
+  const impact = result.packImpacts.find(i => i.packId === 'pack-unresolved-truck-delete');
+  assert.equal(impact.revalidated, true, 'unresolved truck geometry must not allow the unsafe staged-only fast path — it forces conservative full revalidation');
+});
+
 const WHEEL_TRUCK = {
   length: 120, width: 60, height: 60, shapeMode: 'wheelWells',
   shapeConfig: { wellHeight: 20, wellWidth: 12, wellLength: 40, wellOffsetFromRear: 40 },

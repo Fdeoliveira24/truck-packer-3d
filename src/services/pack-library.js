@@ -1970,20 +1970,74 @@ export function hasPlacementAffectingHandlingRuleChange(oldCase, newCase) {
   return handlingRuleSemanticFingerprint(oldCase) !== handlingRuleSemanticFingerprint(newCase);
 }
 
+// Handling Rules ACTIVE-LOAD membership authority: does this instance
+// currently belong to the set of cargo whose Case Handling Rules govern a
+// Pack's validity signature? This answers ONLY "is this part of the active
+// truck load," never "is this placement currently fully legal" — support,
+// collision, rear retention, and orientation legality are deliberately never
+// consulted here; those remain revalidateManualPlacements' job.
+//
+// - Explicit staged state always wins: placement === 'staged' is NEVER a
+//   member, even if its saved pose happens to overlap usable truck geometry.
+//   Physical geometry must not override an explicit staged workflow state.
+// - A non-staged instance participates only when its current geometry
+//   physically occupies usable truck geometry — reusing the same shape-aware
+//   (Wheel Wells / Front Overhang blocked-body) containment authority
+//   getPlacementForAabb already uses for new-instance placement.
+// - A non-staged instance that cannot be safely classified (missing Case
+//   definition, missing/malformed position, malformed/unresolved dimensions,
+//   or a Pack whose truck has no usable geometry) is conservatively treated
+//   as an ACTIVE member so it is never silently dropped from Handling Rules
+//   coverage. No fallback geometry (e.g. the origin, or a zero-size truck) is
+//   ever invented to force a classification.
+//
+// getTrailerUsableZones()/getPlacementForAabb() treat a missing/malformed
+// truck as having no usable zones at all, which would otherwise make every
+// non-staged instance classify as physically "outside" — the opposite of
+// conservative. hasUsableTruckGeometry() is checked first so a truck-less or
+// zero/negative/non-finite-dimension Pack never reaches that path.
+function hasUsableTruckGeometry(truck) {
+  if (!truck || typeof truck !== 'object') return false;
+  const length = Number(truck.length);
+  const width = Number(truck.width);
+  const height = Number(truck.height);
+  return Number.isFinite(length) && length > 0 &&
+    Number.isFinite(width) && width > 0 &&
+    Number.isFinite(height) && height > 0;
+}
+
+function createHandlingRulesMembershipClassifier(pack, caseLibrary) {
+  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
+  const truckUsable = hasUsableTruckGeometry(pack && pack.truck);
+  return inst => {
+    if (!inst || inst.placement === 'staged') return false;
+    const caseData = caseMap.get(inst.caseId);
+    if (!caseData) return true;
+    const pos = normalizeTransformPosition(inst.transform && inst.transform.position);
+    if (!pos) return true;
+    const canonical = getCanonicalInstanceEffectiveDims(inst, caseData);
+    if (!canonical.ok) return true;
+    if (!truckUsable) return true;
+    const aabb = makeAabb(pos, canonical.dims);
+    return getPlacementForAabb(pack, aabb) === 'packed';
+  };
+}
+
 // Deterministic per-Pack signature of the placement-affecting Handling Rules
-// currently governing every PACKED (placement === 'packed', never staged)
-// instance's Case. Staged instances are excluded: a staged item has no
-// current truck placement to invalidate, and will be evaluated against
+// currently governing every ACTIVE-LOAD (see createHandlingRulesMembershipClassifier)
+// instance's Case. Explicitly staged instances are excluded: a staged item has
+// no current truck placement to invalidate, and will be evaluated against
 // whatever rules are live if/when it is later packed. Deterministic
 // regardless of Case Library or instance ordering (unique caseIds, sorted).
 export function buildHandlingRulesValiditySignature(pack, caseLibrary) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
-  const packedCaseIds = Array.from(new Set(
+  const isActiveLoadMember = createHandlingRulesMembershipClassifier(pack, caseLibrary);
+  const activeCaseIds = Array.from(new Set(
     ((pack && pack.cases) || [])
-      .filter(inst => inst && inst.placement === 'packed' && inst.caseId)
+      .filter(inst => inst && inst.caseId && isActiveLoadMember(inst))
       .map(inst => String(inst.caseId))
   )).sort();
-  const parts = packedCaseIds.map(caseId => {
+  const parts = activeCaseIds.map(caseId => {
     const caseData = caseMap.get(caseId);
     if (!caseData) return `${caseId}:missing`;
     return `${caseId}:${handlingRuleSemanticFingerprint(caseData)}`;
@@ -2027,9 +2081,14 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
 
   if (hasPlacementAffectingHandlingRuleChange(oldCase, nextCase)) {
     const packs = getPacks();
-    const affectedPacks = packs.filter(p =>
-      ((p && p.cases) || []).some(inst => inst && inst.placement === 'packed' && inst.caseId === nextCase.id)
-    );
+    // Same active-load membership authority buildHandlingRulesValiditySignature
+    // uses — a Pack is affected only through cargo that actually governs its
+    // signature, so an explicitly staged or physically-outside instance of
+    // this Case can never falsely mark (or move cargo in) an unrelated Pack.
+    const affectedPacks = packs.filter(p => {
+      const isActiveLoadMember = createHandlingRulesMembershipClassifier(p, oldCaseLibrary);
+      return ((p && p.cases) || []).some(inst => inst && inst.caseId === nextCase.id && isActiveLoadMember(inst));
+    });
 
     if (affectedPacks.length) {
       const currentScreen = StateStore.get('currentScreen');
@@ -2141,9 +2200,13 @@ export function commitCaseDeletion(caseIds) {
     result.removedInstanceCount += targets.length;
     result.packImpacts.push(impact);
 
-    // Same physical-cargo definition the reconcile engine uses: only an
-    // explicitly staged instance is exempt from being packed cargo/support.
-    if (!targets.some(inst => inst.placement !== 'staged')) {
+    // Same active-load membership authority buildHandlingRulesValiditySignature
+    // uses: only a physically-outside instance (explicit staged, or non-staged
+    // but not physically inside truck geometry) is exempt from being packed
+    // cargo/support. Classified against the PRE-deletion Case Library — the
+    // Cases being deleted must still resolve for their own removed instances.
+    const isActiveLoadMember = createHandlingRulesMembershipClassifier(p, oldCaseLibrary);
+    if (!targets.some(inst => isActiveLoadMember(inst))) {
       const stagedOnly = { ...p, cases: remaining, lastEdited: now };
       stagedOnly.stats = computeStats(stagedOnly, nextCaseLibrary);
       return stagedOnly;

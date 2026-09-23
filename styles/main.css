@@ -5073,9 +5073,11 @@ body.modal-open {
 
 /* Load-plan "needs review" STATUS on a Load Plan (Grid header actions and List
    title): a compact warning icon — no chip, no border. It is a status, not an action.
-   It rests in normal text colour (the same visual weight as the Notes / kebab
-   controls) and turns amber only on hover or keyboard focus, when the shared
-   floating status card below is shown. */
+   It rests in its warning color (amber) rather than normal text colour — the free
+   Font Awesome build has no outline/regular triangle-exclamation glyph to lighten
+   its weight instead, so the permanent amber keeps it legible as a warning next to
+   the Notes / kebab controls. Hover/focus stay the same color; the shared floating
+   status card below is shown on either. */
 .tp3d-validation-status {
   display: inline-flex;
   align-items: center;

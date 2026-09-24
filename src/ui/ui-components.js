@@ -112,6 +112,10 @@ export function createUIComponents() {
   const modalOwnership = createModalOwnership();
   const modalRoot = document.getElementById('modal-root');
   const toastContainer = document.getElementById('toast-container');
+  // Deterministic, incrementing (not random/time-based) so title IDs stay
+  // stable and unique across every generic dialog for the app's lifetime,
+  // including multiple dialogs open/created in the same tick.
+  let modalTitleIdCounter = 0;
   let dropdownKeyDownListener = null;
   let dropdownRepositionListener = null;
   let dropdownDocClickListener = null;
@@ -209,6 +213,16 @@ export function createUIComponents() {
 
     const modal = document.createElement('div');
     modal.className = 'modal';
+    // Semantic dialog root + stable accessible name. `titleId` is deterministic
+    // (incrementing counter, not random/time-based) so it stays unique across
+    // every dialog and remains deterministic-test-friendly. Callers that
+    // restructure the title element in place (custom headings) keep this same
+    // id and therefore keep a correct, live-computed accessible name; callers
+    // that need a different scheme (e.g. Notes) already overwrite both the id
+    // and aria-labelledby themselves after this returns.
+    const titleId = `tp3d-modal-title-${++modalTitleIdCounter}`;
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-labelledby', titleId);
 
     const showCloseButton = !(config && (config.hideClose === true || config.showCloseButton === false));
 
@@ -217,12 +231,14 @@ export function createUIComponents() {
 
     const title = document.createElement('h3');
     title.className = 'modal-title';
+    title.id = titleId;
     title.textContent = config.title || 'Dialog';
 
     const closeBtn = document.createElement('button');
     closeBtn.className = 'btn btn-ghost';
     closeBtn.type = 'button';
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+    closeBtn.setAttribute('aria-label', `Close ${config.title || 'Dialog'}`);
     closeBtn.addEventListener('click', () => owner.requestDismiss('close-button'));
 
     header.appendChild(title);

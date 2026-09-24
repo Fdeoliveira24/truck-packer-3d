@@ -13,6 +13,7 @@ import * as Utils from '../../src/core/utils.js';
 import { openCaseModal } from '../../src/ui/overlays/case-modal.js';
 import { createCardDisplayOverlay } from '../../src/ui/overlays/card-display-overlay.js';
 import { createHelpModal } from '../../src/ui/overlays/help-modal.js';
+import { openNotesOverlay } from '../../src/ui/overlays/notes-overlay.js';
 import { createUIComponents } from '../../src/ui/ui-components.js';
 import { findMatchingTrailerPreset, packMatchesSearch } from '../../src/screens/packs-screen.js';
 import { TrailerPresets } from '../../src/data/trailer-presets.js';
@@ -23,6 +24,7 @@ const CASE_MODAL_PATH = new URL('../../src/ui/overlays/case-modal.js', import.me
 const CASES_SCREEN_PATH = new URL('../../src/screens/cases-screen.js', import.meta.url);
 const CASE_LIBRARY_PATH = new URL('../../src/services/case-library.js', import.meta.url);
 const PACKS_SCREEN_PATH = new URL('../../src/screens/packs-screen.js', import.meta.url);
+const SETTINGS_OVERLAY_PATH = new URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const MAIN_CSS_PATH = new URL('../../styles/main.css', import.meta.url);
 const UI_COMPONENTS_PATH = new URL('../../src/ui/ui-components.js', import.meta.url);
 
@@ -83,12 +85,30 @@ class FakeModalElement {
     this.children = [];
     this.parentElement = null;
     this._listeners = new Map();
-    this.className = '';
+    this._classSet = new Set();
     this.type = '';
     this.dataset = {};
     this.style = {};
     this._innerHTML = '';
     this._textContent = '';
+    this._attributes = new Map();
+    const classSet = this._classSet;
+    this.classList = {
+      add: (...names) => names.forEach(n => classSet.add(n)),
+      remove: (...names) => names.forEach(n => classSet.delete(n)),
+      contains: name => classSet.has(name),
+      toggle: name => (classSet.has(name) ? (classSet.delete(name), false) : (classSet.add(name), true)),
+    };
+  }
+  // className and classList share the same backing set (as in real DOM), so
+  // code that sets one (e.g. `el.className = 'btn btn-ghost'`) is visible to
+  // code that queries the other (e.g. a `.btn` querySelector from elsewhere).
+  get className() {
+    return Array.from(this._classSet).join(' ');
+  }
+  set className(value) {
+    this._classSet.clear();
+    String(value || '').split(/\s+/).filter(Boolean).forEach(c => this._classSet.add(c));
   }
   appendChild(child) {
     child.parentElement = this;
@@ -118,15 +138,55 @@ class FakeModalElement {
     const list = this._listeners.get(type) || [];
     list.slice().forEach(handler => handler({ target: this, ...evt }));
   }
-  setAttribute() {}
-  getAttribute() {
-    return null;
+  setAttribute(name, value) {
+    this._attributes.set(name, String(value));
   }
-  querySelector() {
-    return null;
+  getAttribute(name) {
+    return this._attributes.has(name) ? this._attributes.get(name) : null;
   }
-  querySelectorAll() {
-    return [];
+  hasAttribute(name) {
+    return this._attributes.has(name);
+  }
+  removeAttribute(name) {
+    this._attributes.delete(name);
+  }
+  // Minimal real selector support: class selectors ('.foo') and simple
+  // tag-name selectors ('button'), optionally chained with the descendant
+  // combinator ('.modal-header .btn', 'footer button'). That's the full
+  // vocabulary actually used against these elements in production code
+  // (case-modal.js, notes-overlay.js, import-*-dialog.js, etc. — including
+  // notes-overlay.js's footer.querySelectorAll('button') to enable/disable
+  // all footer buttons while writing) — no attribute/id/child-combinator
+  // selectors are needed here.
+  _descendants() {
+    const out = [];
+    const walk = el => el.children.forEach(child => { out.push(child); walk(child); });
+    walk(this);
+    return out;
+  }
+  querySelectorAll(selectorText) {
+    const parts = String(selectorText || '').trim().split(/\s+/).filter(Boolean).map(raw =>
+      raw.startsWith('.') ? { kind: 'class', name: raw.slice(1) } : { kind: 'tag', name: raw.toLowerCase() }
+    );
+    if (!parts.length) return [];
+    const matchesPart = (el, part) => {
+      if (!(el instanceof FakeModalElement)) return false;
+      return part.kind === 'class' ? el._classSet.has(part.name) : el.tagName.toLowerCase() === part.name;
+    };
+    const matchesChain = el => {
+      if (!matchesPart(el, parts[parts.length - 1])) return false;
+      let ancestor = el.parentElement;
+      let partIdx = parts.length - 2;
+      while (ancestor && partIdx >= 0) {
+        if (matchesPart(ancestor, parts[partIdx])) partIdx -= 1;
+        ancestor = ancestor.parentElement;
+      }
+      return partIdx < 0;
+    };
+    return this._descendants().filter(matchesChain);
+  }
+  querySelector(selectorText) {
+    return this.querySelectorAll(selectorText)[0] || null;
   }
   get innerHTML() {
     return this._innerHTML;
@@ -1814,6 +1874,178 @@ test('P0-SM-OF-1 Rename Load Plan empty/whitespace title keeps the modal open an
   // Valid Rename behavior is unchanged: still busy-gated, still updates and
   // toasts, still closes (returns true).
   assert.match(renameBlock, /if \(mutationBlockedWhileBusy\(\)\) return false;\s*\n\s*PackLibrary\.update\(packId, \{ title: nextTitle \}\);\s*\n\s*UIComponents\.showToast\('Renamed', 'success'\);\s*\n\s*return true;/);
+});
+
+// P0-SM-OF-4: accessible dialog names. Additive/semantic only — no focus,
+// modality, Escape, or ownership behavior is touched or asserted here.
+test('P0-SM-OF-4 generic showModal has one dialog role, a non-empty accessible name, and a labeled close button', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+    const m = ui.showModal({ title: 'Example Dialog', actions: [] });
+
+    assert.equal(m.modal.getAttribute('role'), 'dialog', 'exactly one semantic dialog root, on .modal');
+    assert.equal(m.overlay.getAttribute('role'), null, 'the backdrop itself is not a second dialog root');
+
+    const header = m.modal.children[0];
+    const title = header.children[0];
+    const labelledBy = m.modal.getAttribute('aria-labelledby');
+    assert.ok(labelledBy, 'modal has a non-empty accessible name via aria-labelledby');
+    assert.equal(title.id, labelledBy, 'aria-labelledby correctly references the visible title element');
+    assert.equal(title.textContent, 'Example Dialog', 'the visible title is the one being referenced');
+
+    const closeBtn = header.children[1];
+    const closeLabel = closeBtn.getAttribute('aria-label');
+    assert.ok(closeLabel, 'icon-only close button has an accessible label');
+    assert.match(closeLabel, /Example Dialog/, 'the close label is specific, not a bare generic "Close"');
+
+    // Phase 4 explicitly does not introduce aria-modal on ordinary dialogs.
+    assert.equal(m.modal.getAttribute('aria-modal'), null, 'no new ordinary aria-modal="true"');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('P0-SM-OF-4 title IDs are unique across multiple simultaneously-open (nested) generic dialogs', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+    // Neither is closed before the next opens, matching a real nested
+    // confirmation stacked on top of a primary dialog.
+    const a = ui.showModal({ title: 'Dialog A', actions: [] });
+    const b = ui.showModal({ title: 'Dialog B', actions: [] });
+    const c = ui.showModal({ title: 'Dialog A' }); // same visible title text as `a`, different instance
+
+    const titleIdOf = ref => ref.modal.children[0].children[0].id;
+    const idA = titleIdOf(a);
+    const idB = titleIdOf(b);
+    const idC = titleIdOf(c);
+
+    assert.notEqual(idA, idB);
+    assert.notEqual(idA, idC);
+    assert.notEqual(idB, idC);
+    assert.equal(a.modal.getAttribute('aria-labelledby'), idA);
+    assert.equal(b.modal.getAttribute('aria-labelledby'), idB);
+    assert.equal(c.modal.getAttribute('aria-labelledby'), idC);
+  } finally {
+    dom.restore();
+  }
+});
+
+test('P0-SM-OF-4 a custom-title caller that restructures the heading in place keeps a correct, non-stale accessible name', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+    // Mirrors src/screens/editor-screen.js's Item Notes showNotesModal(): the
+    // generic title element is kept (not replaced) and its children rebuilt.
+    const config = { title: 'Case A17 — Notes', actions: [] };
+    const m = ui.showModal(config);
+    const header = m.modal.children[0];
+    const heading = header.children[0];
+    const idBeforeRestructure = heading.id;
+    const labelledByBeforeRestructure = m.modal.getAttribute('aria-labelledby');
+
+    heading.textContent = '';
+    const headingTitle = { textContent: config.title }; // stand-in child span
+    heading.children.push(headingTitle); // heading now has custom structure, not plain text
+
+    assert.equal(heading.id, idBeforeRestructure, 'the id is not disturbed by restructuring its children');
+    assert.equal(
+      m.modal.getAttribute('aria-labelledby'),
+      labelledByBeforeRestructure,
+      'aria-labelledby still points at the same (still-present) element — never stale'
+    );
+    assert.equal(m.modal.getAttribute('aria-labelledby'), heading.id);
+
+    // The close button's accessible label was computed from the caller's
+    // original title, matching the restructured visible heading's content.
+    const closeLabel = header.children[1].getAttribute('aria-label');
+    assert.match(closeLabel, /Case A17 — Notes/);
+  } finally {
+    dom.restore();
+  }
+});
+
+test('P0-SM-OF-4 Notes overlay (a real custom-title caller) sets one dialog role and a correctly-referenced accessible name', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+    const entity = { id: 'case-1', notes: '' };
+    const overlayRef = openNotesOverlay({
+      UIComponents: ui,
+      entityType: 'case',
+      entityId: 'case-1',
+      resolveEntity: () => entity,
+      readNote: current => current.notes,
+      saveNote: ({ value }) => { entity.notes = value; },
+      title: 'Case Notes',
+    });
+
+    assert.ok(overlayRef, 'overlay opened');
+    const modal = overlayRef.modal;
+    assert.equal(modal.getAttribute('role'), 'dialog');
+    const labelledBy = modal.getAttribute('aria-labelledby');
+    assert.ok(labelledBy, 'has a non-empty accessible name');
+
+    const header = modal.children[0];
+    const heading = header.children[0];
+    assert.equal(heading.id, labelledBy, 'aria-labelledby references the actual (restructured) heading element');
+
+    const closeButton = header.children[1];
+    assert.match(closeButton.getAttribute('aria-label') || '', /Case Notes/, 'close button has a specific label');
+
+    // This surface's own id scheme must not collide with the generic
+    // primitive's counter-based scheme used by ordinary dialogs.
+    const other = ui.showModal({ title: 'Unrelated dialog', actions: [] });
+    assert.notEqual(other.modal.children[0].children[0].id, heading.id);
+  } finally {
+    dom.restore();
+  }
+});
+
+// Settings builds its own modal directly (doc.createElement, not the generic
+// showModal()) and createSettingsOverlay() carries a very large live-service
+// dependency graph (Supabase, billing, org/account data) with no jsdom
+// harness in this suite to drive open()/render() behaviorally — same
+// constraint documented for packs-screen.js's New/Rename Load Plan coverage
+// above. These are precise source-contract checks against the actual naming
+// wiring instead.
+test('P0-SM-OF-4 Settings dialog gets aria-labelledby wired to the same id its title element sets, close button gets a label, and the existing specialized aria-modal is preserved', async () => {
+  const settingsSource = await fs.readFile(SETTINGS_OVERLAY_PATH, 'utf8');
+
+  assert.match(
+    settingsSource,
+    /const SETTINGS_MODAL_TITLE_ID = '([^']+)';/,
+    'a stable title-id constant is defined'
+  );
+  const idConstantValue = settingsSource.match(/const SETTINGS_MODAL_TITLE_ID = '([^']+)';/)[1];
+  assert.ok(idConstantValue, 'the constant has a non-empty value');
+
+  // The dialog root: role/aria-modal (pre-existing, specialized — untouched)
+  // plus the new aria-labelledby, all referencing the same constant.
+  assert.match(
+    settingsSource,
+    /settingsModal\.setAttribute\('role', 'dialog'\);\s*\n\s*settingsModal\.setAttribute\('aria-modal', 'true'\);\s*\n\s*settingsModal\.setAttribute\('aria-labelledby', SETTINGS_MODAL_TITLE_ID\);/,
+    'existing role/aria-modal are preserved and aria-labelledby is added referencing the shared constant, not a duplicated literal'
+  );
+
+  // The visible per-tab title element gets that exact same constant as its id.
+  assert.match(
+    settingsSource,
+    /const title = doc\.createElement\('div'\);\s*\n\s*title\.classList\.add\('tp3d-settings-right-title'\);\s*\n[\s\S]{0,200}?title\.id = SETTINGS_MODAL_TITLE_ID;\s*\n\s*title\.textContent = meta\.title;/,
+    'the title element that renders meta.title (the visible heading) carries the same id referenced by aria-labelledby'
+  );
+
+  // The icon-only close button gets a real accessible label.
+  assert.match(
+    settingsSource,
+    /closeBtn\.innerHTML = '<i class="fa-solid fa-xmark"><\/i>';\s*\n\s*closeBtn\.setAttribute\('aria-label', 'Close Settings'\);/,
+    'the icon-only close button has a non-empty accessible label'
+  );
+
+  // Only one such id constant/definition exists (no duplicate title roots).
+  const constantDefCount = (settingsSource.match(/const SETTINGS_MODAL_TITLE_ID = /g) || []).length;
+  assert.equal(constantDefCount, 1, 'exactly one title-id definition, not a duplicated scheme');
 });
 
 test('BUSINESS-IDENTITY-UI Trailer Presets derive exactly one named or Custom selection from truck state', async () => {

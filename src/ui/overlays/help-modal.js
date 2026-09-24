@@ -48,13 +48,17 @@ export function createHelpModal({ UIComponents } = {}) {
                     <div>Export an app backup before large imports so you can restore if needed.</div>
                   </div>
                 `,
-      actions: [{ label: 'Close', variant: 'primary', onClick: () => close() }],
+      // No onClick: the footer action falls through to showModal's normal
+      // auto-close (undefined !== false) instead of calling the wrapper's own
+      // close(). That keeps X, backdrop, and footer on one authoritative
+      // primitive close lifecycle, all ending in onClose below.
+      actions: [{ label: 'Close', variant: 'primary' }],
       // Primitive lifecycle cleanup: fires on every dismissal path (X, backdrop,
-      // footer action auto-close, or a manual close()) so the wrapper's `modal`
-      // reference never goes stale after X/backdrop dismissal (isOpen() must
-      // accurately reflect it). close() above already calls modal.close() and
-      // nulls the reference itself for its own call path; this is the one
-      // authoritative clear for the paths that bypass it.
+      // footer auto-close, or a manual close()) so the wrapper's `modal`
+      // reference never goes stale (isOpen() must accurately reflect it). This
+      // is the one authoritative clear; the wrapper's own close() (used for
+      // programmatic closure, e.g. open()'s existing defensive call above)
+      // reaches it the same way, through modal.close() below.
       onClose: () => {
         modal = null;
       },

@@ -509,6 +509,24 @@ body[data-auth="signed_in"] #app {
   transform: none;
 }
 
+/* Modal footer actions (Cancel/Close/Clear, etc.) use variant: 'ghost' for a
+   quieter secondary action, but that made them look like plain text next to
+   their bordered Save/Edit/Delete siblings in the same row. Icon-only ghost
+   controls elsewhere (header close buttons, card overflow/Notes triggers,
+   dropdown/kebab menus) intentionally stay borderless at rest — this rule is
+   scoped to text-label modal-footer buttons only and does not touch those. */
+.modal-footer .btn-ghost {
+  border-color: var(--border-subtle);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+.modal-footer .btn-ghost:hover {
+  background: var(--bg-hover);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+
 /* ================================
   Form Inputs
 ================================== */

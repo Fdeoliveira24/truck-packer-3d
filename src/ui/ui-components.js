@@ -26,17 +26,19 @@ const AUTOPACK_LOADING_MESSAGES = Object.freeze([
 ]);
 
 /**
- * Presence and keyboard ownership only. Dismissal, focus and popup routing stay
- * with their existing owners. Install before application keyboard listeners.
+ * Logical interaction ownership and Escape assignment. Surface callbacks retain
+ * their close/cancel behavior. Install before application keyboard listeners.
  */
 export function createModalOwnership({ windowRef = window, documentRef = document } = {}) {
   const owners = new Map();
   const eventOwners = new WeakMap();
+  const escapeClaims = new WeakMap();
   let order = 0;
 
   function getActiveOwner() {
     let active = null;
     for (const owner of owners.values()) {
+      if (!owner.isActive()) continue;
       if (!active || owner.priority > active.priority ||
           (owner.priority === active.priority && owner.order > active.order)) {
         active = owner;
@@ -45,21 +47,38 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
     return active;
   }
 
-  /** @param {{ kind?: string, element?: Element, parentId?: symbol | null, priority?: number }} [options] */
-  function register({ kind = 'modal', element = null, parentId, priority = 0 } = {}) {
+  function getOwnerForElement(element) {
+    return [...owners.values()].reverse().find(owner =>
+      owner.isActive() && element && owner.element?.contains(element)) || null;
+  }
+
+  /** @param {{ kind?: string, element?: Element, parentId?: symbol | null, priority?: number,
+   * isActive?: () => boolean, canDismiss?: (source: string) => boolean,
+   * onDismiss?: (source: string) => void, onParentClose?: () => void }} [options] */
+  function register({ kind = 'modal', element = null, parentId, priority = 0,
+    isActive = () => true, canDismiss = () => true, onDismiss, onParentClose } = {}) {
     if (parentId === undefined) {
       // Infer ancestry only from an already registered owner's focused content.
       // DOM classes, visibility and ARIA never establish ownership.
-      const focused = documentRef.activeElement;
-      const parent = [...owners.values()].reverse().find(owner =>
-        focused && owner.element?.contains(focused)
-      );
+      let parent = getOwnerForElement(documentRef.activeElement);
+      // A transient popup is not the lifetime owner of a dialog it launches.
+      while (parent?.kind === 'popup') parent = owners.get(parent.parentId);
       parentId = parent?.id || null;
     }
     const id = Symbol(kind);
     const owner = Object.freeze({
-      id, kind, element, parentId, priority, order: ++order,
-      release() { owners.delete(id); },
+      id, kind, element, parentId, priority, order: ++order, isActive, onParentClose,
+      requestDismiss(source) {
+        if (!owners.has(id) || !canDismiss(source) || !onDismiss) return false;
+        onDismiss(source);
+        return true;
+      },
+      release() {
+        if (!owners.delete(id)) return;
+        for (const child of [...owners.values()]) {
+          if (child.parentId === id) child.onParentClose?.();
+        }
+      },
     });
     owners.set(id, owner);
     return owner;
@@ -68,14 +87,25 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
   windowRef.addEventListener('keydown', event => {
     // Window capture precedes legacy document capture handlers which can close
     // an owner. Keep that entry snapshot even after its registration is released.
-    eventOwners.set(event, getActiveOwner()?.id || null);
+    const owner = getActiveOwner();
+    eventOwners.set(event, owner?.id || null);
+    escapeClaims.delete(event);
+    if (event.key !== 'Escape' || !owner) return;
+    // Claim before invoking a callback: it may release this owner or open another.
+    // The same event cannot be reassigned to that new owner or to the Editor.
+    escapeClaims.set(event, owner.id);
+    event.preventDefault();
+    event.stopPropagation();
+    owner.requestDismiss('escape');
   }, true);
 
   function blocksKeyboardEvent(event) {
-    return Boolean(eventOwners.get(event) || owners.size);
+    return Boolean(eventOwners.get(event) || getActiveOwner());
   }
 
-  return { register, getActiveOwner, getOwners: () => [...owners.values()], blocksKeyboardEvent };
+  return { register, getActiveOwner, getOwnerForElement,
+    getOwners: () => [...owners.values()], blocksKeyboardEvent,
+    getEscapeClaim: event => escapeClaims.get(event) || null };
 }
 
 export function createUIComponents() {
@@ -89,8 +119,10 @@ export function createUIComponents() {
   let dropdownActiveAnchorEl = null;
   let dropdownActiveAnchorClasses = [];
   let dropdownSemanticAnchorEl = null;
-  const registeredDropdownSurfaces = new Set();
-  let dropdownCoordinatorKeyDownListener = null;
+  const registeredDropdownSurfaces = new Map();
+  let dropdownOwner = null;
+  let dropdownHost = null;
+  let dropdownActionParentId;
   let closingDropdowns = false;
 
   const toastTypes = {
@@ -171,6 +203,7 @@ export function createUIComponents() {
   }
 
   function showModal(config) {
+    let owner = null;
     const overlay = document.createElement('div');
     overlay.className = 'modal-overlay';
 
@@ -190,7 +223,7 @@ export function createUIComponents() {
     closeBtn.className = 'btn btn-ghost';
     closeBtn.type = 'button';
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-    closeBtn.addEventListener('click', () => close());
+    closeBtn.addEventListener('click', () => owner.requestDismiss('close-button'));
 
     header.appendChild(title);
     if (showCloseButton) {
@@ -236,11 +269,10 @@ export function createUIComponents() {
     overlay.appendChild(modal);
 
     overlay.addEventListener('click', ev => {
-      if (ev.target === overlay && config.dismissible !== false) close();
+      if (ev.target === overlay && config.dismissible !== false) owner.requestDismiss('backdrop');
     });
 
     let closed = false;
-    let owner = null;
     function close() {
       if (closed) return;
       closed = true;
@@ -254,8 +286,16 @@ export function createUIComponents() {
     }
 
     modalRoot.appendChild(overlay);
-    owner = modalOwnership.register({ element: overlay, parentId: config.parentOwnerId });
-    return { close, overlay, modal, body, owner };
+    owner = modalOwnership.register({
+      element: overlay,
+      parentId: config.parentOwnerId === undefined ? dropdownActionParentId : config.parentOwnerId,
+      canDismiss: source =>
+        (source !== 'escape' || config.dismissible !== false) &&
+        (!config.canDismiss || config.canDismiss(source) !== false),
+      onDismiss: close,
+      onParentClose: close,
+    });
+    return { close, requestDismiss: owner.requestDismiss, overlay, modal, body, owner };
   }
 
   function showAutoPackLoadingOverlay(options = {}) {
@@ -409,6 +449,13 @@ export function createUIComponents() {
   }
 
   function openDropdown(anchorEl, items, options = {}) {
+    const parent = modalOwnership.getOwnerForElement(anchorEl);
+    const invokeAction = (callback, ...args) => {
+      const previousParentId = dropdownActionParentId;
+      dropdownActionParentId = parent?.id || null;
+      try { return callback?.(...args); }
+      finally { dropdownActionParentId = previousParentId; }
+    };
     const anchorKey = options.anchorKey ? String(options.anchorKey) : '';
     const fallbackAnchorId = anchorEl && anchorEl.id ? String(anchorEl.id) : '';
     const resolvedAnchorId = anchorKey || fallbackAnchorId;
@@ -524,7 +571,7 @@ export function createUIComponents() {
           try {
             const handler = item.onCheckboxChange || item.onClick;
             const target = /** @type {HTMLInputElement|null} */ (ev.target);
-            if (handler) handler(Boolean(target && target.checked));
+            invokeAction(handler, Boolean(target && target.checked));
           } finally {
             if (options.closeOnCheckboxChange !== false) closeAllDropdowns();
           }
@@ -547,7 +594,7 @@ export function createUIComponents() {
             ev.stopPropagation();
             if (btn.disabled) return;
             closeAllDropdowns();
-            item.rightOnClick && item.rightOnClick();
+            invokeAction(item.rightOnClick);
           });
           iconWrap.appendChild(iconRight);
           btn.appendChild(iconWrap);
@@ -560,7 +607,7 @@ export function createUIComponents() {
         ev.stopPropagation();
         if (btn.disabled || (item && item.status === true)) return;
         closeAllDropdowns();
-        item.onClick && item.onClick();
+        invokeAction(item.onClick);
         if (manageTriggerState && anchorEl && typeof anchorEl.focus === 'function') anchorEl.focus();
       });
       wrap.appendChild(btn);
@@ -586,7 +633,26 @@ export function createUIComponents() {
     dropdown.style.minWidth = `${preferredWidth}px`;
     dropdown.appendChild(wrap);
 
-    document.body.appendChild(dropdown);
+    // A sibling of the modal panel escapes its scrolling/clipped content, while
+    // remaining inside the owner's stacking context below a later child dialog.
+    if (parent?.element) {
+      dropdownHost = document.createElement('div');
+      dropdownHost.className = 'modal-popup-host';
+      parent.element.appendChild(dropdownHost);
+      dropdownHost.appendChild(dropdown);
+    } else {
+      document.body.appendChild(dropdown);
+    }
+    dropdownOwner = modalOwnership.register({
+      kind: 'popup', element: dropdown, parentId: parent?.id || null,
+      priority: parent?.priority || 0,
+      onDismiss: () => {
+        const focusTarget = dropdownSemanticAnchorEl;
+        closeAllDropdowns();
+        if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus();
+      },
+      onParentClose: closeAllDropdowns,
+    });
 
     const positionDropdown = () => {
       if (!dropdown.isConnected) return;
@@ -677,7 +743,11 @@ export function createUIComponents() {
     if (closingDropdowns) return;
     closingDropdowns = true;
     try {
+      dropdownOwner?.release();
+      dropdownOwner = null;
       document.querySelectorAll('[data-dropdown="1"]').forEach(el => el.remove());
+      dropdownHost?.remove();
+      dropdownHost = null;
       if (dropdownActiveAnchorEl && dropdownActiveAnchorClasses.length) {
         dropdownActiveAnchorClasses.forEach(className => dropdownActiveAnchorEl.classList.remove(className));
       }
@@ -702,7 +772,7 @@ export function createUIComponents() {
         window.removeEventListener('scroll', dropdownRepositionListener, true);
         dropdownRepositionListener = null;
       }
-      registeredDropdownSurfaces.forEach(surface => {
+      registeredDropdownSurfaces.forEach((_unregister, surface) => {
         if (surface && typeof surface.isOpen === 'function' && surface.isOpen()) surface.close();
       });
     } finally {
@@ -714,26 +784,25 @@ export function createUIComponents() {
     if (!surface || typeof surface.isOpen !== 'function' || typeof surface.close !== 'function') {
       return () => {};
     }
-    registeredDropdownSurfaces.add(surface);
-    if (!dropdownCoordinatorKeyDownListener) {
-      dropdownCoordinatorKeyDownListener = ev => {
-        if (ev.key !== 'Escape') return;
-        const registeredOpenSurface = Array.from(registeredDropdownSurfaces).find(entry => entry.isOpen());
-        const hasManagedDropdown = Boolean(dropdownSemanticAnchorEl);
-        const hasDynamicDropdown = Boolean(document.querySelector('[data-dropdown="1"]'));
-        if (!registeredOpenSurface && !hasManagedDropdown && !hasDynamicDropdown) return;
-        const focusTarget = dropdownSemanticAnchorEl ||
-          (registeredOpenSurface && typeof registeredOpenSurface.getAnchor === 'function'
-            ? registeredOpenSurface.getAnchor()
-            : null);
-        ev.preventDefault();
-        ev.stopPropagation();
+    const existing = registeredDropdownSurfaces.get(surface);
+    if (existing) return existing;
+    // Persistent page filters expose their existing open state explicitly. They
+    // join the same arbiter, below modal owners, without a second Escape listener.
+    const owner = modalOwnership.register({
+      kind: 'popup', parentId: null, priority: -1, isActive: () => surface.isOpen(),
+      onDismiss: () => {
+        const focusTarget = surface.getAnchor?.();
         closeAllDropdowns();
         if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus();
-      };
-      document.addEventListener('keydown', dropdownCoordinatorKeyDownListener);
-    }
-    return () => registeredDropdownSurfaces.delete(surface);
+      },
+    });
+    const unregister = () => {
+      if (registeredDropdownSurfaces.get(surface) !== unregister) return;
+      owner.release();
+      registeredDropdownSurfaces.delete(surface);
+    };
+    registeredDropdownSurfaces.set(surface, unregister);
+    return unregister;
   }
 
   return {

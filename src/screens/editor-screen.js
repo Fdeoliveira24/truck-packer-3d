@@ -5765,25 +5765,9 @@ export function createEditorScreen({
       const instanceId = inst.id;
       const caseId = inst.caseId;
 
-      // Escape-to-close scoped to this modal only, mirroring the same local
-      // pattern already used in truck-change-controller.js's
-      // showManagedModal rather than changing the shared
-      // UIComponents.showModal primitive for every caller.
+      // Escape is assigned by the shared modal owner; this wrapper only styles Notes.
       function showNotesModal(config) {
-        let modalRef = null;
-        function handleEscape(ev) {
-          if (ev.key === 'Escape' && config.dismissible !== false && modalRef) {
-            ev.preventDefault();
-            modalRef.close();
-          }
-        }
-        modalRef = UIComponents.showModal({
-          ...config,
-          onClose: () => {
-            document.removeEventListener('keydown', handleEscape);
-            if (typeof config.onClose === 'function') config.onClose();
-          },
-        });
+        const modalRef = UIComponents.showModal({ ...config, parentOwnerId: null });
         modalRef.modal.classList.add('tp3d-notes-modal');
         const heading = modalRef.modal.querySelector('.modal-title');
         if (heading) {
@@ -5811,7 +5795,6 @@ export function createEditorScreen({
           heading.appendChild(headingIcon);
           heading.appendChild(headingCopy);
         }
-        document.addEventListener('keydown', handleEscape);
         return modalRef;
       }
 

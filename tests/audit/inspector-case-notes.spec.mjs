@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { createModalOwnership } from '../../src/ui/ui-components.js';
 
 // Inspector per-case Case Instructions/Notes (Case.notes).
 //
@@ -471,15 +472,16 @@ function makeNotesOverlayHarness() {
       return null;
     },
     escape() {
-      for (const handler of documentListeners.get('keydown') || []) {
-        handler({
-          key: 'Escape',
-          preventDefault() {},
-          stopPropagation() {},
-        });
-      }
+      escapeCapture({
+        key: 'Escape',
+        preventDefault() {},
+        stopPropagation() {},
+      });
     },
   };
+  let escapeCapture;
+  const ownership = createModalOwnership({ documentRef,
+    windowRef: { addEventListener(_type, callback) { escapeCapture = callback; } } });
   const modals = [];
   const toasts = [];
   const UIComponents = {
@@ -505,11 +507,13 @@ function makeNotesOverlayHarness() {
         close() {
           if (closed) return;
           closed = true;
+          ref.owner.release();
           modal.isConnected = false;
           overlay.isConnected = false;
           config.onClose?.();
         },
       };
+      ref.owner = ownership.register({ onDismiss: () => ref.close() });
       modals.push({ config, ref, modal, overlay, get closed() { return closed; } });
       return ref;
     },
@@ -1279,7 +1283,7 @@ test('openNotesModal fails safely when the captured Pack/instance no longer exis
     'Save failure (missing Pack/instance) must return false so showModal does NOT close — the draft and edit state are preserved');
 });
 
-test('openNotesModal reuses UIComponents.showModal for all three Item Notes states via a locally Escape-scoped wrapper (no bespoke modal markup, no shared-primitive change)', async () => {
+test('openNotesModal reuses shared modal ownership for all three Item Notes states', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = extractFunctionBlock(src, 'function openNotesModal(pack, inst)');
   const showModalCalls = (block.match(/UIComponents\.showModal\(/g) || []).length;

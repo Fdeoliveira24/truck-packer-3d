@@ -12,6 +12,7 @@ import * as CategoryService from '../../src/services/category-service.js';
 import * as Utils from '../../src/core/utils.js';
 import { openCaseModal } from '../../src/ui/overlays/case-modal.js';
 import { createCardDisplayOverlay } from '../../src/ui/overlays/card-display-overlay.js';
+import { createHelpModal } from '../../src/ui/overlays/help-modal.js';
 import { createUIComponents } from '../../src/ui/ui-components.js';
 import { findMatchingTrailerPreset, packMatchesSearch } from '../../src/screens/packs-screen.js';
 import { TrailerPresets } from '../../src/data/trailer-presets.js';
@@ -67,6 +68,128 @@ function memoryStorage() {
     },
     key(index) {
       return Array.from(values.keys())[index] || null;
+    },
+  };
+}
+
+// P0-SM-OF-1: minimal fake DOM sufficient to actually run createUIComponents()'s
+// showModal/confirm and createHelpModal() (no jsdom harness in this suite — see
+// e.g. tests/audit/inspector-case-notes.spec.mjs). Real element tree, real
+// addEventListener/dispatch, so lifecycle behavior (close idempotence, confirm
+// settlement, Help wrapper state) is exercised for real, not asserted from source.
+class FakeModalElement {
+  constructor(tagName) {
+    this.tagName = String(tagName || 'div').toUpperCase();
+    this.children = [];
+    this.parentElement = null;
+    this._listeners = new Map();
+    this.className = '';
+    this.type = '';
+    this.dataset = {};
+    this.style = {};
+    this._innerHTML = '';
+    this._textContent = '';
+  }
+  appendChild(child) {
+    child.parentElement = this;
+    this.children.push(child);
+    return child;
+  }
+  removeChild(child) {
+    const idx = this.children.indexOf(child);
+    if (idx >= 0) this.children.splice(idx, 1);
+    child.parentElement = null;
+    return child;
+  }
+  remove() {
+    if (this.parentElement) this.parentElement.removeChild(this);
+  }
+  addEventListener(type, handler) {
+    if (!this._listeners.has(type)) this._listeners.set(type, []);
+    this._listeners.get(type).push(handler);
+  }
+  removeEventListener(type, handler) {
+    const list = this._listeners.get(type);
+    if (!list) return;
+    const idx = list.indexOf(handler);
+    if (idx >= 0) list.splice(idx, 1);
+  }
+  dispatch(type, evt = {}) {
+    const list = this._listeners.get(type) || [];
+    list.slice().forEach(handler => handler({ target: this, ...evt }));
+  }
+  setAttribute() {}
+  getAttribute() {
+    return null;
+  }
+  querySelector() {
+    return null;
+  }
+  querySelectorAll() {
+    return [];
+  }
+  get innerHTML() {
+    return this._innerHTML;
+  }
+  set innerHTML(v) {
+    this._innerHTML = v;
+  }
+  get textContent() {
+    return this._textContent;
+  }
+  set textContent(v) {
+    this._textContent = v;
+  }
+}
+
+function installFakeModalDom() {
+  const originalDocument = globalThis.document;
+  const originalWindow = globalThis.window;
+  const originalHTMLElement = globalThis.HTMLElement;
+  const modalRoot = new FakeModalElement('div');
+  const toastContainer = new FakeModalElement('div');
+  // showModal() does `config.content instanceof HTMLElement`, which throws
+  // ReferenceError in plain Node without a global HTMLElement — not just when
+  // content actually is one. FakeModalElement stands in for it.
+  globalThis.HTMLElement = FakeModalElement;
+  globalThis.document = {
+    getElementById(id) {
+      if (id === 'modal-root') return modalRoot;
+      if (id === 'toast-container') return toastContainer;
+      return null;
+    },
+    createElement(tag) {
+      return new FakeModalElement(tag);
+    },
+    querySelectorAll() {
+      return [];
+    },
+    querySelector() {
+      return null;
+    },
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.window = {
+    setTimeout: (...args) => setTimeout(...args),
+    clearTimeout: (...args) => clearTimeout(...args),
+    setInterval: (...args) => setInterval(...args),
+    clearInterval: (...args) => clearInterval(...args),
+    addEventListener() {},
+    removeEventListener() {},
+    innerWidth: 1024,
+    innerHeight: 768,
+  };
+  return {
+    modalRoot,
+    toastContainer,
+    restore() {
+      if (originalDocument === undefined) delete globalThis.document;
+      else globalThis.document = originalDocument;
+      if (originalWindow === undefined) delete globalThis.window;
+      else globalThis.window = originalWindow;
+      if (originalHTMLElement === undefined) delete globalThis.HTMLElement;
+      else globalThis.HTMLElement = originalHTMLElement;
     },
   };
 }
@@ -1352,6 +1475,344 @@ test('BUSINESS-IDENTITY-UI dropdown coordinator closes registered surfaces and r
     if (originalWindow === undefined) delete globalThis.window;
     else globalThis.window = originalWindow;
   }
+});
+
+test('P0-SM-OF-1 showModal close() is idempotent: first close tears down once, later/reentrant/detached closes are safe no-ops', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+
+    // First close removes the overlay and fires onClose exactly once.
+    let onCloseCount = 0;
+    const first = ui.showModal({ title: 'One', actions: [], onClose: () => { onCloseCount += 1; } });
+    assert.ok(dom.modalRoot.children.includes(first.overlay), 'overlay is attached on open');
+    first.close();
+    assert.equal(onCloseCount, 1);
+    assert.equal(first.overlay.parentElement, null, 'overlay removed from the DOM');
+    assert.ok(!dom.modalRoot.children.includes(first.overlay));
+
+    // Second (and further) close() calls are immediate no-ops: no DOM work, no
+    // second onClose, no error.
+    assert.doesNotThrow(() => first.close());
+    assert.equal(onCloseCount, 1, 'onClose does not fire a second time');
+    first.close();
+    assert.equal(onCloseCount, 1);
+
+    // Reentrant close() called from inside onClose/cleanup must also be harmless
+    // (the `closed` guard is set before onClose runs).
+    let reentrantOnCloseCount = 0;
+    const second = ui.showModal({
+      title: 'Two',
+      actions: [],
+      onClose: () => {
+        reentrantOnCloseCount += 1;
+        second.close(); // reentrant
+      },
+    });
+    assert.doesNotThrow(() => second.close());
+    assert.equal(reentrantOnCloseCount, 1, 'reentrant close from onClose does not re-fire onClose');
+
+    // A modal whose DOM was already detached by something else must still close
+    // safely (guard, not the parentElement check, prevents double work/errors).
+    let thirdOnCloseCount = 0;
+    const third = ui.showModal({ title: 'Three', actions: [], onClose: () => { thirdOnCloseCount += 1; } });
+    dom.modalRoot.removeChild(third.overlay); // out-of-band removal
+    assert.equal(third.overlay.parentElement, null);
+    assert.doesNotThrow(() => third.close());
+    assert.equal(thirdOnCloseCount, 1, 'onClose still fires exactly once for an already-detached modal');
+    third.close();
+    assert.equal(thirdOnCloseCount, 1);
+  } finally {
+    dom.restore();
+  }
+});
+
+test('P0-SM-OF-1 showModal close() idempotence prevents double-fire across X / backdrop / action auto-close followed by a manual close', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+
+    // X (header close button) then a manual close() does not double-fire onClose.
+    let xCloseCount = 0;
+    const xModal = ui.showModal({ title: 'X', actions: [], onClose: () => { xCloseCount += 1; } });
+    const header = xModal.modal.children[0];
+    const closeBtn = header.children[1];
+    closeBtn.dispatch('click');
+    assert.equal(xCloseCount, 1);
+    assert.equal(xModal.overlay.parentElement, null);
+    xModal.close();
+    assert.equal(xCloseCount, 1, 'manual close after X does not re-fire onClose');
+
+    // Backdrop click then a manual close() does not double-fire onClose.
+    let backdropCloseCount = 0;
+    const backdropModal = ui.showModal({
+      title: 'Backdrop',
+      actions: [],
+      onClose: () => { backdropCloseCount += 1; },
+    });
+    backdropModal.overlay.dispatch('click', { target: backdropModal.overlay });
+    assert.equal(backdropCloseCount, 1);
+    backdropModal.close();
+    assert.equal(backdropCloseCount, 1, 'manual close after backdrop does not re-fire onClose');
+
+    // dismissible: false must still allow the manual close() to work, and still
+    // not double-fire — backdrop dismissal itself remains blocked (unchanged
+    // dismissal contract; not reinterpreted by this phase).
+    let nonDismissibleBackdropAttempts = 0;
+    const nonDismissible = ui.showModal({
+      title: 'Locked',
+      dismissible: false,
+      actions: [],
+      onClose: () => { nonDismissibleBackdropAttempts += 1; },
+    });
+    nonDismissible.overlay.dispatch('click', { target: nonDismissible.overlay });
+    assert.equal(nonDismissibleBackdropAttempts, 0, 'dismissible:false still blocks backdrop close (unchanged)');
+    nonDismissible.close();
+    assert.equal(nonDismissibleBackdropAttempts, 1);
+
+    // An action's normal-return auto-close, followed by a manual close(), does
+    // not double-fire onClose.
+    let actionCloseCount = 0;
+    const actionModal = ui.showModal({
+      title: 'Action',
+      actions: [{ label: 'OK', onClick: () => {} }],
+      onClose: () => { actionCloseCount += 1; },
+    });
+    const footer = actionModal.modal.children[2];
+    footer.children[0].dispatch('click');
+    assert.equal(actionCloseCount, 1);
+    actionModal.close();
+    assert.equal(actionCloseCount, 1, 'manual close after action auto-close does not re-fire onClose');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('P0-SM-OF-1 showModal action contract is unchanged by the idempotent close()', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+
+    // Synchronous `return false` keeps the modal open (no auto-close).
+    const keepOpen = ui.showModal({ title: 'Keep open', actions: [{ label: 'A', onClick: () => false }] });
+    keepOpen.modal.children[2].children[0].dispatch('click');
+    assert.ok(dom.modalRoot.children.includes(keepOpen.overlay), 'return false keeps the modal open');
+    keepOpen.close();
+
+    // Any other synchronous return value auto-closes as before.
+    const closesNormally = ui.showModal({ title: 'Closes', actions: [{ label: 'A', onClick: () => true }] });
+    closesNormally.modal.children[2].children[0].dispatch('click');
+    assert.equal(closesNormally.overlay.parentElement, null, 'non-false return auto-closes');
+
+    // Manually calling modalRef.close() from inside an action remains safe, and
+    // the subsequent primitive auto-close (since the handler didn't return
+    // false) does not re-fire onClose.
+    let manualCloseOnCloseCount = 0;
+    let manualCloseRef = null;
+    manualCloseRef = ui.showModal({
+      title: 'Manual close from action',
+      actions: [{ label: 'A', onClick: () => { manualCloseRef.close(); } }],
+      onClose: () => { manualCloseOnCloseCount += 1; },
+    });
+    assert.doesNotThrow(() => manualCloseRef.modal.children[2].children[0].dispatch('click'));
+    assert.equal(manualCloseOnCloseCount, 1, 'manual close from an action + auto-close fires onClose once');
+
+    // A returned Promise is NOT newly awaited: since a Promise !== false, the
+    // primitive still auto-closes synchronously, before the Promise settles.
+    let resolvePromise = null;
+    let promiseOnCloseCount = 0;
+    const promiseModal = ui.showModal({
+      title: 'Promise',
+      actions: [{
+        label: 'A',
+        onClick: () => new Promise(resolve => { resolvePromise = resolve; }),
+      }],
+      onClose: () => { promiseOnCloseCount += 1; },
+    });
+    promiseModal.modal.children[2].children[0].dispatch('click');
+    assert.equal(promiseModal.overlay.parentElement, null, 'Promise return auto-closes synchronously, unawaited');
+    assert.equal(promiseOnCloseCount, 1, 'onClose already fired before the action promise settles');
+    // The action promise settling later has no bearing on the already-closed
+    // modal: idempotent close() means this is a harmless no-op, not a second
+    // teardown/onClose.
+    assert.doesNotThrow(() => resolvePromise(true));
+    assert.equal(promiseOnCloseCount, 1);
+
+    // A thrown action error retains current handling: swallowed, modal still closes.
+    const throwingModal = ui.showModal({
+      title: 'Throws',
+      actions: [{ label: 'A', onClick: () => { throw new Error('boom'); } }],
+    });
+    assert.doesNotThrow(() => throwingModal.modal.children[2].children[0].dispatch('click'));
+    assert.equal(throwingModal.overlay.parentElement, null, 'modal still closes after a thrown action error');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('P0-SM-OF-1 UIComponents.confirm() settles exactly once for Confirm/Cancel/X/backdrop, explicit settlement beating the onClose(false) fallback', async () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+
+    // Confirm -> true, exactly once, and the modal actually closes (primitive
+    // auto-close runs onClose(false) afterward, which must be a no-op fallback).
+    const confirmPromise = ui.confirm({ title: 'Sure?' });
+    const confirmOverlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+    const confirmFooter = confirmOverlay.children[0].children[2];
+    assert.equal(confirmFooter.children.length, 2, 'Cancel + Confirm actions');
+    confirmFooter.children[1].dispatch('click'); // Confirm
+    assert.equal(await confirmPromise, true, 'Confirm settles true, surviving the onClose(false) fallback');
+    assert.equal(confirmOverlay.parentElement, null, 'modal actually closed');
+
+    // Cancel -> false, exactly once. Cancel must NOT return boolean `false` from
+    // the action itself (which would keep the modal open) — it settles false and
+    // then allows ordinary closure.
+    const cancelPromise = ui.confirm({ title: 'Sure?' });
+    const cancelOverlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+    const cancelFooter = cancelOverlay.children[0].children[2];
+    cancelFooter.children[0].dispatch('click'); // Cancel
+    assert.equal(await cancelPromise, false);
+    assert.equal(cancelOverlay.parentElement, null, 'Cancel does not leave the modal open');
+
+    // X -> false, exactly once (was previously left pending).
+    const xPromise = ui.confirm({ title: 'Sure?' });
+    const xOverlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+    const xCloseBtn = xOverlay.children[0].children[0].children[1]; // overlay -> modal -> header -> closeBtn
+    xCloseBtn.dispatch('click');
+    assert.equal(await xPromise, false);
+
+    // Backdrop -> false, exactly once (was previously left pending).
+    const backdropPromise = ui.confirm({ title: 'Sure?' });
+    const backdropOverlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+    backdropOverlay.dispatch('click', { target: backdropOverlay });
+    assert.equal(await backdropPromise, false);
+
+    // Repeated primitive close cannot settle twice (idempotent close() means the
+    // onClose fallback can only ever run once regardless of how many times
+    // close() is invoked afterward).
+    let settleAttempts = 0;
+    const repeatedPromise = ui.confirm({ title: 'Sure?' }).then(v => { settleAttempts += 1; return v; });
+    const repeatedOverlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+    repeatedOverlay.children[0].children[0].children[1].dispatch('click'); // X
+    repeatedOverlay.dispatch('click', { target: repeatedOverlay }); // backdrop, already detached — no-op
+    assert.equal(await repeatedPromise, false);
+    assert.equal(settleAttempts, 1, '.then() runs exactly once no matter how many dismissal paths fire');
+  } finally {
+    dom.restore();
+  }
+});
+
+test('P0-SM-OF-1 Help modal wrapper clears its modal reference on every primitive dismissal path and reopens normally', () => {
+  const dom = installFakeModalDom();
+  try {
+    const ui = createUIComponents();
+    const help = createHelpModal({ UIComponents: ui });
+
+    assert.equal(help.isOpen(), false);
+
+    // X clears wrapper state.
+    help.open();
+    assert.equal(help.isOpen(), true);
+    let overlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+    overlay.children[0].children[0].children[1].dispatch('click'); // overlay -> modal -> header -> closeBtn (X)
+    assert.equal(help.isOpen(), false, 'isOpen() is false after X close');
+    assert.equal(overlay.parentElement, null);
+
+    // Reopen after X.
+    help.open();
+    assert.equal(help.isOpen(), true);
+    overlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+
+    // Backdrop clears wrapper state.
+    overlay.dispatch('click', { target: overlay });
+    assert.equal(help.isOpen(), false, 'isOpen() is false after backdrop close');
+
+    // Reopen after backdrop.
+    help.open();
+    assert.equal(help.isOpen(), true);
+    overlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+
+    // Footer close clears wrapper state and does not double-close the primitive.
+    const footer = overlay.children[0].children[2]; // overlay -> modal -> footer
+    assert.equal(footer.children.length, 1, 'single Close footer action');
+    assert.doesNotThrow(() => footer.children[0].dispatch('click'));
+    assert.equal(help.isOpen(), false, 'isOpen() is false after footer close');
+    assert.equal(overlay.parentElement, null);
+
+    // Reopen after footer close.
+    help.open();
+    assert.equal(help.isOpen(), true);
+    overlay = dom.modalRoot.children[dom.modalRoot.children.length - 1];
+
+    // Calling the wrapper's own close() (e.g. programmatic primitive closure
+    // from elsewhere) also clears state and remains reopenable.
+    help.close();
+    assert.equal(help.isOpen(), false);
+    help.open();
+    assert.equal(help.isOpen(), true);
+  } finally {
+    dom.restore();
+  }
+});
+
+// packs-screen.js's New/Rename Load Plan modals are built inside the closure
+// createPacksScreen() returns, which queries ~25 document.getElementById() ids
+// at construction time — there is no jsdom harness in this suite for that (same
+// constraint documented for editor-screen.js / cases-screen.js elsewhere in this
+// repo's tests), so these are precise source-contract checks against the actual
+// onClick handlers rather than a full screen instantiation.
+test('P0-SM-OF-1 New Load Plan empty/whitespace title keeps the modal open, preserving the existing warning and focus behavior', async () => {
+  const packsSource = await fs.readFile(PACKS_SCREEN_PATH, 'utf8');
+  const newPlanBlock = packsSource.slice(
+    packsSource.indexOf('function openNewPackModal'),
+    packsSource.indexOf('function openEditPackModal')
+  );
+  assert.ok(newPlanBlock, 'openNewPackModal block found');
+
+  // Invalid branch: trimmed-empty title (covers both empty and whitespace-only,
+  // since the check is on the trimmed value) keeps the modal open.
+  assert.match(
+    newPlanBlock,
+    /const t = String\(title\.input\.value \|\| ''\)\.trim\(\);\s*\n\s*if \(!t\) \{\s*\n\s*UIComponents\.showToast\('Title is required', 'warning'\);\s*\n\s*title\.input\.focus\(\);\s*\n\s*return false;\s*\n\s*\}/,
+    'empty/whitespace title still warns, still focuses the title input, and now keeps the modal open (return false)'
+  );
+  assert.doesNotMatch(newPlanBlock, /title\.input\.focus\(\);\s*\n\s*return true;/,
+    'the invalid branch no longer returns the value that allows the generic modal to close');
+
+  // Valid path is unchanged: still creates the pack and closes normally (returns
+  // true) after the required identity/other validation.
+  assert.match(newPlanBlock, /const pack = PackLibrary\.create\(\{/);
+  assert.match(newPlanBlock, /PackLibrary\.open\(pack\.id\);\s*\n\s*AppShell\.navigate\('editor'\);\s*\n\s*return true;/);
+});
+
+test('P0-SM-OF-1 Rename Load Plan empty/whitespace title keeps the modal open and performs no update', async () => {
+  const packsSource = await fs.readFile(PACKS_SCREEN_PATH, 'utf8');
+  const renameBlock = packsSource.slice(
+    packsSource.indexOf('function openRename'),
+    packsSource.indexOf('function exportPack')
+  );
+  assert.ok(renameBlock, 'openRename block found');
+
+  // Invalid branch (trimmed-empty, so empty and whitespace-only both hit it)
+  // now keeps the modal open instead of allowing it to close.
+  assert.match(
+    renameBlock,
+    /const nextTitle = String\(f\.input\.value \|\| ''\)\.trim\(\);\s*\n\s*if \(!nextTitle\) return false;/,
+    'empty/whitespace title keeps the modal open (return false)'
+  );
+  assert.doesNotMatch(renameBlock, /if \(!nextTitle\) return true;/,
+    'the invalid branch no longer returns the value that allows the generic modal to close');
+
+  // No update occurs for the invalid branch: PackLibrary.update only appears
+  // after (textually later than) the invalid-title guard.
+  const guardIndex = renameBlock.indexOf('if (!nextTitle) return false;');
+  const updateIndex = renameBlock.indexOf('PackLibrary.update(packId, { title: nextTitle });');
+  assert.ok(guardIndex >= 0 && updateIndex > guardIndex, 'the invalid-title guard runs before any update call');
+
+  // Valid Rename behavior is unchanged: still busy-gated, still updates and
+  // toasts, still closes (returns true).
+  assert.match(renameBlock, /if \(mutationBlockedWhileBusy\(\)\) return false;\s*\n\s*PackLibrary\.update\(packId, \{ title: nextTitle \}\);\s*\n\s*UIComponents\.showToast\('Renamed', 'success'\);\s*\n\s*return true;/);
 });
 
 test('BUSINESS-IDENTITY-UI Trailer Presets derive exactly one named or Custom selection from truck state', async () => {

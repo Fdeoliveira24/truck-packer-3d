@@ -487,6 +487,29 @@ test('P0-SM-OF-3 page dropdowns retain body mounting and the shared Escape path'
   assert.equal(UI.modalOwnership.getActiveOwner(), null);
 });
 
+test('P0-SM-OF-3 persistent surface registration and cleanup are idempotent across re-registration', t => {
+  const { UI, dispatch, key } = installDom(t);
+  let open = false;
+  let closes = 0;
+  const surface = { isOpen: () => open, close: () => { open = false; closes++; } };
+  const release = UI.registerDropdownSurface(surface);
+  assert.equal(UI.registerDropdownSurface(surface), release);
+  assert.equal(UI.modalOwnership.getOwners().length, 1);
+  assert.equal(UI.modalOwnership.blocksKeyboardEvent(key('a')), false, 'inactive surfaces do not block shortcuts');
+  open = true;
+  dispatch(key('Escape'));
+  assert.equal(closes, 1);
+  release();
+  release();
+  assert.deepEqual(UI.modalOwnership.getOwners(), []);
+  const nextRelease = UI.registerDropdownSurface(surface);
+  release();
+  assert.equal(UI.modalOwnership.getOwners().length, 1, 'stale cleanup cannot unregister a new registration');
+  nextRelease();
+  open = true;
+  assert.equal(UI.modalOwnership.blocksKeyboardEvent(key('Escape')), false, 'no orphaned active owner remains');
+});
+
 test('P0-SM-OF-3 dropdown-launched dialogs retain their modal parent after popup teardown', t => {
   const { UI, doc, dispatch, key } = installDom(t);
   const parent = UI.showModal({});

@@ -119,7 +119,7 @@ export function createUIComponents() {
   let dropdownActiveAnchorEl = null;
   let dropdownActiveAnchorClasses = [];
   let dropdownSemanticAnchorEl = null;
-  const registeredDropdownSurfaces = new Set();
+  const registeredDropdownSurfaces = new Map();
   let dropdownOwner = null;
   let dropdownHost = null;
   let dropdownActionParentId;
@@ -772,7 +772,7 @@ export function createUIComponents() {
         window.removeEventListener('scroll', dropdownRepositionListener, true);
         dropdownRepositionListener = null;
       }
-      registeredDropdownSurfaces.forEach(surface => {
+      registeredDropdownSurfaces.forEach((_unregister, surface) => {
         if (surface && typeof surface.isOpen === 'function' && surface.isOpen()) surface.close();
       });
     } finally {
@@ -784,7 +784,8 @@ export function createUIComponents() {
     if (!surface || typeof surface.isOpen !== 'function' || typeof surface.close !== 'function') {
       return () => {};
     }
-    registeredDropdownSurfaces.add(surface);
+    const existing = registeredDropdownSurfaces.get(surface);
+    if (existing) return existing;
     // Persistent page filters expose their existing open state explicitly. They
     // join the same arbiter, below modal owners, without a second Escape listener.
     const owner = modalOwnership.register({
@@ -795,7 +796,13 @@ export function createUIComponents() {
         if (focusTarget && typeof focusTarget.focus === 'function') focusTarget.focus();
       },
     });
-    return () => { owner.release(); registeredDropdownSurfaces.delete(surface); };
+    const unregister = () => {
+      if (registeredDropdownSurfaces.get(surface) !== unregister) return;
+      owner.release();
+      registeredDropdownSurfaces.delete(surface);
+    };
+    registeredDropdownSurfaces.set(surface, unregister);
+    return unregister;
   }
 
   return {

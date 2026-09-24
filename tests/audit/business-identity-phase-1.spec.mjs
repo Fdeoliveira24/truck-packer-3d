@@ -1380,7 +1380,7 @@ test('BUSINESS-IDENTITY-UI compact toolbar dropdowns share one close coordinator
   ]);
 
   assert.match(uiSource, /const shouldToggleClosed = options\.toggle === true && Boolean\(existing\)/);
-  assert.match(uiSource, /registeredDropdownSurfaces\.forEach\(surface =>/);
+  assert.match(uiSource, /registeredDropdownSurfaces\.forEach\(\(_unregister, surface\) =>/);
   assert.match(uiSource, /function registerDropdownSurface\(surface\)/);
   assert.match(uiSource, /onDismiss: \(\) => \{[\s\S]*closeAllDropdowns\(\);[\s\S]*focusTarget\.focus\(\)/);
   assert.match(uiSource, /if \(dropdownSemanticAnchorEl\) dropdownSemanticAnchorEl\.setAttribute\('aria-expanded', 'false'\)/,

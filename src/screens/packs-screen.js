@@ -2181,7 +2181,7 @@ export function createPacksScreen({
               if (!t) {
                 UIComponents.showToast('Title is required', 'warning');
                 title.input.focus();
-                return true;
+                return false;
               }
               const identity = validateLoadPlanIdentityFields(loadPlanNumber, customerReference, {
                 numberRequired: false,
@@ -2470,7 +2470,7 @@ export function createPacksScreen({
             variant: 'primary',
             onClick: () => {
               const nextTitle = String(f.input.value || '').trim();
-              if (!nextTitle) return true;
+              if (!nextTitle) return false;
               if (mutationBlockedWhileBusy()) return false;
               PackLibrary.update(packId, { title: nextTitle });
               UIComponents.showToast('Renamed', 'success');

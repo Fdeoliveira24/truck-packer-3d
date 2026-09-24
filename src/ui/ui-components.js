@@ -185,7 +185,10 @@ export function createUIComponents() {
       if (ev.target === overlay && config.dismissible !== false) close();
     });
 
+    let closed = false;
     function close() {
+      if (closed) return;
+      closed = true;
       if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
       try {
         config.onClose && config.onClose();
@@ -321,17 +324,29 @@ export function createUIComponents() {
 
   function confirm(options) {
     return new Promise(resolve => {
+      // Guarded settlement: the Confirm/Cancel actions settle explicitly (true/false)
+      // before the primitive auto-closes; X/backdrop/other primitive closes settle
+      // false via onClose as a fallback. The guard makes whichever settles first win
+      // and every later attempt (including the onClose fallback after an explicit
+      // settlement) a no-op, so the Promise always settles exactly once.
+      let settled = false;
+      const settle = value => {
+        if (settled) return;
+        settled = true;
+        resolve(value);
+      };
       showModal({
         title: options.title || 'Confirm',
         content: options.message || 'Are you sure?',
         actions: [
-          { label: options.cancelLabel || 'Cancel', onClick: () => resolve(false) },
+          { label: options.cancelLabel || 'Cancel', onClick: () => settle(false) },
           {
             label: options.okLabel || 'Confirm',
             variant: options.danger ? 'danger' : 'primary',
-            onClick: () => resolve(true),
+            onClick: () => settle(true),
           },
         ],
+        onClose: () => settle(false),
       });
     });
   }

@@ -49,6 +49,15 @@ export function createHelpModal({ UIComponents } = {}) {
                   </div>
                 `,
       actions: [{ label: 'Close', variant: 'primary', onClick: () => close() }],
+      // Primitive lifecycle cleanup: fires on every dismissal path (X, backdrop,
+      // footer action auto-close, or a manual close()) so the wrapper's `modal`
+      // reference never goes stale after X/backdrop dismissal (isOpen() must
+      // accurately reflect it). close() above already calls modal.close() and
+      // nulls the reference itself for its own call path; this is the one
+      // authoritative clear for the paths that bypass it.
+      onClose: () => {
+        modal = null;
+      },
     });
   }
 

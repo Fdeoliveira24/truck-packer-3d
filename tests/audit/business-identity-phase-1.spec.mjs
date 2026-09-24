@@ -150,11 +150,14 @@ class FakeModalElement {
   removeAttribute(name) {
     this._attributes.delete(name);
   }
-  // Minimal real selector support: class selectors only ('.foo'), optionally
-  // chained with the descendant combinator ('.modal-header .btn'). That's the
-  // full vocabulary actually used against these elements in production code
-  // (case-modal.js, notes-overlay.js, import-*-dialog.js, etc.) — no
-  // attribute/tag/id/child-combinator selectors are needed here.
+  // Minimal real selector support: class selectors ('.foo') and simple
+  // tag-name selectors ('button'), optionally chained with the descendant
+  // combinator ('.modal-header .btn', 'footer button'). That's the full
+  // vocabulary actually used against these elements in production code
+  // (case-modal.js, notes-overlay.js, import-*-dialog.js, etc. — including
+  // notes-overlay.js's footer.querySelectorAll('button') to enable/disable
+  // all footer buttons while writing) — no attribute/id/child-combinator
+  // selectors are needed here.
   _descendants() {
     const out = [];
     const walk = el => el.children.forEach(child => { out.push(child); walk(child); });
@@ -162,15 +165,20 @@ class FakeModalElement {
     return out;
   }
   querySelectorAll(selectorText) {
-    const parts = String(selectorText || '').trim().split(/\s+/).map(p => p.replace(/^\./, ''));
-    if (!parts.length || !parts[0]) return [];
-    const matchesClass = (el, cls) => el instanceof FakeModalElement && el._classSet.has(cls);
+    const parts = String(selectorText || '').trim().split(/\s+/).filter(Boolean).map(raw =>
+      raw.startsWith('.') ? { kind: 'class', name: raw.slice(1) } : { kind: 'tag', name: raw.toLowerCase() }
+    );
+    if (!parts.length) return [];
+    const matchesPart = (el, part) => {
+      if (!(el instanceof FakeModalElement)) return false;
+      return part.kind === 'class' ? el._classSet.has(part.name) : el.tagName.toLowerCase() === part.name;
+    };
     const matchesChain = el => {
-      if (!matchesClass(el, parts[parts.length - 1])) return false;
+      if (!matchesPart(el, parts[parts.length - 1])) return false;
       let ancestor = el.parentElement;
       let partIdx = parts.length - 2;
       while (ancestor && partIdx >= 0) {
-        if (matchesClass(ancestor, parts[partIdx])) partIdx -= 1;
+        if (matchesPart(ancestor, parts[partIdx])) partIdx -= 1;
         ancestor = ancestor.parentElement;
       }
       return partIdx < 0;

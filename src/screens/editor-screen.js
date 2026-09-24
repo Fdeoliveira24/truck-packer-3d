@@ -2468,6 +2468,11 @@ export function createInteractionManager({
      * Delete/Backspace = delete selection
      */
     function onKeyDown(ev) {
+      if (UIComponents.modalOwnership?.blocksKeyboardEvent(ev)) return;
+      // KeyboardManager consumes Escape while deselecting. Preserve the existing
+      // continuation that releases an active drag/hold (including camera controls).
+      // Modal-owned events above must never enter that continuation.
+      if (ev.defaultPrevented && !(ev.key === 'Escape' && (gizmoDragging || gizmoPending))) return;
       if (!isEditorActive()) { return; }
       // Don't intercept when typing in an input
       const tag = ev.target && ev.target.tagName;

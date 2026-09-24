@@ -1143,6 +1143,7 @@
             actionsEl.appendChild(btn);
           }
           overlay.classList.add('active');
+          if (typeof boot.onAppStatusOverlayShown === 'function') boot.onAppStatusOverlayShown();
         };
       })();
     </script>

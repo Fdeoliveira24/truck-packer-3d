@@ -7,7 +7,8 @@
  * @created 2026-04-19
  */
 
-export function createErrorOverlay() {
+/** @param {{ UIComponents?: any }} [options] */
+export function createErrorOverlay({ UIComponents } = {}) {
   const overlay = document.getElementById('error-overlay');
   const titleEl = document.getElementById('error-title');
   const bodyEl = document.getElementById('error-body');
@@ -15,6 +16,15 @@ export function createErrorOverlay() {
   const iconEl = document.getElementById('error-icon');
 
   let _onBackToPacks = null;
+  let owner = null;
+
+  // Also called by the pre-boot renderer when it displays this shared root.
+  function registerPresence() {
+    if (!overlay || owner) return;
+    owner = UIComponents?.modalOwnership?.register({
+      kind: 'error', element: overlay, parentId: null, priority: 1,
+    });
+  }
 
   function _btn(label, onClick) {
     const btn = document.createElement('button');
@@ -38,6 +48,7 @@ export function createErrorOverlay() {
       buttons.forEach(b => actionsEl.appendChild(b));
     }
     overlay.classList.add('active');
+    registerPresence();
   }
 
   function showNotFound({ kind = 'route' } = {}) {
@@ -79,6 +90,8 @@ export function createErrorOverlay() {
   function hide() {
     if (!overlay) return;
     overlay.classList.remove('active');
+    owner?.release();
+    owner = null;
   }
 
   function isVisible() {
@@ -94,5 +107,5 @@ export function createErrorOverlay() {
     _onBackToPacks = fn;
   }
 
-  return { showNotFound, showFatal, showMaintenance, hide, isVisible, setOnBackToPacks };
+  return { showNotFound, showFatal, showMaintenance, hide, isVisible, setOnBackToPacks, registerPresence };
 }

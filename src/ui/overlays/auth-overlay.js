@@ -45,11 +45,12 @@ const ENABLE_GOOGLE_SIGNIN = false;
 /**
  * @param {{ UIComponents?: any, SupabaseClient?: any, tp3dDebugKey?: string }} [opts]
  */
-export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient, tp3dDebugKey: _tp3dDebugKey } = {}) {
+export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: _tp3dDebugKey } = {}) {
   // ---- State ----
   let overlayEl = null;
   let modalEl = null;
   let isOpen = false;
+  let owner = null;
   let inFlight = false;
   let keydownHandler = null;
   let phase = 'checking'; // 'checking' | 'form' | 'cantconnect'
@@ -928,6 +929,9 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     if (isOpen) return; // Already visible — callers use setPhase() to trigger render
     isOpen = true;
     overlayEl.style.display = 'flex';
+    owner = UIComponents?.modalOwnership?.register({
+      kind: 'auth', element: overlayEl, parentId: null, priority: 2,
+    });
     installKeydownBlocker();
     try { document.body.style.overflow = 'hidden'; } catch { /* ignore */ }
     render('show');
@@ -942,6 +946,8 @@ export function createAuthOverlay({ UIComponents: _UIComponents, SupabaseClient,
     if (!overlayEl) return;
     overlayEl.style.display = 'none';
     isOpen = false;
+    owner?.release();
+    owner = null;
     forcedDisabledMessage = '';
     pendingConfirmationEmail = '';
     removeKeydownBlocker();

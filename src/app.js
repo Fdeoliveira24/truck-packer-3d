@@ -509,12 +509,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
   const UIComponents = createUIComponents();
   try { window.__TP3D_UI = UIComponents; } catch (_) { /* ignore */ }
-  const SystemOverlay = createSystemOverlay();
-  const ErrorOverlay = createErrorOverlay();
+  const SystemOverlay = createSystemOverlay({ UIComponents });
+  const ErrorOverlay = createErrorOverlay({ UIComponents });
   const BootState = (() => {
     window.__TP3D_BOOT = window.__TP3D_BOOT || {};
     return window.__TP3D_BOOT;
   })();
+
+  BootState.onAppStatusOverlayShown = ErrorOverlay.registerPresence;
+  if (BootState.fatalOverlayShown || BootState.maintenanceMode) ErrorOverlay.registerPresence();
 
   function markAppReady() {
     try {

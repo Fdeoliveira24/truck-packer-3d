@@ -11,12 +11,14 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
-export function createSystemOverlay() {
+/** @param {{ UIComponents?: any }} [options] */
+export function createSystemOverlay({ UIComponents } = {}) {
   const overlay = document.getElementById('system-overlay');
   const titleEl = document.getElementById('system-title');
   const messageEl = document.getElementById('system-message');
   const listEl = document.getElementById('system-list');
   const retryBtn = document.getElementById('system-retry');
+  let owner = null;
   if (retryBtn) retryBtn.addEventListener('click', () => window.location.reload());
 
   function show({ title, message, items }) {
@@ -32,11 +34,16 @@ export function createSystemOverlay() {
       });
     }
     overlay.classList.add('active');
+    owner = owner || UIComponents?.modalOwnership?.register({
+      kind: 'system', element: overlay, parentId: null, priority: 1,
+    });
   }
 
   function hide() {
     if (!overlay) return;
     overlay.classList.remove('active');
+    owner?.release();
+    owner = null;
   }
 
   return { show, hide };

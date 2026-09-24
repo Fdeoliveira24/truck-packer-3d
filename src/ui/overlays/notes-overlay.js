@@ -172,16 +172,8 @@ export function openNotesOverlay(config) {
   function handleClose() {
     if (closed) return;
     closed = true;
-    document.removeEventListener('keydown', handleEscape);
     if (activeNotesOverlay && activeNotesOverlay.modal === modalRef.modal) activeNotesOverlay = null;
     if (restoreFocusOnClose) restoreTriggerFocus(trigger, entityType, entityId);
-  }
-
-  function handleEscape(event) {
-    if (event.key !== 'Escape') return;
-    event.preventDefault();
-    event.stopPropagation();
-    close();
   }
 
   const initialContext = getCurrentContext();
@@ -466,7 +458,6 @@ export function openNotesOverlay(config) {
     focusSoon(textarea);
   }
 
-  document.addEventListener('keydown', handleEscape);
   activeNotesOverlay = {
     close,
     modal: modalRef.modal,

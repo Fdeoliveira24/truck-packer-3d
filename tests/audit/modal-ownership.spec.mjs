@@ -13,7 +13,7 @@ import { createErrorOverlay } from '../../src/ui/error-overlay.js';
 
 // Deterministic lifecycle/listener fixture, not a browser propagation proof.
 // Real capture -> target -> bubble is additionally exercised in authenticated
-// Chrome QA using Settings' existing capture Escape close and Editor selection.
+// Chrome QA using Settings, nested dialogs, popups and Editor selection.
 class Surface {
   listeners = [];
   addEventListener(type, fn, capture = false) {
@@ -56,6 +56,7 @@ function installDom(t) {
     remove() { this.parentElement?.removeChild(this); }
     contains(other) { return other === this || this.children.some(child => child.contains(other)); }
     get isConnected() { return this === doc.body || Boolean(this.parentElement?.isConnected); }
+    getBoundingClientRect() { return { left: 100, top: 100, right: 200, bottom: 140, width: 100, height: 40 }; }
     get firstChild() { return this.children[0] || null; }
     set innerHTML(value) { this.html = value; for (const child of [...this.children]) child.remove(); }
     get innerHTML() { return this.html || ''; }
@@ -65,6 +66,7 @@ function installDom(t) {
     matches(selector) {
       return selector.split(',').some(part => {
         const key = part.trim();
+        if (key === '[data-dropdown="1"]') return this.dataset.dropdown === '1';
         if (/^\[[\w-]+\]$/.test(key)) return this.hasAttribute(key.slice(1, -1));
         return key.toUpperCase() === this.tagName;
       });
@@ -89,7 +91,7 @@ function installDom(t) {
   doc.querySelectorAll = selector => doc.body.querySelectorAll(selector);
   doc.querySelector = selector => doc.body.querySelector(selector);
   const win = Object.assign(new Surface(), {
-    setTimeout, clearTimeout, setInterval, clearInterval,
+    setTimeout, clearTimeout, setInterval, clearInterval, innerWidth: 1200, innerHeight: 800,
     location: { reload() { throw new Error('Unexpected reload'); } },
   });
   Object.assign(globalThis, {
@@ -113,7 +115,7 @@ function installDom(t) {
   }
   function dispatch(event) {
     win.emit('keydown', event, true);
-    doc.emit('keydown', event, true);
+    if (!event.stopped) doc.emit('keydown', event, true);
     if (!event.stopped) event.target.emit('keydown', event);
     if (!event.stopped) doc.emit('keydown', event);
     if (!event.stopped) win.emit('keydown', event);
@@ -176,8 +178,8 @@ test('P0-SM-OF-2 entry ownership survives release, stays event-local and refresh
   win.emit('keydown', owned, true);
   owner.release();
   assert.equal(registry.blocksKeyboardEvent(owned), true);
-  assert.equal(owned.defaultPrevented, false, 'recorder does not consume the event');
-  assert.equal(owned.stopped, false);
+  assert.equal(owned.defaultPrevented, true, 'protected owner consumes Escape');
+  assert.equal(owned.stopped, true);
   const next = key('Escape');
   win.emit('keydown', next, true);
   assert.equal(registry.blocksKeyboardEvent(next), false);
@@ -200,7 +202,7 @@ test('P0-SM-OF-2 generic lifecycle registers once, supports reentrancy and leave
   } });
   assert.equal(UI.modalOwnership.getActiveOwner(), modal.owner);
   dispatch(key('Escape', modal.modal));
-  assert.equal(UI.modalOwnership.getActiveOwner(), modal.owner, 'no generic Escape dismissal added');
+  assert.equal(UI.modalOwnership.getActiveOwner(), replacement.owner, 'Escape dismisses exactly one owner');
   modal.close();
   modal.close();
   assert.equal(closes, 1);
@@ -226,8 +228,8 @@ test('P0-SM-OF-2 KeyboardManager preserves unowned shortcuts and typing, blocks 
   dom.dispatch(dom.key('Escape', dom.doc.body, { defaultPrevented: true }));
   assert.equal(calls.deselect, 0);
   const modal = dom.UI.showModal({});
-  dom.dispatch(dom.key('Escape', modal.modal));
   dom.dispatch(dom.key('a', modal.modal, { ctrlKey: true }));
+  dom.dispatch(dom.key('Escape', modal.modal));
   assert.equal(calls.deselect, 0);
   assert.equal(calls.selectAll, 1);
   assert.deepEqual(state.selectedInstanceIds, ['cargo']);
@@ -249,8 +251,7 @@ test('P0-SM-OF-2 actual document and Editor window listeners share the entry sna
     CaseScene: {},
     OperationLifecycle: { isBusy() { editorMutatingAttempts++; return true; } },
   }).init(dom.doc.createElement('canvas'));
-  const owner = dom.UI.modalOwnership.register();
-  dom.doc.addEventListener('keydown', () => owner.release(), true);
+  const owner = dom.UI.modalOwnership.register({ onDismiss: () => owner.release() });
   const escape = dom.dispatch(dom.key('Escape'));
   assert.equal(dom.UI.modalOwnership.getActiveOwner(), null);
   assert.equal(dom.UI.modalOwnership.blocksKeyboardEvent(escape), true);
@@ -299,8 +300,7 @@ test('P0-SM-OF-2 unowned Escape still cancels a live gizmo drag after KeyboardMa
   canvas.emit('pointerdown', { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
   assert.equal(controls.enabled, false, 'actual pointer handler began a gizmo drag');
   cargo.position.y = 5;
-  const owner = dom.UI.modalOwnership.register();
-  dom.doc.addEventListener('keydown', () => owner.release(), true);
+  const owner = dom.UI.modalOwnership.register({ onDismiss: () => owner.release() });
   dom.dispatch(dom.key('Escape', canvas));
   assert.equal(controls.enabled, false, 'owned Escape cannot reach drag cancellation, even after capture close');
   assert.equal(cargo.position.y, 5);
@@ -386,6 +386,139 @@ test('P0-SM-OF-2 Auth and recovery register presence idempotently without new di
   system.hide();
   ordinary.close();
   assert.deepEqual(dom.UI.modalOwnership.getOwners(), []);
+});
+
+test('P0-SM-OF-3 Settings popup and child consume one Escape at a time without background effects', async t => {
+  const dom = installDom(t);
+  const { calls, state } = installKeyboard(dom);
+  const settings = createSettingsOverlay({
+    UIComponents: dom.UI, documentRef: dom.doc,
+    PreferencesManager: { get: () => ({}) }, Utils: {},
+  });
+  const registry = dom.UI.modalOwnership;
+  for (let i = 0; i < 3; i++) {
+    settings.open('resources');
+    const parent = registry.getActiveOwner();
+    const anchor = parent.element.appendChild(dom.doc.createElement('button'));
+    const popup = dom.UI.openDropdown(anchor, []);
+    const popupOwner = registry.getActiveOwner();
+    assert.equal(popupOwner.parentId, parent.id);
+    assert.equal(popup.parentElement.className, 'modal-popup-host');
+    assert.equal(popup.parentElement.parentElement, parent.element);
+    const escape = dom.dispatch(dom.key('Escape', anchor));
+    assert.equal(registry.getEscapeClaim(escape), popupOwner.id);
+    assert.equal(registry.blocksKeyboardEvent(escape), true);
+    assert.equal(popup.isConnected, false);
+    assert.equal(settings.isOpen(), true);
+    popupOwner.release();
+    assert.deepEqual(registry.getOwners(), [parent]);
+    anchor.focus();
+    let settlements = 0;
+    const result = dom.UI.confirm({ title: 'Child' }).then(value => { settlements++; return value; });
+    const child = registry.getActiveOwner();
+    assert.equal(child.parentId, parent.id);
+    dom.dispatch(dom.key('Escape', anchor));
+    assert.equal(await result, false);
+    assert.equal(settlements, 1);
+    assert.equal(settings.isOpen(), true);
+    assert.equal(child.element.isConnected, false);
+    assert.deepEqual(registry.getOwners(), [parent]);
+    dom.dispatch(dom.key('Escape', anchor));
+    assert.equal(settings.isOpen(), false);
+    assert.deepEqual(registry.getOwners(), []);
+    assert.deepEqual(state.selectedInstanceIds, ['cargo']);
+    assert.equal(calls.deselect, 0);
+  }
+  dom.dispatch(dom.key('Escape'));
+  assert.equal(calls.deselect, 1);
+});
+
+test('P0-SM-OF-3 later child supersedes popup; parent teardown removes children and popup exactly once', t => {
+  const { UI, doc, dispatch, key } = installDom(t);
+  const parent = UI.showModal({});
+  const anchor = parent.body.appendChild(doc.createElement('button'));
+  const popup = UI.openDropdown(anchor, []);
+  const popupOwner = UI.modalOwnership.getActiveOwner();
+  let closes = 0;
+  const child = UI.showModal({ parentOwnerId: parent.owner.id, onClose: () => { closes++; } });
+  dispatch(key('Escape'));
+  assert.equal(closes, 1);
+  assert.equal(UI.modalOwnership.getActiveOwner(), popupOwner);
+  assert.equal(popup.isConnected, true);
+  assert.equal(child.overlay.isConnected, false);
+  const other = UI.showModal({ parentOwnerId: parent.owner.id, onClose: () => { closes++; } });
+  parent.close();
+  parent.close();
+  assert.equal(popup.isConnected, false);
+  assert.equal(other.overlay.isConnected, false);
+  assert.equal(closes, 2);
+  assert.deepEqual(UI.modalOwnership.getOwners(), []);
+  UI.closeAllDropdowns();
+});
+
+test('P0-SM-OF-3 user dismissal can be vetoed dynamically; programmatic close remains independent', t => {
+  const { UI, dispatch, key } = installDom(t);
+  let busy = true;
+  let closes = 0;
+  const modal = UI.showModal({ canDismiss: () => !busy, onClose: () => { closes++; } });
+  assert.equal(dispatch(key('Escape')).defaultPrevented, true);
+  modal.modal.children[0].children[1].emit('click', {});
+  modal.overlay.emit('click', { target: modal.overlay });
+  assert.equal(closes, 0);
+  busy = false;
+  assert.equal(modal.requestDismiss('escape'), true);
+  assert.equal(closes, 1);
+  const protectedModal = UI.showModal({ dismissible: false, canDismiss: () => false });
+  dispatch(key('Escape'));
+  assert.equal(protectedModal.overlay.isConnected, true);
+  protectedModal.close();
+  assert.deepEqual(UI.modalOwnership.getOwners(), []);
+});
+
+test('P0-SM-OF-3 page dropdowns retain body mounting and the shared Escape path', t => {
+  const { UI, doc, dispatch, key } = installDom(t);
+  const anchor = doc.body.appendChild(doc.createElement('button'));
+  const popup = UI.openDropdown(anchor, []);
+  assert.equal(popup.parentElement, doc.body);
+  assert.equal(popup.style.zIndex, '16000');
+  assert.equal(UI.modalOwnership.getActiveOwner().parentId, null);
+  dispatch(key('Escape', anchor));
+  assert.equal(popup.isConnected, false);
+  assert.equal(UI.modalOwnership.getActiveOwner(), null);
+});
+
+test('P0-SM-OF-3 dropdown-launched dialogs retain their modal parent after popup teardown', t => {
+  const { UI, doc, dispatch, key } = installDom(t);
+  const parent = UI.showModal({});
+  const anchor = parent.body.appendChild(doc.createElement('button'));
+  let child;
+  const popup = UI.openDropdown(anchor, [{ label: 'Child', onClick: () => { child = UI.showModal({}); } }]);
+  const item = popup.querySelector('button');
+  item.focus();
+  item.emit('click', { stopPropagation() {} });
+  assert.equal(popup.isConnected, false);
+  assert.equal(child.owner.parentId, parent.owner.id);
+  assert.equal(child.overlay.isConnected, true);
+  dispatch(key('Escape'));
+  assert.equal(child.overlay.isConnected, false);
+  assert.equal(parent.overlay.isConnected, true);
+  parent.close();
+});
+
+test('P0-SM-OF-3 protected import-style modal consumes Escape and preserves existing X and Cancel', t => {
+  const { UI, dispatch, key } = installDom(t);
+  let closes = 0;
+  const config = { dismissible: false, actions: [{ label: 'Cancel' }], onClose: () => { closes++; } };
+  const first = UI.showModal(config);
+  dispatch(key('Escape'));
+  assert.equal(closes, 0);
+  first.modal.children[0].children[1].emit('click', {});
+  assert.equal(closes, 1);
+  const second = UI.showModal(config);
+  dispatch(key('Escape'));
+  second.modal.children[2].children[0].emit('click', {});
+  assert.equal(closes, 2);
+  assert.equal(UI.modalOwnership.getActiveOwner(), null);
 });
 
 test('P0-SM-OF-2 pre-boot error renderer publishes presence only when shown', t => {

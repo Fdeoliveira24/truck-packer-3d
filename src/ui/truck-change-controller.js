@@ -157,15 +157,13 @@ export function createTruckChangeController({
   }
 
   function showManagedModal(ctx, config) {
-    let escapeHandler = null;
     const originalOnClose = config.onClose;
     const modalRef = UIComponents.showModal({
       ...config,
+      // Follow-up decisions replace this flow's modal; they are not its children.
+      parentOwnerId: ctx.modalRef ? ctx.modalRef.owner.parentId : undefined,
       dismissible: config.dismissible !== false,
       onClose: () => {
-        if (escapeHandler && documentRef.removeEventListener) {
-          documentRef.removeEventListener('keydown', escapeHandler, true);
-        }
         if (ctx.suppressRestoreOnce) {
           ctx.suppressRestoreOnce = false;
         } else {
@@ -176,13 +174,6 @@ export function createTruckChangeController({
       },
     });
     ctx.modalRef = modalRef;
-    escapeHandler = event => {
-      if (event && event.key === 'Escape' && ctx.modalRef === modalRef) {
-        event.preventDefault && event.preventDefault();
-        modalRef.close();
-      }
-    };
-    if (documentRef.addEventListener) documentRef.addEventListener('keydown', escapeHandler, true);
     return modalRef;
   }
 

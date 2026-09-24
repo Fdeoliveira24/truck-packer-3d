@@ -7336,11 +7336,6 @@ export function createSettingsOverlay({
     });
 
     trapKeydownHandler = ev => {
-      if (ev.key === 'Escape') {
-        close('escape-key');
-        return;
-      }
-
       if (ev.key !== 'Tab') return;
       if (!settingsModal) return;
       const focusables = Array.from(
@@ -7379,7 +7374,10 @@ export function createSettingsOverlay({
 
     doc.body.classList.add('modal-open');
 
-    const owner = UIComponents.modalOwnership?.register({ kind: 'settings', element: settingsOverlay, parentId: null });
+    const owner = UIComponents.modalOwnership?.register({
+      kind: 'settings', element: settingsOverlay, parentId: null,
+      onDismiss: () => close('escape-key'),
+    });
     const ownerKeydownHandler = trapKeydownHandler;
     settingsOverlay._tp3dCleanup = () => {
       owner?.release();

@@ -1501,6 +1501,17 @@ tr:hover td {
   z-index: 20000;
 }
 
+.modal-popup-host {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.modal-popup-host > .dropdown {
+  pointer-events: auto;
+}
+
 .modal {
   width: min(580px, 100%);
   background: var(--bg-secondary);

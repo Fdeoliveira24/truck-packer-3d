@@ -7,6 +7,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createHash } from 'node:crypto';
+import { createModalOwnership } from '../../src/ui/ui-components.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -9351,8 +9352,11 @@ function makeTruckChangeHarness() {
     }),
     addEventListener(type, fn) { if (type === 'keydown') listeners.add(fn); },
     removeEventListener(type, fn) { if (type === 'keydown') listeners.delete(fn); },
-    escape() { for (const fn of [...listeners]) fn({ key: 'Escape', preventDefault() {} }); },
+    escape() { escapeCapture({ key: 'Escape', preventDefault() {}, stopPropagation() {} }); },
   };
+  let escapeCapture;
+  const ownership = createModalOwnership({ documentRef,
+    windowRef: { addEventListener(_type, callback) { escapeCapture = callback; } } });
   const modals = [];
   const toasts = [];
   const UIComponents = {
@@ -9365,9 +9369,11 @@ function makeTruckChangeHarness() {
         close() {
           if (closed) return;
           closed = true;
+          ref.owner.release();
           if (config.onClose) config.onClose();
         },
       };
+      ref.owner = ownership.register({ parentId: config.parentOwnerId, onDismiss: () => ref.close() });
       modals.push({ config, ref, buttons, get closed() { return closed; } });
       return ref;
     },

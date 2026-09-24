@@ -1366,7 +1366,7 @@ test('BUSINESS-IDENTITY-UI management view switching stays atomic and Load Plan 
   assert.match(uiSource, /dropdownSemanticAnchorEl\.setAttribute\('aria-expanded', 'false'\)/);
   assert.match(uiSource, /\['ArrowDown', 'ArrowUp', 'Home', 'End'\]\.includes\(ev\.key\)/,
     'Sort menus support standard keyboard movement');
-  assert.match(uiSource, /item\.onClick && item\.onClick\(\);[\s\S]*if \(manageTriggerState && anchorEl[\s\S]*anchorEl\.focus\(\)/,
+  assert.match(uiSource, /invokeAction\(item\.onClick\);[\s\S]*if \(manageTriggerState && anchorEl[\s\S]*anchorEl\.focus\(\)/,
     'keyboard selection returns focus to the Sort control');
 });
 
@@ -1382,7 +1382,7 @@ test('BUSINESS-IDENTITY-UI compact toolbar dropdowns share one close coordinator
   assert.match(uiSource, /const shouldToggleClosed = options\.toggle === true && Boolean\(existing\)/);
   assert.match(uiSource, /registeredDropdownSurfaces\.forEach\(surface =>/);
   assert.match(uiSource, /function registerDropdownSurface\(surface\)/);
-  assert.match(uiSource, /if \(ev\.key !== 'Escape'\) return;[\s\S]*closeAllDropdowns\(\);[\s\S]*focusTarget\.focus\(\)/);
+  assert.match(uiSource, /onDismiss: \(\) => \{[\s\S]*closeAllDropdowns\(\);[\s\S]*focusTarget\.focus\(\)/);
   assert.match(uiSource, /if \(dropdownSemanticAnchorEl\) dropdownSemanticAnchorEl\.setAttribute\('aria-expanded', 'false'\)/,
     'closing any managed toolbar menu clears the previous trigger state');
 
@@ -1433,7 +1433,7 @@ test('BUSINESS-IDENTITY-UI dropdown coordinator closes registered surfaces and r
     };
     globalThis.window = {
       clearTimeout() {},
-      addEventListener() {},
+      addEventListener(type, handler) { listeners.set(type, handler); },
       removeEventListener() {},
     };
     const ui = createUIComponents();

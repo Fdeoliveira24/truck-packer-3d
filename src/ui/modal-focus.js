@@ -58,11 +58,20 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     // controls and foreign logical owners, which our navigation must bridge.
     const domOrder = allElements.filter(element => usable(element, true, true));
     const candidates = domOrder.filter(element => contains(element) && !element.matches('[aria-disabled="true"]'));
+    const radioGroups = new Map();
+    for (const element of candidates) {
+      if (element.type !== 'radio' || !element.name) continue;
+      let groups = radioGroups.get(element.form);
+      if (!groups) {
+        groups = new Map();
+        radioGroups.set(element.form, groups);
+      }
+      const chosen = groups.get(element.name);
+      if (!chosen || (!chosen.checked && element.checked)) groups.set(element.name, element);
+    }
     const elements = candidates.filter(element => {
       if (element.type !== 'radio' || !element.name) return true;
-      const group = candidates.filter(item => item.type === 'radio' &&
-        item.name === element.name && item.form === element.form);
-      return element === (group.find(item => item.checked) || group[0]);
+      return element === radioGroups.get(element.form).get(element.name);
     })
       // Match native positive-tabindex ordering; stable sort preserves DOM order.
       .sort(byTabOrder);

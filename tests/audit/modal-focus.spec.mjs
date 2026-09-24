@@ -191,6 +191,35 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     assert.equal(await active(), 'one');
   });
 
+  await t.test('radio grouping scales linearly and preserves separate form owners', async () => {
+    await setup();
+    await page.evaluate(() => {
+      const group = (form, checked) => `<form>${Array.from({ length: 100 }, (_, i) =>
+        `<input type="radio" name="choice" id="radio-${form}-${i}" ${i === checked ? 'checked' : ''}>`).join('')}</form>`;
+      window.modal = make('<input id="first">' + group(0, 50) + group(1, -1) +
+        '<input type="radio" name="choice"><input id="unowned" type="radio" name="choice" checked><button id="last">Last</button>', { hideClose: true, actions: [] });
+    });
+    await page.evaluate(() => {
+      window.radioNameReads = 0;
+      const getName = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'name').get;
+      for (const radio of modal.modal.querySelectorAll('input[type="radio"]')) {
+        Object.defineProperty(radio, 'name', { get() { radioNameReads++; return getName.call(this); } });
+      }
+    });
+    await page.keyboard.press('Tab');
+    assert.equal(await active(), 'radio-0-50', 'the checked radio owns its group Tab stop');
+    const reads = await page.evaluate(() => radioNameReads);
+    assert.ok(reads <= 202 * 8, `radio grouping must use bounded work per radio, observed ${reads} name reads`);
+    await page.keyboard.press('Tab');
+    assert.equal(await active(), 'radio-1-0', 'a separate form without a checked radio retains its first radio');
+    await page.keyboard.press('Tab');
+    assert.equal(await active(), 'unowned', 'radios without a form remain a separate group');
+    await page.keyboard.press('Tab');
+    assert.equal(await active(), 'last');
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await active(), 'unowned');
+  });
+
   await t.test('owned popup outside panel is logical content; popup child owns focus', async () => {
     await setup();
     await page.evaluate(() => { window.parent = make('<button id="anchor">Menu</button>', { hideClose: true, actions: [] }); });

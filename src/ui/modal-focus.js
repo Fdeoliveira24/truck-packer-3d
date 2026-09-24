@@ -48,8 +48,8 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
       !owners.some(item => item !== owner && !included.has(item) && item.element?.contains(element) &&
         // An ancestor owner can contain the active child's root without excluding it.
         !item.element.contains(owner.focusRoot));
-    const candidates = [...new Set(roots.flatMap(root => [...root.querySelectorAll(selector)]))]
-      .filter(element => contains(element) && usable(element));
+    const allElements = [...new Set(roots.flatMap(root => [...root.querySelectorAll(selector)]))];
+    const candidates = allElements.filter(element => contains(element) && usable(element));
     const elements = candidates.filter(element => {
       if (element.type !== 'radio' || !element.name) return true;
       const group = candidates.filter(item => item.type === 'radio' &&
@@ -58,7 +58,7 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     })
       // Match native positive-tabindex ordering; stable sort preserves DOM order.
       .sort(byTabOrder);
-    return { contains, elements };
+    return { contains, elements, roots, allElements };
   }
 
   function focus(element) {
@@ -92,7 +92,7 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
     const owner = boundary(active);
     if (!owner) return;
-    const { contains, elements } = region(owner);
+    const { contains, elements, roots, allElements } = region(owner);
     const focused = documentRef.activeElement;
     const index = elements.indexOf(focused);
     let target;
@@ -105,13 +105,14 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     } else if (!event.shiftKey && index === elements.length - 1) {
       target = elements[0];
     } else {
-      // Leave contiguous internal controls to native Tab. Explicitly bridge a
-      // portal, inactive child, or unusable control in the browser's DOM order.
+      // Leave contiguous zero-tabindex controls in one DOM root to native Tab.
+      // Bridge portals/excluded controls and positive tabindex explicitly: page
+      // controls can interleave positive values, without being part of our region.
       const next = elements[index + (event.shiftKey ? -1 : 1)];
-      const domOrder = [...documentRef.querySelectorAll(selector)]
-        .filter(element => tabIndex(element) >= 0)
-        .sort(byTabOrder);
-      if (domOrder[domOrder.indexOf(focused) + (event.shiftKey ? -1 : 1)] !== next) target = next;
+      const sameRoot = roots.some(root => root.contains(focused) && root.contains(next));
+      const domOrder = allElements.filter(element => tabIndex(element) >= 0);
+      if (!sameRoot || tabIndex(focused) > 0 || tabIndex(next) > 0 ||
+          domOrder[domOrder.indexOf(focused) + (event.shiftKey ? -1 : 1)] !== next) target = next;
     }
     if (target) {
       event.preventDefault();

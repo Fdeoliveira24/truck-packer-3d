@@ -77,6 +77,29 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     assert.equal(await active(), 'replacement');
   });
 
+  await t.test('internal Tab scans only the logical region, independent of a large background DOM', async () => {
+    await setup();
+    await page.evaluate(() => {
+      const background = document.createElement('div');
+      background.innerHTML = '<button>Background</button>'.repeat(10000);
+      document.body.appendChild(background);
+      window.modal = make('<input id="first"><input id="second">', { hideClose: true, actions: [] });
+      window.globalFocusScans = [];
+      const query = document.querySelectorAll.bind(document);
+      document.querySelectorAll = selector => {
+        const result = query(selector);
+        if (selector.includes('[tabindex]')) globalFocusScans.push(result.length);
+        return result;
+      };
+    });
+    await page.keyboard.press('Tab');
+    assert.equal(await active(), 'second');
+    assert.equal(await page.evaluate(() => tabEvents.at(-1)), false, 'internal Tab still uses native navigation');
+    assert.deepEqual(await page.evaluate(() => globalFocusScans), [], 'Tab must not enumerate thousands of unrelated background controls');
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await active(), 'first');
+  });
+
   await t.test('nested dialog supersedes parent and closing returns the containment boundary', async () => {
     await setup();
     await page.evaluate(() => { window.parent = make('<input id="parent-first"><button id="parent-last">Parent last</button>', { hideClose: true, actions: [] }); });
@@ -118,7 +141,12 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     assert.equal(await active(), 'editable');
     await page.keyboard.press('Shift+Tab');
     assert.equal(await active(), 'editable');
-    await page.evaluate(() => { modal.close(); modal = make('<button id="zero">Zero</button><button id="two" tabindex="2">Two</button><button id="one" tabindex="1">One</button>', { hideClose: true, actions: [] }); });
+    await page.evaluate(() => {
+      modal.close();
+      document.getElementById('before').tabIndex = 1;
+      document.getElementById('after').tabIndex = 2;
+      modal = make('<button id="zero">Zero</button><button id="two" tabindex="2">Two</button><button id="one" tabindex="1">One</button>', { hideClose: true, actions: [] });
+    });
     assert.equal(await active(), 'one');
     await page.keyboard.press('Tab');
     assert.equal(await active(), 'two');

@@ -2947,8 +2947,8 @@ test('CASES-HANDLING-COMPACT the compact helper only slices the already-computed
     'function renderCaseHandlingChips(caseItem, summary, container, chipTag) {',
     'function createCaseNotesButton('
   );
-  assert.match(helperBody, /summary\.slice\(0, 1\)/, 'only the first entry of the shared summary renders inline');
-  assert.match(helperBody, /summary\.slice\(1\)/, 'the remainder collapses behind +N');
+  assert.match(helperBody, /summary\.slice\(\s*0\s*,\s*1\s*\)/, 'only the first entry of the shared summary renders inline');
+  assert.match(helperBody, /summary\.slice\(\s*1\s*\)/, 'the remainder collapses behind +N');
   const rawFieldPattern =
     /orientationLock|canFlip|noStackOnTop|maxStackCount|isPallet|maxPalletWeight|laneItem|loadPriority/;
   assert.doesNotMatch(helperBody, rawFieldPattern,
@@ -3031,7 +3031,7 @@ test('CASES-HANDLING-COMPACT count semantics: 0, 1, 2, 3, 5, and 7 active rules 
   );
 });
 
-test('CASES-HANDLING-COMPACT Grid and List parity: identical Case, identical visible pair, identical hidden count and order', async () => {
+test('CASES-HANDLING-COMPACT Grid and List parity: identical Case, identical single visible chip, identical hidden count and order', async () => {
   const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
   const { getCaseHandlingSummary } = await import(summaryPath.href);
   const manyRulesCase = baseCase({

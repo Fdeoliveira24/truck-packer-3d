@@ -48,6 +48,10 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
       !owners.some(item => item !== owner && !included.has(item) && item.element?.contains(element) &&
         // An ancestor owner can contain the active child's root without excluding it.
         !item.element.contains(owner.focusRoot));
+    return { contains, roots };
+  }
+
+  function controls({ contains, roots }) {
     const allElements = [...new Set(roots.flatMap(root => [...root.querySelectorAll(selector)]))];
     const candidates = allElements.filter(element => contains(element) && usable(element));
     const elements = candidates.filter(element => {
@@ -58,7 +62,7 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     })
       // Match native positive-tabindex ordering; stable sort preserves DOM order.
       .sort(byTabOrder);
-    return { contains, elements, roots, allElements };
+    return { elements, allElements };
   }
 
   function focus(element) {
@@ -71,7 +75,8 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     // Deferred setup/rerenders must never take focus from a newer dialog/popup.
     if (!usable(owner.focusRoot, false)) return;
     if (getActiveOwner() !== owner || boundary(owner) !== owner) return;
-    const { contains, elements } = region(owner);
+    const focusRegion = region(owner);
+    const { contains } = focusRegion;
     let explicit;
     if (initial) {
       try { explicit = typeof owner.initialFocus === 'function' ? owner.initialFocus() : owner.initialFocus; }
@@ -79,6 +84,7 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     }
     if (usable(explicit, false) && contains(explicit) && focus(explicit)) return;
     if (contains(documentRef.activeElement) && usable(documentRef.activeElement, false)) return;
+    const { elements } = controls(focusRegion);
     const autofocus = elements.find(element => element.hasAttribute('autofocus'));
     // Prefer task fields/content and the existing first footer action over header X.
     const field = elements.find(element => element.matches('input:not([type="button"]):not([type="submit"]):not([type="color"]), textarea, select, [contenteditable="true"]'));
@@ -92,7 +98,9 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     if (event.key !== 'Tab' || event.altKey || event.ctrlKey || event.metaKey) return;
     const owner = boundary(active);
     if (!owner) return;
-    const { contains, elements, roots, allElements } = region(owner);
+    const focusRegion = region(owner);
+    const { contains, roots } = focusRegion;
+    const { elements, allElements } = controls(focusRegion);
     const focused = documentRef.activeElement;
     const index = elements.indexOf(focused);
     let target;

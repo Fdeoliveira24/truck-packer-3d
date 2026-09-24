@@ -100,6 +100,26 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     assert.equal(await active(), 'first');
   });
 
+  await t.test('ensureFocus preserves valid focus without rescanning controls, but rejects inactive children', async () => {
+    await setup();
+    await page.evaluate(() => {
+      window.modal = make('<input id="first"><div id="inactive"><input id="excluded"></div>');
+      ui.modalOwnership.register({ element: document.getElementById('inactive'), parentId: modal.owner.id, isActive: () => false });
+    });
+    await page.evaluate(() => {
+      window.regionScans = 0;
+      const query = modal.modal.querySelectorAll.bind(modal.modal);
+      modal.modal.querySelectorAll = selector => { regionScans++; return query(selector); };
+      modal.owner.ensureFocus();
+      modal.owner.ensureFocus();
+    });
+    assert.equal(await active(), 'first');
+    assert.equal(await page.evaluate(() => regionScans), 0, 'preserving valid focus needs no control enumeration');
+    await page.evaluate(() => { document.getElementById('excluded').focus(); modal.owner.ensureFocus(); });
+    assert.equal(await active(), 'first', 'the fast path must retain logical-child exclusions');
+    assert.equal(await page.evaluate(() => regionScans), 1, 'invalid focus triggers one fresh control scan');
+  });
+
   await t.test('nested dialog supersedes parent and closing returns the containment boundary', async () => {
     await setup();
     await page.evaluate(() => { window.parent = make('<input id="parent-first"><button id="parent-last">Parent last</button>', { hideClose: true, actions: [] }); });

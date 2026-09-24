@@ -527,7 +527,7 @@ async function flushNotesOverlayTasks() {
   await new Promise(resolve => setImmediate(resolve));
 }
 
-test('shared Notes overlay keeps one dialog, re-resolves before a trimmed Save, supports explicit Clear, and restores trigger focus', { concurrency: false }, async () => {
+test('shared Notes overlay keeps one dialog, re-resolves before a trimmed Save, supports explicit Clear, and delegates trigger restoration', { concurrency: false }, async () => {
   const originalDocument = globalThis.document;
   const harness = makeNotesOverlayHarness();
   globalThis.document = harness.documentRef;
@@ -595,7 +595,9 @@ test('shared Notes overlay keeps one dialog, re-resolves before a trimmed Save, 
 
     overlay.close();
     await flushNotesOverlayTasks();
-    assert.equal(trigger.focusCount, 1, 'closing restores focus to the opening control');
+    assert.equal(harness.modals[0].config.restoreFocusResolver({ isValidTarget: target => target === trigger }), trigger,
+      'the shared resolver receives the original trigger; real DOM restoration is covered in modal-focus.spec.mjs');
+    assert.equal(trigger.focusCount, 0, 'Notes must not compete with shared restoration');
   } finally {
     if (originalDocument === undefined) delete globalThis.document;
     else globalThis.document = originalDocument;

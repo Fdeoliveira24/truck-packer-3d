@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 
 // Isolated DOM fixtures using the project's installed Playwright/Chromium.
 // Every request is fulfilled locally: no app boot, session, API, or data writes.
-test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, async t => {
+test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout: 30000 }, async t => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
@@ -14,6 +14,19 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.startsWith('/src/') && pathname.endsWith('.js')) {
       await route.fulfill({ contentType: 'text/javascript', body: await readFile(new URL(`../..${pathname}`, import.meta.url), 'utf8') });
+    } else if (pathname === '/item-notes-fixture.js') {
+      // Execute the actual closed-over Editor adapter with disposable in-memory
+      // dependencies, without booting the renderer, auth or persistence layers.
+      const source = await readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+      const start = source.indexOf('    function openNotesModal(pack, inst) {');
+      const end = source.indexOf('    // Every editor truck writer', start);
+      assert.ok(start >= 0 && end > start);
+      await route.fulfill({ contentType: 'text/javascript', body:
+        `import { resolveNotesFocusTarget } from '/src/ui/overlays/notes-overlay.js';
+         export function openItemNotes({ UIComponents, StateStore, PackLibrary, CaseLibrary, Utils, editorMutationBlocked }, pack, inst) {
+           ${source.slice(start, end)}
+           openNotesModal(pack, inst);
+         }` });
     } else if (pathname === '/focus-fixture') {
       await route.fulfill({ contentType: 'text/html', body: '<button id="before">Page before</button><div id="modal-root"></div><button id="after">Page after</button><div id="toast-container"></div>' });
     } else await route.abort();
@@ -147,6 +160,9 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     await page.keyboard.press('Tab');
     assert.equal(await active(), 'child-first');
     await page.evaluate(() => child.close());
+    assert.equal(await active(), 'parent-first');
+    await page.keyboard.press('Tab');
+    assert.equal(await active(), 'parent-last');
     await page.keyboard.press('Tab');
     assert.equal(await active(), 'parent-first');
     await page.keyboard.press('Shift+Tab');
@@ -340,5 +356,323 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     assert.equal(await page.evaluate(() => settingsOwner.focusRoot.contains(document.activeElement)), true);
     await page.evaluate(() => settings.close());
     assert.equal(await page.getByRole('dialog').count(), 0);
+  });
+
+  await t.test('restores the opener once for programmatic, reentrant, Escape, X, backdrop and footer close', async () => {
+    for (const method of ['programmatic', 'escape', 'x', 'backdrop', 'footer']) {
+      await setup();
+      await page.evaluate(() => {
+        const opener = document.getElementById('before');
+        opener.focus();
+        window.returns = 0;
+        opener.addEventListener('focus', () => returns++);
+        window.modal = make('<input id="field">', { onClose: () => modal.close() });
+      });
+      assert.equal(await active(), 'field');
+      if (method === 'programmatic') await page.evaluate(() => { modal.close(); modal.close(); });
+      if (method === 'escape') await page.keyboard.press('Escape');
+      if (method === 'x') await page.getByRole('button', { name: 'Close Fixture' }).click();
+      if (method === 'backdrop') await page.evaluate(() => modal.overlay.click());
+      if (method === 'footer') await page.getByRole('button', { name: 'Close', exact: true }).click();
+      assert.equal(await active(), 'before', method);
+      assert.equal(await page.evaluate(() => returns), 1, method);
+      await page.evaluate(() => modal.close());
+      assert.equal(await page.evaluate(() => returns), 1, 'later repeated close is inert');
+    }
+  });
+
+  await t.test('nested return follows the logical parent, then the original external trigger', async () => {
+    await setup();
+    await page.evaluate(() => {
+      document.getElementById('before').focus();
+      window.parent = make('<input id="parent-field"><button id="child-trigger">Child</button>');
+    });
+    await page.evaluate(() => {
+      document.getElementById('child-trigger').focus();
+      window.child = make('<input id="child-field">');
+    });
+    await page.evaluate(() => child.close());
+    assert.equal(await active(), 'child-trigger');
+    await page.evaluate(() => {
+      // A caller can give logical parentage even when browser focus escaped.
+      document.getElementById('after').focus();
+      window.child = make('<input id="child-field">', { parentOwnerId: parent.owner.id });
+    });
+    await page.evaluate(() => child.close());
+    assert.equal(await active(), 'parent-field', 'a page source cannot override the active parent');
+    await page.evaluate(() => parent.close());
+    assert.equal(await active(), 'before');
+  });
+
+  await t.test('invalid sources use the current parent region and never hidden or inactive controls', async () => {
+    for (const invalidation of ['removed', 'replaced', 'disabled', 'fieldset', 'hidden', 'display', 'visibility', 'details', 'inert', 'aria-hidden', 'aria-disabled', 'inactive']) {
+      await setup();
+      await page.evaluate(() => {
+        window.parent = make('<input id="fallback"><div id="origin-region"><button id="origin">Open</button></div>');
+      });
+      await page.evaluate(() => {
+        document.getElementById('origin').focus();
+        window.child = make('<input id="child-field">');
+      });
+      await page.evaluate(kind => {
+        const target = document.getElementById('origin');
+        window.oldTarget = target;
+        if (kind === 'removed') target.remove();
+        if (kind === 'replaced') target.replaceWith(target.cloneNode(true));
+        if (kind === 'disabled') target.disabled = true;
+        if (kind === 'fieldset') {
+          const fieldset = document.createElement('fieldset');
+          target.replaceWith(fieldset); fieldset.appendChild(target); fieldset.disabled = true;
+        }
+        if (kind === 'hidden') target.parentElement.hidden = true;
+        if (kind === 'display') target.parentElement.style.display = 'none';
+        if (kind === 'visibility') target.style.visibility = 'hidden';
+        if (kind === 'details') {
+          const details = document.createElement('details');
+          target.replaceWith(details); details.appendChild(target);
+        }
+        if (kind === 'inert') target.parentElement.inert = true;
+        if (kind === 'aria-hidden') target.parentElement.setAttribute('aria-hidden', 'true');
+        if (kind === 'aria-disabled') target.setAttribute('aria-disabled', 'true');
+        if (kind === 'inactive') ui.modalOwnership.register({ element: target.parentElement, parentId: parent.owner.id, isActive: () => false });
+        child.close();
+      }, invalidation);
+      assert.equal(await active(), 'fallback', invalidation);
+      assert.equal(await page.evaluate(() => document.activeElement === oldTarget), false);
+    }
+    await setup();
+    await page.evaluate(() => { document.getElementById('before').focus(); window.modal = make('<input>'); });
+    await page.evaluate(() => { document.getElementById('before').remove(); modal.close(); });
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true, 'no owner and no target fails safely');
+  });
+
+  await t.test('restoreFocus false suppresses return for both the owner lifetime and one final close', async () => {
+    for (const perClose of [false, true]) {
+      await setup();
+      await page.evaluate(perClose => {
+        document.getElementById('before').focus();
+        window.modal = make('<input>', { restoreFocus: perClose });
+      }, perClose);
+      await page.evaluate(perClose => modal.close(perClose ? { restoreFocus: false } : undefined), perClose);
+      assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+    }
+  });
+
+  await t.test('resolver chooses the current destination after onClose cleanup and validates failures', async () => {
+    await setup();
+    await page.evaluate(() => {
+      document.getElementById('before').focus();
+      window.modal = make('<input>', {
+        restoreFocusResolver: () => document.getElementById('replacement'),
+        onClose: () => { document.getElementById('after').id = 'replacement'; },
+      });
+    });
+    await page.evaluate(() => modal.close());
+    assert.equal(await active(), 'replacement');
+    for (const result of ['external', 'hidden', 'stale', 'object', 'throw']) {
+      await setup();
+      await page.evaluate(() => { window.parent = make('<input id="parent-field"><button id="hidden" hidden>Hidden</button>'); });
+      await page.evaluate(result => {
+        window.child = make('<input>', { restoreFocusResolver: () => {
+          if (result === 'throw') throw Error('unavailable');
+          if (result === 'object') return {};
+          if (result === 'stale') return document.createElement('button');
+          return document.getElementById(result === 'hidden' ? 'hidden' : 'before');
+        } });
+      }, result);
+      await page.evaluate(() => child.close());
+      assert.equal(await active(), 'parent-field', result);
+    }
+  });
+
+  await t.test('cascade, replacement, newer owner and blocker prevent stale restoration', async () => {
+    await setup();
+    await page.evaluate(() => { document.getElementById('before').focus(); window.parent = make('<input id="parent-field">'); });
+    await page.evaluate(() => { window.child = make('<input id="child-field">'); });
+    await page.evaluate(() => {
+      window.returnLog = [];
+      document.addEventListener('focusin', event => returnLog.push(event.target.id));
+      parent.close();
+    });
+    assert.deepEqual(await page.evaluate(() => returnLog), ['before'], 'only the outermost owner restores on cascade');
+    await page.evaluate(() => { window.old = make('<input id="old-field">'); });
+    await page.evaluate(() => {
+      window.replacement = make('<input id="replacement">', { parentOwnerId: null });
+      old.close();
+    });
+    assert.equal(await active(), 'replacement');
+    await page.evaluate(() => replacement.close());
+    assert.equal(await active(), 'before', 'same-parent replacement inherits the original source');
+    await page.evaluate(() => {
+      window.old = make('<input>', { onClose: () => { window.newer = make('<input id="newer">'); } });
+    });
+    await page.evaluate(() => old.close());
+    assert.equal(await active(), 'newer', 'onClose can open a newer dialog without a stale return');
+    await page.evaluate(() => {
+      window.blocker = ui.modalOwnership.register({ kind: 'auth', priority: 2 });
+      document.getElementById('after').focus();
+      newer.close();
+    });
+    assert.equal(await active(), 'after', 'ordinary restoration cannot override a specialized owner');
+  });
+
+  await t.test('actual Settings restores after child cancellation and tab rerender without losing the page source', async () => {
+    await setup();
+    await page.evaluate(async () => {
+      const { createSettingsOverlay } = await import('/src/ui/overlays/settings-overlay.js');
+      window.settings = createSettingsOverlay({ UIComponents: ui, PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' } }) }, Utils: {} });
+      document.getElementById('before').focus();
+      settings.open('preferences');
+    });
+    await page.evaluate(() => {
+      window.settingsOwner = ui.modalOwnership.getActiveOwner();
+      window.tabControl = settingsOwner.focusRoot.querySelector('select');
+      tabControl.focus();
+      ui.confirm({ title: 'Nested confirmation' });
+    });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.activeElement === tabControl), true);
+    await page.evaluate(() => { ui.confirm({ title: 'Rerender confirmation' }); });
+    await page.evaluate(() => settings.setActive('resources'));
+    await page.waitForFunction(() => !tabControl.isConnected);
+    assert.equal(await page.evaluate(() => tabControl.isConnected), false);
+    assert.equal(await active(), 'Cancel', 'Settings rerender cannot steal the child focus');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => settingsOwner.focusRoot.contains(document.activeElement)), true);
+    await page.evaluate(() => settings.close());
+    assert.equal(await active(), 'before');
+  });
+
+  await t.test('actual Load Plan Notes resolves visible replacement triggers and rejects a changed context', async () => {
+    for (const mode of ['original', 'removed', 'hidden', 'context', 'disabled']) {
+      await setup();
+      await page.evaluate(async mode => {
+        const { openNotesOverlay } = await import('/src/ui/overlays/notes-overlay.js');
+        const trigger = document.getElementById('before');
+        trigger.dataset.notesEntityType = 'load plan'; trigger.dataset.notesEntityId = 'pack';
+        document.getElementById('after').dataset.notesEntityType = 'load plan';
+        document.getElementById('after').dataset.notesEntityId = 'pack';
+        window.notesContext = 'pack';
+        trigger.focus();
+        window.notes = openNotesOverlay({ UIComponents: ui, entityType: 'load plan', entityId: 'pack', trigger,
+          capturedContext: 'pack', getCurrentContext: () => notesContext,
+          resolveEntity: () => ({ notes: '' }), readNote: entity => entity.notes,
+          saveNote: () => { throw Error('unexpected write'); }, clearValue: '', title: 'Load Plan Notes' });
+        if (mode === 'removed') trigger.remove();
+        if (mode === 'hidden') trigger.hidden = true;
+        if (mode === 'disabled') trigger.disabled = true;
+        if (mode === 'context') notesContext = 'other-pack';
+      }, mode);
+      await page.getByRole('button', { name: 'Add Note', exact: true }).click();
+      await page.keyboard.press('Escape');
+      assert.equal(await active(), mode === 'original' ? 'before' : mode === 'context' ? 'Page beforePage after' : 'after', mode);
+      assert.equal(await page.getByRole('dialog').count(), 0);
+    }
+  });
+
+  await t.test('actual Item Notes survives empty/edit replacement cycles and resolves a current Inspector trigger', async () => {
+    for (const mode of ['original', 'removed', 'hidden', 'selection']) {
+      await setup();
+      await page.evaluate(async mode => {
+        const { openItemNotes } = await import('/item-notes-fixture.js');
+        const trigger = document.getElementById('before');
+        trigger.dataset.notesEntityType = 'item'; trigger.dataset.notesEntityId = 'instance';
+        const next = document.getElementById('after');
+        next.dataset.notesEntityType = 'item'; next.dataset.notesEntityId = 'instance';
+        window.selection = ['instance'];
+        const inst = { id: 'instance', caseId: 'case' };
+        const pack = { id: 'pack', cases: [inst] };
+        trigger.focus();
+        openItemNotes({ UIComponents: ui,
+          StateStore: { get: key => ({ currentScreen: 'editor', currentPackId: 'pack', selectedInstanceIds: selection })[key] },
+          PackLibrary: { getById: () => pack }, CaseLibrary: { getById: () => ({ name: 'Case' }) },
+          Utils: {}, editorMutationBlocked: () => false }, pack, inst);
+        if (mode === 'removed') trigger.remove();
+        if (mode === 'hidden') trigger.hidden = true;
+        if (mode === 'selection') selection = ['other'];
+      }, mode);
+      for (let i = 0; i < 3; i++) {
+        await page.getByRole('button', { name: 'Add Note', exact: true }).click();
+        assert.equal(await page.getByRole('dialog').count(), 1);
+        assert.equal(await page.evaluate(() => document.activeElement.tagName), 'TEXTAREA');
+        await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+        assert.equal(await active(), 'Add Note');
+      }
+      await page.keyboard.press('Escape');
+      if (mode === 'selection') assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
+      else assert.equal(await active(), mode === 'original' ? 'before' : 'after', mode);
+    }
+  });
+
+  await t.test('fallback skips inactive focus regions and a reentrant resolver cannot supersede a new owner', async () => {
+    await setup();
+    await page.evaluate(() => {
+      window.parent = make('<div aria-hidden="true"><input id="hidden-field"></div><input id="allowed-field">');
+    });
+    await page.evaluate(() => { window.child = make('<input>', { restoreFocusResolver: () => null }); });
+    await page.evaluate(() => child.close());
+    assert.equal(await active(), 'allowed-field');
+    await page.evaluate(() => {
+      window.child = make('<input>', { restoreFocusResolver: () => {
+        window.newer = make('<input id="newer-field">', { parentOwnerId: parent.owner.id });
+        return document.getElementById('allowed-field');
+      } });
+    });
+    await page.evaluate(() => child.close());
+    assert.equal(await active(), 'newer-field');
+  });
+
+  await t.test('actual import dialogs preserve cancellation policy and return to their triggers', async () => {
+    await setup();
+    await page.evaluate(async () => {
+      const { createImportCasesDialog } = await import('/src/ui/overlays/import-cases-dialog.js');
+      window.importCases = createImportCasesDialog({ UIComponents: ui });
+      document.getElementById('before').focus();
+      importCases.open();
+    });
+    await page.keyboard.press('Escape');
+    assert.equal(await page.getByRole('dialog').count(), 1, 'Cases import still ignores Escape');
+    await page.getByRole('button', { name: 'Cancel', exact: true }).click();
+    assert.equal(await active(), 'before');
+    await page.evaluate(async () => {
+      const { createImportAppDialog } = await import('/src/ui/overlays/import-app-dialog.js');
+      createImportAppDialog({ UIComponents: ui }).open();
+    });
+    await page.getByRole('button', { name: 'Close', exact: true }).click();
+    assert.equal(await active(), 'before');
+  });
+
+  await t.test('actual Truck Change cancellation and replacement preserve the surviving parent and truck data', async () => {
+    await setup();
+    await page.evaluate(async () => {
+      const { createTruckChangeController } = await import('/src/ui/truck-change-controller.js');
+      window.pack = { id: 'pack', truck: { length: 100, width: 80, height: 80 }, cases: [{ id: 'case' }] };
+      window.originalPack = JSON.stringify(pack);
+      window.restoredControls = 0;
+      window.controller = createTruckChangeController({ UIComponents: ui,
+        CaseLibrary: { getCases: () => [] },
+        PackLibrary: {
+          reconcilePlacementsForTruck: () => ({ nextPack: pack, kept: [], adjusted: [], invalid: ['case'], unresolved: [], malformed: [], summary: {} }),
+          stagePlacementIds: source => ({ pack: source, stagedIds: ['case'], failedIds: [] }),
+          repackInvalidPlacements: () => ({ pack, repackedIds: [], failedIds: ['case'] }),
+          update: () => { throw Error('Cancel must not commit'); },
+        },
+      });
+      document.getElementById('before').focus();
+      window.parent = make('<button id="truck-trigger">Update truck</button>');
+    });
+    await page.evaluate(() => {
+      document.getElementById('truck-trigger').focus();
+      controller.request({ pack, nextTruck: { ...pack.truck, length: 90 }, restoreControls: () => { restoredControls++; } });
+    });
+    await page.getByRole('button', { name: 'Repack invalid', exact: true }).click();
+    assert.equal(await page.getByRole('dialog').count(), 2, 'replacement does not stack a stale Truck Change dialog');
+    await page.keyboard.press('Escape');
+    assert.equal(await active(), 'truck-trigger');
+    assert.equal(await page.evaluate(() => JSON.stringify(pack)), await page.evaluate(() => originalPack));
+    assert.equal(await page.evaluate(() => restoredControls), 1);
+    assert.equal(await page.evaluate(() => controller.isActive()), false);
+    await page.evaluate(() => parent.close());
+    assert.equal(await active(), 'before');
   });
 });

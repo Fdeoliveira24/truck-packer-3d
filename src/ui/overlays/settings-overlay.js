@@ -7379,7 +7379,7 @@ export function createSettingsOverlay({
 
     doc.body.classList.add('modal-open');
 
-    const owner = UIComponents.modalOwnership?.register({ kind: 'settings', element: settingsOverlay });
+    const owner = UIComponents.modalOwnership?.register({ kind: 'settings', element: settingsOverlay, parentId: null });
     const ownerKeydownHandler = trapKeydownHandler;
     settingsOverlay._tp3dCleanup = () => {
       owner?.release();

@@ -320,9 +320,13 @@ test('P0-SM-OF-2 Settings reuses, closes, reopens and cleans disconnected owners
     PreferencesManager: { get: () => ({}) }, Utils: {},
   });
   for (let i = 0; i < 3; i++) {
+    const unrelated = dom.UI.showModal({});
+    unrelated.modal.focus();
     settings.open('resources');
     const owner = dom.UI.modalOwnership.getActiveOwner();
     assert.equal(owner.kind, 'settings');
+    assert.equal(owner.parentId, null, 'Settings remains a root even when another modal had focus');
+    unrelated.close();
     settings.open('resources');
     assert.equal(dom.UI.modalOwnership.getActiveOwner(), owner);
     dom.dispatch(dom.key('Escape', owner.element));

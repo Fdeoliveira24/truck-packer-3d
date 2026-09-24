@@ -5765,9 +5765,12 @@ export function createEditorScreen({
       const instanceId = inst.id;
       const caseId = inst.caseId;
 
-      // Escape is assigned by the shared modal owner; this wrapper only styles Notes.
+      // Shared ownership handles Escape and containment; keep the Notes task target.
       function showNotesModal(config) {
-        const modalRef = UIComponents.showModal({ ...config, parentOwnerId: null });
+        const modalRef = UIComponents.showModal({
+          ...config, parentOwnerId: null,
+          initialFocus: () => modalRef.modal.querySelector('textarea, .modal-footer .btn-primary'),
+        });
         modalRef.modal.classList.add('tp3d-notes-modal');
         const heading = modalRef.modal.querySelector('.modal-title');
         if (heading) {

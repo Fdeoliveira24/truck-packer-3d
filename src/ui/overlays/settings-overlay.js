@@ -75,7 +75,7 @@ export function createSettingsOverlay({
   let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'export' | 'import' | 'help'
   let unmountAccountButton = null;
   let lastFocusedEl = null;
-  let trapKeydownHandler = null;
+  let focusOwner = null;
   let warnedMissingModalRoot = false;
   let tabClickHandler = null;
 
@@ -2744,12 +2744,7 @@ export function createSettingsOverlay({
       // ignore
     }
 
-    try {
-      if (trapKeydownHandler) doc.removeEventListener('keydown', trapKeydownHandler, true);
-    } catch {
-      // ignore
-    }
-    trapKeydownHandler = null;
+    focusOwner = null;
 
     try {
       if (tabClickHandler && settingsOverlay) {
@@ -7258,6 +7253,7 @@ export function createSettingsOverlay({
     });
     debugTabSnapshot('render');
     debugSettingsModalSnapshot('render');
+    focusOwner?.ensureFocus();
     return counts;
   }
 
@@ -7344,32 +7340,6 @@ export function createSettingsOverlay({
       if (ev.target === settingsOverlay) close('backdrop-click');
     });
 
-    trapKeydownHandler = ev => {
-      if (ev.key !== 'Tab') return;
-      if (!settingsModal) return;
-      const focusables = Array.from(
-        settingsModal.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
-      ).filter(el => !el.hasAttribute('disabled') && el.offsetParent !== null);
-      if (!focusables.length) {
-        ev.preventDefault();
-        settingsModal.focus();
-        return;
-      }
-      const first = focusables[0];
-      const last = focusables[focusables.length - 1];
-      const active = doc.activeElement;
-      if (ev.shiftKey) {
-        if (active === first || active === settingsModal) {
-          ev.preventDefault();
-          last.focus();
-        }
-      } else if (active === last) {
-        ev.preventDefault();
-        first.focus();
-      }
-    };
-    doc.addEventListener('keydown', trapKeydownHandler, true);
-
     const root = doc.getElementById('modal-root');
     if (root) {
       root.appendChild(settingsOverlay);
@@ -7385,14 +7355,12 @@ export function createSettingsOverlay({
 
     const owner = UIComponents.modalOwnership?.register({
       kind: 'settings', element: settingsOverlay, parentId: null,
+      focusRoot: settingsModal,
       onDismiss: () => close('escape-key'),
     });
-    const ownerKeydownHandler = trapKeydownHandler;
+    focusOwner = owner;
     settingsOverlay._tp3dCleanup = () => {
       owner?.release();
-      if (ownerKeydownHandler) {
-        doc.removeEventListener('keydown', ownerKeydownHandler, true);
-      }
     };
 
     ensureOrgChangedListener();
@@ -7406,11 +7374,6 @@ export function createSettingsOverlay({
     if (openingUserView.isAuthed) {
       queueAccountBundleRefresh({ force: true, source: 'open:created-refresh' });
     }
-
-    const focusTarget = /** @type {HTMLElement|null} */ (
-      settingsModal.querySelector('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')
-    );
-    (focusTarget || settingsModal).focus();
   }
 
   function init() {

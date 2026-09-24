@@ -1,5 +1,6 @@
-/** Focus policy over the interaction registry; no separate stack or restoration. */
+/** Focus policy over the existing interaction registry; no separate owner stack. */
 export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOwners }) {
+  const restoration = new WeakMap();
   const selector = 'a[href], button, input, select, textarea, summary, [contenteditable], [tabindex]';
   const tabIndex = element => element.isContentEditable && !element.hasAttribute('tabindex')
     ? 0 : element.tabIndex;
@@ -84,9 +85,9 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     return documentRef.activeElement === element;
   }
 
-  function enter(owner, initial = false) {
+  function enter(owner, initial = false, allowed = _element => true) {
     // Deferred setup/rerenders must never take focus from a newer dialog/popup.
-    if (!usable(owner.focusRoot, false)) return;
+    if (!usable(owner.focusRoot, false) || !allowed(owner.focusRoot)) return;
     if (getActiveOwner() !== owner || boundary(owner) !== owner) return;
     const focusRegion = region(owner);
     const { contains } = focusRegion;
@@ -95,9 +96,9 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
       try { explicit = typeof owner.initialFocus === 'function' ? owner.initialFocus() : owner.initialFocus; }
       catch { /* An unavailable caller target falls through to the dialog policy. */ }
     }
-    if (usable(explicit, false) && contains(explicit) && focus(explicit)) return;
-    if (contains(documentRef.activeElement) && usable(documentRef.activeElement, false)) return;
-    const { elements } = controls(focusRegion);
+    if (usable(explicit, false) && contains(explicit) && allowed(explicit) && focus(explicit)) return;
+    if (contains(documentRef.activeElement) && usable(documentRef.activeElement, false) && allowed(documentRef.activeElement)) return;
+    const elements = controls(focusRegion).elements.filter(allowed);
     const autofocus = elements.find(element => element.hasAttribute('autofocus'));
     // Prefer task fields/content and the existing first footer action over header X.
     const field = elements.find(element => element.matches('input:not([type="button"]):not([type="submit"]):not([type="color"]), textarea, select, [contenteditable="true"]'));
@@ -105,6 +106,46 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     const action = elements.find(element => element.closest('.modal-footer'));
     const target = autofocus || field || task || action || elements[0];
     if (!focus(target)) focus(owner.focusRoot);
+  }
+
+  function capture(owner, resolver) {
+    const owners = getOwners();
+    const parent = owners.find(item => item.id === owner.parentId);
+    let source = documentRef.activeElement;
+    const previous = [...owners].reverse().find(item => source && item.element?.contains(source));
+    // A replacement shares its predecessor's logical parent, so its return
+    // source is the flow's opener, not a control in the about-to-close dialog.
+    if (previous && previous !== parent && previous.parentId === owner.parentId) {
+      source = restoration.get(previous)?.source || source;
+    }
+    restoration.set(owner, { source, parent, resolver });
+  }
+
+  function restore(owner) {
+    const saved = restoration.get(owner);
+    restoration.delete(owner);
+    if (!saved) return;
+    const { source, parent, resolver } = saved;
+    const owners = getOwners();
+    // A cascading parent close owns the final return. Its child must not jump
+    // to the page in between, nor compete with a replacement or newer owner.
+    if (parent && !owners.includes(parent)) return;
+    const active = getActiveOwner();
+    if (active && active !== parent) return;
+    const focusRegion = active && boundary(active) === active ? region(active) : null;
+    const isValidTarget = target => usable(target, false) &&
+      target !== documentRef.body && target !== documentRef.documentElement &&
+      !target.closest('[inert], [aria-hidden="true"], [aria-disabled="true"]') &&
+      (focusRegion ? focusRegion.contains(target) :
+        !active && !owners.some(item => item.element?.contains(target)));
+    let target = source;
+    if (typeof resolver === 'function') {
+      try { target = resolver({ source, isValidTarget }); }
+      catch { target = null; }
+    }
+    if (getActiveOwner() !== active) return;
+    if (isValidTarget(target) && focus(target)) return;
+    if (focusRegion) enter(active, false, isValidTarget);
   }
 
   function handleTab(event, active) {
@@ -140,5 +181,5 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     }
   }
 
-  return { enter, handleTab };
+  return { enter, handleTab, capture, restore };
 }

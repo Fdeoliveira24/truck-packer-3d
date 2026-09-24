@@ -74,7 +74,6 @@ export function createSettingsOverlay({
   let settingsInstanceCounter = 0;
   let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'export' | 'import' | 'help'
   let unmountAccountButton = null;
-  let lastFocusedEl = null;
   let focusOwner = null;
   let warnedMissingModalRoot = false;
   let tabClickHandler = null;
@@ -2794,15 +2793,6 @@ export function createSettingsOverlay({
     modalOrgId = '';
     selectedInterval = 'month';
     resourcesSubView = 'root'; // Reset sub-view on close
-
-    try {
-      if (lastFocusedEl && typeof lastFocusedEl.focus === 'function') {
-        lastFocusedEl.focus();
-      }
-    } catch {
-      // ignore
-    }
-    lastFocusedEl = null;
   }
 
   function normalizeTab(tab) {
@@ -7308,9 +7298,6 @@ export function createSettingsOverlay({
       tabClickHandler = null;
       _tabState.didBind = false;
     }
-
-    const activeEl = doc.activeElement instanceof HTMLElement ? doc.activeElement : null;
-    lastFocusedEl = activeEl && typeof activeEl.focus === 'function' ? activeEl : null;
 
     settingsOverlay = doc.createElement('div');
     settingsOverlay.className = 'modal-overlay';

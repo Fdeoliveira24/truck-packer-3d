@@ -44,17 +44,15 @@ function focusSoon(target) {
   else window.setTimeout(focus, 0);
 }
 
-function restoreTriggerFocus(trigger, entityType, entityId) {
-  let target = trigger;
-  if (!target || typeof target.focus !== 'function' || target.isConnected === false) {
-    target = Array.from(document.querySelectorAll('[data-notes-entity-id]')).find(candidate =>
-      candidate instanceof HTMLElement &&
-      candidate.dataset.notesEntityType === entityType &&
-      candidate.dataset.notesEntityId === entityId
-    ) || null;
-  }
-  if (!target || typeof target.focus !== 'function' || target.isConnected === false) return;
-  focusSoon(target);
+// Both Notes surfaces can outlive their Grid/Inspector trigger. Resolve against
+// the current view and let the shared ownership policy validate every candidate.
+export function resolveNotesFocusTarget({ trigger, entityType, entityId, isValidTarget }) {
+  if (isValidTarget(trigger)) return trigger;
+  return Array.from(document.querySelectorAll('[data-notes-entity-id]')).find(candidate =>
+    candidate instanceof HTMLElement &&
+    candidate.dataset.notesEntityType === entityType &&
+    candidate.dataset.notesEntityId === entityId && isValidTarget(candidate)
+  ) || null;
 }
 
 /**
@@ -124,7 +122,6 @@ export function openNotesOverlay(config) {
   const textareaId = `${overlayId}-textarea`;
   let modalRef = null;
   let closed = false;
-  let restoreFocusOnClose = true;
   let writing = false;
 
   const contentRoot = document.createElement('div');
@@ -165,22 +162,19 @@ export function openNotesOverlay(config) {
   }
 
   function close({ restoreFocus = true } = {}) {
-    restoreFocusOnClose = restoreFocus;
-    if (modalRef) modalRef.close();
+    if (modalRef) modalRef.close({ restoreFocus });
   }
 
   function handleClose() {
     if (closed) return;
     closed = true;
     if (activeNotesOverlay && activeNotesOverlay.modal === modalRef.modal) activeNotesOverlay = null;
-    if (restoreFocusOnClose) restoreTriggerFocus(trigger, entityType, entityId);
   }
 
   const initialContext = getCurrentContext();
   const initialEntity = resolveCurrentEntity(initialContext);
   if (!initialEntity) {
     showToast(missingMessage());
-    restoreTriggerFocus(trigger, entityType, entityId);
     return null;
   }
 
@@ -189,6 +183,8 @@ export function openNotesOverlay(config) {
     content: contentRoot,
     actions: [],
     onClose: handleClose,
+    restoreFocusResolver: ({ isValidTarget }) => contextIsCurrent(getCurrentContext())
+      ? resolveNotesFocusTarget({ trigger, entityType, entityId, isValidTarget }) : null,
   });
   modalRef.modal.classList.add('tp3d-notes-modal');
   modalRef.modal.setAttribute('role', 'dialog');

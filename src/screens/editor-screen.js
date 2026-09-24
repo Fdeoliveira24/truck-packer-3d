@@ -13,7 +13,7 @@
 
 import { createCaseGeometry } from '../editor/geometry-factory.js';
 import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.js';
-import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
+import { openNotesOverlay, resolveNotesFocusTarget } from '../ui/overlays/notes-overlay.js';
 import {
   buildSpaceUtilizationResult,
   createSpaceUtilizationGauge,
@@ -5764,12 +5764,19 @@ export function createEditorScreen({
       const packId = pack.id;
       const instanceId = inst.id;
       const caseId = inst.caseId;
+      const trigger = document.activeElement;
 
       // Shared ownership handles Escape and containment; keep the Notes task target.
       function showNotesModal(config) {
         const modalRef = UIComponents.showModal({
           ...config, parentOwnerId: null,
           initialFocus: () => modalRef.modal.querySelector('textarea, .modal-footer .btn-primary'),
+          restoreFocusResolver: ({ isValidTarget }) => {
+            const selection = StateStore.get('selectedInstanceIds') || [];
+            if (StateStore.get('currentScreen') !== 'editor' || StateStore.get('currentPackId') !== packId ||
+                selection.length !== 1 || selection[0] !== instanceId) return null;
+            return resolveNotesFocusTarget({ trigger, entityType: 'item', entityId: instanceId, isValidTarget });
+          },
         });
         modalRef.modal.classList.add('tp3d-notes-modal');
         const heading = modalRef.modal.querySelector('.modal-title');
@@ -6569,6 +6576,8 @@ export function createEditorScreen({
         iconClass: 'fa-regular fa-file-lines',
         onClick: () => openNotesModal(pack, inst),
       });
+      notesButton.dataset.notesEntityType = 'item';
+      notesButton.dataset.notesEntityId = inst.id;
       if (hasAnyNotes) {
         const notesIndicator = document.createElement('span');
         notesIndicator.className = 'tp3d-notes-indicator-dot';

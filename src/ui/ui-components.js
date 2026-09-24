@@ -59,10 +59,13 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
   /** @param {{ kind?: string, element?: Element, parentId?: symbol | null, priority?: number,
    * isActive?: () => boolean, canDismiss?: (source: string) => boolean,
    * onDismiss?: (source: string) => void, onParentClose?: () => void,
-   * focusRoot?: HTMLElement, initialFocus?: HTMLElement | (() => HTMLElement | null) }} [options] */
+   * focusRoot?: HTMLElement, initialFocus?: HTMLElement | (() => HTMLElement | null),
+   * restoreFocus?: boolean,
+   * restoreFocusResolver?: (context: { source: Element, isValidTarget: (target: any) => boolean }) => Element | null }} [options] */
   function register({ kind = 'modal', element = null, parentId, priority = 0,
     isActive = () => true, canDismiss = () => true, onDismiss, onParentClose,
-    focusRoot = null, initialFocus = null } = {}) {
+    focusRoot = null, initialFocus = null, restoreFocus = Boolean(focusRoot),
+    restoreFocusResolver = null } = {}) {
     if (parentId === undefined) {
       // Infer ancestry only from an already registered owner's focused content.
       // DOM classes, visibility and ARIA never establish ownership.
@@ -81,13 +84,24 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
         onDismiss(source);
         return true;
       },
-      release() {
+      release({ restoreFocus: restoreOnRelease = true } = {}) {
+        let active = getActiveOwner();
+        while (active && active !== owner) active = owners.get(active.parentId);
+        const ownedFocus = active === owner;
         if (!owners.delete(id)) return;
         for (const child of [...owners.values()]) {
           if (child.parentId === id) child.onParentClose?.();
         }
+        if (restoreFocus && restoreOnRelease && ownedFocus) {
+          const releasedOrder = order;
+          queueMicrotask(() => {
+            // Run after removal, onClose cleanup and synchronous rerenders.
+            if (order === releasedOrder) modalFocus.restore(owner);
+          });
+        }
       },
     });
+    if (restoreFocus) modalFocus.capture(owner, restoreFocusResolver);
     owners.set(id, owner);
     if (focusRoot) queueMicrotask(() => modalFocus.enter(owner, true));
     return owner;
@@ -216,6 +230,10 @@ export function createUIComponents() {
     }, 180);
   }
 
+  // Ordinary dialogs restore on final close by default. A single resolver can
+  // select a current target via { source, isValidTarget }; invalid results use
+  // the surviving parent's normal focus region. Specialized callers can opt
+  // out with restoreFocus: false, either here or for one close({ restoreFocus }).
   function showModal(config) {
     let owner = null;
     const overlay = document.createElement('div');
@@ -300,10 +318,10 @@ export function createUIComponents() {
     });
 
     let closed = false;
-    function close() {
+    function close({ restoreFocus = true } = {}) {
       if (closed) return;
       closed = true;
-      owner.release();
+      owner.release({ restoreFocus });
       if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
       try {
         config.onClose && config.onClose();
@@ -317,12 +335,14 @@ export function createUIComponents() {
       element: overlay,
       focusRoot: modal,
       initialFocus: config.initialFocus,
+      restoreFocus: config.restoreFocus !== false,
+      restoreFocusResolver: config.restoreFocusResolver,
       parentId: config.parentOwnerId === undefined ? dropdownActionParentId : config.parentOwnerId,
       canDismiss: source =>
         (source !== 'escape' || config.dismissible !== false) &&
         (!config.canDismiss || config.canDismiss(source) !== false),
-      onDismiss: close,
-      onParentClose: close,
+      onDismiss: () => close(),
+      onParentClose: () => close(),
     });
     return { close, requestDismiss: owner.requestDismiss, overlay, modal, body, owner };
   }

@@ -11,6 +11,8 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+import { createModalFocus } from './modal-focus.js';
+
 const AUTOPACK_LOADING_IMAGE_SRC = 'media/autopack-loading-truck-480w.gif?v=20260703';
 const AUTOPACK_LOADING_MESSAGE_INTERVAL_MS = 2600;
 const AUTOPACK_LOADING_MAX_MS = 90000;
@@ -34,6 +36,8 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
   const eventOwners = new WeakMap();
   const escapeClaims = new WeakMap();
   let order = 0;
+  const modalFocus = createModalFocus({ windowRef, documentRef, getActiveOwner,
+    getOwners: () => [...owners.values()] });
 
   function getActiveOwner() {
     let active = null;
@@ -54,9 +58,11 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
 
   /** @param {{ kind?: string, element?: Element, parentId?: symbol | null, priority?: number,
    * isActive?: () => boolean, canDismiss?: (source: string) => boolean,
-   * onDismiss?: (source: string) => void, onParentClose?: () => void }} [options] */
+   * onDismiss?: (source: string) => void, onParentClose?: () => void,
+   * focusRoot?: HTMLElement, initialFocus?: HTMLElement | (() => HTMLElement | null) }} [options] */
   function register({ kind = 'modal', element = null, parentId, priority = 0,
-    isActive = () => true, canDismiss = () => true, onDismiss, onParentClose } = {}) {
+    isActive = () => true, canDismiss = () => true, onDismiss, onParentClose,
+    focusRoot = null, initialFocus = null } = {}) {
     if (parentId === undefined) {
       // Infer ancestry only from an already registered owner's focused content.
       // DOM classes, visibility and ARIA never establish ownership.
@@ -68,6 +74,8 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
     const id = Symbol(kind);
     const owner = Object.freeze({
       id, kind, element, parentId, priority, order: ++order, isActive, onParentClose,
+      focusRoot, initialFocus,
+      ensureFocus() { modalFocus.enter(owner); },
       requestDismiss(source) {
         if (!owners.has(id) || !canDismiss(source) || !onDismiss) return false;
         onDismiss(source);
@@ -81,6 +89,7 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
       },
     });
     owners.set(id, owner);
+    if (focusRoot) queueMicrotask(() => modalFocus.enter(owner, true));
     return owner;
   }
 
@@ -90,6 +99,7 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
     const owner = getActiveOwner();
     eventOwners.set(event, owner?.id || null);
     escapeClaims.delete(event);
+    modalFocus.handleTab(event, owner);
     if (event.key !== 'Escape' || !owner) return;
     // Claim before invoking a callback: it may release this owner or open another.
     // The same event cannot be reassigned to that new owner or to the Editor.
@@ -222,6 +232,7 @@ export function createUIComponents() {
     // and aria-labelledby themselves after this returns.
     const titleId = `tp3d-modal-title-${++modalTitleIdCounter}`;
     modal.setAttribute('role', 'dialog');
+    modal.setAttribute('tabindex', '-1');
     modal.setAttribute('aria-labelledby', titleId);
 
     const showCloseButton = !(config && (config.hideClose === true || config.showCloseButton === false));
@@ -304,6 +315,8 @@ export function createUIComponents() {
     modalRoot.appendChild(overlay);
     owner = modalOwnership.register({
       element: overlay,
+      focusRoot: modal,
+      initialFocus: config.initialFocus,
       parentId: config.parentOwnerId === undefined ? dropdownActionParentId : config.parentOwnerId,
       canDismiss: source =>
         (source !== 'escape' || config.dismissible !== false) &&

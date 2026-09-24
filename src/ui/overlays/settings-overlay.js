@@ -7296,6 +7296,7 @@ export function createSettingsOverlay({
       return;
     }
     if (settingsOverlay && !settingsOverlay.isConnected) {
+      settingsOverlay._tp3dCleanup?.();
       settingsOverlay = null;
       settingsModal = null;
       settingsLeftPane = null;
@@ -7378,9 +7379,12 @@ export function createSettingsOverlay({
 
     doc.body.classList.add('modal-open');
 
+    const owner = UIComponents.modalOwnership?.register({ kind: 'settings', element: settingsOverlay, parentId: null });
+    const ownerKeydownHandler = trapKeydownHandler;
     settingsOverlay._tp3dCleanup = () => {
-      if (trapKeydownHandler) {
-        doc.removeEventListener('keydown', trapKeydownHandler, true);
+      owner?.release();
+      if (ownerKeydownHandler) {
+        doc.removeEventListener('keydown', ownerKeydownHandler, true);
       }
     };
 

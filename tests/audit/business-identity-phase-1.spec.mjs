@@ -1433,6 +1433,7 @@ test('BUSINESS-IDENTITY-UI dropdown coordinator closes registered surfaces and r
     };
     globalThis.window = {
       clearTimeout() {},
+      addEventListener() {},
       removeEventListener() {},
     };
     const ui = createUIComponents();

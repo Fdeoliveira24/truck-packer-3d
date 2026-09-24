@@ -25,7 +25,61 @@ const AUTOPACK_LOADING_MESSAGES = Object.freeze([
   'Finalizing your load plan...',
 ]);
 
+/**
+ * Presence and keyboard ownership only. Dismissal, focus and popup routing stay
+ * with their existing owners. Install before application keyboard listeners.
+ */
+export function createModalOwnership({ windowRef = window, documentRef = document } = {}) {
+  const owners = new Map();
+  const eventOwners = new WeakMap();
+  let order = 0;
+
+  function getActiveOwner() {
+    let active = null;
+    for (const owner of owners.values()) {
+      if (!active || owner.priority > active.priority ||
+          (owner.priority === active.priority && owner.order > active.order)) {
+        active = owner;
+      }
+    }
+    return active;
+  }
+
+  /** @param {{ kind?: string, element?: Element, parentId?: symbol | null, priority?: number }} [options] */
+  function register({ kind = 'modal', element = null, parentId, priority = 0 } = {}) {
+    if (parentId === undefined) {
+      // Infer ancestry only from an already registered owner's focused content.
+      // DOM classes, visibility and ARIA never establish ownership.
+      const focused = documentRef.activeElement;
+      const parent = [...owners.values()].reverse().find(owner =>
+        focused && owner.element?.contains(focused)
+      );
+      parentId = parent?.id || null;
+    }
+    const id = Symbol(kind);
+    const owner = Object.freeze({
+      id, kind, element, parentId, priority, order: ++order,
+      release() { owners.delete(id); },
+    });
+    owners.set(id, owner);
+    return owner;
+  }
+
+  windowRef.addEventListener('keydown', event => {
+    // Window capture precedes legacy document capture handlers which can close
+    // an owner. Keep that entry snapshot even after its registration is released.
+    eventOwners.set(event, getActiveOwner()?.id || null);
+  }, true);
+
+  function blocksKeyboardEvent(event) {
+    return Boolean(eventOwners.get(event) || owners.size);
+  }
+
+  return { register, getActiveOwner, getOwners: () => [...owners.values()], blocksKeyboardEvent };
+}
+
 export function createUIComponents() {
+  const modalOwnership = createModalOwnership();
   const modalRoot = document.getElementById('modal-root');
   const toastContainer = document.getElementById('toast-container');
   let dropdownKeyDownListener = null;
@@ -186,9 +240,11 @@ export function createUIComponents() {
     });
 
     let closed = false;
+    let owner = null;
     function close() {
       if (closed) return;
       closed = true;
+      owner.release();
       if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
       try {
         config.onClose && config.onClose();
@@ -198,7 +254,8 @@ export function createUIComponents() {
     }
 
     modalRoot.appendChild(overlay);
-    return { close, overlay, modal, body };
+    owner = modalOwnership.register({ element: overlay, parentId: config.parentOwnerId });
+    return { close, overlay, modal, body, owner };
   }
 
   function showAutoPackLoadingOverlay(options = {}) {
@@ -680,6 +737,7 @@ export function createUIComponents() {
   }
 
   return {
+    modalOwnership,
     showToast,
     showModal,
     showAutoPackLoadingOverlay,

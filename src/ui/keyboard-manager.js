@@ -38,6 +38,7 @@ export function createKeyboardManager({
     }
 
     function handleKeyDown(event) {
+      if (event.defaultPrevented || UIComponents.modalOwnership?.blocksKeyboardEvent(event)) return;
       if (isTypingContext(event)) return;
       const key = buildKeyString(event);
       const handler = shortcuts[key];

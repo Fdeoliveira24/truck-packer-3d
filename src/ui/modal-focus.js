@@ -5,9 +5,10 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     ? 0 : element.tabIndex;
   const byTabOrder = (a, b) => (tabIndex(a) || Infinity) - (tabIndex(b) || Infinity);
 
-  function usable(element, sequential = true) {
+  function usable(element, sequential = true, nativeTab = false) {
     if (!element?.isConnected || typeof element.focus !== 'function' ||
-        !element.getClientRects?.().length || element.matches(':disabled, [aria-disabled="true"]') ||
+        !element.getClientRects?.().length || element.matches(':disabled') ||
+        (!nativeTab && element.matches('[aria-disabled="true"]')) ||
         element.closest('[hidden]') || element.type === 'hidden') return false;
     if (sequential && tabIndex(element) < 0) return false;
     for (let node = element; node; node = node.parentElement) {
@@ -53,7 +54,10 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
 
   function controls({ contains, roots }) {
     const allElements = [...new Set(roots.flatMap(root => [...root.querySelectorAll(selector)]))];
-    const candidates = allElements.filter(element => contains(element) && usable(element));
+    // Native Tab skips hidden/disabled controls, but still visits aria-disabled
+    // controls and foreign logical owners, which our navigation must bridge.
+    const domOrder = allElements.filter(element => usable(element, true, true));
+    const candidates = domOrder.filter(element => contains(element) && !element.matches('[aria-disabled="true"]'));
     const elements = candidates.filter(element => {
       if (element.type !== 'radio' || !element.name) return true;
       const group = candidates.filter(item => item.type === 'radio' &&
@@ -62,7 +66,7 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     })
       // Match native positive-tabindex ordering; stable sort preserves DOM order.
       .sort(byTabOrder);
-    return { elements, allElements };
+    return { elements, domOrder };
   }
 
   function focus(element) {
@@ -100,7 +104,7 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
     if (!owner) return;
     const focusRegion = region(owner);
     const { contains, roots } = focusRegion;
-    const { elements, allElements } = controls(focusRegion);
+    const { elements, domOrder } = controls(focusRegion);
     const focused = documentRef.activeElement;
     const index = elements.indexOf(focused);
     let target;
@@ -118,7 +122,6 @@ export function createModalFocus({ windowRef, documentRef, getActiveOwner, getOw
       // controls can interleave positive values, without being part of our region.
       const next = elements[index + (event.shiftKey ? -1 : 1)];
       const sameRoot = roots.some(root => root.contains(focused) && root.contains(next));
-      const domOrder = allElements.filter(element => tabIndex(element) >= 0);
       if (!sameRoot || tabIndex(focused) > 0 || tabIndex(next) > 0 ||
           domOrder[domOrder.indexOf(focused) + (event.shiftKey ? -1 : 1)] !== next) target = next;
     }

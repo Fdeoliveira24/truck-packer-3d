@@ -63,6 +63,11 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     assert.equal(await page.evaluate(() => tabEvents.at(-1)), false, 'ordinary internal Tab is native');
     await page.keyboard.press('Tab');
     assert.equal(await active(), 'last');
+    assert.equal(await page.evaluate(() => tabEvents.at(-1)), false, 'native Tab skips hidden and disabled controls');
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await active(), 'second');
+    assert.equal(await page.evaluate(() => tabEvents.at(-1)), false, 'native Shift+Tab skips hidden and disabled controls');
+    await page.keyboard.press('Tab');
     await page.keyboard.press('Tab');
     assert.equal(await active(), 'first');
     await page.keyboard.press('Shift+Tab');
@@ -75,6 +80,16 @@ test('P0-SM-OF-5 real DOM focus and keyboard behavior', { timeout: 30000 }, asyn
     await page.evaluate(() => document.getElementById('after').focus());
     await page.keyboard.press('Tab');
     assert.equal(await active(), 'replacement');
+  });
+
+  await t.test('aria-disabled controls remain excluded even though native Tab would visit them', async () => {
+    await setup();
+    await page.evaluate(() => { window.modal = make('<input id="first"><button aria-disabled="true">Unavailable</button><input id="last">', { hideClose: true, actions: [] }); });
+    await page.keyboard.press('Tab');
+    assert.equal(await active(), 'last');
+    assert.equal(await page.evaluate(() => tabEvents.at(-1)), true, 'logical exclusions still require explicit navigation');
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await active(), 'first');
   });
 
   await t.test('internal Tab scans only the logical region, independent of a large background DOM', async () => {

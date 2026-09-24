@@ -95,6 +95,10 @@ export function createSettingsOverlay({
   const TAB_STORAGE_KEY = 'tp3d:settings:activeTab';
   const SETTINGS_MODAL_ATTR = 'data-tp3d-settings-modal';
   const SETTINGS_INSTANCE_ATTR = 'data-tp3d-settings-instance';
+  // Settings is a strict singleton overlay (reused or fully torn down and
+  // recreated, never stacked — see the reuse/recreate branch in open()), so a
+  // fixed id is safe: exactly one element can ever hold it at a time.
+  const SETTINGS_MODAL_TITLE_ID = 'tp3d-settings-modal-title';
   const ORG_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
   // ── Render-trace state (debug-only dedup) ──
@@ -4817,6 +4821,9 @@ export function createSettingsOverlay({
 
     const title = doc.createElement('div');
     title.classList.add('tp3d-settings-right-title');
+    // settingsRightPane.innerHTML = '' (above, each render) always removes the
+    // previous title element first, so this fixed id never collides with it.
+    title.id = SETTINGS_MODAL_TITLE_ID;
     title.textContent = meta.title;
 
     const helper = doc.createElement('div');
@@ -4832,6 +4839,7 @@ export function createSettingsOverlay({
     closeBtn.type = 'button';
     closeBtn.className = 'btn btn-ghost';
     closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
+    closeBtn.setAttribute('aria-label', 'Close Settings');
     closeBtn.addEventListener('click', () => close('close-button'));
 
     header.appendChild(headerLeft);
@@ -7319,6 +7327,7 @@ export function createSettingsOverlay({
     settingsModal.setAttribute(SETTINGS_INSTANCE_ATTR, String(instanceId));
     settingsModal.setAttribute('role', 'dialog');
     settingsModal.setAttribute('aria-modal', 'true');
+    settingsModal.setAttribute('aria-labelledby', SETTINGS_MODAL_TITLE_ID);
     settingsModal.setAttribute('tabindex', '-1');
 
     settingsLeftPane = doc.createElement('div');

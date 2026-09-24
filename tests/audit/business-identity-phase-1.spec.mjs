@@ -2921,8 +2921,8 @@ test('CASES-HANDLING-COMPACT the compact helper only slices the already-computed
     'function renderCaseHandlingChips(caseItem, summary, container, chipTag) {',
     'function createCaseNotesButton('
   );
-  assert.match(helperBody, /summary\.slice\(0, 2\)/, 'first two entries of the shared summary render inline');
-  assert.match(helperBody, /summary\.slice\(2\)/, 'the remainder collapses behind +N');
+  assert.match(helperBody, /summary\.slice\(0, 1\)/, 'only the first entry of the shared summary renders inline');
+  assert.match(helperBody, /summary\.slice\(1\)/, 'the remainder collapses behind +N');
   const rawFieldPattern =
     /orientationLock|canFlip|noStackOnTop|maxStackCount|isPallet|maxPalletWeight|laneItem|loadPriority/;
   assert.doesNotMatch(helperBody, rawFieldPattern,
@@ -2939,10 +2939,10 @@ test('CASES-HANDLING-COMPACT the compact helper only slices the already-computed
     'reserved/future fields are never surfaced as if they were active enforced Handling Rules');
 });
 
-test('CASES-HANDLING-COMPACT count semantics: 0, 1, 2, 3, and 5+ active rules split the same way getCaseHandlingSummary() orders them', async () => {
+test('CASES-HANDLING-COMPACT count semantics: 0, 1, 2, 3, 5, and 7 active rules split the same way getCaseHandlingSummary() orders them', async () => {
   const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
   const { getCaseHandlingSummary } = await import(summaryPath.href);
-  const splitOf = summary => ({ visible: summary.slice(0, 2), hidden: summary.slice(2) });
+  const splitOf = summary => ({ visible: summary.slice(0, 1), hidden: summary.slice(1) });
 
   // A. zero rules — Grid shows no chip, List shows "—" (unchanged elsewhere in this file).
   assert.deepEqual(getCaseHandlingSummary(baseCase()), []);
@@ -2951,20 +2951,39 @@ test('CASES-HANDLING-COMPACT count semantics: 0, 1, 2, 3, and 5+ active rules sp
   let summary = getCaseHandlingSummary(baseCase({ noStackOnTop: true }));
   assert.deepEqual(splitOf(summary), { visible: ['No top load'], hidden: [] });
 
-  // C. two rules — both visible, no +N.
+  // C. two rules — only the first is visible, exactly +1.
   summary = getCaseHandlingSummary(baseCase({ orientationLock: 'upright', noStackOnTop: true }));
-  assert.deepEqual(splitOf(summary), { visible: ['Upright', 'No top load'], hidden: [] });
+  assert.deepEqual(splitOf(summary), { visible: ['Upright'], hidden: ['No top load'] });
 
-  // D. three rules — first two visible, exactly +1, third rule discoverable only via +N.
+  // D. three rules — first rule visible, exactly +2, the rest discoverable only via +N.
   summary = getCaseHandlingSummary(
     baseCase({ orientationLock: 'upright', noStackOnTop: true, maxStackCount: 2 })
   );
   const three = splitOf(summary);
-  assert.deepEqual(three.visible, ['Upright', 'No top load']);
-  assert.deepEqual(three.hidden, ['Max 2 on top']);
+  assert.deepEqual(three.visible, ['Upright']);
+  assert.deepEqual(three.hidden, ['No top load', 'Max 2 on top']);
 
-  // E. many rules (7) — exactly two visible, exactly +5, every hidden label present
-  // and in getCaseHandlingSummary() order, nothing lost.
+  // E. five rules — exactly one visible chip, exactly +4.
+  summary = getCaseHandlingSummary(
+    baseCase({
+      orientationLock: 'upright',
+      noStackOnTop: true,
+      maxStackCount: 2,
+      isPallet: true,
+      laneItem: true,
+    })
+  );
+  assert.equal(summary.length, 5);
+  const five = splitOf(summary);
+  assert.deepEqual(five.visible, ['Upright']);
+  assert.deepEqual(
+    five.hidden,
+    ['No top load', 'Max 2 on top', 'Pallet base', 'Lane: Always'],
+    'all four remaining rules survive behind +4, in shared-summary order'
+  );
+
+  // F. many rules (7) — exactly one visible chip, exactly +6, every hidden label
+  // present and in getCaseHandlingSummary() order, nothing lost.
   summary = getCaseHandlingSummary(
     baseCase({
       orientationLock: 'upright',
@@ -2978,11 +2997,11 @@ test('CASES-HANDLING-COMPACT count semantics: 0, 1, 2, 3, and 5+ active rules sp
   );
   assert.equal(summary.length, 7);
   const many = splitOf(summary);
-  assert.deepEqual(many.visible, ['Upright', 'No top load']);
+  assert.deepEqual(many.visible, ['Upright']);
   assert.deepEqual(
     many.hidden,
-    ['Max 2 on top', 'Pallet base', 'Max load warning: 2,000 lb', 'Lane: Always', 'Priority: High'],
-    'all five remaining rules survive behind +5, in shared-summary order'
+    ['No top load', 'Max 2 on top', 'Pallet base', 'Max load warning: 2,000 lb', 'Lane: Always', 'Priority: High'],
+    'all six remaining rules survive behind +6, in shared-summary order'
   );
 });
 
@@ -3005,8 +3024,8 @@ test('CASES-HANDLING-COMPACT Grid and List parity: identical Case, identical vis
   const gridSummary = getCaseHandlingSummary(manyRulesCase);
   const listSummary = getCaseHandlingSummary(manyRulesCase);
   assert.deepEqual(gridSummary, listSummary);
-  assert.deepEqual(gridSummary.slice(0, 2), listSummary.slice(0, 2));
-  assert.deepEqual(gridSummary.slice(2), listSummary.slice(2));
+  assert.deepEqual(gridSummary.slice(0, 1), listSummary.slice(0, 1));
+  assert.deepEqual(gridSummary.slice(1), listSummary.slice(1));
 });
 
 test('CASES-HANDLING-COMPACT the "+N" control is a real, fully-labeled, keyboard-safe button that reuses the existing read-only dropdown pattern', async () => {
@@ -3132,7 +3151,7 @@ test('CASES-HANDLING-COMPACT CSS: the "+N" control resets native button chrome o
 
   const cell = cssRuleBody(cssSource, '.tp3d-cases-handling-cell');
   assert.match(cell, /display:\s*flex;/);
-  assert.match(cell, /flex-wrap:\s*wrap;/, 'wraps only as a narrow-viewport fallback — at most 3 elements now, not 6-7');
+  assert.match(cell, /flex-wrap:\s*wrap;/, 'wraps only as a narrow-viewport fallback — at most 2 elements now, not 6-7');
   assert.doesNotMatch(cssSource, /\.tp3d-cases-handling-cell\s*\{[^}]*height:\s*\d/,
     'no forced fixed row height is imposed by this change');
 });

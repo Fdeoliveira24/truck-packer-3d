@@ -190,8 +190,8 @@ export function createCasesScreen({
     // decides how many of ITS entries render as inline chips; it never
     // recomputes or reorders the rule set itself.
     function renderCaseHandlingChips(caseItem, summary, container, chipTag) {
-      const visible = summary.slice(0, 2);
-      const hidden = summary.slice(2);
+      const visible = summary.slice(0, 1);
+      const hidden = summary.slice(1);
       visible.forEach(label => {
         const chipEl = document.createElement(chipTag);
         chipEl.className = 'badge tp3d-handling-chip';
@@ -809,7 +809,7 @@ export function createCasesScreen({
 
         if (badgePrefs.showHandling !== false) {
           // Active non-default AutoPack handling rules (shared single source),
-          // compressed to two inline chips plus a "+N" control so a long rule
+          // compressed to one inline chip plus a "+N" control so a long rule
           // chain cannot dominate the card.
           renderCaseHandlingChips(c, getCaseHandlingSummary(c), badgesWrap, 'div');
         }
@@ -1146,7 +1146,7 @@ export function createCasesScreen({
         if (handlingSummary.length === 0) {
           tdHandling.textContent = '—';
         } else {
-          // Same two-chip-plus-"+N" compression as the Grid, from the same
+          // Same one-chip-plus-"+N" compression as the Grid, from the same
           // shared summary order.
           renderCaseHandlingChips(c, handlingSummary, tdHandling, 'span');
         }

@@ -2904,7 +2904,7 @@ test('CASES-HANDLING-COMPACT one shared helper backs Grid and List, and the comp
     'Grid calls the shared helper with the unmodified shared summary');
   assert.match(caseList, /const handlingSummary = getCaseHandlingSummary\(c\);/,
     'List computes the summary once, from the shared authority');
-  assert.match(caseList, /renderCaseHandlingChips\(c, handlingSummary, tdHandling, 'span'\);/,
+  assert.match(caseList, /renderCaseHandlingChips\(c, handlingSummary, handlingCell, 'span'\);/,
     'List calls the SAME shared helper with that summary — no independent List-only slicing logic');
 
   assert.doesNotMatch(
@@ -2912,6 +2912,32 @@ test('CASES-HANDLING-COMPACT one shared helper backs Grid and List, and the comp
     /slice\(0,\s*2\)|renderCaseHandlingChips|createCaseHandlingMoreButton|tp3d-handling-chip-more/,
     'case-rule-summary.js keeps returning the complete, unsliced rule set — it knows nothing about the Grid/List compression'
   );
+});
+
+test('CASES-HANDLING-COMPACT List: the flex/wrap chip layout never lives on the <td> itself, so the Handling column stays row-height-synced with its siblings', async () => {
+  const { caseList } = await readManagementSources();
+  const listTail = sliceBetween(
+    caseList,
+    "const tdHandling = document.createElement('td');",
+    "if (badgePrefs.showHandling === false)"
+  );
+
+  // A <td> whose own `display` is overridden to `flex` drops out of the
+  // table's row-height synchronization: the browser sizes it to its
+  // (shorter) flex content instead of matching sibling cells, so its
+  // border-bottom renders several px above every other cell in the row —
+  // a visible "step" in the row divider on every single row. The fix keeps
+  // `tp3d-cases-handling-cell` (display: flex; flex-wrap: wrap; ...) on an
+  // inner <div>, leaving the <td> a plain, default-height table cell.
+  assert.doesNotMatch(listTail, /tdHandling\.className\s*=\s*'tp3d-cases-handling-cell'/,
+    'the flex/wrap class must never be assigned directly to the <td>');
+  assert.match(
+    listTail,
+    /const handlingCell = document\.createElement\('div'\);\s*\n\s*handlingCell\.className = 'tp3d-cases-handling-cell';/,
+    'the flex/wrap class lives on an inner <div> the <td> merely contains'
+  );
+  assert.match(listTail, /tdHandling\.appendChild\(handlingCell\);/,
+    'the inner flex div is appended into the otherwise-plain <td>');
 });
 
 test('CASES-HANDLING-COMPACT the compact helper only slices the already-computed summary — it never rebuilds rule semantics from raw Case fields', async () => {

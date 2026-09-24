@@ -1140,15 +1140,22 @@ export function createCasesScreen({
         }
         tr.appendChild(tdCat);
 
+        // `.tp3d-cases-handling-cell` (flex/wrap/gap for the chip run) lives on
+        // an inner <div>, never on the <td> itself: a table-cell element whose
+        // own `display` is overridden to `flex` drops out of the table's row-
+        // height synchronization, leaving its border-bottom several px above
+        // every sibling cell's — a real per-row "step" in the row divider.
         const tdHandling = document.createElement('td');
-        tdHandling.className = 'tp3d-cases-handling-cell';
         const handlingSummary = getCaseHandlingSummary(c);
         if (handlingSummary.length === 0) {
           tdHandling.textContent = '—';
         } else {
+          const handlingCell = document.createElement('div');
+          handlingCell.className = 'tp3d-cases-handling-cell';
           // Same one-chip-plus-"+N" compression as the Grid, from the same
           // shared summary order.
-          renderCaseHandlingChips(c, handlingSummary, tdHandling, 'span');
+          renderCaseHandlingChips(c, handlingSummary, handlingCell, 'span');
+          tdHandling.appendChild(handlingCell);
         }
         if (badgePrefs.showHandling === false) {
           tdHandling.style.display = 'none';

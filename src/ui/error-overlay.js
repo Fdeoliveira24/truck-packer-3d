@@ -14,6 +14,21 @@
  */
 export const BLOCKER_PRIORITY = Object.freeze({ recoverable: 1, auth: 2, terminal: 3 });
 
+// styles/main.css paints terminal roots at this base (above Auth's 99999),
+// which also covers the pre-boot overlay before shared ownership exists.
+const TERMINAL_Z_INDEX = 100000;
+
+/**
+ * Equal-priority terminal blockers resolve by registration order in the
+ * shared registry; paint in that same order. Pass no owner to clear.
+ * @param {HTMLElement | null} element
+ * @param {{ order: number } | null} [owner]
+ */
+export function syncTerminalStacking(element, owner = null) {
+  if (!element) return;
+  element.style.zIndex = owner ? String(TERMINAL_Z_INDEX + owner.order) : '';
+}
+
 // The root's data-error-mode is the semantic mode, also written by the
 // pre-boot renderer in index.html so the handoff never infers it from text.
 const TERMINAL_MODES = new Set(['fatal', 'maintenance']);
@@ -64,6 +79,7 @@ export function createErrorOverlay({ UIComponents } = {}) {
       restoreFocus: false,
     }) || null;
     ownerTier = owner ? tier : null;
+    syncTerminalStacking(overlay, tier === 'terminal' ? owner : null);
     previous?.release({ restoreFocus: false });
   }
 
@@ -145,6 +161,7 @@ export function createErrorOverlay({ UIComponents } = {}) {
     if (isTerminal() && !includeTerminal) return;
     overlay.classList.remove('active');
     overlay.removeAttribute('data-error-mode');
+    syncTerminalStacking(overlay);
     const previous = owner;
     owner = null;
     ownerTier = null;

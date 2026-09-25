@@ -11,7 +11,7 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
-import { BLOCKER_PRIORITY } from './error-overlay.js';
+import { BLOCKER_PRIORITY, syncTerminalStacking } from './error-overlay.js';
 
 /** @param {{ UIComponents?: any }} [options] */
 export function createSystemOverlay({ UIComponents } = {}) {
@@ -37,18 +37,26 @@ export function createSystemOverlay({ UIComponents } = {}) {
       });
     }
     overlay.classList.add('active');
+    if (owner) {
+      // Same owner and order: repair focus only while this blocker is the
+      // active owner (shared focus refuses otherwise), never re-stack.
+      owner.ensureFocus();
+      return;
+    }
     // Terminal runtime blocker: one owner, never dismissible, and no return to
     // whatever happened to be focused before the failure.
-    owner = owner || UIComponents?.modalOwnership?.register({
+    owner = UIComponents?.modalOwnership?.register({
       kind: 'system', element: overlay, parentId: null, priority: BLOCKER_PRIORITY.terminal,
       focusRoot: cardEl, initialFocus: () => retryBtn, canDismiss: () => false,
       restoreFocus: false,
-    });
+    }) || null;
+    syncTerminalStacking(overlay, owner);
   }
 
   function hide() {
     if (!overlay) return;
     overlay.classList.remove('active');
+    syncTerminalStacking(overlay);
     owner?.release({ restoreFocus: false });
     owner = null;
   }

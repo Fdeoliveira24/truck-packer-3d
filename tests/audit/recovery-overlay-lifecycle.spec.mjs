@@ -58,10 +58,21 @@ test('P0-SM-OF-9 recovery, System and Error overlay lifecycle in real Chromium',
     await page.evaluate(() => {
       window.calls = { escape: 0, back: 0 };
       document.addEventListener('keydown', event => { if (event.key === 'Escape') calls.escape++; });
+      // Test-only synchronous probe: records any attempted removal of the shared
+      // lock class while watched, even if it is re-added in the same task.
       window.unlocks = 0;
-      new MutationObserver(() => {
-        if (window.watchLock && !document.body.classList.contains('tp3d-shared-modal-lock')) unlocks++;
-      }).observe(document.body, { attributes: true, attributeFilter: ['class'] });
+      const lockClass = 'tp3d-shared-modal-lock';
+      const classes = document.body.classList;
+      const remove = classes.remove.bind(classes);
+      const toggle = classes.toggle.bind(classes);
+      classes.remove = (...tokens) => {
+        if (window.watchLock && tokens.includes(lockClass) && classes.contains(lockClass)) unlocks++;
+        return remove(...tokens);
+      };
+      classes.toggle = (token, force) => {
+        if (window.watchLock && token === lockClass && force !== true && classes.contains(lockClass)) unlocks++;
+        return force === undefined ? toggle(token) : toggle(token, force);
+      };
     });
   };
   const boot = () => page.evaluate(async () => {
@@ -102,6 +113,17 @@ test('P0-SM-OF-9 recovery, System and Error overlay lifecycle in real Chromium',
       error: document.getElementById('error-overlay').classList.contains('active'),
       system: document.getElementById('system-overlay').classList.contains('active'),
     };
+  });
+  // Observable paint order: which overlay is hit at the viewport centre. Inert
+  // nodes are skipped by hit testing, so lift inert for this one synchronous
+  // probe and restore it before returning.
+  const topmost = () => page.evaluate(() => {
+    const inertNodes = [...document.querySelectorAll('[inert]')];
+    inertNodes.forEach(node => node.removeAttribute('inert'));
+    const hit = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+    inertNodes.forEach(node => node.setAttribute('inert', ''));
+    if (hit?.closest('[data-auth-overlay]')) return 'auth';
+    return hit?.closest('#system-overlay, #error-overlay')?.id || null;
   });
   const inert = selector => page.evaluate(selector => Boolean(document.querySelector(selector)?.closest('[inert]')), selector);
   const semantics = cardSelector => page.evaluate(cardSelector => {
@@ -254,37 +276,72 @@ test('P0-SM-OF-9 recovery, System and Error overlay lifecycle in real Chromium',
     await expectClean();
   });
 
-  await t.test('Mode transition recoverable -> fatal keeps one owner, terminal focus and an unbroken lock', async () => {
+  await t.test('Mode transition recoverable -> fatal without Auth keeps one owner, terminal focus and no transient unlock', async () => {
     await load();
     await boot();
-    await page.evaluate(() => { errorOverlay.showNotFound({ kind: 'pack' }); window.firstOwner = ui.modalOwnership.getActiveOwner(); window.watchLock = true; });
-    await page.evaluate(() => auth.show());
-    assert.equal((await snapshot()).active, 'auth', 'Auth supersedes recoverable');
-    await page.evaluate(() => errorOverlay.showFatal());
-    const state = await snapshot();
-    assert.deepEqual([state.owners.filter(kind => kind === 'error').length, state.active, state.mode, state.focus],
-      [1, 'error', 'fatal', 'Reload']);
+    await page.evaluate(() => { errorOverlay.showNotFound({ kind: 'pack' }); window.firstOwner = ui.modalOwnership.getActiveOwner(); });
+    let state = await snapshot();
+    assert.deepEqual([state.owners, state.active, state.lock], [['error'], 'error', true], 'recoverable is the only owner; no Auth masks the lock');
+    await page.evaluate(() => { window.watchLock = true; errorOverlay.showFatal(); window.watchLock = false; });
+    state = await snapshot();
+    assert.deepEqual([state.owners, state.active, state.mode, state.focus, state.lock],
+      [['error'], 'error', 'fatal', 'Reload', true]);
     assert.equal(await page.evaluate(() => ui.modalOwnership.getOwners().includes(firstOwner)), false,
       'recoverable owner is not left registered');
-    assert.equal(await page.evaluate(() => unlocks), 0);
-    await page.evaluate(() => { window.watchLock = false; auth.hide(); errorOverlay.hide({ includeTerminal: true }); });
+    assert.equal(await page.evaluate(() => unlocks), 0, 'no synchronous shared-lock removal during the transition');
+    // Negative control: the probe does detect a real release of the last owner.
+    await page.evaluate(() => { window.watchLock = true; errorOverlay.hide({ includeTerminal: true }); window.watchLock = false; });
+    assert.equal(await page.evaluate(() => unlocks), 1, 'probe records an actual unlock');
     await expectClean();
   });
 
-  await t.test('System and fatal Error overlap retain independent locks', async () => {
+  await t.test('System then fatal Error: later Error owns keyboard and paint; repeated System.show cannot steal either', async () => {
     await load();
     await boot();
-    await page.evaluate(() => { systemOverlay.show({}); errorOverlay.showFatal(); });
+    await page.evaluate(() => { systemOverlay.show({ title: 'System' }); errorOverlay.showFatal(); });
     let state = await snapshot();
-    assert.deepEqual([state.owners, state.active, state.focus, await inert('#system-overlay')],
-      [['system', 'error'], 'error', 'Reload', true], 'the latest terminal blocker receives interaction');
+    assert.deepEqual([state.owners, state.active, state.focus, await topmost(), await inert('#system-overlay')],
+      [['system', 'error'], 'error', 'Reload', 'error-overlay', true]);
+    await page.evaluate(() => systemOverlay.show({ title: 'System refreshed', items: ['x'] }));
+    state = await snapshot();
+    assert.deepEqual([state.owners, state.active, state.focus, await topmost()],
+      [['system', 'error'], 'error', 'Reload', 'error-overlay'], 'existing System owner is not re-stacked or focused');
     await page.evaluate(() => { window.watchLock = true; errorOverlay.hide({ includeTerminal: true }); });
     state = await snapshot();
-    assert.deepEqual([state.active, state.lock, state.appInert, await inert('#system-overlay')], ['system', true, true, false]);
+    assert.deepEqual([state.active, state.lock, state.appInert, await inert('#system-overlay'), await topmost()],
+      ['system', true, true, false, 'system-overlay']);
     await page.keyboard.press('Tab');
     assert.equal((await snapshot()).focus, 'system-retry');
     assert.equal(await page.evaluate(() => unlocks), 0);
     await page.evaluate(() => { window.watchLock = false; systemOverlay.hide(); });
+    await expectClean();
+  });
+
+  await t.test('Fatal Error then System: later System owns keyboard and paint; active repeated show repairs focus', async () => {
+    await load();
+    await boot();
+    await page.evaluate(() => { errorOverlay.showFatal(); systemOverlay.show({ title: 'System' }); });
+    let state = await snapshot();
+    assert.deepEqual([state.owners, state.active, state.focus, await topmost(), await inert('#error-overlay')],
+      [['error', 'system'], 'system', 'system-retry', 'system-overlay', true]);
+    // Displace focus, then a repeated show on the active System repairs it.
+    await page.evaluate(() => document.getElementById('system-retry').blur());
+    assert.equal(await page.evaluate(() => document.activeElement === document.body), true, 'focus displaced');
+    await page.evaluate(() => systemOverlay.show({ title: 'System refreshed' }));
+    state = await snapshot();
+    assert.deepEqual([state.owners, state.focus, await topmost()], [['error', 'system'], 'system-retry', 'system-overlay']);
+    // Hide and reopen gets a fresh owner/order normally.
+    await page.evaluate(() => { systemOverlay.hide(); });
+    assert.deepEqual([(await snapshot()).active, await topmost()], ['error', 'error-overlay']);
+    await page.evaluate(() => systemOverlay.show({}));
+    assert.deepEqual([(await snapshot()).active, (await snapshot()).focus, await topmost()], ['system', 'system-retry', 'system-overlay']);
+    await page.evaluate(() => { systemOverlay.hide(); errorOverlay.hide({ includeTerminal: true }); });
+    await expectClean();
+    // No stale terminal stacking: a later recoverable Error stays below Auth.
+    await page.evaluate(() => { errorOverlay.showNotFound({ kind: 'route' }); auth.show(); });
+    assert.deepEqual([(await snapshot()).active, await topmost(),
+      await page.evaluate(() => document.getElementById('error-overlay').style.zIndex)], ['auth', 'auth', '']);
+    await page.evaluate(() => { auth.hide(); errorOverlay.hide(); });
     await expectClean();
   });
 
@@ -314,6 +371,7 @@ test('P0-SM-OF-9 recovery, System and Error overlay lifecycle in real Chromium',
       state = await snapshot();
       assert.deepEqual([state.owners.filter(kind => kind === 'error').length, state.active, state.focus],
         [1, 'error', 'Reload'], 'terminal precedence above Auth after handoff');
+      assert.equal(await topmost(), 'error-overlay', 'handoff keeps the terminal painted above Auth');
       await page.keyboard.press('Escape');
       assert.equal((await snapshot()).error, true);
       await page.evaluate(() => { auth.hide(); errorOverlay.hide({ includeTerminal: true }); });

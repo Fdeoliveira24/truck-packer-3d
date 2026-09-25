@@ -7433,7 +7433,7 @@ test('AUTO-PACK-A1-R6 live adapter preserves runtime gates, zones, and orientati
 
   assert.match(engineSrc, /getProRuleSet\(_bs, activeRole\)/,
     'A1-R6 must preserve the billing/pro gate in the runtime engine');
-  assert.match(engineSrc, /const isWorkspaceRunStale = \(\) =>[\s\S]*?runWorkspaceGeneration !== workspaceGeneration/,
+  assert.match(engineSrc, /function isActiveRunValid\(run\) \{[\s\S]*?run\.workspaceGeneration !== workspaceGeneration[\s\S]*?OperationLifecycle\.isCurrent\(run\.token\)/,
     'A1-R6 must preserve the stale-run guard (workspace generation, plus the E-UX operation-token check)');
   assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\);/,
     'A1-R6 must continue using TrailerGeometry as the single usable-zone source');
@@ -12621,7 +12621,7 @@ test('PHASE-B2B engine uses the production row-aware planner and never blind-sli
 
 test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when tweens stop ticking', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
-  const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');
+  const tweenStart = src.indexOf('function tweenInstanceToPosition(run, instanceId, positionInches, duration');
   const tweenEnd = src.indexOf('\n  function sleep(ms)', tweenStart);
   const block = tweenStart >= 0 && tweenEnd > tweenStart ? src.slice(tweenStart, tweenEnd) : '';
 
@@ -12631,7 +12631,7 @@ test('AUTO-PACK-A0B AutoPack animation cannot leave the run promise stuck when t
     'AutoPack tween bridge must define a bounded but not visually aggressive fallback delay');
   assert.match(block, /fallback = runtimeWindow\.setTimeout\(\(\) => \{[\s\S]*fallbackCount \+= 1;[\s\S]*finish\(\);[\s\S]*\}, fallbackDelay\)/,
     'AutoPack tween bridge must resolve even if the tween loop does not tick');
-  assert.match(block, /if \(fallback\) runtimeWindow\.clearTimeout\(fallback\);/,
+  assert.match(block, /if \(fallback !== null\) runtimeWindow\.clearTimeout\(fallback\);/,
     'AutoPack tween completion must clear the fallback through the shared finish path');
   assert.match(block, /\.onComplete\(finish\)/,
     'AutoPack tween completion must resolve through the same finish path as the fallback');
@@ -12643,7 +12643,7 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack yields after staging before synchronous solvi
   const solverStart = src.indexOf('const solverStartedAt = nowMs();', packStart);
   const block = packStart >= 0 && solverStart > packStart ? src.slice(packStart, solverStart) : '';
 
-  assert.match(block, /stageInstant\(stagingMap\);[\s\S]*?await waitForAnimationFrames\(2\);\s*if \(isWorkspaceRunStale\(\)\) return;/,
+  assert.match(block, /stageInstant\(stagingMap\);[\s\S]*?await waitForAnimationFrames\(2\);\s*if \(isRunStale\(\)\) return;/,
     'AutoPack must allow staged items to paint before the synchronous solver can block the UI thread');
   assert.match(src, /function waitForAnimationFrames\(count = 1\)/,
     'AutoPack runtime must include an animation-frame yield helper');
@@ -12654,7 +12654,7 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack animates placements in batches with fallback 
   const animateStart = src.indexOf('async function animatePlacements');
   const animateEnd = src.indexOf('\n  function prepareObjectForPlacement', animateStart);
   const block = animateStart >= 0 && animateEnd > animateStart ? src.slice(animateStart, animateEnd) : '';
-  const tweenStart = src.indexOf('function tweenInstanceToPosition(instanceId, positionInches, duration');
+  const tweenStart = src.indexOf('function tweenInstanceToPosition(run, instanceId, positionInches, duration');
   const tweenEnd = src.indexOf('\n  function sleep(ms)', tweenStart);
   const tweenBlock = tweenStart >= 0 && tweenEnd > tweenStart ? src.slice(tweenStart, tweenEnd) : '';
 
@@ -12666,7 +12666,7 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack animates placements in batches with fallback 
     'AutoPack animation must use row/group/dependency-aware batches');
   assert.doesNotMatch(block, /entries\.slice\(i, i \+ ANIMATION_BATCH_SIZE\)/,
     'AutoPack animation must not blind-slice across semantic boundaries');
-  assert.match(block, /batch\.forEach\(\(\[id, pos\]\) => \{[\s\S]*tweenInstanceToPosition\(id, pos, ANIMATION_DURATION_MS, metrics\);[\s\S]*\}\);/,
+  assert.match(block, /batch\.forEach\(\(\[id, pos\]\) => \{[\s\S]*tweenInstanceToPosition\(run, id, pos, ANIMATION_DURATION_MS, metrics\);[\s\S]*\}\);/,
     'AutoPack animation must start each batch without awaiting per-object tween callbacks');
   assert.match(block, /await sleep\(ANIMATION_DURATION_MS \+ ANIMATION_BATCH_GAP_MS\);[\s\S]*snapInstanceToPosition\(id, pos\);/,
     'AutoPack animation must use a deterministic batch window and then snap the batch to final positions');
@@ -12680,14 +12680,14 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack diagnostics report solver and animation timin
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const packStart = src.indexOf('async function pack()');
   const endStart = src.indexOf("if (diag && typeof diag.autopackEnd === 'function')", packStart);
-  const endBlock = endStart >= 0 ? src.slice(endStart, src.indexOf('\n      runtimeWindow.setTimeout', endStart)) : '';
+  const endBlock = endStart >= 0 ? src.slice(endStart, src.indexOf('\n      previewRun = run;', endStart)) : '';
 
   // ESLint 10's no-useless-assignment rule flagged the `= 0` initializers as
   // dead stores: every reachable path assigns solverMs/animationMs from
   // nowMs() - startedAt before any read (verified — both assignments happen
   // before the sole read site in the diagnostics block below), so declaring
   // them without an initializer is runtime-equivalent.
-  assert.match(src, /const runStartedAt = nowMs\(\);[\s\S]*let solverMs;[\s\S]*let animationMs;[\s\S]*const animationMetrics = \{ animated: 0, batches: 0, fallbackCount: 0 \};/,
+  assert.match(src, /let runStartedAt;[\s\S]*let solverMs;[\s\S]*let animationMs;[\s\S]*const animationMetrics = \{ animated: 0, batches: 0, fallbackCount: 0 \};[\s\S]*runStartedAt = nowMs\(\);/,
     'AutoPack must initialize timing and animation metrics for each run');
   assert.match(src, /const solverStartedAt = nowMs\(\);[\s\S]*const packingSolution = runAdaptiveAutoPack\(\{[\s\S]*const solverResult = packingSolution \? packingSolution\.selectedSolution : null;[\s\S]*solverMs = nowMs\(\) - solverStartedAt;/,
     'AutoPack must measure synchronous adaptive solver time');

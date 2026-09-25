@@ -492,10 +492,91 @@ export function createAutoPackEngine({
   const TWEEN_FALLBACK_GRACE_MS = 90;
   let isRunning = false;
   let workspaceGeneration = 0;
+  // Per-run ownership. `activeRun` is the run that currently holds the AutoPack
+  // operation token; `previewRun` is a finished run whose delayed automatic
+  // preview has not fired yet. Neither is an operation authority —
+  // OperationLifecycle still owns the mutating slot; these only let a run
+  // invalidate (monotonically) and settle its own deferred effects.
+  let activeRun = null;
+  let previewRun = null;
 
   function bumpWorkspaceGeneration() {
     workspaceGeneration += 1;
+    if (activeRun) invalidateRun(activeRun);
+    if (previewRun) dropPreviewRun(previewRun);
     return workspaceGeneration;
+  }
+
+  function settleRunEffects(run) {
+    if (!run) return;
+    for (const effect of [...run.effects]) effect.cancel();
+  }
+
+  function invalidateRun(run) {
+    if (!run || run.invalidated) return;
+    run.invalidated = true;
+    settleRunEffects(run);
+    if (run.previewTimer !== null) {
+      runtimeWindow.clearTimeout(run.previewTimer);
+      run.previewTimer = null;
+    }
+  }
+
+  function releaseRunWatch(run) {
+    if (!run || !run.unsubscribe) return;
+    const unsubscribe = run.unsubscribe;
+    run.unsubscribe = null;
+    unsubscribe();
+  }
+
+  // Invalidate a finished run's pending preview. The StateStore watch is
+  // released on a microtask because this can run inside a StateStore notify
+  // loop, where synchronous unsubscription would skip the next subscriber.
+  function dropPreviewRun(run) {
+    invalidateRun(run);
+    if (previewRun === run) previewRun = null;
+    Promise.resolve().then(() => releaseRunWatch(run));
+  }
+
+  function watchRunContext(run) {
+    if (!StateStore || typeof StateStore.subscribe !== 'function') return;
+    // Departure is monotonic: once the Pack/screen/state is replaced, returning
+    // to the same Pack in Editor never makes this run valid again.
+    run.unsubscribe = StateStore.subscribe(changes => {
+      if (run.invalidated) return;
+      if (
+        (changes && changes._replace) ||
+        StateStore.get('currentPackId') !== run.packId ||
+        StateStore.get('currentScreen') !== 'editor'
+      ) {
+        if (previewRun === run) dropPreviewRun(run);
+        else invalidateRun(run);
+      }
+    });
+  }
+
+  function isActiveRunValid(run) {
+    if (!run || run.invalidated || activeRun !== run) return false;
+    if (
+      run.workspaceGeneration !== workspaceGeneration ||
+      StateStore.get('currentPackId') !== run.packId ||
+      StateStore.get('currentScreen') !== 'editor' ||
+      (OperationLifecycle && !OperationLifecycle.isCurrent(run.token))
+    ) {
+      invalidateRun(run);
+      return false;
+    }
+    return true;
+  }
+
+  function isPostRunPreviewValid(run) {
+    return Boolean(
+      run && !run.invalidated &&
+      run.workspaceGeneration === workspaceGeneration &&
+      StateStore.get('currentPackId') === run.packId &&
+      StateStore.get('currentScreen') === 'editor' &&
+      PackLibrary.getById(run.packId)
+    );
   }
 
   function cloneForAutoPackResults(value) {
@@ -694,7 +775,6 @@ export function createAutoPackEngine({
       UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'AutoPack' });
       return;
     }
-    let opToken = null;
     let loadingOverlay = null;
     const updateLoadingOverlay = message => {
       try {
@@ -715,15 +795,6 @@ export function createAutoPackEngine({
       }
       loadingOverlay = null;
     };
-    const runWorkspaceGeneration = workspaceGeneration;
-    // Stale if the workspace/project changed mid-run, OR another operation has taken
-    // over the editor slot. The isBusy() clause is essential: after this run's own
-    // finishOperation() the slot is idle, which is normal completion (not stale) —
-    // so the post-run preview-capture scheduling below still fires.
-    const isWorkspaceRunStale = () =>
-      runWorkspaceGeneration !== workspaceGeneration ||
-      (opToken !== null && OperationLifecycle && OperationLifecycle.isBusy() && !OperationLifecycle.isCurrent(opToken));
-
     // Billing gate: AutoPack requires active Pro subscription.
     try {
       const billingApi = runtimeWindow.__TP3D_BILLING || null;
@@ -785,23 +856,35 @@ export function createAutoPackEngine({
       return;
     }
 
-    StateStore.set({ autoPackResults: null }, { skipHistory: true });
-
-    isRunning = true;
     // Claim the single mutating-operation slot for the whole run. No await ran
-    // between the isBusy() check above and here, so this cannot lose a race.
-    opToken = OperationLifecycle ? OperationLifecycle.beginOperation('autopacking', { packId }) : null;
-    try {
-      if (UIComponents && typeof UIComponents.showAutoPackLoadingOverlay === 'function') {
-        loadingOverlay = UIComponents.showAutoPackLoadingOverlay({
-          initialMessage: 'Preparing your load plan...',
-        });
+    // between the isBusy() check above and here. Acquisition fails closed: a
+    // rejected claim leaves previous Results, the Pack, the scene, and any
+    // other operation untouched.
+    let opToken = null;
+    if (OperationLifecycle) {
+      opToken = OperationLifecycle.beginOperation('autopacking', { packId });
+      if (!opToken) {
+        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'AutoPack' });
+        return;
       }
-    } catch {
-      loadingOverlay = null;
     }
-    cancelAllTweens();
-    const runStartedAt = nowMs();
+
+    // Everything after acquisition is inside one try/finally so any throw
+    // releases the token, closes loading, and settles this run's effects.
+    isRunning = true;
+    if (previewRun) dropPreviewRun(previewRun);
+    const run = {
+      token: opToken,
+      packId,
+      workspaceGeneration,
+      invalidated: false,
+      effects: new Set(),
+      unsubscribe: null,
+      previewTimer: null,
+    };
+    activeRun = run;
+    const isRunStale = () => !isActiveRunValid(run);
+    let runStartedAt;
     let solverMs;
     let animationMs;
     const animationMetrics = { animated: 0, batches: 0, fallbackCount: 0 };
@@ -809,16 +892,30 @@ export function createAutoPackEngine({
     animationMetrics.strategy = 'batched';
     animationMetrics.threshold = LARGE_LOAD_ANIMATION_THRESHOLD;
     animationMetrics.placementCount = 0;
-
-    const diag =
-      (typeof runtimeWindow !== 'undefined' &&
-        runtimeWindow.__TP3D_DIAG__ &&
-        typeof runtimeWindow.__TP3D_DIAG__.isActive === 'function' &&
-        runtimeWindow.__TP3D_DIAG__.isActive())
-        ? runtimeWindow.__TP3D_DIAG__
-        : null;
+    let diag = null;
 
     try {
+      watchRunContext(run);
+      StateStore.set({ autoPackResults: null }, { skipHistory: true });
+      try {
+        if (UIComponents && typeof UIComponents.showAutoPackLoadingOverlay === 'function') {
+          loadingOverlay = UIComponents.showAutoPackLoadingOverlay({
+            initialMessage: 'Preparing your load plan...',
+          });
+        }
+      } catch {
+        loadingOverlay = null;
+      }
+      cancelAllTweens();
+      runStartedAt = nowMs();
+      diag =
+        (typeof runtimeWindow !== 'undefined' &&
+          runtimeWindow.__TP3D_DIAG__ &&
+          typeof runtimeWindow.__TP3D_DIAG__.isActive === 'function' &&
+          runtimeWindow.__TP3D_DIAG__.isActive())
+          ? runtimeWindow.__TP3D_DIAG__
+          : null;
+
       updateLoadingOverlay('Preparing your load plan...');
       toast('Building load plan…', 'info', { title: 'AutoPack', duration: 1800 });
 
@@ -871,7 +968,7 @@ export function createAutoPackEngine({
       updateLoadingOverlay('Checking fit, stacking, and safety rules...');
       toast('Checking fit, stacking, and safety rules…', 'info', { title: 'AutoPack', duration: 4000 });
       await waitForAnimationFrames(2);
-      if (isWorkspaceRunStale()) return;
+      if (isRunStale()) return;
 
       try {
         if (diag && typeof diag.autopackStart === 'function') {
@@ -950,7 +1047,7 @@ export function createAutoPackEngine({
       // strategies stay available on packingSolution.solutions for future UI.
       const solverResult = packingSolution ? packingSolution.selectedSolution : null;
       solverMs = nowMs() - solverStartedAt;
-      if (!solverResult || isWorkspaceRunStale()) return;
+      if (!solverResult || isRunStale()) return;
 
       updateLoadingOverlay('Recovering leftover cargo where possible...');
       const placements = solverResult.placements;
@@ -999,7 +1096,7 @@ export function createAutoPackEngine({
           rotations,
           orientedDimsMap,
           animationCaseIds,
-          isWorkspaceRunStale,
+          run,
           animationMetrics,
           {
             frontSurfaceFirst,
@@ -1009,7 +1106,11 @@ export function createAutoPackEngine({
         );
       }
       animationMs = nowMs() - animationStartedAt;
-      if (!animationCompleted || isWorkspaceRunStale()) {
+      // A stale run performs zero further scene writes: the committed Pack stays
+      // committed, but it grants no authority over whatever scene is now current.
+      if (isRunStale()) return;
+      if (!animationCompleted) {
+        // Same context, incomplete animation: sync the scene to the committed Pack.
         applyScenePoseFromCases(nextCases);
         return;
       }
@@ -1074,13 +1175,21 @@ export function createAutoPackEngine({
         // ignore
       }
 
-      runtimeWindow.setTimeout(() => {
-        if (isWorkspaceRunStale()) return;
+      // The AutoPack token is released before this fires, so the preview uses
+      // post-run context validity (workspace/Pack/screen, never departed) rather
+      // than token ownership. The run's StateStore watch stays until it fires.
+      previewRun = run;
+      run.previewTimer = runtimeWindow.setTimeout(() => {
+        run.previewTimer = null;
+        const valid = isPostRunPreviewValid(run);
+        if (previewRun === run) previewRun = null;
+        releaseRunWatch(run);
+        if (!valid) return;
         capturePackPreview(packId, { source: 'auto' });
       }, 60);
 
     } catch (err) {
-      if (isWorkspaceRunStale()) return;
+      if (isRunStale()) return;
       console.error('[AutoPack] Error:', err);
       try {
         if (diag && typeof diag.autopackEnd === 'function') {
@@ -1091,6 +1200,10 @@ export function createAutoPackEngine({
       }
       toast('AutoPack failed', 'error', { title: 'AutoPack' });
     } finally {
+      // No AutoPack-owned tween or fallback may outlive the token release.
+      settleRunEffects(run);
+      if (activeRun === run) activeRun = null;
+      if (previewRun !== run) releaseRunWatch(run);
       closeLoadingOverlay();
       isRunning = false;
       if (opToken && OperationLifecycle) OperationLifecycle.finishOperation(opToken);
@@ -1131,7 +1244,7 @@ export function createAutoPackEngine({
     rotations,
     orientedDimsMap,
     caseIdMap,
-    shouldAbort = null,
+    run,
     metrics = null,
     animationOptions = {}
   ) {
@@ -1145,23 +1258,28 @@ export function createAutoPackEngine({
     );
 
     for (const entries of batches) {
-      if (typeof shouldAbort === 'function' && shouldAbort()) return false;
+      if (!isActiveRunValid(run)) return false;
       const batch = entries
-        .filter(([id]) => prepareObjectForPlacement(id, rotations, orientedDimsMap));
+        .filter(([id]) => prepareObjectForPlacement(id, rotations, orientedDimsMap))
+        .map(([id, pos]) => [id, pos, CaseScene.getObject(id)]);
       if (!batch.length) { continue; }
       if (metrics) {
         metrics.batches += 1;
         metrics.animated += batch.length;
       }
       batch.forEach(([id, pos]) => {
-        tweenInstanceToPosition(id, pos, ANIMATION_DURATION_MS, metrics);
+        tweenInstanceToPosition(run, id, pos, ANIMATION_DURATION_MS, metrics);
       });
       // eslint-disable-next-line no-await-in-loop
       await sleep(ANIMATION_DURATION_MS + ANIMATION_BATCH_GAP_MS);
-      batch.forEach(([id, pos]) => {
+      // Validate BEFORE the post-wait snap: the context may have changed while
+      // this batch slept, and a stale run must not write the current scene.
+      if (!isActiveRunValid(run)) return false;
+      batch.forEach(([id, pos, obj]) => {
+        // A same-ID replacement mesh is not the object this batch animated.
+        if (CaseScene.getObject(id) !== obj) return;
         snapInstanceToPosition(id, pos);
       });
-      if (typeof shouldAbort === 'function' && shouldAbort()) return false;
     }
     return true;
   }
@@ -1195,16 +1313,32 @@ export function createAutoPackEngine({
     obj.position.set(target.x, target.y, target.z);
   }
 
-  function tweenInstanceToPosition(instanceId, positionInches, duration, metrics = null) {
+  // The tween and its fallback timer are owned by `run`: finishing, run
+  // cleanup, or invalidation settles them, and a deferred finish writes only
+  // while the run is still valid and the captured mesh is still current.
+  function tweenInstanceToPosition(run, instanceId, positionInches, duration, metrics = null) {
     const obj = CaseScene.getObject(instanceId);
     if (!obj) { return; }
     const target = SceneManager.vecInchesToWorld(positionInches);
     let settled = false;
     let fallback = null;
+    let tween = null;
+    const effect = {
+      cancel() {
+        if (settled) return;
+        settled = true;
+        run.effects.delete(effect);
+        if (fallback !== null) runtimeWindow.clearTimeout(fallback);
+        fallback = null;
+        if (tween && typeof tween.stop === 'function') {
+          try { tween.stop(); } catch { /* ignore */ }
+        }
+      },
+    };
     const finish = () => {
       if (settled) return;
-      settled = true;
-      if (fallback) runtimeWindow.clearTimeout(fallback);
+      effect.cancel();
+      if (!isActiveRunValid(run) || CaseScene.getObject(instanceId) !== obj) return;
       obj.position.set(target.x, target.y, target.z);
     };
     const Tween = runtimeWindow.TWEEN || null;
@@ -1212,13 +1346,16 @@ export function createAutoPackEngine({
       finish();
       return;
     }
+    run.effects.add(effect);
     const fallbackDelay = Math.max(250, (Number(duration) || 0) + TWEEN_FALLBACK_GRACE_MS);
     fallback = runtimeWindow.setTimeout(() => {
+      fallback = null;
+      if (settled) return;
       if (metrics) { metrics.fallbackCount += 1; }
       finish();
     }, fallbackDelay);
     try {
-      new Tween.Tween(obj.position)
+      tween = new Tween.Tween(obj.position)
         .to({ x: target.x, y: target.y, z: target.z }, duration)
         .easing(Tween.Easing.Cubic.InOut)
         .onComplete(finish)

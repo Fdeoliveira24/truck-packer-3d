@@ -3828,13 +3828,17 @@ tr:hover td {
 }
 
 body.modal-open {
-  overflow: hidden;
+  /* Preserve any inline overflow declaration while the shared lock is held. */
+  overflow: hidden !important;
+}
 
-  /* Prevent iOS Safari background scroll & pull-to-refresh while modal is open.
-     (-webkit-overflow-scrolling only accepts auto/touch — "none" was never a
-     valid value and browsers always discarded it; overflow: hidden and
-     touch-action: none below already fully implement the scroll lock.) */
+body.modal-open #app {
   touch-action: none;
+}
+
+body.modal-open #app .content,
+body.modal-open #app .nav {
+  overflow: hidden !important;
 }
 
 .toast {

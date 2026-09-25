@@ -933,7 +933,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       kind: 'auth', element: overlayEl, parentId: null, priority: 2,
     });
     installKeydownBlocker();
-    try { document.body.style.overflow = 'hidden'; } catch { /* ignore */ }
     render('show');
     requestAnimationFrame(() => {
       const first = modalEl?.querySelector('input:not([type="checkbox"])');
@@ -951,7 +950,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     forcedDisabledMessage = '';
     pendingConfirmationEmail = '';
     removeKeydownBlocker();
-    try { document.body.style.overflow = ''; } catch { /* ignore */ }
   }
 
   function isOpenFn() {

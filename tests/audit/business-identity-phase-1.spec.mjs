@@ -1876,9 +1876,8 @@ test('P0-SM-OF-1 Rename Load Plan empty/whitespace title keeps the modal open an
   assert.match(renameBlock, /if \(mutationBlockedWhileBusy\(\)\) return false;\s*\n\s*PackLibrary\.update\(packId, \{ title: nextTitle \}\);\s*\n\s*UIComponents\.showToast\('Renamed', 'success'\);\s*\n\s*return true;/);
 });
 
-// P0-SM-OF-4: accessible dialog names. Additive/semantic only — no focus,
-// modality, Escape, or ownership behavior is touched or asserted here.
-test('P0-SM-OF-4 generic showModal has one dialog role, a non-empty accessible name, and a labeled close button', () => {
+// P0-SM-OF-4/7: accessible dialog names and ordinary modal semantics.
+test('P0-SM-OF-4/7 generic showModal has one named modal dialog and a labeled close button', () => {
   const dom = installFakeModalDom();
   try {
     const ui = createUIComponents();
@@ -1899,8 +1898,7 @@ test('P0-SM-OF-4 generic showModal has one dialog role, a non-empty accessible n
     assert.ok(closeLabel, 'icon-only close button has an accessible label');
     assert.match(closeLabel, /Example Dialog/, 'the close label is specific, not a bare generic "Close"');
 
-    // Phase 4 explicitly does not introduce aria-modal on ordinary dialogs.
-    assert.equal(m.modal.getAttribute('aria-modal'), null, 'no new ordinary aria-modal="true"');
+    assert.equal(m.modal.getAttribute('aria-modal'), 'true', 'ordinary shared dialogs are modal');
   } finally {
     dom.restore();
   }

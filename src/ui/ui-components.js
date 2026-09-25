@@ -27,6 +27,98 @@ const AUTOPACK_LOADING_MESSAGES = Object.freeze([
   'Finalizing your load plan...',
 ]);
 
+/** Shared resources for blocking owners registered in the interaction registry. */
+function createModalIsolation({ documentRef, getOwners }) {
+  const locks = new Map();
+  const isolated = new Map();
+  const body = documentRef.body;
+  const sharedLockClass = 'tp3d-shared-modal-lock';
+  let hadModalOpen = null;
+
+  function restore(element, previous) {
+    if (previous === null) element.removeAttribute('inert');
+    else element.setAttribute('inert', previous);
+  }
+
+  function update() {
+    const active = [...locks.values()].filter(owner => owner.isActive() && owner.element?.isConnected)
+      .sort((a, b) => b.priority - a.priority || b.order - a.order)[0];
+
+    if (active) {
+      if (hadModalOpen === null) {
+        hadModalOpen = body.classList.contains('modal-open');
+        body.classList.add('modal-open');
+      }
+      // Legacy overlays may change modal-open; only this registry owns the
+      // shared marker that keeps scroll isolation in force.
+      body.classList.add(sharedLockClass);
+    } else if (hadModalOpen !== null) {
+      body.classList.remove(sharedLockClass);
+      body.classList.toggle('modal-open', hadModalOpen);
+      hadModalOpen = null;
+    }
+
+    const targets = new Set();
+    if (active) {
+      const owners = getOwners();
+      const byId = new Map(owners.map(owner => [owner.id, owner]));
+      const roots = [active.element];
+      for (const owner of owners) {
+        if (owner.kind !== 'popup' || !owner.element?.isConnected || !owner.isActive() ||
+            active.element.contains(owner.element)) continue;
+        let parent = byId.get(owner.parentId);
+        while (parent && parent.kind === 'popup') parent = byId.get(parent.parentId);
+        if (parent === active) roots.push(owner.element);
+      }
+
+      // Isolate siblings along the path to each allowed surface, never an
+      // ancestor of that surface or anything inside its own subtree.
+      const keep = new Set(roots);
+      const parents = new Set();
+      for (const root of roots) {
+        for (let parent = root.parentElement; parent; parent = parent.parentElement) {
+          keep.add(parent);
+          parents.add(parent);
+          if (parent === body) break;
+        }
+      }
+      for (const parent of parents) {
+        for (const child of parent.children) {
+          if (keep.has(child) || child.id === 'toast-container' ||
+              ['SCRIPT', 'STYLE', 'LINK'].includes(child.tagName)) continue;
+          targets.add(child);
+        }
+      }
+    }
+
+    for (const [element, previous] of isolated) {
+      if (targets.has(element)) continue;
+      restore(element, previous);
+      isolated.delete(element);
+    }
+    for (const element of targets) {
+      if (isolated.has(element)) continue;
+      isolated.set(element, element.getAttribute('inert'));
+      element.setAttribute('inert', '');
+    }
+  }
+
+  function acquire(owner) {
+    const token = Symbol('modal-isolation');
+    locks.set(token, owner);
+    update();
+    let released = false;
+    return Object.freeze({ release() {
+      if (released) return;
+      released = true;
+      locks.delete(token);
+      update();
+    } });
+  }
+
+  return { acquire, update };
+}
+
 /**
  * Logical interaction ownership and Escape assignment. Surface callbacks retain
  * their close/cancel behavior. Install before application keyboard listeners.
@@ -37,6 +129,8 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
   const escapeClaims = new WeakMap();
   let order = 0;
   const modalFocus = createModalFocus({ windowRef, documentRef, getActiveOwner,
+    getOwners: () => [...owners.values()] });
+  const modalIsolation = createModalIsolation({ documentRef,
     getOwners: () => [...owners.values()] });
 
   function getActiveOwner() {
@@ -75,6 +169,7 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
       parentId = parent?.id || null;
     }
     const id = Symbol(kind);
+    let isolationLock = null;
     const owner = Object.freeze({
       id, kind, element, parentId, priority, order: ++order, isActive, onParentClose,
       focusRoot, initialFocus,
@@ -92,6 +187,8 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
         for (const child of [...owners.values()]) {
           if (child.parentId === id) child.onParentClose?.();
         }
+        isolationLock?.release();
+        if (!isolationLock) modalIsolation.update();
         if (restoreFocus && restoreOnRelease && ownedFocus) {
           const releasedOrder = order;
           queueMicrotask(() => {
@@ -103,6 +200,8 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
     });
     if (restoreFocus) modalFocus.capture(owner, restoreFocusResolver);
     owners.set(id, owner);
+    if (kind !== 'popup' && element) isolationLock = modalIsolation.acquire(owner);
+    else modalIsolation.update();
     if (focusRoot) queueMicrotask(() => modalFocus.enter(owner, true));
     return owner;
   }
@@ -250,6 +349,7 @@ export function createUIComponents() {
     // and aria-labelledby themselves after this returns.
     const titleId = `tp3d-modal-title-${++modalTitleIdCounter}`;
     modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
     modal.setAttribute('tabindex', '-1');
     modal.setAttribute('aria-labelledby', titleId);
 

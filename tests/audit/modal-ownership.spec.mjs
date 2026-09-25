@@ -63,6 +63,7 @@ function installDom(t) {
     setAttribute(key, value) { this.attributes.set(key, String(value)); }
     getAttribute(key) { return this.attributes.get(key) ?? null; }
     hasAttribute(key) { return this.attributes.has(key); }
+    removeAttribute(key) { this.attributes.delete(key); }
     matches(selector) {
       return selector.split(',').some(part => {
         const key = part.trim();
@@ -357,6 +358,7 @@ test('P0-SM-OF-2 Auth and recovery register presence idempotently without new di
   const auth = createAuthOverlay({ UIComponents: dom.UI });
   system.show({});
   const systemOwner = dom.UI.modalOwnership.getActiveOwner();
+  assert.equal(dom.doc.body.classList.contains('modal-open'), true);
   system.show({ title: 'Updated' });
   assert.equal(dom.UI.modalOwnership.getActiveOwner(), systemOwner);
   error.showNotFound();
@@ -370,22 +372,27 @@ test('P0-SM-OF-2 Auth and recovery register presence idempotently without new di
   const authOwner = dom.UI.modalOwnership.getActiveOwner();
   assert.equal(authOwner.kind, 'auth');
   assert.equal(authOwner.parentId, null);
+  assert.equal(dom.doc.body.classList.contains('modal-open'), true);
   auth.show();
   assert.equal(dom.UI.modalOwnership.getOwners().length, 4);
   dom.dispatch(dom.key('Escape'));
   assert.equal(auth.isOpen(), true);
   auth.hide();
   auth.hide();
+  assert.equal(dom.doc.body.classList.contains('modal-open'), true, 'Auth release keeps recovery and ordinary locks');
   dom.dispatch(dom.key('Escape'));
   assert.equal(error.isVisible(), true);
   assert.equal(dom.roots.get('system-overlay').classList.contains('active'), true);
   error.hide();
   error.hide();
+  assert.equal(dom.doc.body.classList.contains('modal-open'), true, 'Error release keeps System and ordinary locks');
   assert.equal(dom.UI.modalOwnership.getActiveOwner(), systemOwner);
   system.hide();
   system.hide();
+  assert.equal(dom.doc.body.classList.contains('modal-open'), true, 'System release keeps the ordinary lock');
   ordinary.close();
   assert.deepEqual(dom.UI.modalOwnership.getOwners(), []);
+  assert.equal(dom.doc.body.classList.contains('modal-open'), false);
 });
 
 test('P0-SM-OF-3 Settings popup and child consume one Escape at a time without background effects', async t => {

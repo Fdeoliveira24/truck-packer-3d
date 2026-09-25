@@ -2648,7 +2648,8 @@ tr:hover td {
 
 /* Prevent sidebar from blocking modal on mobile */
 @media (max-width: 768px) {
-  body.modal-open .sidebar {
+  body.modal-open .sidebar,
+  body.tp3d-shared-modal-lock .sidebar {
     pointer-events: none;
   }
 }
@@ -3827,14 +3828,22 @@ tr:hover td {
   max-width: 360px;
 }
 
-body.modal-open {
-  overflow: hidden;
+body.modal-open,
+body.tp3d-shared-modal-lock {
+  /* Preserve any inline overflow declaration while the shared lock is held. */
+  overflow: hidden !important;
+}
 
-  /* Prevent iOS Safari background scroll & pull-to-refresh while modal is open.
-     (-webkit-overflow-scrolling only accepts auto/touch — "none" was never a
-     valid value and browsers always discarded it; overflow: hidden and
-     touch-action: none below already fully implement the scroll lock.) */
+body.modal-open #app,
+body.tp3d-shared-modal-lock #app {
   touch-action: none;
+}
+
+body.modal-open #app .content,
+body.modal-open #app .nav,
+body.tp3d-shared-modal-lock #app .content,
+body.tp3d-shared-modal-lock #app .nav {
+  overflow: hidden !important;
 }
 
 .toast {

@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 
 // Isolated DOM fixtures using the project's installed Playwright/Chromium.
 // Every request is fulfilled locally: no app boot, session, API, or data writes.
-test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout: 30000 }, async t => {
+test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, async t => {
   const browser = await chromium.launch({ headless: true });
   t.after(() => browser.close());
   const page = await browser.newPage();
@@ -14,6 +14,8 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.startsWith('/src/') && pathname.endsWith('.js')) {
       await route.fulfill({ contentType: 'text/javascript', body: await readFile(new URL(`../..${pathname}`, import.meta.url), 'utf8') });
+    } else if (pathname === '/styles/main.css') {
+      await route.fulfill({ contentType: 'text/css', body: await readFile(new URL('../../styles/main.css', import.meta.url), 'utf8') });
     } else if (pathname === '/item-notes-fixture.js') {
       // Execute the actual closed-over Editor adapter with disposable in-memory
       // dependencies, without booting the renderer, auth or persistence layers.
@@ -29,10 +31,23 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
          }` });
     } else if (pathname === '/focus-fixture') {
       await route.fulfill({ contentType: 'text/html', body: '<button id="before">Page before</button><div id="modal-root"></div><button id="after">Page after</button><div id="toast-container"></div>' });
+    } else if (pathname === '/isolation-fixture') {
+      await route.fulfill({ contentType: 'text/html', body: `
+        <link rel="stylesheet" href="/styles/main.css">
+        <style>
+          body { min-height: 1200px; }
+          #app { padding-top: 200px; }
+          #app .content { height: 100px; overflow: auto; }
+        </style>
+        <div id="app"><button id="before">Page before</button>
+          <div class="content"><div style="height: 300px">Scrollable page</div></div>
+          <button id="after">Page after</button></div>
+        <div id="modal-root"></div><div id="toast-container"></div>
+        <div id="background-extra" aria-hidden="true"><button id="extra">Extra</button></div>` });
     } else await route.abort();
   });
-  const setup = async () => {
-    await page.goto('http://localhost:5500/focus-fixture');
+  const setup = async (fixture = 'focus-fixture') => {
+    await page.goto(`http://localhost:5500/${fixture}`);
     await page.evaluate(async () => {
       const { createUIComponents } = await import('/src/ui/ui-components.js');
       window.ui = createUIComponents();
@@ -44,6 +59,179 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
     });
   };
   const active = () => page.evaluate(() => document.activeElement.id || document.activeElement.getAttribute('aria-label') || document.activeElement.textContent.trim());
+
+  await t.test('ordinary modal isolates the page, keeps its popup usable, and restores scroll and ARIA state', async () => {
+    await setup('isolation-fixture');
+    await page.evaluate(() => {
+      document.getElementById('before').focus();
+      document.querySelector('.content').scrollTop = 80;
+      window.scrollTo(0, 120);
+      window.initialScroll = { page: window.scrollY, content: document.querySelector('.content').scrollTop };
+      window.modal = make('<button id="anchor">Open choices</button>');
+    });
+    assert.deepEqual(await page.evaluate(() => ({
+      pageInert: document.getElementById('app').inert,
+      extraInert: document.getElementById('background-extra').inert,
+      modalInert: modal.overlay.inert,
+      role: modal.modal.getAttribute('role'),
+      ariaModal: modal.modal.getAttribute('aria-modal'),
+      named: modal.modal.getAttribute('aria-labelledby') === modal.modal.querySelector('h3').id,
+      bodyLocked: document.body.classList.contains('modal-open'),
+      bodyOverflow: getComputedStyle(document.body).overflow,
+      contentOverflow: getComputedStyle(document.querySelector('.content')).overflow,
+      pageScroll: window.scrollY,
+      contentScroll: document.querySelector('.content').scrollTop,
+    })), { pageInert: true, extraInert: true, modalInert: false, role: 'dialog',
+      ariaModal: 'true', named: true, bodyLocked: true, bodyOverflow: 'hidden', contentOverflow: 'hidden',
+      pageScroll: 120, contentScroll: 80 });
+    assert.equal(await page.evaluate(() => {
+      const pageControl = document.getElementById('before');
+      pageControl.focus();
+      return document.activeElement === pageControl;
+    }), false, 'native inert prevents background focus');
+    await assert.rejects(page.locator('#before').click({ timeout: 250 }), 'background click cannot activate');
+    await page.evaluate(() => {
+      window.popup = ui.openDropdown(document.getElementById('anchor'), [{ label: 'Choice', onClick: () => { window.chosen = true; } }]);
+    });
+    assert.equal(await page.evaluate(() => popup.closest('[inert]') === null), true, 'owned popup remains outside inert regions');
+    assert.equal(await page.evaluate(() => popup.hasAttribute('aria-modal')), false, 'popup is not a modal dialog');
+    await page.getByRole('button', { name: 'Choice', exact: true }).click();
+    assert.equal(await page.evaluate(() => window.chosen), true);
+    await page.evaluate(() => {
+      window.beforeCloseScroll = { page: window.scrollY, content: document.querySelector('.content').scrollTop };
+      modal.close();
+    });
+    assert.deepEqual(await page.evaluate(() => ({
+      pageInert: document.getElementById('app').hasAttribute('inert'),
+      extraInert: document.getElementById('background-extra').hasAttribute('inert'),
+      extraAria: document.getElementById('background-extra').getAttribute('aria-hidden'),
+      bodyLocked: document.body.classList.contains('modal-open'),
+      page: window.scrollY,
+      content: document.querySelector('.content').scrollTop,
+      beforeClose: beforeCloseScroll,
+    })), { pageInert: false, extraInert: false, extraAria: 'true', bodyLocked: false,
+      page: await page.evaluate(() => beforeCloseScroll.page),
+      content: await page.evaluate(() => beforeCloseScroll.content),
+      beforeClose: await page.evaluate(() => beforeCloseScroll) });
+  });
+
+  await t.test('nested and out-of-order owners retain the lock until the last release', async () => {
+    await setup('isolation-fixture');
+    await page.evaluate(() => {
+      window.parentModal = make('<button id="child-trigger">Open child</button>');
+      document.getElementById('child-trigger').focus();
+      window.childModal = make('<input id="child-field">');
+    });
+    assert.deepEqual(await page.evaluate(() => ({
+      page: document.getElementById('app').inert,
+      parent: parentModal.overlay.inert,
+      child: childModal.overlay.inert,
+      locked: document.body.classList.contains('tp3d-shared-modal-lock'),
+    })), { page: true, parent: true, child: false, locked: true });
+    await page.evaluate(() => childModal.close());
+    assert.deepEqual(await page.evaluate(() => ({
+      page: document.getElementById('app').inert,
+      parent: parentModal.overlay.inert,
+      locked: document.body.classList.contains('tp3d-shared-modal-lock'),
+    })), { page: true, parent: false, locked: true });
+    await page.getByRole('button', { name: 'Open child' }).click();
+    await page.evaluate(() => parentModal.close());
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert), false);
+    await page.evaluate(() => {
+      window.first = make('<input id="first-modal">', { parentOwnerId: null });
+      window.second = make('<input id="second-modal">', { parentOwnerId: null });
+      first.close();
+      first.close();
+    });
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert && document.body.classList.contains('tp3d-shared-modal-lock')), true);
+    await page.evaluate(() => { second.close(); second.close(); });
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert || document.body.classList.contains('tp3d-shared-modal-lock')), false);
+  });
+
+  await t.test('legacy modal-open removal cannot release shared scroll isolation', async () => {
+    for (const priorModalOpen of [false, true]) {
+      await setup('isolation-fixture');
+      await page.evaluate(prior => {
+        document.body.classList.toggle('modal-open', prior);
+        document.body.style.overflow = 'scroll';
+        window.first = make('<button>First</button>', { parentOwnerId: null });
+      }, priorModalOpen);
+      const state = () => page.evaluate(() => ({
+        marker: document.body.classList.contains('tp3d-shared-modal-lock'),
+        modalOpen: document.body.classList.contains('modal-open'),
+        bodyOverflow: getComputedStyle(document.body).overflow,
+        contentOverflow: getComputedStyle(document.querySelector('.content')).overflow,
+        appInert: document.getElementById('app').inert,
+      }));
+      assert.deepEqual(await state(), {
+        marker: true, modalOpen: true, bodyOverflow: 'hidden', contentOverflow: 'hidden', appInert: true,
+      });
+      await page.evaluate(() => {
+        window.second = make('<button>Second</button>', { parentOwnerId: null });
+        document.body.classList.remove('modal-open'); // External legacy overlay closes.
+      });
+      assert.deepEqual(await state(), {
+        marker: true, modalOpen: false, bodyOverflow: 'hidden', contentOverflow: 'hidden', appInert: true,
+      });
+      await page.evaluate(() => first.close()); // Release the older owner first.
+      assert.deepEqual(await state(), {
+        marker: true, modalOpen: false, bodyOverflow: 'hidden', contentOverflow: 'hidden', appInert: true,
+      });
+      await page.evaluate(() => second.close());
+      assert.deepEqual(await page.evaluate(() => ({
+        marker: document.body.classList.contains('tp3d-shared-modal-lock'),
+        modalOpen: document.body.classList.contains('modal-open'),
+        inlineOverflow: document.body.style.overflow,
+        appInert: document.getElementById('app').inert,
+      })), { marker: false, modalOpen: priorModalOpen, inlineOverflow: 'scroll', appInert: false });
+    }
+  });
+
+  await t.test('pre-existing inert, aria-hidden, body class and inline overflow survive a shared lock', async () => {
+    await setup('isolation-fixture');
+    await page.evaluate(() => {
+      document.getElementById('app').setAttribute('inert', 'prior');
+      document.getElementById('app').setAttribute('aria-hidden', 'false');
+      document.body.classList.add('modal-open');
+      document.body.style.overflow = 'scroll';
+      window.modal = make('<input>');
+    });
+    assert.equal(await page.evaluate(() => getComputedStyle(document.body).overflow), 'hidden');
+    await page.evaluate(() => modal.close());
+    assert.deepEqual(await page.evaluate(() => ({
+      inert: document.getElementById('app').getAttribute('inert'),
+      aria: document.getElementById('app').getAttribute('aria-hidden'),
+      modalOpen: document.body.classList.contains('modal-open'),
+      inlineOverflow: document.body.style.overflow,
+    })), { inert: 'prior', aria: 'false', modalOpen: true, inlineOverflow: 'scroll' });
+  });
+
+  await t.test('specialized blockers cannot release another owner\'s page lock', async () => {
+    await setup('isolation-fixture');
+    await page.evaluate(() => {
+      window.modal = make('<input id="ordinary">');
+      const authRoot = document.createElement('div');
+      authRoot.innerHTML = '<input id="auth-field">';
+      document.body.appendChild(authRoot);
+      window.authOwner = ui.modalOwnership.register({ kind: 'auth', element: authRoot, parentId: null, priority: 2 });
+    });
+    assert.equal(await page.evaluate(() => Boolean(modal.overlay.closest('[inert]')) && !authOwner.element.closest('[inert]')), true);
+    await page.evaluate(() => authOwner.release());
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert && !modal.overlay.inert), true);
+    await page.evaluate(() => {
+      for (const kind of ['system', 'error']) {
+        const root = document.createElement('div');
+        root.innerHTML = '<button>Retry</button>';
+        document.body.appendChild(root);
+        const owner = ui.modalOwnership.register({ kind, element: root, parentId: null, priority: 1 });
+        if (!document.getElementById('app').inert) throw Error('page unlocked');
+        owner.release();
+        if (!document.getElementById('app').inert) throw Error('specialized release unlocked ordinary modal');
+      }
+      modal.close();
+    });
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert), false);
+  });
 
   await t.test('initial target, caller focus, autofocus, task field, and root fallback', async () => {
     await setup();
@@ -283,10 +471,13 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
     await setup();
     await page.evaluate(() => {
       window.modal = make('<input id="field">');
-      window.blocker = ui.modalOwnership.register({ kind: 'auth', priority: 2 });
-      document.getElementById('before').focus();
+      const authRoot = document.createElement('div');
+      authRoot.innerHTML = '<input id="auth-field">';
+      document.body.appendChild(authRoot);
+      window.blocker = ui.modalOwnership.register({ kind: 'auth', element: authRoot, priority: 2 });
+      document.getElementById('auth-field').focus();
     });
-    assert.equal(await active(), 'before', 'queued ordinary initial focus is suppressed');
+    assert.equal(await active(), 'auth-field', 'queued ordinary initial focus is suppressed');
     await page.keyboard.press('Tab');
     assert.equal(await page.evaluate(() => tabEvents.at(-1)), false);
     await page.evaluate(() => { blocker.release(); modal.close(); ui.modalOwnership.register({ kind: 'popup' }); document.getElementById('before').focus(); });
@@ -320,13 +511,14 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
   });
 
   await t.test('actual Settings uses shared containment through tab renders, popup, and nested confirmation', async () => {
-    await setup();
+    await setup('isolation-fixture');
     await page.evaluate(async () => {
       const { createSettingsOverlay } = await import('/src/ui/overlays/settings-overlay.js');
       window.settings = createSettingsOverlay({ UIComponents: ui, PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' } }) }, Utils: {} });
       settings.open('resources');
     });
     assert.equal(await page.evaluate(() => Boolean(document.activeElement.closest('[role="dialog"]'))), true);
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert && document.body.classList.contains('modal-open')), true);
     await page.evaluate(() => {
       window.settingsOwner = ui.modalOwnership.getActiveOwner();
       const buttons = [...settingsOwner.focusRoot.querySelectorAll('button')].filter(el => el.getClientRects().length && !el.disabled);
@@ -345,17 +537,21 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
       settings.render({ source: 'focus-test' });
     });
     assert.equal(await active(), 'Nested');
+    assert.equal(await page.evaluate(() => popup.closest('[inert]') === null), true, 'Settings popup stays interactive');
     await page.getByRole('button', { name: 'Nested', exact: true }).click();
     assert.equal(await active(), 'Cancel');
+    assert.equal(await page.evaluate(() => settingsOwner.element.inert && document.getElementById('app').inert), true);
     await page.keyboard.press('Shift+Tab');
     assert.equal(await active(), 'Close Nested confirmation');
     await page.keyboard.press('Shift+Tab');
     assert.equal(await active(), 'Confirm', 'no Settings trap steals child Tab');
     await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => !settingsOwner.element.inert && document.getElementById('app').inert), true);
     await page.keyboard.press('Tab');
     assert.equal(await page.evaluate(() => settingsOwner.focusRoot.contains(document.activeElement)), true);
     await page.evaluate(() => settings.close());
     assert.equal(await page.getByRole('dialog').count(), 0);
+    assert.equal(await page.evaluate(() => !document.getElementById('app').inert && !document.body.classList.contains('modal-open')), true);
   });
 
   await t.test('restores the opener once for programmatic, reentrant, Escape, X, backdrop and footer close', async () => {
@@ -394,9 +590,11 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
     await page.evaluate(() => child.close());
     assert.equal(await active(), 'child-trigger');
     await page.evaluate(() => {
-      // A caller can give logical parentage even when browser focus escaped.
-      document.getElementById('after').focus();
-      window.child = make('<input id="child-field">', { parentOwnerId: parent.owner.id });
+      // A resolver cannot return a page control while the parent owns it.
+      window.child = make('<input id="child-field">', {
+        parentOwnerId: parent.owner.id,
+        restoreFocusResolver: () => document.getElementById('after'),
+      });
     });
     await page.evaluate(() => child.close());
     assert.equal(await active(), 'parent-field', 'a page source cannot override the active parent');
@@ -509,11 +707,14 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
     await page.evaluate(() => old.close());
     assert.equal(await active(), 'newer', 'onClose can open a newer dialog without a stale return');
     await page.evaluate(() => {
-      window.blocker = ui.modalOwnership.register({ kind: 'auth', priority: 2 });
-      document.getElementById('after').focus();
+      const authRoot = document.createElement('div');
+      authRoot.innerHTML = '<input id="auth-field">';
+      document.body.appendChild(authRoot);
+      window.blocker = ui.modalOwnership.register({ kind: 'auth', element: authRoot, priority: 2 });
+      document.getElementById('auth-field').focus();
       newer.close();
     });
-    assert.equal(await active(), 'after', 'ordinary restoration cannot override a specialized owner');
+    assert.equal(await active(), 'auth-field', 'ordinary restoration cannot override a specialized owner');
   });
 
   await t.test('actual Settings restores after child cancellation and tab rerender without losing the page source', async () => {
@@ -563,10 +764,12 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
         if (mode === 'disabled') trigger.disabled = true;
         if (mode === 'context') notesContext = 'other-pack';
       }, mode);
+      assert.equal(await page.evaluate(() => document.getElementById('after').inert && document.body.classList.contains('modal-open')), true);
       await page.getByRole('button', { name: 'Add Note', exact: true }).click();
       await page.keyboard.press('Escape');
       assert.equal(await active(), mode === 'original' ? 'before' : mode === 'context' ? 'Page beforePage after' : 'after', mode);
       assert.equal(await page.getByRole('dialog').count(), 0);
+      assert.equal(await page.evaluate(() => document.getElementById('after').inert || document.body.classList.contains('modal-open')), false);
     }
   });
 
@@ -591,6 +794,7 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
         if (mode === 'hidden') trigger.hidden = true;
         if (mode === 'selection') selection = ['other'];
       }, mode);
+      assert.equal(await page.evaluate(() => document.getElementById('after').inert && document.body.classList.contains('modal-open')), true);
       for (let i = 0; i < 3; i++) {
         await page.getByRole('button', { name: 'Add Note', exact: true }).click();
         assert.equal(await page.getByRole('dialog').count(), 1);
@@ -599,6 +803,7 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
         assert.equal(await active(), 'Add Note');
       }
       await page.keyboard.press('Escape');
+      assert.equal(await page.evaluate(() => document.getElementById('after').inert || document.body.classList.contains('modal-open')), false);
       if (mode === 'selection') assert.equal(await page.evaluate(() => document.activeElement === document.body), true);
       else assert.equal(await active(), mode === 'original' ? 'before' : 'after', mode);
     }
@@ -630,16 +835,20 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
       document.getElementById('before').focus();
       importCases.open();
     });
+    assert.equal(await page.evaluate(() => document.getElementById('after').inert), true);
     await page.keyboard.press('Escape');
     assert.equal(await page.getByRole('dialog').count(), 1, 'Cases import still ignores Escape');
     await page.getByRole('button', { name: 'Cancel', exact: true }).click();
     assert.equal(await active(), 'before');
+    assert.equal(await page.evaluate(() => document.getElementById('after').inert), false);
     await page.evaluate(async () => {
       const { createImportAppDialog } = await import('/src/ui/overlays/import-app-dialog.js');
       createImportAppDialog({ UIComponents: ui }).open();
     });
+    assert.equal(await page.evaluate(() => document.getElementById('after').inert), true);
     await page.getByRole('button', { name: 'Close', exact: true }).click();
     assert.equal(await active(), 'before');
+    assert.equal(await page.evaluate(() => document.getElementById('after').inert), false);
   });
 
   await t.test('actual Truck Change cancellation and replacement preserve the surviving parent and truck data', async () => {
@@ -665,6 +874,7 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
       document.getElementById('truck-trigger').focus();
       controller.request({ pack, nextTruck: { ...pack.truck, length: 90 }, restoreControls: () => { restoredControls++; } });
     });
+    assert.equal(await page.evaluate(() => document.getElementById('before').inert && document.body.classList.contains('modal-open')), true);
     await page.getByRole('button', { name: 'Repack invalid', exact: true }).click();
     assert.equal(await page.getByRole('dialog').count(), 2, 'replacement does not stack a stale Truck Change dialog');
     await page.keyboard.press('Escape');
@@ -674,5 +884,6 @@ test('P0-SM-OF-5/6 real DOM focus, restoration and keyboard behavior', { timeout
     assert.equal(await page.evaluate(() => controller.isActive()), false);
     await page.evaluate(() => parent.close());
     assert.equal(await active(), 'before');
+    assert.equal(await page.evaluate(() => document.getElementById('before').inert || document.body.classList.contains('modal-open')), false);
   });
 });

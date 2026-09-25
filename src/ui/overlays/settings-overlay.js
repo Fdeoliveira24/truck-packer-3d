@@ -2737,12 +2737,6 @@ export function createSettingsOverlay({
       // ignore
     }
 
-    try {
-      doc.body.classList.remove('modal-open');
-    } catch {
-      // ignore
-    }
-
     focusOwner = null;
 
     try {
@@ -7337,8 +7331,6 @@ export function createSettingsOverlay({
       }
       doc.body.appendChild(settingsOverlay);
     }
-
-    doc.body.classList.add('modal-open');
 
     const owner = UIComponents.modalOwnership?.register({
       kind: 'settings', element: settingsOverlay, parentId: null,

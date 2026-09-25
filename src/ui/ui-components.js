@@ -14,18 +14,11 @@
 import { createModalFocus } from './modal-focus.js';
 
 const AUTOPACK_LOADING_IMAGE_SRC = 'media/autopack-loading-truck-480w.gif?v=20260703';
-const AUTOPACK_LOADING_MESSAGE_INTERVAL_MS = 2600;
-const AUTOPACK_LOADING_MAX_MS = 90000;
-const AUTOPACK_LOADING_MESSAGES = Object.freeze([
-  'Preparing your load plan...',
-  'Checking fit, stacking, and safety rules...',
-  'Testing legal rotations and orientations...',
-  'Looking for stable support surfaces...',
-  'Filling usable floor space...',
-  'Checking wheel wells and raised surfaces...',
-  'Recovering leftover cargo where possible...',
-  'Finalizing your load plan...',
-]);
+// One-time notice only: AutoPack status lifetime follows the engine's run
+// cleanup, so this never closes the surface or implies completion.
+const AUTOPACK_STATUS_LONG_RUNNING_MS = 90000;
+const AUTOPACK_STATUS_LONG_RUNNING_MESSAGE =
+  'AutoPack is still working. Large or complex loads can take longer.';
 
 /** Shared resources for blocking owners registered in the interaction registry. */
 function createModalIsolation({ documentRef, getOwners }) {
@@ -448,10 +441,10 @@ export function createUIComponents() {
   }
 
   function showAutoPackLoadingOverlay(options = {}) {
+    // Non-modal status surface: it registers no modal owner, takes no focus,
+    // acquires no isolation/scroll lock, has no controls, and never blocks
+    // pointer input. OperationLifecycle alone blocks conflicting mutations.
     const root = modalRoot || document.body;
-    const messages = Array.isArray(options.messages) && options.messages.length
-      ? options.messages.map(message => String(message || '')).filter(Boolean)
-      : AUTOPACK_LOADING_MESSAGES;
     const imageSrc = String(options.imageSrc || AUTOPACK_LOADING_IMAGE_SRC || '').trim();
     const resolvedImageSrc = imageSrc
       ? (() => {
@@ -464,22 +457,16 @@ export function createUIComponents() {
       : '';
     const titleText = String(options.title || 'Building your load plan');
     const titleId = `autopack-loading-title-${Date.now()}`;
-    const messageId = `autopack-loading-message-${Date.now()}`;
-    let messageIndex = 0;
     let closed = false;
-    let intervalId = null;
-    let maxTimerId = null;
+    let longRunningTimerId = null;
 
     const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay autopack-loading-overlay';
+    overlay.className = 'autopack-loading-overlay';
     overlay.dataset.tp3dAutopackLoading = '1';
 
-    const modal = document.createElement('div');
-    modal.className = 'modal autopack-loading-modal';
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
+    const modal = document.createElement('section');
+    modal.className = 'autopack-loading-modal';
     modal.setAttribute('aria-labelledby', titleId);
-    modal.setAttribute('aria-describedby', messageId);
 
     const body = document.createElement('div');
     body.className = 'autopack-loading-body';
@@ -522,7 +509,6 @@ export function createUIComponents() {
 
     const message = document.createElement('p');
     message.className = 'autopack-loading-message';
-    message.id = messageId;
     message.setAttribute('role', 'status');
     message.setAttribute('aria-live', 'polite');
 
@@ -539,29 +525,25 @@ export function createUIComponents() {
     overlay.appendChild(modal);
     root.appendChild(overlay);
 
+    // Stage text changes only when the engine reports a real stage; an
+    // unchanged message is not rewritten so it is not re-announced.
     const setMessage = nextMessage => {
+      if (closed) return;
       const text = String(nextMessage || '').trim();
-      if (text) message.textContent = text;
+      if (text && message.textContent !== text) message.textContent = text;
     };
-    setMessage(options.initialMessage || messages[0]);
-    messageIndex = 1;
+    setMessage(options.initialMessage || 'Preparing your load plan...');
 
-    if (messages.length > 1) {
-      intervalId = window.setInterval(() => {
-        setMessage(messages[messageIndex % messages.length]);
-        messageIndex += 1;
-      }, AUTOPACK_LOADING_MESSAGE_INTERVAL_MS);
-    }
-
-    maxTimerId = window.setTimeout(() => {
-      close();
-    }, Number.isFinite(options.maxMs) ? options.maxMs : AUTOPACK_LOADING_MAX_MS);
+    longRunningTimerId = window.setTimeout(() => {
+      longRunningTimerId = null;
+      setMessage(AUTOPACK_STATUS_LONG_RUNNING_MESSAGE);
+    }, Number.isFinite(options.longRunningMs) ? options.longRunningMs : AUTOPACK_STATUS_LONG_RUNNING_MS);
 
     function close() {
       if (closed) return;
       closed = true;
-      if (intervalId) window.clearInterval(intervalId);
-      if (maxTimerId) window.clearTimeout(maxTimerId);
+      if (longRunningTimerId !== null) window.clearTimeout(longRunningTimerId);
+      longRunningTimerId = null;
       if (overlay.parentElement) overlay.parentElement.removeChild(overlay);
     }
 

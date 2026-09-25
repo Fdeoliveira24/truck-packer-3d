@@ -210,8 +210,13 @@ async function withFixture(options, run) {
     TrailerGeometry: { getTrailerUsableZones: truck => [{ min: { x: 0, y: 0, z: -truck.width / 2 }, max: { x: truck.length, y: truck.height, z: truck.width / 2 } }] },
     UIComponents: {
       showToast: (...args) => toasts.push(args),
-      showAutoPackLoadingOverlay() {
-        const overlay = { closed: false, setMessage() {}, close() { this.closed = true; } };
+      showAutoPackLoadingOverlay(overlayOptions = {}) {
+        const overlay = {
+          closed: false,
+          messages: [overlayOptions.initialMessage],
+          setMessage(message) { this.messages.push(message); },
+          close() { this.closed = true; },
+        };
         overlays.push(overlay);
         return overlay;
       },
@@ -549,4 +554,23 @@ test('10A: run watch never leaks across rejected, stale, and repeated runs', asy
     assert.equal(f.listenerCount(), 0);
     assert.equal(f.previews.length, 1, 'a new run supersedes the previous pending preview');
   });
+});
+
+test('10B: status messages name only real coarse stages, in order, with no timer-driven text', async () => {
+  const expected = {
+    300: ['Preparing your load plan...', 'Preparing your load plan...', 'Checking fit, stacking, and safety rules...',
+      'Applying the selected layout...', 'Placing cargo in the truck...'],
+    301: ['Preparing your load plan...', 'Preparing your load plan...', 'Checking fit, stacking, and safety rules...',
+      'Applying the selected layout...'],
+  };
+  for (const count of [300, 301]) {
+    await withFixture({ caseCount: count, tween: 'none' }, async f => {
+      const promise = f.engine.pack();
+      assert.deepEqual(f.overlays[0].messages, expected[count].slice(0, 3), 'solver stage set before the frame yield');
+      await f.initialFrames();
+      await f.finish(promise);
+      assert.deepEqual(f.overlays[0].messages, expected[count], String(count));
+      assert.equal(f.overlays[0].closed, true, 'engine cleanup ends the status');
+    });
+  }
 });

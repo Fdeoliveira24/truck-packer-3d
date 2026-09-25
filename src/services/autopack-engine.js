@@ -935,7 +935,6 @@ export function createAutoPackEngine({
       const xStep = Math.max(2, Math.min(12, truckL / 60));
       const zStep = Math.max(2, Math.min(12, truckW / 20));
 
-      updateLoadingOverlay('Testing legal rotations and orientations...');
       const packItems = buildLegacyAutoPackItems({
         instances: packData.cases || [],
         getCaseById: caseId => CaseLibrary.getById(caseId),
@@ -988,7 +987,6 @@ export function createAutoPackEngine({
       }
 
       const solverStartedAt = nowMs();
-      updateLoadingOverlay('Filling usable floor space...');
       const hiddenPacked = (packData.cases || []).filter(inst =>
         inst && inst.hidden === true && inst.placement !== 'staged'
       );
@@ -1049,7 +1047,6 @@ export function createAutoPackEngine({
       solverMs = nowMs() - solverStartedAt;
       if (!solverResult || isRunStale()) return;
 
-      updateLoadingOverlay('Recovering leftover cargo where possible...');
       const placements = solverResult.placements;
       const rotations = solverResult.rotations;
       const orientedDimsMap = solverResult.orientedDims;
@@ -1062,7 +1059,10 @@ export function createAutoPackEngine({
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
-      updateLoadingOverlay('Finalizing your load plan...');
+      // Status messages name only real coarse stages, set just before that work.
+      // The solve above is one synchronous call, so no per-phase solver
+      // progress is claimed.
+      updateLoadingOverlay('Applying the selected layout...');
       toast('Preparing final layout…', 'info', { title: 'AutoPack', duration: 1600 });
 
       const nextCases = buildAutoPackNextCases(
@@ -1090,6 +1090,7 @@ export function createAutoPackEngine({
       } else {
         // The final pack state was already committed. Reset only the live meshes
         // to their staging pose so the legacy small-load animation can still run.
+        updateLoadingOverlay('Placing cargo in the truck...');
         stageInstant(stagingMap);
         animationCompleted = await animatePlacements(
           placements,

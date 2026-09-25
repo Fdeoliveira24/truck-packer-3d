@@ -1574,23 +1574,24 @@ tr:hover td {
   gap: var(--space-2);
 }
 
+/* Non-modal AutoPack status: no backdrop, never intercepts pointer input, and
+   sits above Editor content but below every blocking dialog (ordinary modals
+   start at 10001; recoverable Error, Auth, and terminal blockers are higher). */
 .autopack-loading-overlay {
-  z-index: 24000;
-  background:
-    radial-gradient(circle at 50% 34%, rgb(255, 159, 28, 0.14), transparent 32%),
-    rgb(15, 23, 42, 0.58);
-  cursor: progress;
-}
-
-@supports ((backdrop-filter: blur(2px)) or (-webkit-backdrop-filter: blur(2px))) {
-  .autopack-loading-overlay {
-    -webkit-backdrop-filter: blur(8px) saturate(0.86);
-    backdrop-filter: blur(8px) saturate(0.86);
-  }
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-5);
+  z-index: 9000;
+  pointer-events: none;
 }
 
 .autopack-loading-modal {
   width: min(460px, 100%);
+  max-height: 90vh;
+  overflow: hidden;
   text-align: center;
   border: 1px solid rgb(226, 232, 240, 0.92);
   border-radius: var(--radius-md);
@@ -1716,6 +1717,20 @@ tr:hover td {
   .autopack-loading-progress span {
     animation: none;
     width: 100%;
+  }
+
+  /* Swap the animated GIF for the existing static fallback, without spin. */
+  .autopack-loading-image {
+    display: none;
+  }
+
+  .autopack-loading-visual .autopack-loading-fallback,
+  .autopack-loading-visual.has-image .autopack-loading-fallback {
+    display: grid;
+  }
+
+  .autopack-loading-fallback .fa-spinner {
+    animation: none;
   }
 }
 

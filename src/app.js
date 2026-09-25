@@ -7004,7 +7004,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           EditorUI.render();
         }
         if (changes.selectedInstanceIds) {
-          EditorUI.render();
+          EditorUI.renderSelection();
         }
         if (
           changes.currentScreen ||

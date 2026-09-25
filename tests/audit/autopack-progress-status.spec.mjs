@@ -19,6 +19,8 @@ const prebootScript = [...indexHtml.matchAll(/<script>([\s\S]*?)<\/script>/g)]
 assert.ok(prebootScript, 'pre-boot app-status renderer present in index.html');
 
 const LONG_RUNNING = 'AutoPack is still working. Large or complex loads can take longer.';
+// The status helper's production long-running threshold (AUTOPACK_STATUS_LONG_RUNNING_MS).
+const NOTICE_MS = 90000;
 
 test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { timeout: 90000 }, async t => {
   const browser = await chromium.launch({ headless: true });
@@ -61,19 +63,36 @@ test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { ti
 
   const load = async () => {
     await page.goto('http://localhost:5500/autopack-status-fixture');
-    await page.evaluate(async () => {
+    await page.evaluate(async noticeMs => {
       // Timer probe: records every timeout the page creates, clears and fires,
       // and any interval, so tests can prove no status timer outlives close().
-      window.timers = { pending: new Set(), intervals: 0 };
+      // The status's long-running notice timeout (its production default) is held
+      // instead of scheduled: tests elapse the threshold explicitly, so notice
+      // behaviour never races wall-clock time.
+      window.timers = { pending: new Set(), held: new Map(), intervals: 0 };
+      let heldSeq = 0;
       const set = window.setTimeout.bind(window);
       const clear = window.clearTimeout.bind(window);
       const interval = window.setInterval.bind(window);
       window.setTimeout = (fn, ms, ...args) => {
+        if (ms === noticeMs) {
+          const id = `held-${++heldSeq}`;
+          timers.held.set(id, () => fn(...args));
+          timers.pending.add(id);
+          return id;
+        }
         const id = set(() => { timers.pending.delete(id); fn(...args); }, ms);
         timers.pending.add(id);
         return id;
       };
-      window.clearTimeout = id => { timers.pending.delete(id); clear(id); };
+      window.clearTimeout = id => { timers.pending.delete(id); timers.held.delete(id); clear(id); };
+      window.elapseNoticeThreshold = () => {
+        for (const [id, fire] of [...timers.held]) {
+          timers.held.delete(id);
+          timers.pending.delete(id);
+          fire();
+        }
+      };
       window.setInterval = (...args) => { timers.intervals += 1; return interval(...args); };
       window.calls = { escape: 0, scenePointer: 0 };
       document.addEventListener('keydown', event => { if (event.key === 'Escape') calls.escape++; });
@@ -92,14 +111,14 @@ test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { ti
       window.lifecycle = createOperationLifecycle();
       window.openStatus = options => {
         window.opToken = lifecycle.beginOperation('autopacking', { packId: 'fixture' });
-        window.apStatus = ui.showAutoPackLoadingOverlay({ initialMessage: 'Preparing your load plan...', ...options });
+        window.apStatus = ui.showAutoPackLoadingOverlay({ initialMessage: 'Checking fit, stacking, and safety rules...', ...options });
         window.mutations = 0;
         const node = apStatus.overlay.querySelector('.autopack-loading-message');
         new MutationObserver(records => { mutations += records.length; })
           .observe(node, { childList: true, characterData: true, subtree: true });
         return true;
       };
-    });
+    }, NOTICE_MS);
   };
   const state = () => page.evaluate(() => {
     const root = document.querySelector('[data-tp3d-autopack-loading]');
@@ -162,7 +181,7 @@ test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { ti
     });
     assert.deepEqual(semantics, { dialogs: 0, tag: 'SECTION', name: 'Building your load plan',
       live: 1, busy: 0, focusable: 0, classes: 'autopack-loading-overlay' });
-    assert.equal(s.message, 'Preparing your load plan...');
+    assert.equal(s.message, 'Checking fit, stacking, and safety rules...');
   });
 
   await t.test('Tab / Shift+Tab stay normal page order; Escape neither closes status nor touches the operation', async () => {
@@ -177,23 +196,35 @@ test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { ti
     assert.equal(await page.evaluate(() => calls.escape), 1, 'Escape reaches the normal document context');
   });
 
-  await t.test('pointer passes through the wrapper and the status card to the Editor scene', async () => {
+  await t.test('pointer passes through the wrapper to the Editor scene; the card absorbs its own clicks', async () => {
     const [cx, cy] = await statusCenter();
-    for (const [x, y] of [[cx, cy], [40, 400], [1240, 780]]) {
+    const cardTop = await page.evaluate(() => document.querySelector('.autopack-loading-modal').getBoundingClientRect().top);
+    for (const [x, y] of [[40, 400], [1240, 780], [cx, cardTop - 20]]) {
       assert.equal(await page.evaluate(([x, y]) => document.elementFromPoint(x, y)?.id, [x, y]),
-        'scene', `hit test at ${x},${y}`);
+        'scene', `wrapper hit test at ${x},${y}`);
     }
+    assert.equal(await page.evaluate(([x, y]) => Boolean(document.elementFromPoint(x, y)?.closest('.autopack-loading-modal')),
+      [cx, cy]), true, 'the card takes its own hit test');
+    await page.mouse.move(40, 400);
+    await page.mouse.down();
+    await page.mouse.move(100, 420);
+    await page.mouse.up();
+    await page.mouse.click(1240, 780);
+    await page.mouse.click(cx, cy);
     await page.mouse.move(cx, cy);
     await page.mouse.down();
     await page.mouse.move(cx + 60, cy + 20);
     await page.mouse.up();
-    await page.mouse.click(40, 400);
-    assert.equal(await page.evaluate(() => calls.scenePointer), 2, 'camera drag + click reach the scene');
+    assert.equal(await page.evaluate(() => calls.scenePointer), 2,
+      'camera drag + click outside the card reach the scene; a click or drag on the card does not');
     const styles = await page.evaluate(() => {
-      const cs = getComputedStyle(document.querySelector('.autopack-loading-overlay'));
-      return { bg: cs.backgroundColor, filter: cs.backdropFilter, pe: cs.pointerEvents };
+      const wrapper = getComputedStyle(document.querySelector('.autopack-loading-overlay'));
+      const card = getComputedStyle(document.querySelector('.autopack-loading-modal'));
+      return { bg: wrapper.backgroundColor, filter: wrapper.backdropFilter, pe: wrapper.pointerEvents, cardPe: card.pointerEvents };
     });
-    assert.deepEqual(styles, { bg: 'rgba(0, 0, 0, 0)', filter: 'none', pe: 'none' });
+    assert.deepEqual(styles, { bg: 'rgba(0, 0, 0, 0)', filter: 'none', pe: 'none', cardPe: 'auto' });
+    const s = await state();
+    assert.deepEqual([s.owners, s.lock, s.inert], [[], false, 0], 'absorbing clicks adds no modal behaviour');
     assert.equal(await paintedAt(cx, cy), 'status', 'status paints above Editor content');
   });
 
@@ -248,15 +279,19 @@ test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { ti
     });
   }
 
-  await t.test('long-running notice appears once, keeps the status and operation, and close is idempotent', async () => {
+  await t.test('long-running notice appears once at the threshold, keeps the status and operation, and close is idempotent', async () => {
     await load();
-    await page.evaluate(() => openStatus({ longRunningMs: 40 }));
-    assert.equal(await page.evaluate(() => timers.pending.size), 1, 'one delayed notice timer');
-    await page.waitForTimeout(120);
+    await page.evaluate(() => openStatus());
+    assert.deepEqual(await page.evaluate(() => [timers.pending.size, timers.held.size]), [1, 1],
+      'one notice timer at the production threshold');
     let s = await state();
+    assert.equal(s.message, 'Checking fit, stacking, and safety rules...', 'no notice before the threshold');
+    assert.equal(await page.evaluate(() => mutations), 0);
+    await page.evaluate(() => elapseNoticeThreshold());
+    s = await state();
     assert.deepEqual([s.present, s.message, s.opCurrent, s.owners], [true, LONG_RUNNING, true, []]);
     assert.equal(await page.evaluate(() => mutations), 1, 'announced once');
-    await page.waitForTimeout(120);
+    await page.evaluate(() => elapseNoticeThreshold());
     assert.equal(await page.evaluate(() => mutations), 1, 'never repeats');
     assert.equal(await page.evaluate(() => timers.pending.size), 0);
     await page.evaluate(() => { apStatus.close(); apStatus.close(); apStatus.setMessage('Late stage'); });
@@ -269,18 +304,18 @@ test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { ti
 
   await t.test('close before threshold clears the notice; explicit stages update once, duplicates do not rewrite', async () => {
     await load();
-    await page.evaluate(() => openStatus({ longRunningMs: 80 }));
+    await page.evaluate(() => openStatus());
     await page.evaluate(() => {
-      apStatus.setMessage('Checking fit, stacking, and safety rules...');
-      apStatus.setMessage('Checking fit, stacking, and safety rules...');
+      apStatus.setMessage('Placing cargo in the truck...');
+      apStatus.setMessage('Placing cargo in the truck...');
     });
-    assert.equal((await state()).message, 'Checking fit, stacking, and safety rules...');
+    assert.equal((await state()).message, 'Placing cargo in the truck...');
     assert.equal(await page.evaluate(() => mutations), 1, 'duplicate stage is not rewritten');
-    await page.evaluate(() => { apStatus.close(); apStatus.setMessage('Applying the selected layout...'); });
-    assert.equal(await page.evaluate(() => timers.pending.size), 0, 'notice timer cleared on close');
-    await page.waitForTimeout(200);
+    await page.evaluate(() => { apStatus.close(); apStatus.setMessage('Late stage'); });
+    assert.deepEqual(await page.evaluate(() => [timers.pending.size, timers.held.size]), [0, 0], 'notice timer cleared on close');
+    await page.evaluate(() => elapseNoticeThreshold());
     assert.equal(await page.evaluate(() => apStatus.overlay.querySelector('.autopack-loading-message').textContent),
-      'Checking fit, stacking, and safety rules...');
+      'Placing cargo in the truck...', 'the notice never appears after an early close');
     assert.equal(await page.evaluate(() => mutations), 1);
     assert.equal(await page.evaluate(() => timers.intervals), 0);
   });

@@ -442,8 +442,10 @@ export function createUIComponents() {
 
   function showAutoPackLoadingOverlay(options = {}) {
     // Non-modal status surface: it registers no modal owner, takes no focus,
-    // acquires no isolation/scroll lock, has no controls, and never blocks
-    // pointer input. OperationLifecycle alone blocks conflicting mutations.
+    // acquires no isolation/scroll lock and has no controls. Only the card itself
+    // absorbs pointer input; the Editor around it stays usable, OperationLifecycle
+    // blocks conflicting mutations, and selection changes during the run do not
+    // re-sync the animating scene (EditorUI.renderSelection).
     const root = modalRoot || document.body;
     const imageSrc = String(options.imageSrc || AUTOPACK_LOADING_IMAGE_SRC || '').trim();
     const resolvedImageSrc = imageSrc

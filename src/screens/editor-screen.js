@@ -3734,6 +3734,9 @@ export function createEditorScreen({
     }
 
     let initialized = false;
+    // A selection change arrived while a mutating operation owned the Editor; the
+    // full render it would have triggered runs once that operation ends.
+    let selectionRenderPending = false;
     const supportsWebGL = Utils.hasWebGL();
     const browserCats = new Set();
     const browserManufacturers = new Set();
@@ -4295,6 +4298,7 @@ export function createEditorScreen({
             refreshActionButtons();
             renderSpaceUtilizationSection(PackLibrary.getById(StateStore.get('currentPackId')));
           }
+          if (selectionRenderPending && !OperationLifecycle.isBusy()) render();
         });
       }
 
@@ -4379,6 +4383,7 @@ export function createEditorScreen({
     }
 
     function render() {
+      selectionRenderPending = false;
       if (StateStore.get('currentScreen') !== 'editor') {
         setValidationPopoverOpen(false);
         return;
@@ -4411,6 +4416,20 @@ export function createEditorScreen({
       renderAutoPackResultsPanel(pack);
       renderHandlingRulesStatus(pack);
       SceneManager.resize();
+    }
+
+    // Selection-only change. While a mutating operation owns the Editor the scene
+    // can be ahead of what it shows (an AutoPack animation runs over poses the
+    // Pack has already committed), so a full render's CaseScene.sync would snap
+    // every mesh to its committed pose mid-animation. Keep the scene selection in
+    // step with the app selection now, and render fully when the operation ends.
+    function renderSelection() {
+      if (OperationLifecycle && OperationLifecycle.isBusy()) {
+        CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
+        selectionRenderPending = true;
+        return;
+      }
+      render();
     }
 
     function syncEditorSceneLayout() {
@@ -6994,7 +7013,7 @@ export function createEditorScreen({
       return ok ? out : null;
     }
 
-    return { init: initEditorUI, render, onActivated, resetWorkspaceState };
+    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState };
   })();
 
   const onDeactivated = () => { };

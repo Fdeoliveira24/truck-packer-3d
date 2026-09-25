@@ -898,9 +898,13 @@ export function createAutoPackEngine({
       watchRunContext(run);
       StateStore.set({ autoPackResults: null }, { skipHistory: true });
       try {
+        // The status names only stages a user can see. Nothing paints before the
+        // frame yield ahead of the synchronous solve, so it opens on that stage;
+        // animated loads switch to "Placing cargo in the truck..." when their
+        // animation begins. No per-phase solver progress is claimed.
         if (UIComponents && typeof UIComponents.showAutoPackLoadingOverlay === 'function') {
           loadingOverlay = UIComponents.showAutoPackLoadingOverlay({
-            initialMessage: 'Preparing your load plan...',
+            initialMessage: 'Checking fit, stacking, and safety rules...',
           });
         }
       } catch {
@@ -916,7 +920,6 @@ export function createAutoPackEngine({
           ? runtimeWindow.__TP3D_DIAG__
           : null;
 
-      updateLoadingOverlay('Preparing your load plan...');
       toast('Building load plan…', 'info', { title: 'AutoPack', duration: 1800 });
 
       const truck = packData.truck;
@@ -964,7 +967,6 @@ export function createAutoPackEngine({
       // Paint a concrete working state, then yield a frame, BEFORE the synchronous
       // solver locks the main thread — otherwise large packs look frozen at their
       // old positions with a stale "starting" toast.
-      updateLoadingOverlay('Checking fit, stacking, and safety rules...');
       toast('Checking fit, stacking, and safety rules…', 'info', { title: 'AutoPack', duration: 4000 });
       await waitForAnimationFrames(2);
       if (isRunStale()) return;
@@ -1059,10 +1061,6 @@ export function createAutoPackEngine({
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
-      // Status messages name only real coarse stages, set just before that work.
-      // The solve above is one synchronous call, so no per-phase solver
-      // progress is claimed.
-      updateLoadingOverlay('Applying the selected layout...');
       toast('Preparing final layout…', 'info', { title: 'AutoPack', duration: 1600 });
 
       const nextCases = buildAutoPackNextCases(

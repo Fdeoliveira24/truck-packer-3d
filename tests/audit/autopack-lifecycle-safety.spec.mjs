@@ -556,20 +556,20 @@ test('10A: run watch never leaks across rejected, stale, and repeated runs', asy
   });
 });
 
-test('10B: status messages name only real coarse stages, in order, with no timer-driven text', async () => {
-  const expected = {
-    300: ['Preparing your load plan...', 'Preparing your load plan...', 'Checking fit, stacking, and safety rules...',
-      'Applying the selected layout...', 'Placing cargo in the truck...'],
-    301: ['Preparing your load plan...', 'Preparing your load plan...', 'Checking fit, stacking, and safety rules...',
-      'Applying the selected layout...'],
-  };
+test('10B: status shows only stages a user can see, each present at an event-loop yield', async () => {
+  const solving = 'Checking fit, stacking, and safety rules...';
+  const placing = 'Placing cargo in the truck...';
   for (const count of [300, 301]) {
     await withFixture({ caseCount: count, tween: 'none' }, async f => {
       const promise = f.engine.pack();
-      assert.deepEqual(f.overlays[0].messages, expected[count].slice(0, 3), 'solver stage set before the frame yield');
+      // First yield: the frame wait right before the synchronous solve.
+      assert.deepEqual(f.overlays[0].messages, [solving], `${count}: the solve stage is what paints first`);
       await f.initialFrames();
+      // Next yield: the first animation batch wait, or (large load) completion.
+      assert.deepEqual(f.overlays[0].messages, count === 300 ? [solving, placing] : [solving], `${count}: stage at the next yield`);
+      assert.equal(f.overlays[0].closed, count === 301, `${count}: an instant large load has no placing stage`);
       await f.finish(promise);
-      assert.deepEqual(f.overlays[0].messages, expected[count], String(count));
+      assert.equal(f.overlays[0].messages.length, count === 300 ? 2 : 1, `${count}: no later, timer-driven, or unpainted stage`);
       assert.equal(f.overlays[0].closed, true, 'engine cleanup ends the status');
     });
   }

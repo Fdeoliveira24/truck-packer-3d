@@ -1601,8 +1601,24 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         const captureToken = OperationLifecycle.beginOperation('capturingPreview', { packId, source });
         if (!captureToken) return false;
+        let unsubscribeCaptureContext = null;
         try {
           const captureWorkspaceKey = getActiveWorkspaceKey();
+          const automaticCapture = source !== 'manual';
+          let autoContextInvalidated = false;
+          const isCurrentAutoContext = () => (
+            !autoContextInvalidated &&
+            getActiveWorkspaceKey() === captureWorkspaceKey &&
+            StateStore.get('currentScreen') === 'editor' &&
+            StateStore.get('currentPackId') === packId
+          );
+          if (automaticCapture) {
+            if (!isCurrentAutoContext()) return false;
+            // A return to the same Pack/screen cannot make an older frame wait safe.
+            unsubscribeCaptureContext = StateStore.subscribe(stateChanges => {
+              if (stateChanges._replace || !isCurrentAutoContext()) autoContextInvalidated = true;
+            });
+          }
           const pack = PackLibrary.getById(packId);
           if (!pack) throw new Error('Load plan not found');
 
@@ -1610,6 +1626,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           if (captureWorkspaceKey && getActiveWorkspaceKey() !== captureWorkspaceKey) return false;
           if (!PackLibrary.getById(packId)) return false;
+          if (automaticCapture && !isCurrentAutoContext()) return false;
 
           const width = 320;
           const height = 180;
@@ -1627,6 +1644,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
           if (captureWorkspaceKey && getActiveWorkspaceKey() !== captureWorkspaceKey) return false;
           if (!PackLibrary.getById(packId)) return false;
+          if (automaticCapture && !isCurrentAutoContext()) return false;
           // Stale-capture guard: if this capture slot was superseded, do not write
           // a thumbnail over whatever newer state now owns the editor.
           if (!OperationLifecycle.isCurrent(captureToken)) return false;
@@ -1644,6 +1662,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           }
           return false;
         } finally {
+          if (unsubscribeCaptureContext) unsubscribeCaptureContext();
           OperationLifecycle.finishOperation(captureToken);
         }
       }

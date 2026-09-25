@@ -11,6 +11,8 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+import { BLOCKER_PRIORITY, syncTerminalStacking } from './error-overlay.js';
+
 /** @param {{ UIComponents?: any }} [options] */
 export function createSystemOverlay({ UIComponents } = {}) {
   const overlay = document.getElementById('system-overlay');
@@ -18,6 +20,7 @@ export function createSystemOverlay({ UIComponents } = {}) {
   const messageEl = document.getElementById('system-message');
   const listEl = document.getElementById('system-list');
   const retryBtn = document.getElementById('system-retry');
+  const cardEl = overlay ? overlay.querySelector('.system-card') : null;
   let owner = null;
   if (retryBtn) retryBtn.addEventListener('click', () => window.location.reload());
 
@@ -34,15 +37,27 @@ export function createSystemOverlay({ UIComponents } = {}) {
       });
     }
     overlay.classList.add('active');
-    owner = owner || UIComponents?.modalOwnership?.register({
-      kind: 'system', element: overlay, parentId: null, priority: 1,
-    });
+    if (owner) {
+      // Same owner and order: repair focus only while this blocker is the
+      // active owner (shared focus refuses otherwise), never re-stack.
+      owner.ensureFocus();
+      return;
+    }
+    // Terminal runtime blocker: one owner, never dismissible, and no return to
+    // whatever happened to be focused before the failure.
+    owner = UIComponents?.modalOwnership?.register({
+      kind: 'system', element: overlay, parentId: null, priority: BLOCKER_PRIORITY.terminal,
+      focusRoot: cardEl, initialFocus: () => retryBtn, canDismiss: () => false,
+      restoreFocus: false,
+    }) || null;
+    syncTerminalStacking(overlay, owner);
   }
 
   function hide() {
     if (!overlay) return;
     overlay.classList.remove('active');
-    owner?.release();
+    syncTerminalStacking(overlay);
+    owner?.release({ restoreFocus: false });
     owner = null;
   }
 

@@ -4822,6 +4822,13 @@ body.tp3d-shared-modal-lock #app .nav {
   display: flex;
 }
 
+/* Terminal blockers own interaction above Auth (inline z-index 99999). */
+#system-overlay,
+#error-overlay[data-error-mode='fatal'],
+#error-overlay[data-error-mode='maintenance'] {
+  z-index: 100000;
+}
+
 .system-card {
   width: min(760px, 100%);
   background: var(--bg-secondary);

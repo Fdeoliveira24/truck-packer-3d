@@ -7,6 +7,18 @@
  * @created 2026-04-19
  */
 
+/**
+ * Shared-registry precedence for specialized blockers. Auth registers at 2
+ * (auth-overlay.js); ordinary modals default to 0.
+ * terminal (System, fatal, maintenance) > auth > recoverable (route, missing Pack).
+ */
+export const BLOCKER_PRIORITY = Object.freeze({ recoverable: 1, auth: 2, terminal: 3 });
+
+// The root's data-error-mode is the semantic mode, also written by the
+// pre-boot renderer in index.html so the handoff never infers it from text.
+const TERMINAL_MODES = new Set(['fatal', 'maintenance']);
+const RECOVERABLE_MODES = new Set(['route', 'pack']);
+
 /** @param {{ UIComponents?: any }} [options] */
 export function createErrorOverlay({ UIComponents } = {}) {
   const overlay = document.getElementById('error-overlay');
@@ -14,16 +26,45 @@ export function createErrorOverlay({ UIComponents } = {}) {
   const bodyEl = document.getElementById('error-body');
   const actionsEl = document.getElementById('error-actions');
   const iconEl = document.getElementById('error-icon');
+  const cardEl = overlay ? overlay.querySelector('.error-card') : null;
 
   let _onBackToPacks = null;
   let owner = null;
+  let ownerTier = null;
+
+  function getMode() {
+    const mode = overlay?.getAttribute('data-error-mode');
+    return TERMINAL_MODES.has(mode) || RECOVERABLE_MODES.has(mode) ? mode : null;
+  }
+
+  function isTerminal() {
+    return TERMINAL_MODES.has(getMode());
+  }
 
   // Also called by the pre-boot renderer when it displays this shared root.
+  // Keeps exactly one owner whose tier matches the root's current mode.
   function registerPresence() {
-    if (!overlay || owner) return;
+    if (!overlay || !overlay.classList.contains('active')) return;
+    const mode = getMode();
+    // A visible root without a recognized mode is only ever the pre-boot fatal path.
+    const tier = RECOVERABLE_MODES.has(mode) ? 'recoverable' : 'terminal';
+    if (owner && ownerTier === tier) {
+      // Same tier: content may have been replaced under the focused control.
+      owner.ensureFocus();
+      return;
+    }
+    const previous = owner;
+    // Acquire the new tier before releasing the old one so the background
+    // never unlocks between them.
     owner = UIComponents?.modalOwnership?.register({
-      kind: 'error', element: overlay, parentId: null, priority: 1,
-    });
+      kind: 'error', element: overlay, parentId: null, priority: BLOCKER_PRIORITY[tier],
+      focusRoot: cardEl,
+      initialFocus: () => actionsEl?.querySelector('button') || null,
+      canDismiss: () => false,
+      restoreFocus: false,
+    }) || null;
+    ownerTier = owner ? tier : null;
+    previous?.release({ restoreFocus: false });
   }
 
   function _btn(label, onClick) {
@@ -35,8 +76,9 @@ export function createErrorOverlay({ UIComponents } = {}) {
     return btn;
   }
 
-  function _render(title, body, buttons, { iconVariant = 'warn', iconClass = 'fa-circle-question' } = {}) {
+  function _render(mode, title, body, buttons, { iconVariant = 'warn', iconClass = 'fa-circle-question' } = {}) {
     if (!overlay) return;
+    overlay.setAttribute('data-error-mode', mode);
     if (iconEl) {
       iconEl.className = `error-icon error-icon--${iconVariant}`;
       iconEl.innerHTML = `<i class="fas ${iconClass}" aria-hidden="true"></i>`;
@@ -52,8 +94,11 @@ export function createErrorOverlay({ UIComponents } = {}) {
   }
 
   function showNotFound({ kind = 'route' } = {}) {
+    // A recoverable state never downgrades an active fatal/maintenance blocker.
+    if (isVisible() && isTerminal()) return;
     const isPack = kind === 'pack';
     _render(
+      isPack ? 'pack' : 'route',
       isPack ? 'Load plan not found' : 'Page not found',
       isPack
         ? 'This load plan is missing, deleted, or no longer available.'
@@ -71,6 +116,7 @@ export function createErrorOverlay({ UIComponents } = {}) {
     const config = opts && typeof opts === 'object' ? opts : null;
     const message = config && typeof config.message === 'string' ? config.message : '';
     _render(
+      'fatal',
       'Something went wrong',
       message || 'An unexpected error stopped the app from loading correctly.',
       [_btn('Reload', () => window.location.reload())],
@@ -80,6 +126,7 @@ export function createErrorOverlay({ UIComponents } = {}) {
 
   function showMaintenance() {
     _render(
+      'maintenance',
       "We'll be back soon",
       'Truck Packer 3D is temporarily unavailable while we perform maintenance. Please try again soon.',
       [_btn('Reload', () => window.location.reload())],
@@ -87,11 +134,21 @@ export function createErrorOverlay({ UIComponents } = {}) {
     );
   }
 
-  function hide() {
+  /**
+   * Hide the recoverable (route / missing Pack) state. Recovery cleanup paths
+   * call this freely, so a terminal fatal/maintenance state is left in place
+   * unless `includeTerminal` is passed explicitly.
+   * @param {{ includeTerminal?: boolean }} [options]
+   */
+  function hide({ includeTerminal = false } = {}) {
     if (!overlay) return;
+    if (isTerminal() && !includeTerminal) return;
     overlay.classList.remove('active');
-    owner?.release();
+    overlay.removeAttribute('data-error-mode');
+    const previous = owner;
     owner = null;
+    ownerTier = null;
+    previous?.release({ restoreFocus: false });
   }
 
   function isVisible() {
@@ -107,5 +164,5 @@ export function createErrorOverlay({ UIComponents } = {}) {
     _onBackToPacks = fn;
   }
 
-  return { showNotFound, showFatal, showMaintenance, hide, isVisible, setOnBackToPacks, registerPresence };
+  return { showNotFound, showFatal, showMaintenance, hide, isVisible, getMode, setOnBackToPacks, registerPresence };
 }

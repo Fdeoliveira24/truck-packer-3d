@@ -1033,7 +1033,7 @@
 
     <!-- ===== GLOBAL UI ROOT: ERROR OVERLAY (app-state errors: 404, 500, maintenance) ===== -->
     <div class="system-overlay" id="error-overlay">
-      <div class="error-card">
+      <div class="error-card" role="dialog" aria-modal="true" aria-labelledby="error-title" tabindex="-1">
         <div id="error-icon" aria-hidden="true"></div>
         <h2 id="error-title">Truck Packer 3D</h2>
         <p id="error-body"></p>
@@ -1045,7 +1045,7 @@
 
     <!-- ===== GLOBAL UI ROOT: SYSTEM OVERLAY (runtime failures) ===== -->
     <div class="system-overlay" id="system-overlay">
-      <div class="system-card">
+      <div class="system-card" role="dialog" aria-modal="true" aria-labelledby="system-title" tabindex="-1">
         <h2 id="system-title">Truck Packer 3D</h2>
         <p id="system-message"></p>
         <ul class="system-list" id="system-list"></ul>
@@ -1131,9 +1131,12 @@
           }
           if (titleEl) titleEl.textContent = state.title;
           if (bodyEl) bodyEl.textContent = state.body;
+          // Semantic mode for the shared-owner handoff (ErrorOverlay.registerPresence).
+          overlay.setAttribute('data-error-mode', variant === 'maintenance' ? 'maintenance' : 'fatal');
+          let btn = null;
           if (actionsEl) {
             actionsEl.innerHTML = '';
-            const btn = document.createElement('button');
+            btn = document.createElement('button');
             btn.type = 'button';
             btn.className = 'btn btn-primary';
             btn.textContent = state.buttonLabel;
@@ -1143,6 +1146,8 @@
             actionsEl.appendChild(btn);
           }
           overlay.classList.add('active');
+          // One initial focus per display; shared ownership (if booted) takes over.
+          if (btn) btn.focus();
           if (typeof boot.onAppStatusOverlayShown === 'function') boot.onAppStatusOverlayShown();
         };
       })();

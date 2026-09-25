@@ -14,6 +14,8 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
     const pathname = new URL(route.request().url()).pathname;
     if (pathname.startsWith('/src/') && pathname.endsWith('.js')) {
       await route.fulfill({ contentType: 'text/javascript', body: await readFile(new URL(`../..${pathname}`, import.meta.url), 'utf8') });
+    } else if (pathname === '/styles/main.css') {
+      await route.fulfill({ contentType: 'text/css', body: await readFile(new URL('../../styles/main.css', import.meta.url), 'utf8') });
     } else if (pathname === '/item-notes-fixture.js') {
       // Execute the actual closed-over Editor adapter with disposable in-memory
       // dependencies, without booting the renderer, auth or persistence layers.
@@ -31,12 +33,11 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
       await route.fulfill({ contentType: 'text/html', body: '<button id="before">Page before</button><div id="modal-root"></div><button id="after">Page after</button><div id="toast-container"></div>' });
     } else if (pathname === '/isolation-fixture') {
       await route.fulfill({ contentType: 'text/html', body: `
+        <link rel="stylesheet" href="/styles/main.css">
         <style>
           body { min-height: 1200px; }
           #app { padding-top: 200px; }
           #app .content { height: 100px; overflow: auto; }
-          body.modal-open { overflow: hidden !important; }
-          body.modal-open #app .content { overflow: hidden !important; }
         </style>
         <div id="app"><button id="before">Page before</button>
           <div class="content"><div style="height: 300px">Scrollable page</div></div>
@@ -125,13 +126,13 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
       page: document.getElementById('app').inert,
       parent: parentModal.overlay.inert,
       child: childModal.overlay.inert,
-      locked: document.body.classList.contains('modal-open'),
+      locked: document.body.classList.contains('tp3d-shared-modal-lock'),
     })), { page: true, parent: true, child: false, locked: true });
     await page.evaluate(() => childModal.close());
     assert.deepEqual(await page.evaluate(() => ({
       page: document.getElementById('app').inert,
       parent: parentModal.overlay.inert,
-      locked: document.body.classList.contains('modal-open'),
+      locked: document.body.classList.contains('tp3d-shared-modal-lock'),
     })), { page: true, parent: false, locked: true });
     await page.getByRole('button', { name: 'Open child' }).click();
     await page.evaluate(() => parentModal.close());
@@ -142,9 +143,48 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
       first.close();
       first.close();
     });
-    assert.equal(await page.evaluate(() => document.getElementById('app').inert && document.body.classList.contains('modal-open')), true);
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert && document.body.classList.contains('tp3d-shared-modal-lock')), true);
     await page.evaluate(() => { second.close(); second.close(); });
-    assert.equal(await page.evaluate(() => document.getElementById('app').inert || document.body.classList.contains('modal-open')), false);
+    assert.equal(await page.evaluate(() => document.getElementById('app').inert || document.body.classList.contains('tp3d-shared-modal-lock')), false);
+  });
+
+  await t.test('legacy modal-open removal cannot release shared scroll isolation', async () => {
+    for (const priorModalOpen of [false, true]) {
+      await setup('isolation-fixture');
+      await page.evaluate(prior => {
+        document.body.classList.toggle('modal-open', prior);
+        document.body.style.overflow = 'scroll';
+        window.first = make('<button>First</button>', { parentOwnerId: null });
+      }, priorModalOpen);
+      const state = () => page.evaluate(() => ({
+        marker: document.body.classList.contains('tp3d-shared-modal-lock'),
+        modalOpen: document.body.classList.contains('modal-open'),
+        bodyOverflow: getComputedStyle(document.body).overflow,
+        contentOverflow: getComputedStyle(document.querySelector('.content')).overflow,
+        appInert: document.getElementById('app').inert,
+      }));
+      assert.deepEqual(await state(), {
+        marker: true, modalOpen: true, bodyOverflow: 'hidden', contentOverflow: 'hidden', appInert: true,
+      });
+      await page.evaluate(() => {
+        window.second = make('<button>Second</button>', { parentOwnerId: null });
+        document.body.classList.remove('modal-open'); // External legacy overlay closes.
+      });
+      assert.deepEqual(await state(), {
+        marker: true, modalOpen: false, bodyOverflow: 'hidden', contentOverflow: 'hidden', appInert: true,
+      });
+      await page.evaluate(() => first.close()); // Release the older owner first.
+      assert.deepEqual(await state(), {
+        marker: true, modalOpen: false, bodyOverflow: 'hidden', contentOverflow: 'hidden', appInert: true,
+      });
+      await page.evaluate(() => second.close());
+      assert.deepEqual(await page.evaluate(() => ({
+        marker: document.body.classList.contains('tp3d-shared-modal-lock'),
+        modalOpen: document.body.classList.contains('modal-open'),
+        inlineOverflow: document.body.style.overflow,
+        appInert: document.getElementById('app').inert,
+      })), { marker: false, modalOpen: priorModalOpen, inlineOverflow: 'scroll', appInert: false });
+    }
   });
 
   await t.test('pre-existing inert, aria-hidden, body class and inline overflow survive a shared lock', async () => {

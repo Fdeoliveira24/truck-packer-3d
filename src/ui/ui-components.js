@@ -32,6 +32,7 @@ function createModalIsolation({ documentRef, getOwners }) {
   const locks = new Map();
   const isolated = new Map();
   const body = documentRef.body;
+  const sharedLockClass = 'tp3d-shared-modal-lock';
   let hadModalOpen = null;
 
   function restore(element, previous) {
@@ -43,11 +44,17 @@ function createModalIsolation({ documentRef, getOwners }) {
     const active = [...locks.values()].filter(owner => owner.isActive() && owner.element?.isConnected)
       .sort((a, b) => b.priority - a.priority || b.order - a.order)[0];
 
-    if (active && hadModalOpen === null) {
-      hadModalOpen = body.classList.contains('modal-open');
-      body.classList.add('modal-open');
-    } else if (!active && hadModalOpen !== null) {
-      if (!hadModalOpen) body.classList.remove('modal-open');
+    if (active) {
+      if (hadModalOpen === null) {
+        hadModalOpen = body.classList.contains('modal-open');
+        body.classList.add('modal-open');
+      }
+      // Legacy overlays may change modal-open; only this registry owns the
+      // shared marker that keeps scroll isolation in force.
+      body.classList.add(sharedLockClass);
+    } else if (hadModalOpen !== null) {
+      body.classList.remove(sharedLockClass);
+      body.classList.toggle('modal-open', hadModalOpen);
       hadModalOpen = null;
     }
 

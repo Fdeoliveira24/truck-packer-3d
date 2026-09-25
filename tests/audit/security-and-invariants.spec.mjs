@@ -13396,19 +13396,22 @@ test('tp3dDebug-only billing accessor is guarded by isTp3dDebugEnabled', async (
 test('auth overlay render() preserves input values before innerHTML clear', async () => {
   const src = await fs.readFile(authOverlayPath, 'utf8');
 
-  // render() must read current email input value before clearing
+  // Same-view values are captured by stable field identity, including revealed
+  // passwords and confirmation fields. Native DOM behavior is covered in the
+  // isolated auth-overlay-lifecycle browser suite.
   const renderFn = src.substring(
     src.indexOf('function render('),
-    src.indexOf('function render(') + 600
+    src.indexOf('// ---- Brand header ----')
   );
-  assert.ok(renderFn.includes('input[type="email"]'),
-    'render() must query email input before innerHTML clear');
-  assert.ok(renderFn.includes('input[type="password"]'),
-    'render() must query password input before innerHTML clear');
+  const captureFn = src.substring(src.indexOf('function captureFields('), src.indexOf('function focusTarget('));
+  for (const key of ['email', 'password', 'password-confirm']) {
+    assert.ok(captureFn.includes(`data-auth-focus="${key}"`),
+      `captureFields must preserve ${key} by stable identity`);
+  }
   // The save must occur BEFORE innerHTML = ''
-  const saveIdx = renderFn.indexOf('querySelector');
+  const saveIdx = renderFn.indexOf('if (sameView) captureFields()');
   const clearIdx = renderFn.indexOf('innerHTML');
-  assert.ok(saveIdx < clearIdx,
+  assert.ok(saveIdx >= 0 && clearIdx > saveIdx,
     'input value save must come before innerHTML clear');
 });
 
@@ -13417,10 +13420,10 @@ test('auth overlay show() does not re-render when already open', async () => {
 
   const showFn = src.substring(
     src.indexOf('function show()'),
-    src.indexOf('function show()') + 400
+    src.indexOf('function hide()')
   );
   // If isOpen, should return early without calling render
-  assert.ok(showFn.includes('if (isOpen) return'),
+  assert.ok(showFn.includes('if (!overlayEl || isOpen) return'),
     'show() must return early when already open');
   // Should NOT have the old pattern: if (isOpen) { render(); return; }
   assert.ok(!showFn.includes('if (isOpen) { render'),
@@ -13432,7 +13435,7 @@ test('auth overlay setPhase skips re-render when form is already showing same ph
 
   const setPhaseFn = src.substring(
     src.indexOf('function setPhase('),
-    src.indexOf('function setPhase(') + 600
+    src.indexOf('function navigateTo(')
   );
   assert.ok(setPhaseFn.includes('setPhase:skip'),
     'setPhase must log skip when phase is unchanged and form is open');

@@ -52,7 +52,13 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
   let isOpen = false;
   let owner = null;
   let inFlight = false;
-  let keydownHandler = null;
+  let lifecycleEpoch = 0;
+  let renderEpoch = 0;
+  let renderedView = null;
+  let transitionTimer = null;
+  let transitionDeadline = 0;
+  let removeNetworkListeners = null;
+  let viewMessage = null;
   let phase = 'checking'; // 'checking' | 'form' | 'cantconnect'
   let lastBootstrapError = null;
   let retryHandler = null;
@@ -144,13 +150,27 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
 
   // ---- DOM Helpers ----
 
+  function currentUiHandler(callback) {
+    const epoch = lifecycleEpoch;
+    const generation = renderEpoch;
+    return event => {
+      if (!isCurrent(epoch) || generation !== renderEpoch) {
+        event.preventDefault?.();
+        return;
+      }
+      callback(event);
+    };
+  }
+
   function el(tag, attrs = {}, children = []) {
     const e = document.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) {
       if (k === 'className') { e.className = v; }
       else if (k === 'textContent') { e.textContent = v; }
       else if (k === 'innerHTML') { e.innerHTML = v; }
-      else if (k.startsWith('on') && typeof v === 'function') { e.addEventListener(k.slice(2).toLowerCase(), v); }
+      else if (k.startsWith('on') && typeof v === 'function') {
+        e.addEventListener(k.slice(2).toLowerCase(), currentUiHandler(v));
+      }
       else if (k === 'style' && typeof v === 'object') { Object.assign(e.style, v); }
       else if (k === 'disabled') { e.disabled = v; }
       else { e.setAttribute(k, v); }
@@ -182,6 +202,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       role: 'dialog',
       'aria-modal': 'true',
       'aria-label': 'Authentication',
+      tabindex: '-1',
     });
 
     overlayEl.appendChild(modalEl);
@@ -190,8 +211,87 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
 
   // ---- Rendering ----
 
+  function isCurrent(epoch) {
+    return isOpen && epoch === lifecycleEpoch;
+  }
+
+  function viewKey() {
+    return phase === 'form'
+      ? `${phase}:${page}:${page === 'signup' && pendingConfirmationEmail ? 'confirmation' : 'form'}`
+      : phase;
+  }
+
+  function clearCooldown() {
+    if (cooldownTimer !== null) clearTimeout(cooldownTimer);
+    cooldownTimer = null;
+  }
+
+  function clearTransitionTimer() {
+    if (transitionTimer !== null) clearTimeout(transitionTimer);
+    transitionTimer = null;
+  }
+
+  function scheduleTransition() {
+    if (!transitionDeadline) return;
+    const epoch = lifecycleEpoch;
+    const generation = renderEpoch;
+    const timer = setTimeout(() => {
+      if (!isCurrent(epoch) || generation !== renderEpoch || transitionTimer !== timer) return;
+      transitionTimer = null;
+      transitionDeadline = 0;
+      navigateTo('signin');
+    }, Math.max(0, transitionDeadline - Date.now()));
+    transitionTimer = timer;
+  }
+
+  // Invalidate UI work only. Auth requests and their authority continue normally.
+  function invalidateView() {
+    lifecycleEpoch++;
+    clearCooldown();
+    clearTransitionTimer();
+    transitionDeadline = 0;
+    inFlight = false;
+    viewMessage = null;
+    _fieldPassword = '';
+    _fieldPasswordConfirm = '';
+    showPassword = false;
+    renderedView = null;
+  }
+
+  function captureFields() {
+    const email = modalEl?.querySelector('[data-auth-focus="email"]');
+    const password = modalEl?.querySelector('[data-auth-focus="password"]');
+    const confirm = modalEl?.querySelector('[data-auth-focus="password-confirm"]');
+    if (email) fieldEmail = email.value;
+    if (password) _fieldPassword = password.value;
+    if (confirm) _fieldPasswordConfirm = confirm.value;
+  }
+
+  function focusTarget(key) {
+    return modalEl?.querySelector(`[data-auth-focus="${key}"]:not(:disabled)`);
+  }
+
+  function initialFocus() {
+    if (phase === 'checking') return modalEl;
+    if (phase === 'cantconnect') return focusTarget('retry') || modalEl;
+    if (page === 'signup' && pendingConfirmationEmail) {
+      return focusTarget('resend') || focusTarget('signin') || modalEl;
+    }
+    return focusTarget(page === 'reset' ? 'password' : 'email') || modalEl;
+  }
+
+  function focusAfterRender(key) {
+    if (!isOpen || !owner || UIComponents.modalOwnership.getActiveOwner() !== owner) return;
+    const target = (key && focusTarget(key)) || initialFocus();
+    target?.focus();
+    owner.ensureFocus();
+  }
+
   function scheduleCooldownTick() {
-    if (cooldownTimer) clearTimeout(cooldownTimer);
+    clearCooldown();
+    if (!isOpen) return;
+    const epoch = lifecycleEpoch;
+    const generation = renderEpoch;
     const now = Date.now();
     const nextTick = Math.max(0, Math.min(
       forgotCooldownUntil > now ? forgotCooldownUntil - now : Infinity,
@@ -199,8 +299,18 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       backoffUntil > now ? backoffUntil - now : Infinity,
     ));
     if (nextTick < Infinity) {
-      cooldownTimer = setTimeout(() => { if (isOpen) render('cooldown'); }, Math.min(nextTick + 100, 1500));
+      cooldownTimer = setTimeout(() => {
+        if (!isCurrent(epoch) || generation !== renderEpoch) return;
+        cooldownTimer = null;
+        render('cooldown');
+      }, Math.min(nextTick + 100, 1500));
     }
+  }
+
+  function finishOperation(epoch) {
+    if (!isCurrent(epoch)) return;
+    inFlight = false;
+    render('operationComplete');
   }
 
   /**
@@ -211,11 +321,14 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     const p = String(nextPhase || '').toLowerCase();
     const nextP = p === 'cantconnect' || p === 'form' ? p : 'checking';
     const unchanged = nextP === phase && !error;
+    if (nextP !== phase) {
+      captureFields();
+      invalidateView();
+    }
     phase = nextP;
     lastBootstrapError = error || null;
     retryHandler = typeof onRetry === 'function' ? onRetry : retryHandler;
     if (unchanged && isOpen && phase === 'form') {
-      // Form is already showing this phase — skip destructive re-render
       if (isDebugEnabled()) console.info('[AuthUI] setPhase:skip', { phase, page });
       return;
     }
@@ -223,27 +336,23 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
   }
 
   function navigateTo(nextPage) {
+    captureFields();
+    invalidateView();
     page = nextPage;
-    _fieldPassword = '';
-    _fieldPasswordConfirm = '';
-    showPassword = false;
     render('navigateTo');
-    // Focus first input after render
-    requestAnimationFrame(() => {
-      const first = modalEl?.querySelector('input:not([type="checkbox"])');
-      first?.focus();
-    });
   }
 
   function render(reason) {
-    if (!modalEl) return;
-    // Preserve in-progress input values before destroying DOM
-    try {
-      const curEmail = modalEl.querySelector('input[type="email"]');
-      const curPw = modalEl.querySelector('input[type="password"]');
-      if (curEmail && curEmail.value) fieldEmail = curEmail.value;
-      if (curPw && curPw.value) _fieldPassword = curPw.value;
-    } catch { /* ignore */ }
+    if (!isOpen || !modalEl) return;
+    const sameView = renderedView === viewKey();
+    const focused = document.activeElement;
+    const focusKey = sameView && modalEl.contains(focused)
+      ? focused.getAttribute('data-auth-focus') : null;
+    if (sameView) captureFields();
+    clearCooldown();
+    clearTransitionTimer();
+    renderEpoch++;
+    renderedView = viewKey();
     if (isDebugEnabled()) console.info('[AuthUI] render', { reason: reason || 'unknown', phase, page });
     modalEl.innerHTML = '';
 
@@ -252,7 +361,6 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     } else if (phase === 'cantconnect') {
       renderCantConnect();
     } else {
-      // phase === 'form'
       switch (page) {
         case 'signup': renderSignUp(); break;
         case 'forgot': renderForgot(); break;
@@ -260,6 +368,9 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
         default: renderSignIn(); break;
       }
     }
+    installNetworkListeners();
+    scheduleTransition();
+    focusAfterRender(focusKey);
   }
 
   // ---- Brand header ----
@@ -298,7 +409,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       renderBrandHeader("Can't connect"),
       el('p', { className: 'auth-subtitle', textContent: 'Check your connection and try again.' }),
       isDebugEnabled() && lastBootstrapError ? el('details', { className: 'auth-debug' }, [
-        el('summary', { textContent: 'Debug info' }),
+        el('summary', { textContent: 'Debug info', 'data-auth-focus': 'debug' }),
         el('pre', { textContent: toAscii(lastBootstrapError?.message || String(lastBootstrapError)) }),
       ]) : null,
       el('div', { className: 'auth-actions' }, [
@@ -306,6 +417,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           className: 'btn btn-primary auth-btn-full',
           type: 'button',
           textContent: 'Retry',
+          'data-auth-focus': 'retry',
           onClick: () => { retryHandler?.(); },
         }),
       ]),
@@ -314,16 +426,21 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
 
   // ---- Inline message elements ----
   function createMessageBox() {
-    return el('div', {
+    const box = el('div', {
       className: 'auth-message',
       'data-auth-msg': '1',
       role: 'alert',
       'aria-live': 'polite',
       style: { display: 'none' },
     });
+    if (viewMessage) showMessage(box, viewMessage.text, viewMessage.type);
+    return box;
   }
 
   function showMessage(msgEl, text, type = 'error') {
+    viewMessage = { text, type };
+    // A same-view rerender may have replaced the initiating operation's node.
+    msgEl = modalEl?.querySelector('[data-auth-msg="1"]') || msgEl;
     if (!msgEl) return;
     msgEl.textContent = toAscii(text || '');
     msgEl.className = `auth-message auth-message--${type}`;
@@ -343,6 +460,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       type,
       id,
       'aria-label': label,
+      'data-auth-focus': 'email',
       ...attrs,
     });
     group.appendChild(input);
@@ -373,6 +491,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       type: 'button',
       'aria-label': showPassword ? 'Hide password' : 'Show password',
       tabindex: '-1',
+      'data-auth-focus': `${attrs['data-auth-focus']}-toggle`,
       innerHTML: showPassword
         ? '<i class="fa-solid fa-eye-slash"></i>'
         : '<i class="fa-solid fa-eye"></i>',
@@ -417,8 +536,10 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     const btn = el('button', {
       className: 'btn auth-btn-full auth-btn-google',
       type: 'button',
+      'data-auth-focus': 'google',
       onClick: async () => {
         if (inFlight) return;
+        const operationEpoch = lifecycleEpoch;
         try {
           inFlight = true;
           await SupabaseClient.signInWithOAuth('google', {
@@ -428,7 +549,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           // OAuth redirects, so errors here are unusual
           console.error('[Auth] Google sign-in error', err);
         } finally {
-          inFlight = false;
+          finishOperation(operationEpoch);
         }
       },
     }, [
@@ -447,6 +568,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       value: fieldEmail,
     });
     const pw = buildPasswordField('Password', {
+      'data-auth-focus': 'password',
       autocomplete: 'current-password',
       placeholder: 'Enter your password',
       value: _fieldPassword,
@@ -462,6 +584,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     const submitBtn = el('button', {
       className: 'btn btn-primary auth-btn-full',
       type: 'submit',
+      'data-auth-focus': 'submit',
       disabled: offline || inFlight || backedOff,
     }, [
       inFlight ? el('i', { className: 'fa-solid fa-spinner fa-spin', style: { marginRight: '8px' } }) : null,
@@ -487,6 +610,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           email.input.focus();
           return;
         }
+        const operationEpoch = lifecycleEpoch;
         try {
           inFlight = true;
           submitBtn.disabled = true;
@@ -502,22 +626,22 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
             if (fullUser?.banned_until) {
               const ts = new Date(fullUser.banned_until).getTime();
               if (!isNaN(ts) && ts > Date.now()) {
-                showMessage(msgBox, 'Account is no longer active. Please contact support.', 'error');
+                if (isCurrent(operationEpoch)) showMessage(msgBox, 'Account is no longer active. Please contact support.', 'error');
                 try { await SupabaseClient.signOut({ scope: 'local' }); } catch { /* ignore */ }
                 return;
               }
             }
           } catch { /* If ban check fails, let sign-in succeed */ }
 
+          if (!isCurrent(operationEpoch)) return;
           resetFailures();
           // Auth state listener in app.js will close the overlay
         } catch (err) {
+          if (!isCurrent(operationEpoch)) return;
           recordFailure();
           showMessage(msgBox, mapAuthError(err, 'signin'), 'error');
         } finally {
-          inFlight = false;
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Sign in';
+          finishOperation(operationEpoch);
         }
       },
     }, [
@@ -539,6 +663,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           className: 'auth-link',
           type: 'button',
           textContent: 'Forgot password?',
+          'data-auth-focus': 'forgot',
           onClick: () => navigateTo('forgot'),
         }),
         el('span', { className: 'auth-footer-sep', textContent: '\u00B7' }),
@@ -546,6 +671,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           className: 'auth-link',
           type: 'button',
           textContent: "Don't have an account? Sign up",
+          'data-auth-focus': 'signup',
           onClick: () => navigateTo('signup'),
         }),
       ]),
@@ -570,10 +696,14 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
       value: fieldEmail,
     });
     const pw = buildPasswordField('Password', {
+      'data-auth-focus': 'password',
       autocomplete: 'new-password',
       placeholder: 'Create a password',
+      value: _fieldPassword,
     });
     const pwConfirm = buildPasswordField('Confirm password', {
+      'data-auth-focus': 'password-confirm',
+      value: _fieldPasswordConfirm,
       autocomplete: 'new-password',
       placeholder: 'Confirm your password',
     });
@@ -586,6 +716,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     const submitBtn = el('button', {
       className: 'btn btn-primary auth-btn-full',
       type: 'submit',
+      'data-auth-focus': 'submit',
       disabled: offline || inFlight || backedOff,
     }, [
       inFlight ? el('i', { className: 'fa-solid fa-spinner fa-spin', style: { marginRight: '8px' } }) : null,
@@ -621,6 +752,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           return;
         }
 
+        const operationEpoch = lifecycleEpoch;
         try {
           inFlight = true;
           submitBtn.disabled = true;
@@ -628,9 +760,11 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           showMessage(msgBox, '', 'error');
 
           const data = await SupabaseClient.signUp(emailVal, pwVal);
+          if (!isCurrent(operationEpoch)) return;
           const sess = data?.session;
           if (!sess) {
             // Email confirmation required
+            invalidateView();
             pendingConfirmationEmail = emailVal;
             resetFailures();
             render('confirmation');
@@ -639,12 +773,11 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
             // Session created immediately - auth listener will close overlay
           }
         } catch (err) {
+          if (!isCurrent(operationEpoch)) return;
           recordFailure();
           showMessage(msgBox, mapAuthError(err, 'signup'), 'error');
         } finally {
-          inFlight = false;
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Create account';
+          finishOperation(operationEpoch);
         }
       },
     }, [
@@ -668,6 +801,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           className: 'auth-link',
           type: 'button',
           textContent: 'Already have an account? Sign in',
+          'data-auth-focus': 'signin',
           onClick: () => {
             pendingConfirmationEmail = '';
             navigateTo('signin');
@@ -688,23 +822,26 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     const resendBtn = el('button', {
       className: 'btn auth-btn-full',
       type: 'button',
+      'data-auth-focus': 'resend',
       disabled: cooldownLeft > 0 || inFlight,
       textContent: cooldownLeft > 0 ? `Resend in ${cooldownLeft}s` : 'Resend confirmation email',
       onClick: async () => {
         if (inFlight || Date.now() < resendDisabledUntil) return;
+        const operationEpoch = lifecycleEpoch;
         try {
           inFlight = true;
           resendBtn.disabled = true;
           showMessage(msgBox, '', 'error');
           await SupabaseClient.resendConfirmation(pendingConfirmationEmail);
+          if (!isCurrent(operationEpoch)) return;
           showMessage(msgBox, 'Confirmation email sent. Check your inbox.', 'success');
           resendDisabledUntil = Date.now() + RESEND_COOLDOWN_MS;
           scheduleCooldownTick();
         } catch (err) {
+          if (!isCurrent(operationEpoch)) return;
           showMessage(msgBox, mapAuthError(err, 'signup'), 'error');
         } finally {
-          inFlight = false;
-          resendBtn.disabled = false;
+          finishOperation(operationEpoch);
         }
       },
     });
@@ -726,6 +863,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           className: 'auth-link',
           type: 'button',
           textContent: 'Back to sign in',
+          'data-auth-focus': 'signin',
           onClick: () => {
             pendingConfirmationEmail = '';
             navigateTo('signin');
@@ -753,6 +891,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     const submitBtn = el('button', {
       className: 'btn btn-primary auth-btn-full',
       type: 'submit',
+      'data-auth-focus': 'submit',
       disabled: offline || inFlight || cooldownLeft > 0,
       textContent: cooldownLeft > 0 ? `Retry in ${cooldownLeft}s` : 'Send reset link',
     });
@@ -773,6 +912,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           return;
         }
 
+        const operationEpoch = lifecycleEpoch;
         try {
           inFlight = true;
           submitBtn.disabled = true;
@@ -781,17 +921,17 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
 
           const redirectTo = window.location.origin + window.location.pathname;
           await SupabaseClient.resetPasswordForEmail(emailVal, redirectTo);
+          if (!isCurrent(operationEpoch)) return;
 
           showMessage(msgBox, 'If that email is registered, you will receive a reset link shortly.', 'success');
           forgotCooldownUntil = Date.now() + FORGOT_COOLDOWN_MS;
           scheduleCooldownTick();
         } catch (err) {
+          if (!isCurrent(operationEpoch)) return;
           recordFailure();
           showMessage(msgBox, mapAuthError(err, 'forgot'), 'error');
         } finally {
-          inFlight = false;
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Send reset link';
+          finishOperation(operationEpoch);
         }
       },
     }, [
@@ -810,6 +950,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           className: 'auth-link',
           type: 'button',
           textContent: 'Back to sign in',
+          'data-auth-focus': 'signin',
           onClick: () => navigateTo('signin'),
         }),
       ]),
@@ -823,10 +964,14 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
   function renderReset() {
     const msgBox = createMessageBox();
     const pw = buildPasswordField('New password', {
+      'data-auth-focus': 'password',
+      value: _fieldPassword,
       autocomplete: 'new-password',
       placeholder: 'Enter new password',
     });
     const pwConfirm = buildPasswordField('Confirm new password', {
+      'data-auth-focus': 'password-confirm',
+      value: _fieldPasswordConfirm,
       autocomplete: 'new-password',
       placeholder: 'Confirm new password',
     });
@@ -836,6 +981,7 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
     const submitBtn = el('button', {
       className: 'btn btn-primary auth-btn-full',
       type: 'submit',
+      'data-auth-focus': 'submit',
       disabled: inFlight,
       textContent: 'Update password',
     });
@@ -862,26 +1008,27 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
           return;
         }
 
+        const operationEpoch = lifecycleEpoch;
         try {
           inFlight = true;
           submitBtn.disabled = true;
           submitBtn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Updating\u2026';
           showMessage(msgBox, '', 'error');
+          clearTransitionTimer();
+          transitionDeadline = 0;
 
           await SupabaseClient.updateUserPassword(pwVal);
+          if (!isCurrent(operationEpoch)) return;
           showMessage(msgBox, 'Password updated successfully! Redirecting\u2026', 'success');
 
           // Small delay then navigate to sign in (auth listener should auto-close)
-          setTimeout(() => {
-            page = 'signin';
-            render('passwordUpdated');
-          }, 1500);
+          // Each render owns its callback while retaining this deadline.
+          transitionDeadline = Date.now() + 1500;
         } catch (err) {
+          if (!isCurrent(operationEpoch)) return;
           showMessage(msgBox, mapAuthError(err, 'reset'), 'error');
         } finally {
-          inFlight = false;
-          submitBtn.disabled = false;
-          submitBtn.textContent = 'Update password';
+          finishOperation(operationEpoch);
         }
       },
     }, [
@@ -902,54 +1049,31 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
 
   // ---- Overlay show/hide ----
 
-  function installKeydownBlocker() {
-    if (keydownHandler) return;
-    keydownHandler = ev => {
-      try {
-        const key = String(ev.key || '').toLowerCase();
-        if (key === 'escape') { ev.preventDefault(); ev.stopPropagation(); return; }
-        const target = ev.target;
-        const isTyping = target?.matches?.('input, textarea, select, [contenteditable="true"]');
-        if (!isTyping && key !== 'tab') { ev.stopPropagation(); }
-        if (!isTyping && (ev.metaKey || ev.ctrlKey || ev.altKey)) { ev.stopPropagation(); }
-      } catch { /* ignore */ }
-    };
-    document.addEventListener('keydown', keydownHandler, true);
-  }
-
-  function removeKeydownBlocker() {
-    if (!keydownHandler) return;
-    document.removeEventListener('keydown', keydownHandler, true);
-    keydownHandler = null;
-  }
-
   function show() {
     ensureMounted();
-    if (!overlayEl) return;
-    if (isOpen) return; // Already visible — callers use setPhase() to trigger render
+    if (!overlayEl || isOpen) return;
+    invalidateView();
     isOpen = true;
     overlayEl.style.display = 'flex';
     owner = UIComponents?.modalOwnership?.register({
       kind: 'auth', element: overlayEl, parentId: null, priority: 2,
+      focusRoot: modalEl, initialFocus, canDismiss: () => false,
+      restoreFocus: false,
     });
-    installKeydownBlocker();
     render('show');
-    requestAnimationFrame(() => {
-      const first = modalEl?.querySelector('input:not([type="checkbox"])');
-      first?.focus();
-    });
   }
 
   function hide() {
-    ensureMounted();
-    if (!overlayEl) return;
-    overlayEl.style.display = 'none';
+    if (!isOpen) return;
     isOpen = false;
-    owner?.release();
+    invalidateView();
+    overlayEl.style.display = 'none';
+    owner?.release({ restoreFocus: false });
     owner = null;
+    removeNetworkListeners?.();
+    removeNetworkListeners = null;
     forcedDisabledMessage = '';
     pendingConfirmationEmail = '';
-    removeKeydownBlocker();
   }
 
   function isOpenFn() {
@@ -961,31 +1085,42 @@ export function createAuthOverlay({ UIComponents, SupabaseClient, tp3dDebugKey: 
   }
 
   function showAccountDisabled(message) {
+    captureFields();
+    invalidateView();
     forcedDisabledMessage = String(message || 'Account is no longer active. Please contact support.');
     page = 'signin';
-    setPhase('form');
-    show();
+    phase = 'form';
+    if (isOpen) render('contextTransition');
+    else show();
   }
 
   /** Called by app.js when PASSWORD_RECOVERY event is detected */
   function showResetPassword() {
+    invalidateView();
+    pendingConfirmationEmail = '';
     page = 'reset';
-    setPhase('form');
-    show();
+    phase = 'form';
+    if (isOpen) render('contextTransition');
+    else show();
   }
 
-  // ---- Online/offline listeners ----
-  try {
-    window.addEventListener('online', () => {
-      try { if (isOpen && phase === 'checking') retryHandler?.(); }
-      catch { /* ignore */ }
-    }, { passive: true });
-
-    window.addEventListener('offline', () => {
-      try { if (isOpen) render('offline'); }
-      catch { /* ignore */ }
-    }, { passive: true });
-  } catch { /* ignore */ }
+  // Each render replaces these callbacks so even queued old network work is inert.
+  function installNetworkListeners() {
+    removeNetworkListeners?.();
+    const online = currentUiHandler(() => {
+      try {
+        if (phase === 'checking') retryHandler?.();
+        else render('online');
+      } catch { /* ignore */ }
+    });
+    const offline = currentUiHandler(() => render('offline'));
+    window.addEventListener('online', online, { passive: true });
+    window.addEventListener('offline', offline, { passive: true });
+    removeNetworkListeners = () => {
+      window.removeEventListener('online', online);
+      window.removeEventListener('offline', offline);
+    };
+  }
 
   // ---- Public API ----
   return {

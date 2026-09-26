@@ -898,9 +898,13 @@ export function createAutoPackEngine({
       watchRunContext(run);
       StateStore.set({ autoPackResults: null }, { skipHistory: true });
       try {
+        // The status names only stages a user can see. Nothing paints before the
+        // frame yield ahead of the synchronous solve, so it opens on that stage;
+        // animated loads switch to "Placing cargo in the truck..." when their
+        // animation begins. No per-phase solver progress is claimed.
         if (UIComponents && typeof UIComponents.showAutoPackLoadingOverlay === 'function') {
           loadingOverlay = UIComponents.showAutoPackLoadingOverlay({
-            initialMessage: 'Preparing your load plan...',
+            initialMessage: 'Checking fit, stacking, and safety rules...',
           });
         }
       } catch {
@@ -915,9 +919,6 @@ export function createAutoPackEngine({
           runtimeWindow.__TP3D_DIAG__.isActive())
           ? runtimeWindow.__TP3D_DIAG__
           : null;
-
-      updateLoadingOverlay('Preparing your load plan...');
-      toast('Building load plan…', 'info', { title: 'AutoPack', duration: 1800 });
 
       const truck = packData.truck;
       const mode = (truck && truck.shapeMode) ? truck.shapeMode : 'rect';
@@ -935,7 +936,6 @@ export function createAutoPackEngine({
       const xStep = Math.max(2, Math.min(12, truckL / 60));
       const zStep = Math.max(2, Math.min(12, truckW / 20));
 
-      updateLoadingOverlay('Testing legal rotations and orientations...');
       const packItems = buildLegacyAutoPackItems({
         instances: packData.cases || [],
         getCaseById: caseId => CaseLibrary.getById(caseId),
@@ -962,11 +962,10 @@ export function createAutoPackEngine({
 
       const stagingMap = buildStagingMap(packItems, truck);
       stageInstant(stagingMap);
-      // Paint a concrete working state, then yield a frame, BEFORE the synchronous
-      // solver locks the main thread — otherwise large packs look frozen at their
-      // old positions with a stale "starting" toast.
-      updateLoadingOverlay('Checking fit, stacking, and safety rules...');
-      toast('Checking fit, stacking, and safety rules…', 'info', { title: 'AutoPack', duration: 4000 });
+      // Yield a frame so the staged poses and the status card's solve stage paint
+      // BEFORE the synchronous solver locks the main thread — otherwise large packs
+      // look frozen at their old positions. The status card is the only
+      // running-progress channel; no stage toast duplicates it.
       await waitForAnimationFrames(2);
       if (isRunStale()) return;
 
@@ -988,7 +987,6 @@ export function createAutoPackEngine({
       }
 
       const solverStartedAt = nowMs();
-      updateLoadingOverlay('Filling usable floor space...');
       const hiddenPacked = (packData.cases || []).filter(inst =>
         inst && inst.hidden === true && inst.placement !== 'staged'
       );
@@ -1049,7 +1047,6 @@ export function createAutoPackEngine({
       solverMs = nowMs() - solverStartedAt;
       if (!solverResult || isRunStale()) return;
 
-      updateLoadingOverlay('Recovering leftover cargo where possible...');
       const placements = solverResult.placements;
       const rotations = solverResult.rotations;
       const orientedDimsMap = solverResult.orientedDims;
@@ -1061,9 +1058,6 @@ export function createAutoPackEngine({
       const packedCount = placements instanceof Map ? placements.size : 0;
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
-
-      updateLoadingOverlay('Finalizing your load plan...');
-      toast('Preparing final layout…', 'info', { title: 'AutoPack', duration: 1600 });
 
       const nextCases = buildAutoPackNextCases(
         packData.cases || [],
@@ -1090,6 +1084,7 @@ export function createAutoPackEngine({
       } else {
         // The final pack state was already committed. Reset only the live meshes
         // to their staging pose so the legacy small-load animation can still run.
+        updateLoadingOverlay('Placing cargo in the truck...');
         stageInstant(stagingMap);
         animationCompleted = await animatePlacements(
           placements,

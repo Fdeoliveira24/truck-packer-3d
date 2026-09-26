@@ -534,7 +534,7 @@ export function createUIComponents() {
       const text = String(nextMessage || '').trim();
       if (text && message.textContent !== text) message.textContent = text;
     };
-    setMessage(options.initialMessage || 'Preparing your load plan...');
+    setMessage(options.initialMessage || 'Checking fit, stacking, and safety rules...');
 
     longRunningTimerId = window.setTimeout(() => {
       longRunningTimerId = null;

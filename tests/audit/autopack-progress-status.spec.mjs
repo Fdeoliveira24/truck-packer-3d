@@ -320,6 +320,17 @@ test('P0-SM-OF-10B AutoPack progress status is non-modal in real Chromium', { ti
     assert.equal(await page.evaluate(() => timers.intervals), 0);
   });
 
+  await t.test('without an explicit initialMessage the status opens on the solve stage', async () => {
+    await load();
+    const message = await page.evaluate(() => {
+      const status = ui.showAutoPackLoadingOverlay();
+      const text = status.overlay.querySelector('.autopack-loading-message').textContent;
+      status.close();
+      return text;
+    });
+    assert.equal(message, 'Checking fit, stacking, and safety rules...');
+  });
+
   const visualStyles = () => page.evaluate(() => {
     const q = selector => getComputedStyle(document.querySelector(selector));
     return {

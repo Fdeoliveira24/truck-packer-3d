@@ -1818,8 +1818,8 @@ test('ORGANIZED-UNPACK identical mixed-rotation cases form deterministic aligned
     rows.get(z).push(inst.transform.position.x);
   }
   const rowXs = [...rows.values()].map(values => values.sort((a, b) => a - b));
-  assert.deepEqual(rowXs[0], [10, 42, 74], 'the first row must use one uniform 32-inch column grid');
-  assert.deepEqual(rowXs[1], [10, 42, 74], 'every full row must align to the same X origin and grid');
+  assert.deepEqual(rowXs[0], [10, 34, 58], 'the first row must use one uniform 24-inch column grid (20 in + 4 in clearance)');
+  assert.deepEqual(rowXs[1], [10, 34, 58], 'every full row must align to the same X origin and grid');
   assert.deepEqual(rowXs[2], [10], 'the partial final row must restart at the same X origin');
 
   const aabbs = first.cases.map(stagedAabb);
@@ -1941,4 +1941,180 @@ test('ORGANIZED-UNPACK unresolved references remain untouched without fabricated
     'an unresolved instance must keep its safe existing placement classification');
   assert.equal(Object.hasOwn(unresolvedAfter, 'packedProfile'), false,
     'Unpack must still remove the Max Capacity marker from unresolved instances');
+});
+
+// Edge-to-edge clearances (not center spacing) of an organized result, measured
+// on occupied AABBs: neighbours within a row, rows within a Case type, and the
+// occupied bounds of consecutive Case-type groups.
+function measureOrganizedClearances(cases) {
+  const groups = new Map();
+  for (const inst of cases) {
+    if (!groups.has(inst.caseId)) groups.set(inst.caseId, []);
+    groups.get(inst.caseId).push(stagedAabb(inst));
+  }
+  const withinRow = [];
+  const betweenRows = [];
+  const bands = [];
+  for (const [caseId, aabbs] of groups) {
+    const rows = new Map();
+    for (const aabb of aabbs) {
+      const key = aabb.min.z.toFixed(9);
+      if (!rows.has(key)) rows.set(key, []);
+      rows.get(key).push(aabb);
+    }
+    const rowList = [...rows.values()].sort((a, b) => a[0].min.z - b[0].min.z);
+    for (const row of rowList) {
+      row.sort((a, b) => a.min.x - b.min.x);
+      for (let i = 1; i < row.length; i += 1) withinRow.push(row[i].min.x - row[i - 1].max.x);
+    }
+    for (let i = 1; i < rowList.length; i += 1) {
+      betweenRows.push(Math.min(...rowList[i].map(a => a.min.z)) - Math.max(...rowList[i - 1].map(a => a.max.z)));
+    }
+    bands.push({
+      caseId,
+      rows: rowList.length,
+      minX: Math.min(...aabbs.map(a => a.min.x)),
+      maxX: Math.max(...aabbs.map(a => a.max.x)),
+      minZ: Math.min(...aabbs.map(a => a.min.z)),
+      maxZ: Math.max(...aabbs.map(a => a.max.z)),
+    });
+  }
+  bands.sort((a, b) => a.minZ - b.minZ);
+  return { withinRow, betweenRows, bands, betweenGroups: bands.slice(1).map((band, i) => band.minZ - bands[i].maxZ) };
+}
+
+test('ORGANIZED-UNPACK compact spacing: 4 in within a Case type, 8 in between group bounds, never overlapping', async () => {
+  const EditorScreen = await loadEditorScreenModule();
+  assert.equal(EditorScreen.ORGANIZED_UNPACK_ITEM_GAP, 4, 'same-type clearance is 4 in');
+  assert.equal(EditorScreen.ORGANIZED_UNPACK_GROUP_GAP, 8, 'Case-type group clearance is 8 in');
+  const specs = [
+    { id: 'u-carton', dims: { length: 12, width: 10, height: 8 }, qty: 25 },
+    { id: 'u-long', dims: { length: 60, width: 18, height: 16 }, qty: 3 },
+    { id: 'u-wide', dims: { length: 30, width: 40, height: 20 }, qty: 2 },
+    { id: 'u-tall', dims: { length: 20, width: 20, height: 50 }, qty: 4 },
+    { id: 'u-single', dims: { length: 24, width: 24, height: 24 }, qty: 1 },
+    { id: 'u-fraction', dims: { length: 15.75, width: 9.5, height: 7.25 }, qty: 9 },
+  ];
+  const cases = specs.map(spec => makeVerticalCase({ id: spec.id, name: spec.id, dimensions: spec.dims }));
+  const rotations = [{ x: 0, y: 0, z: 0 }, { x: 0, y: Math.PI / 2, z: 0 }, { x: Math.PI / 2, y: 0, z: 0 }];
+  const instances = [];
+  specs.forEach((spec, s) => {
+    for (let i = 0; i < spec.qty; i += 1) {
+      const n = instances.length;
+      instances.push(makeVerticalInstance(spec.id, `${spec.id}-${String(i).padStart(2, '0')}`, { x: n, y: 5, z: s }, {
+        transform: {
+          position: { x: n, y: 5, z: s },
+          rotation: rotations[n % rotations.length],
+          scale: { x: 1, y: 1, z: 1 },
+        },
+        packedProfile: 'max-capacity',
+        notes: `note-${n}`,
+      }));
+    }
+  });
+  // Interleave Case types so grouping, not input order, forms the bands.
+  const shuffled = instances.map((inst, i) => ({ inst, key: (i * 7) % instances.length }))
+    .sort((a, b) => a.key - b.key).map(entry => entry.inst);
+
+  const truck = RECT_TRUCK;
+  const layout = await buildOrganizedUnpackLayout({ cases, instances: shuffled, truck });
+  assert.equal(layout.movedCount, instances.length, 'every resolved instance moves');
+  assert.deepEqual(layout.cases.map(inst => inst.id), shuffled.map(inst => inst.id),
+    'instances keep their identity and Pack order');
+  const sourceById = new Map(shuffled.map(inst => [inst.id, inst]));
+  for (const inst of layout.cases) {
+    const spec = specs.find(entry => entry.id === inst.caseId);
+    assert.equal(inst.placement, 'staged');
+    assert.equal(Object.hasOwn(inst, 'packedProfile'), false, 'packed profile removed');
+    assert.deepEqual(inst.transform.rotation, { x: 0, y: 0, z: 0 }, 'canonical staging rotation');
+    assert.deepEqual(inst.orientedDims, spec.dims, 'canonical effective dimensions');
+    assert.equal(inst.transform.position.y, spec.dims.height / 2, 'resting on the staging floor');
+    const source = sourceById.get(inst.id);
+    assert.equal(inst.caseId, source.caseId);
+    assert.equal(inst.notes, source.notes, 'user metadata preserved');
+    assert.deepEqual(inst.transform.scale, source.transform.scale);
+  }
+
+  const aabbs = layout.cases.map(stagedAabb);
+  for (let left = 0; left < aabbs.length; left += 1) {
+    for (let right = left + 1; right < aabbs.length; right += 1) {
+      assert.equal(aabbsOverlap(aabbs[left], aabbs[right]), false,
+        `${layout.cases[left].id} and ${layout.cases[right].id} must not overlap`);
+    }
+  }
+
+  const measured = measureOrganizedClearances(layout.cases);
+  assert.ok(measured.withinRow.length > 0 && measured.betweenRows.length > 0, 'fixture has columns and rows');
+  for (const gap of [...measured.withinRow, ...measured.betweenRows]) {
+    assert.ok(Math.abs(gap - 4) < 1e-9, `same-type edge-to-edge clearance ${gap} must be 4 in`);
+  }
+  assert.equal(measured.betweenGroups.length, specs.length - 1, 'one group per Case type');
+  for (const gap of measured.betweenGroups) {
+    assert.ok(Math.abs(gap - 8) < 1e-9, `group edge-to-edge clearance ${gap} must be 8 in`);
+  }
+  const rowsById = Object.fromEntries(measured.bands.map(band => [band.caseId, band.rows]));
+  assert.equal(rowsById['u-carton'], 4, 'a large group wraps into several rows (7 per row)');
+  assert.equal(rowsById['u-long'], 3, 'a long case wraps one per row');
+  assert.equal(rowsById['u-single'], 1, 'a one-item group is a single row');
+  const footprint = caseId => {
+    const spec = specs.find(entry => entry.id === caseId);
+    return spec.dims.length * spec.dims.width;
+  };
+  const order = measured.bands.map(band => footprint(band.caseId));
+  assert.deepEqual(order, [...order].sort((a, b) => b - a), 'larger footprints stay nearest the truck');
+  const canonical = (await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`)).getStagingLayout(truck);
+  assert.ok(Math.abs(measured.bands[0].minZ - canonical.originZ) < 1e-9, 'the first group starts at the canonical origin');
+  for (const band of measured.bands) {
+    assert.ok(Math.abs(band.minX - canonical.originX) < 1e-9, `${band.caseId} rows start at the canonical X origin`);
+    assert.ok(band.maxX <= canonical.truckL + 1e-9, `${band.caseId} stays within the canonical strip length`);
+  }
+
+  // Center spacing is dimension + clearance, e.g. the carton grid steps 16 x 14.
+  const cartonXs = [...new Set(layout.cases.filter(inst => inst.caseId === 'u-carton')
+    .map(inst => inst.transform.position.x))].sort((a, b) => a - b);
+  assert.deepEqual(cartonXs, [6, 22, 38, 54, 70, 86, 102], 'carton centers step 12 + 4 = 16 in');
+
+  const again = await buildOrganizedUnpackLayout({ cases, instances: shuffled, truck });
+  assert.equal(JSON.stringify(again), JSON.stringify(layout), 'repeated runs are byte-identical');
+  const reapplied = await buildOrganizedUnpackLayout({ cases, instances: layout.cases, truck });
+  assert.equal(JSON.stringify(reapplied.cases.map(inst => inst.transform)),
+    JSON.stringify(layout.cases.map(inst => inst.transform)), 'Unpack of an organized result is a fixed point');
+
+  const single = await buildOrganizedUnpackLayout({ cases, instances: [shuffled.find(inst => inst.caseId === 'u-wide')], truck });
+  assert.deepEqual(single.cases[0].transform.position,
+    { x: canonical.originX + 15, y: 10, z: canonical.originZ + 20 },
+    'one Case sits in the first cell at the canonical origin');
+});
+
+test('ORGANIZED-UNPACK compact spacing never leaks into canonical staging paths', async () => {
+  const caseData = makeVerticalCase({ id: 'leak-case', dimensions: { length: 10, width: 10, height: 10 } });
+  const { PackLibrary, packId } = await setupVerticalPack({ cases: [caseData], instances: [], packId: 'pack-leak' });
+  const layout = PackLibrary.getStagingLayout(RECT_TRUCK);
+  assert.equal(layout.gap, 12, 'the canonical staging gap stays 12 in');
+  assert.equal(layout.originZ, RECT_TRUCK.width / 2 + 12, 'the canonical staging origin stays truck edge + 12 in');
+
+  // Case Browser "+ Add" to staging.
+  const bulk = PackLibrary.addInstancesToStaging(packId, caseData.id, 3);
+  assert.equal(bulk.reason, 'ok');
+  const bulkXs = PackLibrary.getById(packId).cases.map(inst => inst.transform.position.x).sort((a, b) => a - b);
+  assert.deepEqual(bulkXs.slice(1).map((x, i) => x - bulkXs[i] - caseData.dimensions.length), [12, 12],
+    'bulk add-to-staging keeps 12 in edge-to-edge clearance');
+
+  // Default Add Case placement (findSafeStagingPosition).
+  const added = PackLibrary.addInstance(packId, caseData.id);
+  assert.equal(added.transform.position.x - bulkXs[2] - caseData.dimensions.length, 12,
+    'Add Case staging keeps 12 in edge-to-edge clearance');
+
+  // Organized Unpack takes only the origin and strip from the canonical layout:
+  // a different canonical gap does not change its spacing.
+  const EditorScreen = await loadEditorScreenModule();
+  const instances = [0, 1, 2].map(i => makeVerticalInstance(caseData.id, `leak-${i}`, { x: i * 20, y: 5, z: 0 }));
+  const build = gap => EditorScreen.buildOrganizedUnpackStagingCases({
+    instances,
+    stagingLayout: { ...layout, gap },
+    getCaseById: () => caseData,
+    getCanonicalInstanceEffectiveDims: PackLibrary.getCanonicalInstanceEffectiveDims,
+  }).cases.map(inst => inst.transform.position);
+  assert.deepEqual(build(30), build(12), 'Unpack spacing is independent of the canonical gap');
+  assert.deepEqual(build(12).map(p => p.x), [5, 19, 33], 'Unpack uses its own 4 in clearance');
 });

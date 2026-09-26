@@ -676,6 +676,13 @@ export function groupInstancesForUnpackStaging(instances, getCaseById) {
 }
 
 const ORGANIZED_UNPACK_ROTATION = Object.freeze({ x: 0, y: 0, z: 0 });
+// Organized Unpack presentation spacing, in inches of edge-to-edge clearance:
+// between neighbours of one Case type, and between the occupied bounds of
+// consecutive Case-type groups. Unpack-only — the canonical staging layout
+// supplies the strip origin and length, and every other staging path keeps
+// the canonical gap.
+export const ORGANIZED_UNPACK_ITEM_GAP = 4;
+export const ORGANIZED_UNPACK_GROUP_GAP = 8;
 
 export function buildOrganizedUnpackStagingCases({
   instances,
@@ -685,11 +692,11 @@ export function buildOrganizedUnpackStagingCases({
 }) {
   const sourceInstances = Array.isArray(instances) ? instances : [];
   const layout = stagingLayout && typeof stagingLayout === 'object' ? stagingLayout : {};
-  const gap = Number(layout.gap);
+  const gap = ORGANIZED_UNPACK_ITEM_GAP;
   const truckLength = Number(layout.truckL);
   const originX = Number(layout.originX);
   const originZ = Number(layout.originZ);
-  const canBuildLayout = gap > 0 && truckLength > 0 &&
+  const canBuildLayout = Number(layout.gap) > 0 && truckLength > 0 &&
     Number.isFinite(originX) && Number.isFinite(originZ) &&
     typeof getCaseById === 'function' &&
     typeof getCanonicalInstanceEffectiveDims === 'function';
@@ -731,7 +738,6 @@ export function buildOrganizedUnpackStagingCases({
   });
 
   const stagedById = new Map();
-  const categoryBandGap = gap * 2;
   let categoryOriginZ = originZ;
   let movedCount = 0;
   for (const group of stagingGroups) {
@@ -749,6 +755,7 @@ export function buildOrganizedUnpackStagingCases({
     const cellLength = Math.max(...payload.map(item => item.dims.length)) + gap;
     const cellWidth = Math.max(...payload.map(item => item.dims.width)) + gap;
     const cols = Math.max(1, Math.floor((truckLength + gap) / Math.max(1, cellLength)));
+    let groupMaxZ = categoryOriginZ;
     for (let index = 0; index < payload.length; index += 1) {
       const item = payload[index];
       const col = index % cols;
@@ -758,6 +765,7 @@ export function buildOrganizedUnpackStagingCases({
         y: item.dims.height / 2,
         z: categoryOriginZ + item.dims.width / 2 + row * cellWidth,
       };
+      groupMaxZ = Math.max(groupMaxZ, stagedPosition.z + item.dims.width / 2);
       movedCount += 1;
       stagedById.set(item.inst.id, {
         ...item.inst,
@@ -770,8 +778,8 @@ export function buildOrganizedUnpackStagingCases({
         placement: 'staged',
       });
     }
-    const rows = Math.ceil(payload.length / cols);
-    categoryOriginZ += rows * cellWidth + categoryBandGap;
+    // The next group starts a fixed clearance past this group's occupied edge.
+    categoryOriginZ = groupMaxZ + ORGANIZED_UNPACK_GROUP_GAP;
   }
 
   return {
@@ -5259,9 +5267,25 @@ export function createEditorScreen({
             { ...livePack, cases: nextCases }, CaseLibrary.getCases()
           );
         }
-        PackLibrary.update(packId, patch);
+        // Staging the cargo discards the packed solution this Pack's AutoPack
+        // Results describe. Clear them without a notification of their own so
+        // the Pack commit's notification renders the staged Pack without them
+        // (one Editor render); restore them if the commit does not land.
+        const discardedResults = StateStore.get('autoPackResults');
+        const clearsResults = movedCount > 0 && Boolean(discardedResults) && discardedResults.packId === packId;
+        if (clearsResults) StateStore.set({ autoPackResults: null }, { skipHistory: true, skipNotify: true });
+        let committed = null;
+        try {
+          committed = PackLibrary.update(packId, patch);
+        } finally {
+          if (clearsResults && !committed) {
+            StateStore.set({ autoPackResults: discardedResults }, { skipHistory: true, skipNotify: true });
+          }
+        }
+        if (!committed) return;
+        // PackLibrary.update notified StateStore synchronously, and that
+        // notification already ran the full Editor render for this commit.
         UIComponents.showToast(`Moved ${movedCount} case${movedCount === 1 ? '' : 's'} to staging.`, 'info', { title: 'Unpack' });
-        render();
       } finally {
         if (opToken && OperationLifecycle) OperationLifecycle.finishOperation(opToken);
       }

@@ -4423,8 +4423,11 @@ export function createEditorScreen({
     // Pack has already committed), so a full render's CaseScene.sync would snap
     // every mesh to its committed pose mid-animation. Keep the scene selection in
     // step with the app selection now, and render fully when the operation ends.
+    // Outside the Editor the scene is not shown: render() returns before touching
+    // it and clears any deferred render, and re-entering the Editor renders the
+    // selection current at that time.
     function renderSelection() {
-      if (OperationLifecycle && OperationLifecycle.isBusy()) {
+      if (StateStore.get('currentScreen') === 'editor' && OperationLifecycle && OperationLifecycle.isBusy()) {
         CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
         selectionRenderPending = true;
         return;

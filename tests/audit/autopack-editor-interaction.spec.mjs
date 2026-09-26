@@ -111,7 +111,8 @@ const AutoPackEngine = createAutoPackEngine({
   getActiveOrgIdForBilling: () => '', getOrgRoleHydrationState: () => 'ready',
   getProRuleSet: () => ({ canUseProFeature: true }), getWorkspaceSwitchState: () => null,
   maybeScheduleBillingRefresh() {}, normalizeOrgIdForBilling: value => value, openSettingsOverlay() {},
-  PackLibrary, runtimeWindow: window, SceneManager, StateStore, toast() {}, TrailerGeometry, UIComponents, Utils,
+  PackLibrary, runtimeWindow: window, SceneManager, StateStore, toast: (...args) => UIComponents.showToast(...args),
+  TrailerGeometry, UIComponents, Utils,
 });
 const TruckChangeController = createTruckChangeController({ PackLibrary, CaseLibrary, UIComponents, documentRef: document });
 const EditorUI = createEditorScreen({
@@ -148,13 +149,18 @@ const THREE = window.THREE;
 const canvas = () => SceneManager.getRenderer().domElement;
 const livePack = () => PackLibrary.getById(packId);
 const realSync = CaseScene.sync;
+const realSetSelected = CaseScene.setSelected;
 window.probe = {
   syncCalls: 0,
+  setSelectedCalls: 0,
   canvasPointerDowns: 0,
-  StateStore, OperationLifecycle, SceneManager, CaseScene,
+  toasts: [],
+  opLog: [],
+  StateStore, OperationLifecycle, SceneManager, CaseScene, AppShell,
   op: () => OperationLifecycle.currentOperation().kind,
   selection: () => (StateStore.get('selectedInstanceIds') || []).slice(),
   casesJson: () => JSON.stringify(livePack().cases),
+  poses: () => JSON.stringify(livePack().cases.map(inst => CaseScene.getObject(inst.id).position.toArray())),
   // Meshes not yet at their committed pose: AutoPack's remaining visual work.
   unplaced() {
     return livePack().cases.filter(inst => {
@@ -239,6 +245,14 @@ CaseScene.sync = pack => {
   window.probe.syncCalls += 1;
   return realSync(pack);
 };
+CaseScene.setSelected = ids => {
+  window.probe.setSelectedCalls += 1;
+  return realSetSelected(ids);
+};
+OperationLifecycle.subscribe(state => window.probe.opLog.push({ kind: state.kind, at: performance.now() }));
+new MutationObserver(records => records.forEach(record => record.addedNodes.forEach(node => {
+  if (node.nodeType === 1) window.probe.toasts.push(node.textContent.replace(/\\s+/g, ' ').trim());
+}))).observe(document.getElementById('toast-container'), { childList: true });
 canvas().addEventListener('pointerdown', () => { window.probe.canvasPointerDowns += 1; }, true);
 window.__EDITOR_READY = true;
 `;
@@ -248,31 +262,40 @@ const CONTENT_TYPES = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json',
 };
 const SERVED = ['/src/', '/styles/', '/vendor/', '/media/', '/node_modules/three/'];
+// Transient stage toasts the status card replaced as the only running-progress channel.
+const PROGRESS_TOAST = /Building load plan|Checking fit|Preparing final layout/;
+
+async function openEditor(browser) {
+  const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+  page.setDefaultTimeout(30000);
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/*', async route => {
+    const url = new URL(route.request().url());
+    if (url.origin !== ORIGIN) return route.abort();
+    if (url.pathname === '/index.html') return route.fulfill({ contentType: 'text/html', body: indexHtml });
+    if (url.pathname === '/src/app.js') return route.fulfill({ contentType: 'text/javascript', body: bootstrap });
+    const ext = url.pathname.slice(url.pathname.lastIndexOf('.'));
+    if (!SERVED.some(prefix => url.pathname.startsWith(prefix)) || !CONTENT_TYPES[ext]) {
+      return route.fulfill({ status: 404, body: '' });
+    }
+    const text = /^\.(js|mjs|css|svg|json)$/.test(ext);
+    const body = await read(url.pathname.slice(1), text ? 'utf8' : undefined).catch(() => null);
+    return body === null
+      ? route.fulfill({ status: 404, body: '' })
+      : route.fulfill({ contentType: CONTENT_TYPES[ext], body });
+  });
+  await page.goto(`${ORIGIN}/index.html`);
+  await page.waitForFunction(() => window.__EDITOR_READY === true);
+  return { page, errors };
+}
+
+const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 
 test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs the animating scene', { timeout: 120000 }, async () => {
-  const browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const browser = await launch();
   try {
-    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
-    page.setDefaultTimeout(30000);
-    const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
-    await page.route('**/*', async route => {
-      const url = new URL(route.request().url());
-      if (url.origin !== ORIGIN) return route.abort();
-      if (url.pathname === '/index.html') return route.fulfill({ contentType: 'text/html', body: indexHtml });
-      if (url.pathname === '/src/app.js') return route.fulfill({ contentType: 'text/javascript', body: bootstrap });
-      const ext = url.pathname.slice(url.pathname.lastIndexOf('.'));
-      if (!SERVED.some(prefix => url.pathname.startsWith(prefix)) || !CONTENT_TYPES[ext]) {
-        return route.fulfill({ status: 404, body: '' });
-      }
-      const text = /^\.(js|mjs|css|svg|json)$/.test(ext);
-      const body = await read(url.pathname.slice(1), text ? 'utf8' : undefined).catch(() => null);
-      return body === null
-        ? route.fulfill({ status: 404, body: '' })
-        : route.fulfill({ contentType: CONTENT_TYPES[ext], body });
-    });
-    await page.goto(`${ORIGIN}/index.html`);
-    await page.waitForFunction(() => window.__EDITOR_READY === true);
+    const { page, errors } = await openEditor(browser);
 
     const probe = fn => page.evaluate(fn);
     const unplaced = () => probe(() => window.probe.unplaced());
@@ -350,6 +373,87 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
     assert.deepEqual(await probe(() => window.probe.selection()), [cargo.id], 'selection kept through completion');
     await page.waitForFunction(() => [...document.querySelectorAll('#editor-right button')]
       .some(button => button.textContent.trim() === 'Duplicate'));
+    const toasts = await probe(() => window.probe.toasts.slice());
+    assert.deepEqual(toasts.filter(text => PROGRESS_TOAST.test(text)), [], 'the status card is the only running-progress channel');
+    assert.ok(toasts.some(text => /Packed \d+ of \d+ cases/.test(text)), `completion toast remains (${toasts.join(' | ')})`);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('P0-SM-OF-10B a selection change outside the Editor never touches the scene; re-entry renders it', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const probe = fn => page.evaluate(fn);
+    const target = 'cargo-7';
+
+    await page.click('#btn-autopack');
+    await page.waitForFunction(count => document.querySelector('.autopack-loading-message')?.textContent ===
+      'Placing cargo in the truck...' && window.probe.unplaced() < count, CARGO_COUNT);
+
+    // Leave the Editor mid-animation and change the selection while the in-flight
+    // batch wait still owns the operation: the busy path must not run off-screen.
+    const departed = await page.evaluate(id => {
+      const p = window.probe;
+      p.AppShell.navigate('packs');
+      p.departedAt = performance.now();
+      p.departurePoses = p.poses();
+      p.countsAtDeparture = { setSelected: p.setSelectedCalls, sync: p.syncCalls };
+      p.StateStore.set({ selectedInstanceIds: [id] }, { skipHistory: true });
+      return {
+        screen: p.StateStore.get('currentScreen'), op: p.op(), selection: p.selection(),
+        setSelected: p.setSelectedCalls - p.countsAtDeparture.setSelected, sync: p.syncCalls - p.countsAtDeparture.sync,
+      };
+    }, target);
+    assert.equal(departed.screen, 'packs');
+    assert.equal(departed.op, 'autopacking', 'the in-flight batch wait still owns the operation');
+    assert.deepEqual(departed.selection, [target]);
+    assert.equal(departed.setSelected, 0, 'an off-Editor selection change never touches CaseScene');
+    assert.equal(departed.sync, 0, 'an off-Editor selection change never re-syncs the scene');
+
+    // Departure invalidated the run: the operation releases within the batch wait,
+    // and nothing deferred fires against the hidden scene when it does.
+    await page.waitForFunction(() => window.probe.op() === 'idle', null, { timeout: 5000 });
+    await page.waitForTimeout(600);
+    const released = await probe(() => {
+      const p = window.probe;
+      const idle = p.opLog.find(entry => entry.kind === 'idle' && entry.at >= p.departedAt);
+      return {
+        releaseMs: idle ? idle.at - p.departedAt : null,
+        posesUnchanged: p.poses() === p.departurePoses,
+        setSelected: p.setSelectedCalls - p.countsAtDeparture.setSelected,
+        sync: p.syncCalls - p.countsAtDeparture.sync,
+        results: p.StateStore.get('autoPackResults'),
+        status: document.querySelectorAll('[data-tp3d-autopack-loading]').length,
+      };
+    });
+    assert.ok(released.releaseMs !== null && released.releaseMs < 1000,
+      `the operation is released promptly after departure (${released.releaseMs} ms)`);
+    assert.equal(released.posesUnchanged, true, 'no stale scene write after departure');
+    assert.equal(released.setSelected, 0, 'no deferred selection render fires off-Editor');
+    assert.equal(released.sync, 0, 'no deferred full render fires off-Editor');
+    assert.equal(released.results, null, 'a departed run publishes no Results');
+    assert.equal(released.status, 0, 'run cleanup closed the status');
+
+    // Re-entering the Editor renders the committed Pack and the current selection.
+    await probe(() => window.probe.AppShell.navigate('editor'));
+    await page.waitForFunction(() => [...document.querySelectorAll('#editor-right button')]
+      .some(button => button.textContent.trim() === 'Duplicate'));
+    const back = await page.evaluate(id => ({
+      unplaced: window.probe.unplaced(),
+      selection: window.probe.selection(),
+      emissive: window.probe.emissive(id),
+      accent: window.probe.accent(),
+      synced: window.probe.syncCalls > window.probe.countsAtDeparture.sync,
+      autopackButton: document.getElementById('btn-autopack').textContent.trim(),
+    }), target);
+    assert.equal(back.synced, true, 're-entry runs the normal Editor render');
+    assert.equal(back.unplaced, 0, 're-entry shows the committed Pack');
+    assert.deepEqual(back.selection, [target]);
+    assert.equal(back.emissive, back.accent, 're-entry highlights the current selection');
+    assert.equal(back.autopackButton, 'AutoPack', 're-entry shows the idle operation state');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

@@ -920,8 +920,6 @@ export function createAutoPackEngine({
           ? runtimeWindow.__TP3D_DIAG__
           : null;
 
-      toast('Building load plan…', 'info', { title: 'AutoPack', duration: 1800 });
-
       const truck = packData.truck;
       const mode = (truck && truck.shapeMode) ? truck.shapeMode : 'rect';
       const truckL = truck.length || 636;
@@ -964,10 +962,10 @@ export function createAutoPackEngine({
 
       const stagingMap = buildStagingMap(packItems, truck);
       stageInstant(stagingMap);
-      // Paint a concrete working state, then yield a frame, BEFORE the synchronous
-      // solver locks the main thread — otherwise large packs look frozen at their
-      // old positions with a stale "starting" toast.
-      toast('Checking fit, stacking, and safety rules…', 'info', { title: 'AutoPack', duration: 4000 });
+      // Yield a frame so the staged poses and the status card's solve stage paint
+      // BEFORE the synchronous solver locks the main thread — otherwise large packs
+      // look frozen at their old positions. The status card is the only
+      // running-progress channel; no stage toast duplicates it.
       await waitForAnimationFrames(2);
       if (isRunStale()) return;
 
@@ -1060,8 +1058,6 @@ export function createAutoPackEngine({
       const packedCount = placements instanceof Map ? placements.size : 0;
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
-
-      toast('Preparing final layout…', 'info', { title: 'AutoPack', duration: 1600 });
 
       const nextCases = buildAutoPackNextCases(
         packData.cases || [],

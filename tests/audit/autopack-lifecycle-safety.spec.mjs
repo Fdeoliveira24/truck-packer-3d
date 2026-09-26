@@ -225,7 +225,7 @@ async function withFixture(options, run) {
   });
   const fixture = {
     engine, clock, state, StateStore, packs, packWrites, stateWrites, objects,
-    frames, tweenCompletes, tweenState, lifecycle, previews, overlays, diagnostics,
+    frames, tweenCompletes, tweenState, lifecycle, previews, overlays, diagnostics, toasts,
     listenerCount: () => listeners.size,
     get solveCalls() { return solveCalls; },
     async frame() {
@@ -573,4 +573,81 @@ test('10B: status shows only stages a user can see, each present at an event-loo
       assert.equal(f.overlays[0].closed, true, 'engine cleanup ends the status');
     });
   }
+});
+
+test('10B: the status is the only running-progress channel; outcome, warning, and error toasts remain', async () => {
+  const progress = /Building load plan|Checking fit|Preparing final layout/;
+  const scenarios = {
+    animated: {
+      options: { caseCount: 2, tween: 'none' },
+      expected: [['Packed 2 of 2 cases (25.0% volume).', 'success']],
+    },
+    large: {
+      options: { caseCount: 301, tween: 'none' },
+      expected: [
+        ['Large load detected. Showing the final layout instantly to keep the editor responsive.', 'info'],
+        ['Packed 301 of 301 cases (25.0% volume).', 'success'],
+      ],
+    },
+    budget: {
+      options: { solve: args => solutionFor(args.items, { count: 0, warnings: ['time budget reached'] }) },
+      expected: [
+        ['Packed 0 of 1 cases (25.0% volume). 1 moved to staging.', 'warning'],
+        ['AutoPack reached its time budget; remaining items were staged. The placed layout is fully validated.', 'warning'],
+      ],
+    },
+    unresolved: {
+      options: {},
+      missingCase: true,
+      expected: [
+        ['1 unresolved item excluded from AutoPack (missing case definition).', 'warning'],
+        ['1 item(s) were excluded — their case definition is missing', 'warning'],
+      ],
+    },
+    failure: {
+      options: { solve: () => { throw new Error('injected solver failure'); } },
+      expected: [['AutoPack failed', 'error']],
+    },
+  };
+  for (const [name, scenario] of Object.entries(scenarios)) {
+    await withFixture(scenario.options, async f => {
+      if (scenario.missingCase) f.packs.get('a').cases[0].caseId = 'deleted';
+      const priorError = console.error;
+      if (name === 'failure') console.error = () => {};
+      try {
+        const promise = f.engine.pack();
+        await f.initialFrames();
+        await f.finish(promise);
+      } finally {
+        console.error = priorError;
+      }
+      const shown = f.toasts.map(([message, type]) => [message, type]);
+      assert.deepEqual(shown.filter(([message]) => progress.test(message)), [], `${name}: no stage toast duplicates the status`);
+      for (const toast of scenario.expected) {
+        assert.ok(shown.some(([message, type]) => message === toast[0] && type === toast[1]), `${name}: keeps ${toast[0]}`);
+      }
+    });
+  }
+});
+
+test('10B: screen departure invalidates the run at once and releases the operation within one batch wait', async () => {
+  await withFixture({ caseCount: 6 }, async f => {
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    const writesAtDeparture = [...f.objects.values()].map(obj => obj.writes.length);
+    f.StateStore.set({ currentScreen: 'packs' });
+    // Invalidation settles the run's tween fallbacks synchronously; only the
+    // in-flight batch sleep still holds the operation.
+    assert.equal(f.clock.jobs.size, 1, 'departure cancels the run-owned fallbacks at once');
+    assert.equal(f.lifecycle.currentOperation().kind, 'autopacking', 'the in-flight batch wait still owns the token');
+    await f.clock.advanceBy(276);
+    assert.equal(f.lifecycle.isBusy(), false, 'the operation is released within one batch wait');
+    assert.equal(f.engine.running, false);
+    assert.equal(f.overlays[0].closed, true, 'run cleanup closed the status');
+    await promise;
+    assert.deepEqual([...f.objects.values()].map(obj => obj.writes.length), writesAtDeparture, 'no stale scene write');
+    assert.equal(f.state.autoPackResults, null);
+    assert.equal(f.clock.jobs.size, 0);
+    assert.equal(f.listenerCount(), 0);
+  });
 });

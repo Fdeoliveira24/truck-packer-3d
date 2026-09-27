@@ -2234,7 +2234,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       getViewSignature: pack => editorViewSignature(normalizeEditorView(pack.editorView) ||
         SceneManager.getDefaultEditorView(pack.truck)),
     });
-    EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 
     // ==== UI: Packs Screen ====
     // ============================================================================
@@ -2326,6 +2325,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       TruckChangeController,
       OperationLifecycle,
     });
+    EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 
     // ============================================================================
     // SECTION: SCREEN UI (UPDATES)

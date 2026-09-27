@@ -380,6 +380,8 @@ try {
   }
 } catch (_) { /* ignore */ }
 
+const PREVIEW_RENDER_VERSION = 2;
+
 /**
  * Coalesce automatic Pack preview requests without retaining workspace or Pack
  * objects across the debounce window.
@@ -431,7 +433,8 @@ function createPackPreviewScheduler({
     const viewSignature = getViewSignature(pack);
     if (!viewSignature) return null;
     if (pack.thumbnailVisualSignature === getVisualSignature(pack) &&
-        pack.thumbnailViewSignature === viewSignature) return null;
+        pack.thumbnailViewSignature === viewSignature &&
+        (!pack.thumbnail || pack.thumbnailRenderVersion === PREVIEW_RENDER_VERSION)) return null;
     return { packId, workspaceKey: String(getActiveWorkspaceKey()) };
   }
 
@@ -1649,6 +1652,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,
                 thumbnailVisualSignature: visualSignature,
                 thumbnailViewSignature: viewSignature,
+                thumbnailRenderVersion: PREVIEW_RENDER_VERSION,
               }));
             }
             if (!quiet && source === 'manual') {
@@ -1664,9 +1668,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
           }
           if (!validateContext()) return false;
-          const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), 320, 180, {
-            mimeType: 'image/jpeg', quality: 0.72, hideGrid: true,
-          });
+          const dataUrl = renderPreviewToDataUrl(SceneManager.getCamera(), 640, 360);
           const bytes = estimateDataUrlBytes(dataUrl);
           if (bytes > 150 * 1024) throw new Error(`Preview too large (${Math.round(bytes / 1024)}KB)`);
 
@@ -1677,6 +1679,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             thumbnailSource: source === 'manual' ? 'manual' : 'auto',
             thumbnailVisualSignature: visualSignature,
             thumbnailViewSignature: viewSignature,
+            thumbnailRenderVersion: PREVIEW_RENDER_VERSION,
           }, { skipHistory: true });
           if (!updated) throw new Error('Load plan not found');
           if (!quiet) UIComponents.showToast('Preview captured', 'success', { title: 'Preview' });
@@ -1722,7 +1725,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const pack = identity && identity.pack;
         if (pack && view && (pack.cases?.length > 0 || pack.thumbnail) &&
             (pack.thumbnailVisualSignature !== identity.visualSignature ||
-             pack.thumbnailViewSignature !== view.signature)) {
+             pack.thumbnailViewSignature !== view.signature ||
+             (pack.thumbnail && pack.thumbnailRenderVersion !== PREVIEW_RENDER_VERSION))) {
           void capturePackPreview(pack.id, { source: 'auto', quiet: true, beforeDeparture: true });
         }
       }
@@ -1737,6 +1741,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!pack.thumbnail) return false;
         PackLibrary.updatePreview(packId, {
           thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,
+          thumbnailRenderVersion: PREVIEW_RENDER_VERSION,
           thumbnailVisualSignature: CaseScene.getVisualSignature(pack),
           thumbnailViewSignature: editorViewSignature(normalizeEditorView(pack.editorView) ||
             SceneManager.getDefaultEditorView(pack.truck)),
@@ -2219,6 +2224,74 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         ctx.putImageData(img, 0, 0);
         return canvas.toDataURL(mimeType, quality);
+      }
+
+      // Preview alone uses the display framebuffer: ordinary render targets omit
+      // the live ACES/exposure/sRGB pipeline. Screenshot/PDF retain their helper.
+      function renderPreviewToDataUrl(camera, width, height) {
+        const renderer = SceneManager.getRenderer();
+        const scene = SceneManager.getScene();
+        if (!renderer || !scene || !camera) throw new Error('3D viewport not ready');
+
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d', { colorSpace: 'srgb' });
+        if (!ctx) throw new Error('Preview canvas not available');
+
+        const size = renderer.getSize(new THREE.Vector2());
+        const pixelRatio = renderer.getPixelRatio();
+        const target = renderer.getRenderTarget();
+        const cubeFace = renderer.getActiveCubeFace();
+        const mipLevel = renderer.getActiveMipmapLevel();
+        const viewport = renderer.getViewport(new THREE.Vector4());
+        const scissor = renderer.getScissor(new THREE.Vector4());
+        const scissorTest = renderer.getScissorTest();
+        const autoClear = renderer.autoClear;
+        const autoClearColor = renderer.autoClearColor;
+        const autoClearDepth = renderer.autoClearDepth;
+        const aspect = camera.aspect;
+        const projection = camera.projectionMatrix.clone();
+        const projectionInverse = camera.projectionMatrixInverse.clone();
+        const grid = scene.getObjectByName('grid');
+        const gridVisible = grid?.visible;
+
+        try {
+          if (grid) grid.visible = false;
+          renderer.setRenderTarget(null);
+          // r185 sets only the backing buffer and DPR, never canvas CSS size.
+          renderer.setDrawingBufferSize(width, height, 1);
+          renderer.setScissorTest(false);
+          if (camera.isPerspectiveCamera) {
+            camera.aspect = width / height;
+            camera.updateProjectionMatrix();
+          }
+          renderer.render(scene, camera);
+          // No await: the browser may clear the WebGL buffer after this task.
+          // Render only the main scene here, omitting the separate axis widget.
+          ctx.drawImage(renderer.domElement, 0, 0);
+          return canvas.toDataURL('image/jpeg', 0.80);
+        } finally {
+          if (grid) grid.visible = gridVisible;
+          if (camera.isPerspectiveCamera) camera.aspect = aspect;
+          camera.projectionMatrix.copy(projection);
+          camera.projectionMatrixInverse.copy(projectionInverse);
+          renderer.setDrawingBufferSize(size.x, size.y, pixelRatio);
+          try {
+            renderer.setRenderTarget(null);
+            SceneManager.render();
+          } finally {
+            // Repaint also uses viewport/scissor and clear flags for the axis.
+            // Restore these even if the normal repaint itself fails.
+            renderer.autoClear = autoClear;
+            renderer.autoClearColor = autoClearColor;
+            renderer.autoClearDepth = autoClearDepth;
+            renderer.setRenderTarget(target, cubeFace, mipLevel);
+            renderer.setViewport(viewport);
+            renderer.setScissor(scissor);
+            renderer.setScissorTest(scissorTest);
+          }
+        }
       }
 
       return { captureScreenshot, generatePDF, capturePackPreview, capturePackPreviewFromLibrary, flushPackPreviewBeforeNavigation, clearPackPreview };

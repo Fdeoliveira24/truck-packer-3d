@@ -17,10 +17,11 @@ const subscriberEnd = appSource.indexOf('\n      });\n\n      try {\n        Rou
 assert.ok(subscriberAnchor >= 0 && subscriberStart > subscriberAnchor && subscriberEnd > subscriberStart,
   'app.js StateStore render subscriber is extractable');
 const appSubscriber = appSource.slice(subscriberStart + 'StateStore.subscribe('.length, subscriberEnd + '\n      }'.length);
-const schedulerStart = appSource.indexOf('function createPackPreviewScheduler({');
+const schedulerStart = appSource.indexOf('const PREVIEW_RENDER_VERSION =');
 const schedulerEnd = appSource.indexOf('\n\nconst TP3D_BUILD_STAMP', schedulerStart);
 assert.ok(schedulerStart >= 0 && schedulerEnd > schedulerStart, 'app.js preview scheduler is extractable');
 const previewScheduler = appSource.slice(schedulerStart, schedulerEnd);
+const previewVersionCode = appSource.slice(schedulerStart, appSource.indexOf(';', schedulerStart) + 1);
 
 const importMap = JSON.stringify({
   imports: { three: '/node_modules/three/build/three.module.js', 'three/addons/': '/node_modules/three/examples/jsm/' },
@@ -35,7 +36,9 @@ const readbackStart = appSource.indexOf('      function renderCameraToDataUrl(')
 const readbackEnd = appSource.indexOf('      return { captureScreenshot, generatePDF,', readbackStart);
 assert.ok(captureStart >= 0 && captureEnd > captureStart && readbackEnd > readbackStart);
 const captureCode = appSource.slice(captureStart, captureEnd).replace('async function capturePackPreview(', 'async function productionCapturePackPreview(');
-const readbackCode = appSource.slice(readbackStart, readbackEnd).replace('function renderCameraToDataUrl(', 'function productionRenderCameraToDataUrl(');
+const readbackCode = appSource.slice(readbackStart, readbackEnd)
+  .replace('function renderCameraToDataUrl(', 'function productionRenderCameraToDataUrl(')
+  .replace('function renderPreviewToDataUrl(', 'function productionRenderPreviewToDataUrl(');
 
 const FIXTURE_CASES = [
   { id: 'qa-carton', name: 'QA Carton', dims: { length: 12, width: 10, height: 8 }, qty: 20 },
@@ -140,11 +143,17 @@ const CaseScene = createCaseScene({ SceneManager, CaseLibrary, CategoryService, 
 const OperationLifecycle = createOperationLifecycle();
 const InteractionManager = createInteractionManager({ SceneManager, CaseScene, StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, OperationLifecycle });
 
+${previewVersionCode}
 ${captureCode}
 ${readbackCode}
 const getActiveWorkspaceKey = () => CoreStorage.getWorkspaceScope();
 function renderCameraToDataUrl(...args) {
   const image = productionRenderCameraToDataUrl(...args);
+  log.push({ type: 'readback', packId: StateStore.get('currentPackId'), screen: StateStore.get('currentScreen'), image });
+  return image;
+}
+function renderPreviewToDataUrl(...args) {
+  const image = productionRenderPreviewToDataUrl(...args);
   log.push({ type: 'readback', packId: StateStore.get('currentPackId'), screen: StateStore.get('currentScreen'), image });
   return image;
 }
@@ -244,7 +253,10 @@ EditorUI.render();
 const livePack = () => PackLibrary.getById(StateStore.get('currentPackId'));
 window.probe = {
   EditorUI, CaseScene, SceneManager, InteractionManager, PackLibrary, CoreStorage, CaseLibrary, CategoryService, Normalizer, AutoPackEngine, AutoPackPreviewScheduler, ExportService, PacksUI,
-  snapshotImage: () => productionRenderCameraToDataUrl(SceneManager.getCamera(), 320, 180, { mimeType: 'image/jpeg', quality: 0.72, hideGrid: true }),
+  previewVersion: PREVIEW_RENDER_VERSION,
+  renderPreview: productionRenderPreviewToDataUrl,
+  renderLegacy: productionRenderCameraToDataUrl,
+  snapshotImage: () => productionRenderPreviewToDataUrl(SceneManager.getCamera(), 640, 360),
   log, faults, packId, otherPackId, StateStore, OperationLifecycle, AppShell, CorePackLibrary,
   toasts: [],
   op: () => OperationLifecycle.currentOperation().kind,
@@ -409,10 +421,245 @@ test('PR-B scheduler skips signature work for an empty Pack without a thumbnail 
   }
 });
 
+test('fidelity: Screenshot and all PDF views retain their original capture helper and options', () => {
+  const calls = [], toasts = [], downloads = [];
+  const camera = { name: 'perspective' }, topCam = { name: 'top' }, sideCam = { name: 'side' };
+  const doc = {
+    internal: { pageSize: { getWidth: () => 612, getHeight: () => 792 } },
+    getNumberOfPages: () => 1, splitTextToSize: text => [text],
+  };
+  for (const method of ['setFontSize', 'setFont', 'text', 'addImage', 'addPage', 'line', 'setPage', 'save']) doc[method] = () => {};
+  const dependencies = {
+    window: { __TP3D_BILLING: { getBillingState: () => ({ ok: true }) }, jspdf: { jsPDF: function () { return doc; } } },
+    BillingService: { getProRuleSet: () => ({ canUseProFeature: true }) },
+    getCurrentPack: () => ({ title: 'Fixture', truck: {}, cases: [] }),
+    PreferencesManager: { get: () => ({ export: { screenshotResolution: '1920x1080', pdfIncludeStats: false }, units: {} }) },
+    Utils: { parseResolution: () => ({ width: 1920, height: 1080 }) },
+    SceneManager: { getCamera: () => camera },
+    PackLibrary: { computeStats: () => ({ totalWeight: 0 }) },
+    ImportExport: { buildCargoInstructionsManifest: () => ({ caseEntries: [], itemEntries: [] }) },
+    buildOrthoCameras: () => ({ topCam, sideCam }), buildChecklist: () => [],
+    renderCameraToDataUrl: (...args) => { calls.push(args); return 'data:fixture'; },
+    renderPreviewToDataUrl: () => { assert.fail('export must not use the preview path'); },
+    downloadDataUrl: (...args) => downloads.push(args), safeName: () => 'fixture',
+    UIComponents: { showToast: (...args) => toasts.push(args) },
+  };
+  const start = appSource.indexOf('      function captureScreenshot(');
+  const end = appSource.indexOf('      function getCurrentPack()', start);
+  const exports = new Function(...Object.keys(dependencies), `${appSource.slice(start, end)}\nreturn { captureScreenshot, generatePDF };`)(...Object.values(dependencies));
+  exports.captureScreenshot(); exports.generatePDF();
+  assert.deepEqual(calls, [
+    [camera, 1920, 1080, { mimeType: 'image/png', hideGrid: true }],
+    [camera, 960, 540, { mimeType: 'image/jpeg', quality: 0.92, hideGrid: true }],
+    [topCam, 960, 520, { mimeType: 'image/jpeg', quality: 0.9, hideGrid: true }],
+    [sideCam, 960, 420, { mimeType: 'image/jpeg', quality: 0.9, hideGrid: true }],
+  ]);
+  assert.equal(downloads.length, 1);
+  assert.deepEqual(toasts.map(args => args.slice(0, 2)), [['Screenshot saved', 'success'], ['PDF exported', 'success']]);
+});
+
 test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, async t => {
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    await t.test('fidelity: display colors match direct rendering in light and dark scenes, JPEG is 640x360 q0.80', async () => {
+      await openPack(page);
+      const proof = await page.evaluate(async () => {
+        const q = window.probe;
+        const renderer = q.SceneManager.getRenderer();
+        const actualScene = q.SceneManager.getScene;
+        const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+        camera.position.set(0, 0, 5);
+        const scene = new THREE.Scene();
+        scene.add(new THREE.AmbientLight(0xffffff, 2));
+        const cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: '#3b82f6' }));
+        scene.add(cube);
+        q.SceneManager.getScene = () => scene;
+        const size = renderer.getSize(new THREE.Vector2());
+        const ratio = renderer.getPixelRatio();
+        const encode = HTMLCanvasElement.prototype.toDataURL;
+        const results = [];
+        try {
+          for (const background of ['#f6f7fb', '#121318']) {
+            scene.background = new THREE.Color(background);
+            // Independent reference: normal framebuffer with the live settings.
+            renderer.setRenderTarget(null);
+            renderer.setDrawingBufferSize(640, 360, 1);
+            renderer.setScissorTest(false);
+            camera.aspect = 640 / 360;
+            camera.updateProjectionMatrix();
+            renderer.render(scene, camera);
+            const reference = document.createElement('canvas');
+            reference.width = 640; reference.height = 360;
+            const referenceContext = reference.getContext('2d');
+            referenceContext.drawImage(renderer.domElement, 0, 0);
+            const expected = referenceContext.getImageData(0, 0, 640, 360).data;
+            renderer.setDrawingBufferSize(size.x, size.y, ratio);
+            camera.aspect = 1; camera.updateProjectionMatrix();
+            let encoderArgs = null;
+            let maxDifference = 0;
+            HTMLCanvasElement.prototype.toDataURL = function (...args) {
+              encoderArgs = args;
+              const actual = this.getContext('2d').getImageData(0, 0, 640, 360).data;
+              actual.forEach((value, index) => { maxDifference = Math.max(maxDifference, Math.abs(value - expected[index])); });
+              return encode.apply(this, args);
+            };
+            const image = q.renderPreview(camera, 640, 360);
+            const decoded = new Image(); decoded.src = image; await decoded.decode();
+            referenceContext.drawImage(decoded, 0, 0);
+            const corner = [...referenceContext.getImageData(0, 0, 1, 1).data];
+            results.push({ background, encoderArgs, maxDifference, corner,
+              width: decoded.naturalWidth, height: decoded.naturalHeight, jpeg: image.startsWith('data:image/jpeg;base64,') });
+          }
+        } finally {
+          HTMLCanvasElement.prototype.toDataURL = encode;
+          q.SceneManager.getScene = actualScene;
+          renderer.setDrawingBufferSize(size.x, size.y, ratio);
+          q.SceneManager.render();
+          cube.geometry.dispose(); cube.material.dispose();
+        }
+        return results;
+      });
+      for (const result of proof) {
+        assert.deepEqual(result.encoderArgs, ['image/jpeg', 0.8]);
+        assert.equal(result.maxDifference, 0, 'lossless pre-encode pixels equal independently rendered display pixels');
+        assert.equal(result.width, 640); assert.equal(result.height, 360); assert.equal(result.jpeg, true);
+        const expected = result.background === '#121318' ? [18, 19, 24] : [246, 247, 251];
+        assert.ok(expected.every((value, i) => Math.abs(result.corner[i] - value) <= 3), JSON.stringify(result));
+      }
+    });
+
+    await t.test('fidelity: renderer, grid, projection, CSS and ownership restore on success and render/copy/encode/repaint failure', async () => {
+      const proof = await page.evaluate(() => {
+        const q = window.probe;
+        const renderer = q.SceneManager.getRenderer();
+        const scene = q.SceneManager.getScene();
+        const camera = q.SceneManager.getCamera();
+        const grid = scene.getObjectByName('grid');
+        const render = renderer.render;
+        const copy = CanvasRenderingContext2D.prototype.drawImage;
+        const encode = HTMLCanvasElement.prototype.toDataURL;
+        const originalRatio = renderer.getPixelRatio();
+        const target = new THREE.WebGLRenderTarget(32, 32);
+        const snapshot = () => ({
+          size: renderer.getSize(new THREE.Vector2()).toArray(), ratio: renderer.getPixelRatio(),
+          buffer: [renderer.domElement.width, renderer.domElement.height],
+          css: renderer.domElement.style.cssText,
+          rect: renderer.domElement.getBoundingClientRect().toJSON(),
+          viewport: renderer.getViewport(new THREE.Vector4()).toArray(),
+          scissor: renderer.getScissor(new THREE.Vector4()).toArray(), scissorTest: renderer.getScissorTest(),
+          target: renderer.getRenderTarget() === target,
+          aspect: camera.aspect, projection: camera.projectionMatrix.toArray(), inverse: camera.projectionMatrixInverse.toArray(),
+          grid: grid.visible, autoClear: [renderer.autoClear, renderer.autoClearColor, renderer.autoClearDepth],
+          tone: [renderer.toneMapping, renderer.toneMappingExposure, renderer.outputColorSpace],
+          pack: JSON.stringify(q.PackLibrary.getById(q.packId)), view: q.EditorUI.getPreviewView()?.signature,
+        });
+        const results = [];
+        try {
+          for (const fault of ['none', 'render', 'copy', 'encode', 'repaint']) {
+            renderer.setPixelRatio(2);
+            renderer.setRenderTarget(target);
+            renderer.setViewport(3, 4, 27, 25);
+            renderer.setScissor(5, 6, 20, 21);
+            renderer.setScissorTest(true);
+            grid.visible = fault !== 'copy';
+            const before = snapshot();
+            const authority = q.EditorUI.getPreviewScene();
+            let renders = 0; let axis = 0; let message = null;
+            renderer.render = function (s, c) {
+              renders++;
+              if (s !== scene) axis++;
+              if ((fault === 'render' && renders === 1) || (fault === 'repaint' && s !== scene)) throw new Error('injected ' + fault);
+              return render.call(this, s, c);
+            };
+            CanvasRenderingContext2D.prototype.drawImage = function (...args) {
+              if (fault === 'copy') throw new Error('injected copy');
+              return copy.apply(this, args);
+            };
+            HTMLCanvasElement.prototype.toDataURL = function (...args) {
+              if (fault === 'encode') throw new Error('injected encode');
+              return encode.apply(this, args);
+            };
+            try { q.renderPreview(camera, 640, 360); } catch (error) { message = error.message; }
+            results.push({ fault, message, before, after: snapshot(), axis,
+              sameAuthority: q.EditorUI.getPreviewScene() === authority });
+          }
+        } finally {
+          renderer.render = render;
+          CanvasRenderingContext2D.prototype.drawImage = copy;
+          HTMLCanvasElement.prototype.toDataURL = encode;
+          renderer.setRenderTarget(null); renderer.setPixelRatio(originalRatio);
+          renderer.setScissorTest(false); grid.visible = true;
+          q.SceneManager.render(); target.dispose();
+        }
+        return results;
+      });
+      for (const result of proof) {
+        assert.deepEqual(result.after, result.before, result.fault);
+        assert.equal(result.message, result.fault === 'none' ? null : 'injected ' + result.fault);
+        assert.equal(result.sameAuthority, true);
+        assert.equal(result.axis, 1, 'axis restored on the normal repaint only');
+      }
+    });
+
+    await t.test('fidelity: oversized preview is rejected without replacing the image or its version', async () => {
+      const proof = await page.evaluate(async () => {
+        const q = window.probe;
+        await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+        const pack = q.PackLibrary.getById(q.packId);
+        const encode = HTMLCanvasElement.prototype.toDataURL;
+        HTMLCanvasElement.prototype.toDataURL = () => 'data:image/jpeg;base64,' + 'A'.repeat(204804);
+        q.mark();
+        let accepted;
+        try { accepted = await q.ExportService.capturePackPreview(q.packId, { source: 'manual' }); }
+        finally { HTMLCanvasElement.prototype.toDataURL = encode; }
+        return { accepted, samePack: pack === q.PackLibrary.getById(q.packId), op: q.op(),
+          writes: q.log.filter(e => e.type === 'write').length,
+          message: q.log.find(e => e.type === 'toast')?.message };
+      });
+      assert.equal(proof.accepted, false); assert.equal(proof.samePack, true);
+      assert.equal(proof.op, 'idle'); assert.equal(proof.writes, 0);
+      assert.match(proof.message, /Preview too large/);
+    });
+
+    for (const legacyVersion of [null, 1]) {
+      await t.test(`fidelity: legacy version ${legacyVersion} refreshes once without refreshing other Packs or cleared previews`, async () => {
+        await page.evaluate(async legacyVersion => {
+          const q = window.probe;
+          q.reset(); q.PackLibrary.open(q.packId); q.AppShell.navigate('editor');
+          await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+          q.AppShell.navigate('packs');
+          const image = q.PackLibrary.getById(q.packId).thumbnail;
+          q.PackLibrary.updatePreview(q.packId, { thumbnailRenderVersion: legacyVersion });
+          q.PackLibrary.updatePreview(q.otherPackId, { thumbnail: image, thumbnailRenderVersion: 1 });
+          q.mark();
+        }, legacyVersion);
+        await openPack(page);
+        await settlePreview(page);
+        assert.equal((await counts(page)).readbacks, 1);
+        assert.deepEqual(await page.evaluate(() => {
+          const q = window.probe;
+          return [q.PackLibrary.getById(q.packId).thumbnailRenderVersion, q.PackLibrary.getById(q.otherPackId).thumbnailRenderVersion];
+        }), [2, 1]);
+        await page.evaluate(() => { const q = window.probe; q.AppShell.navigate('packs'); q.mark(); });
+        await openPack(page);
+        await settlePreview(page);
+        assert.equal((await counts(page)).readbacks, 0);
+        await page.evaluate(() => {
+          const q = window.probe;
+          q.ExportService.clearPackPreview(q.packId);
+          q.AppShell.navigate('packs');
+          // Legacy Clear metadata has no version, but matching visual/view signatures.
+          q.PackLibrary.updatePreview(q.packId, { thumbnailRenderVersion: null });
+          q.mark();
+        });
+        await openPack(page);
+        await settlePreview(page);
+        assert.equal((await counts(page)).readbacks, 0);
+        assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).thumbnail), null);
+      });
+    }
+
     for (const mode of ['list', 'grid']) {
       await t.test(`manual ${mode} opens B, captures B pixels once and stays in Editor`, async () => {
         await page.evaluate(() => window.probe.reset());
@@ -730,13 +977,13 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         q.CorePackLibrary.updatePreview(q.packId, {
           thumbnail: 'data:image/png;base64,fixture', thumbnailUpdatedAt: 123,
           thumbnailSource: 'manual', thumbnailVisualSignature: 'fixture-signature',
-          thumbnailViewSignature: 'fixture-view',
+          thumbnailViewSignature: 'fixture-view', thumbnailRenderVersion: 2,
         });
         const before = q.PackLibrary.getById(q.packId);
         const fields = pack => ({
           thumbnail: pack.thumbnail, thumbnailUpdatedAt: pack.thumbnailUpdatedAt,
           thumbnailSource: pack.thumbnailSource, thumbnailVisualSignature: pack.thumbnailVisualSignature,
-          thumbnailViewSignature: pack.thumbnailViewSignature,
+          thumbnailViewSignature: pack.thumbnailViewSignature, thumbnailRenderVersion: pack.thumbnailRenderVersion,
           lastEdited: pack.lastEdited, stats: pack.stats,
         });
         const expected = fields(before);
@@ -771,8 +1018,8 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         return {
           result, before, after: target.toArray(), statsSame: stats === current.stats,
           lastEditedSame: pack.lastEdited === current.lastEdited,
-          persisted: stored.thumbnail === current.thumbnail && stored.thumbnailVisualSignature === current.thumbnailVisualSignature,
-          normalized: normalized.thumbnailVisualSignature === current.thumbnailVisualSignature,
+          persisted: stored.thumbnail === current.thumbnail && stored.thumbnailVisualSignature === current.thumbnailVisualSignature && stored.thumbnailRenderVersion === 2,
+          normalized: normalized.thumbnailVisualSignature === current.thumbnailVisualSignature && normalized.thumbnailRenderVersion === 2,
           runtimeOnly: !Object.hasOwn(q.StateStore.snapshot(), 'notification') && !Object.hasOwn(stored, 'notification'),
           authoritative: identity?.pack === current && q.CaseScene.getSyncedPack() === current,
           logs: q.log.map(e => e.type),

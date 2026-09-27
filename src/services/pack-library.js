@@ -2533,6 +2533,7 @@ export function create(packData) {
     thumbnailSource: null,
     thumbnailVisualSignature: null,
     thumbnailViewSignature: null,
+    thumbnailRenderVersion: null,
     editorView: null,
   };
   StateStore.set({ packLibrary: [...getPacks(), pack] });
@@ -2585,6 +2586,10 @@ export function updatePreview(packId, patch, { skipHistory = true } = {}) {
   const previewPatch = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
   const next = { ...previousPack };
   if (Object.hasOwn(previewPatch, 'thumbnail')) next.thumbnail = typeof previewPatch.thumbnail === 'string' ? previewPatch.thumbnail : null;
+  if (Object.hasOwn(previewPatch, 'thumbnailRenderVersion')) {
+    next.thumbnailRenderVersion = Number.isSafeInteger(previewPatch.thumbnailRenderVersion) && previewPatch.thumbnailRenderVersion > 0
+      ? previewPatch.thumbnailRenderVersion : null;
+  }
   if (Object.hasOwn(previewPatch, 'thumbnailUpdatedAt')) next.thumbnailUpdatedAt = Number.isFinite(previewPatch.thumbnailUpdatedAt) ? previewPatch.thumbnailUpdatedAt : null;
   if (Object.hasOwn(previewPatch, 'thumbnailSource')) next.thumbnailSource = ['manual', 'auto'].includes(previewPatch.thumbnailSource) ? previewPatch.thumbnailSource : null;
   if (Object.hasOwn(previewPatch, 'thumbnailVisualSignature')) {
@@ -2642,6 +2647,7 @@ export function duplicate(packId) {
   copy.thumbnailSource = null;
   copy.thumbnailVisualSignature = null;
   copy.thumbnailViewSignature = null;
+  copy.thumbnailRenderVersion = null;
   copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
   StateStore.set({ packLibrary: [...getPacks(), copy] });
   return copy;

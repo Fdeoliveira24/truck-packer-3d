@@ -1168,6 +1168,7 @@ export function createSceneRuntime({
 
     return {
       init: initScene,
+      render,
       resize,
       refreshTheme,
       setTruck,

@@ -68,7 +68,7 @@ async function createCaptureHarness({ screen = 'editor', packId = 'pack-a', onRe
     getActiveWorkspaceKey: () => workspaceKey,
     requestAnimationFrame: callback => frames.push(callback),
     SceneManager: { getCamera: () => ({}) },
-    renderCameraToDataUrl() {
+    renderPreviewToDataUrl() {
       renders.push({ screen: state.currentScreen, packId: state.currentPackId });
       if (onRender) onRender(StateStore);
       return 'data:image/jpeg;base64,AAAA';
@@ -76,7 +76,9 @@ async function createCaptureHarness({ screen = 'editor', packId = 'pack-a', onRe
     estimateDataUrlBytes: () => 3,
   };
   vm.createContext(context);
-  vm.runInContext(`${appSource.slice(start, end)}\nglobalThis.capture = capturePackPreview;`, context);
+  const versionStart = appSource.indexOf('const PREVIEW_RENDER_VERSION =');
+  const versionCode = appSource.slice(versionStart, appSource.indexOf(';', versionStart) + 1);
+  vm.runInContext(`${versionCode}\n${appSource.slice(start, end)}\nglobalThis.capture = capturePackPreview;`, context);
 
   return {
     capture: context.capture,

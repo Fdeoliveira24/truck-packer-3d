@@ -474,6 +474,8 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     thumbnail,
     thumbnailUpdatedAt,
     thumbnailSource,
+    thumbnailRenderVersion: Number.isSafeInteger(p?.thumbnailRenderVersion) && p.thumbnailRenderVersion > 0
+      ? p.thumbnailRenderVersion : null,
     thumbnailVisualSignature: typeof p?.thumbnailVisualSignature === 'string' && p.thumbnailVisualSignature
       ? p.thumbnailVisualSignature : null,
     thumbnailViewSignature: typeof p?.thumbnailViewSignature === 'string' && p.thumbnailViewSignature

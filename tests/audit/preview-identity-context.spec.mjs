@@ -12,7 +12,7 @@ const read = (path, encoding = 'utf8') => readFile(new URL(path, repo), encoding
 
 const appSource = await read('src/app.js');
 const subscriberAnchor = appSource.indexOf("let prevScreen = StateStore.get('currentScreen');");
-const subscriberStart = appSource.indexOf('StateStore.subscribe(changes => {', subscriberAnchor);
+const subscriberStart = appSource.indexOf('StateStore.subscribe((changes, _state, notification) => {', subscriberAnchor);
 const subscriberEnd = appSource.indexOf('\n      });\n\n      try {\n        Router.init(', subscriberStart);
 assert.ok(subscriberAnchor >= 0 && subscriberStart > subscriberAnchor && subscriberEnd > subscriberStart,
   'app.js StateStore render subscriber is extractable');
@@ -48,6 +48,7 @@ const TOTAL = FIXTURE_CASES.reduce((sum, c) => sum + c.qty, 0);
 
 const bootstrap = `
 import * as CoreStorage from '/src/core/storage.js';
+import * as Normalizer from '/src/core/normalizer.js';
 import { createPacksScreen } from '/src/screens/packs-screen.js';
 import { createTableFooter } from '/src/ui/table-footer.js';
 import { createUIComponents } from '/src/ui/ui-components.js';
@@ -152,7 +153,7 @@ function capturePackPreview(id, options) {
 }
 const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn createPackPreviewScheduler;')();
 const AutoPackPreviewScheduler = createPreviewScheduler({
-  StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getActiveWorkspaceKey: () => getActiveWorkspaceKey() + '|' + CoreStorage.captureScopeContext().generation,
+  StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => getActiveWorkspaceKey() + '|' + CoreStorage.captureScopeContext().generation,
 });
 
 const ExportService = { captureScreenshot() {}, generatePDF() {}, capturePackPreview, clearPackPreview, capturePackPreviewFromLibrary, flushPackPreviewBeforeNavigation };
@@ -178,7 +179,7 @@ const PacksUI = createPacksScreen({
   persistNow() {}, toast: (...args) => UIComponents.showToast(...args), toAscii: value => value,
 });
 PacksUI.init();
-const Storage = { saveSoon() {}, saveNow() {} };
+const Storage = { saveSoon() { log.push({ type: 'save' }); CoreStorage.saveSoon(); }, saveNow: CoreStorage.saveNow };
 const KeyboardManager = createKeyboardManager({
   StateStore, PackLibrary, CaseLibrary, CaseScene, SceneManager, InteractionManager, AutoPackEngine,
   OperationLifecycle, UIComponents, AppShell, Storage, Utils,
@@ -198,8 +199,8 @@ SceneManager.setTruck = (...args) => {
   log.push({ type: 'render', at: now(), op: OperationLifecycle.currentOperation().kind });
   return realSetTruck(...args);
 };
-const realUpdate = PackLibrary.update;
-PackLibrary.update = (id, patch, options) => {
+const realUpdate = PackLibrary.updatePreview;
+PackLibrary.updatePreview = (id, patch, options) => {
   const screen = StateStore.get('currentScreen');
   const result = realUpdate(id, patch, options);
   if (result && Object.hasOwn(patch, 'thumbnail')) log.push({ type: 'write', packId: id, screen, source: patch.thumbnailSource });
@@ -230,7 +231,7 @@ StateStore.subscribe(createAppSubscriber({
     schedule: () => { log.push({ type: 'previewSchedule', at: now() }); return AutoPackPreviewScheduler.schedule(); },
   },
   PackLibrary, ExportService, AppShell,
-  PacksUI, CasesUI: { render() {} }, RecoverableErrorOverlay: { syncRecoverableErrorOverlay() {} },
+  PacksUI: { render() { log.push({ type: 'packsRender' }); PacksUI.render(); } }, CasesUI: { render() { log.push({ type: 'casesRender' }); } }, RecoverableErrorOverlay: { syncRecoverableErrorOverlay() {} },
 }));
 OperationLifecycle.subscribe(state => log.push({ type: 'op', at: now(), kind: state.kind }));
 AppShell.navigate('editor');
@@ -238,7 +239,7 @@ EditorUI.render();
 
 const livePack = () => PackLibrary.getById(StateStore.get('currentPackId'));
 window.probe = {
-  EditorUI, CaseScene, SceneManager, InteractionManager, PackLibrary, CoreStorage, AutoPackEngine, AutoPackPreviewScheduler, ExportService, PacksUI,
+  EditorUI, CaseScene, SceneManager, InteractionManager, PackLibrary, CoreStorage, CaseLibrary, CategoryService, Normalizer, AutoPackEngine, AutoPackPreviewScheduler, ExportService, PacksUI,
   snapshotImage: () => productionRenderCameraToDataUrl(SceneManager.getCamera(), 320, 180, { mimeType: 'image/jpeg', quality: 0.72, hideGrid: true }),
   log, faults, packId, otherPackId, StateStore, OperationLifecycle, AppShell, CorePackLibrary,
   toasts: [],
@@ -294,7 +295,9 @@ window.probe.reset = () => {
   const op = OperationLifecycle.currentOperation();
   if (op.busy) OperationLifecycle.finishOperation(op.token);
   CoreStorage.setWorkspaceScope('fixture-a');
-  StateStore.replace(structuredClone(seed));
+  StateStore.replace(structuredClone(seed), { resetHistory: true });
+  PackLibrary.getPacks().forEach(pack => { pack.thumbnailVisualSignature = CaseScene.getVisualSignature(pack); });
+  StateStore.resetHistory();
   window.probe.mark();
 };
 window.probe.reset();
@@ -354,7 +357,7 @@ const counts = page => page.evaluate(() => {
 });
 const settlePreview = async page => {
   await page.waitForFunction(() => window.probe.op() === 'idle');
-  await page.waitForTimeout(650); // Beyond both production preview producers; detect duplicates.
+  await page.waitForTimeout(650); // Beyond the production debounce; detect duplicates.
   await page.waitForFunction(() => window.probe.op() === 'idle');
 };
 const openPack = (page, id = A) => page.evaluate(id => {
@@ -526,8 +529,8 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         const q = window.probe;
         const provisional = q.InteractionManager.hasProvisionalPose();
         const mismatches = q.sceneMismatches();
-        // Inject stale timestamps only; the pose comes from real pointer input.
-        q.PackLibrary.getById(q.otherPackId).lastEdited = Date.now();
+        // Inject unknown freshness only; the pose comes from real pointer input.
+        q.PackLibrary.getById(q.otherPackId).thumbnailVisualSignature = null;
         q.mark();
         q.AppShell.navigate('packs');
         return { provisional, mismatches, screen: q.StateStore.get('currentScreen'), writes: q.log.filter(e => e.type === 'write').length };
@@ -558,7 +561,9 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
           const original = q.InteractionManager.hasProvisionalPose;
           const token = kind === 'provisionalPose' ? null : q.OperationLifecycle.beginOperation(kind);
           if (!token) q.InteractionManager.hasProvisionalPose = () => true;
-          q.PackLibrary.update(q.packId, { notes: 'dirty fixture' });
+          const cases = structuredClone(q.PackLibrary.getById(q.packId).cases);
+          cases[0].transform.position.x += 10;
+          q.PackLibrary.update(q.packId, { cases });
           q.AppShell.navigate('packs');
           const before = { screen: q.StateStore.get('currentScreen'), writes: q.log.filter(e => e.type === 'write').length };
           await new Promise(resolve => setTimeout(resolve, 350));
@@ -582,7 +587,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       await page.evaluate(() => {
         const q = window.probe;
         q.reset();
-        q.PackLibrary.update(q.packId, { notes: 'stale while inactive' });
+        q.PackLibrary.getById(q.packId).thumbnailVisualSignature = null;
         q.mark();
       });
       await openPack(page);
@@ -628,7 +633,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       }
     });
 
-    await t.test('animated AutoPack duplicate and Unpack thumbnail render remain PR-B baseline', async () => {
+    await t.test('PR-B animated AutoPack and Unpack each capture quietly once without preview render', async () => {
       await page.evaluate(() => window.probe.reset());
       await openPack(page);
       await page.evaluate(() => window.probe.mark());
@@ -637,14 +642,11 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       await settlePreview(page);
       const animated = await counts(page);
       const attempts = await page.evaluate(() => window.probe.log.filter(e => e.type === 'request'));
-      assert.equal(attempts.length, 2, 'both existing preview producers remain');
+      assert.equal(attempts.length, 1);
       assert.equal(attempts[0].busy, false);
-      // Slow software WebGL can keep the first capture busy at the engine's
-      // unchanged 60 ms timer. Only that existing busy guard may reject it.
-      const accepted = attempts.filter(e => !e.busy).length;
-      assert.equal(animated.readbacks, accepted);
-      assert.equal(animated.writes, accepted);
-      assert.equal(animated.successes, attempts[1].busy ? 0 : 1, 'existing engine preview toast remains deferred');
+      assert.equal(animated.readbacks, 1);
+      assert.equal(animated.writes, 1);
+      assert.equal(animated.successes, 0);
       t.diagnostic('Animated AutoPack: ' + JSON.stringify(animated));
       await page.evaluate(() => window.probe.mark());
       await page.click('#btn-unpack');
@@ -652,7 +654,8 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       const unpack = await counts(page);
       assert.equal(unpack.readbacks, 1);
       assert.equal(unpack.writes, 1);
-      assert.equal(await page.evaluate(() => window.probe.log.filter(e => e.type === 'render').length), 2);
+      assert.equal(await page.evaluate(() => window.probe.log.filter(e => e.type === 'render').length), 1);
+      assert.equal(await page.evaluate(() => window.probe.log.filter(e => e.type === 'sync').length), 1);
       assert.equal(await page.evaluate(() => window.probe.results()), null);
       assert.deepEqual(await page.evaluate(() => window.probe.sceneMismatches()), []);
     });
@@ -665,15 +668,235 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         seed.packLibrary[0].cases = Array.from({ length: 301 }, (_, i) => ({ ...structuredClone(base), id: 'instant-' + i }));
         q.StateStore.replace(seed);
         q.PackLibrary.open(q.packId); q.AppShell.navigate('editor'); q.mark();
+        document.getElementById('btn-autopack').click();
       });
-      await page.click('#btn-autopack');
       await page.waitForFunction(() => window.probe.op() === 'idle' && window.probe.results()?.options?.length > 0);
       await settlePreview(page);
       const instant = await counts(page);
       assert.equal(instant.readbacks, 1);
       assert.equal(instant.writes, 1);
+      assert.equal(instant.requests, 1);
+      assert.equal(instant.successes, 0);
       assert.equal(await page.evaluate(() => window.probe.counts().packed), 301);
     });
+
+    await t.test('PR-B preview write persists, refreshes Packs only, preserves camera and scene authority', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page);
+      const proof = await page.evaluate(async () => {
+        const q = window.probe;
+        q.mark();
+        const pack = q.PackLibrary.getById(q.packId);
+        const stats = pack.stats;
+        const target = q.SceneManager.getControls().target;
+        target.set(31, 12, -17);
+        const before = target.toArray();
+        const result = await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+        q.CoreStorage.saveNow();
+        const saved = Object.values(localStorage).map(v => { try { return JSON.parse(v); } catch { return null; } })
+          .find(v => v?.packLibrary?.some(p => p.id === q.packId));
+        const stored = saved.packLibrary.find(p => p.id === q.packId);
+        const normalized = q.Normalizer.normalizeAppData(saved).packLibrary.find(p => p.id === q.packId);
+        const current = q.PackLibrary.getById(q.packId);
+        const identity = q.EditorUI.getPreviewScene();
+        return {
+          result, before, after: target.toArray(), statsSame: stats === current.stats,
+          lastEditedSame: pack.lastEdited === current.lastEdited,
+          persisted: stored.thumbnail === current.thumbnail && stored.thumbnailVisualSignature === current.thumbnailVisualSignature,
+          normalized: normalized.thumbnailVisualSignature === current.thumbnailVisualSignature,
+          runtimeOnly: !Object.hasOwn(q.StateStore.snapshot(), 'notification') && !Object.hasOwn(stored, 'notification'),
+          authoritative: identity?.pack === current && q.CaseScene.getSyncedPack() === current,
+          logs: q.log.map(e => e.type),
+        };
+      });
+      assert.equal(proof.result, true);
+      assert.equal(proof.persisted, true);
+      assert.equal(proof.normalized, true);
+      assert.equal(proof.runtimeOnly, true);
+      assert.equal(proof.statsSame, true);
+      assert.equal(proof.lastEditedSame, true);
+      assert.equal(proof.authoritative, true);
+      assert.ok(proof.after.every((value, index) => Math.abs(value - proof.before[index]) < 1e-10), 'camera target is unchanged within floating-point precision');
+      assert.equal(proof.logs.filter(e => e === 'save').length, 1);
+      assert.equal(proof.logs.filter(e => e === 'packsRender').length, 1);
+      for (const type of ['render', 'sync', 'casesRender', 'subscriberRender']) assert.equal(proof.logs.includes(type), false, type);
+    });
+
+    for (const [kind, expected] of [['notes', 0], ['position', 1], ['name', 1], ['appearance', 1], ['category', 1], ['shadowedColor', 0], ['irrelevant', 0]]) {
+      await t.test('PR-B freshness filters ' + kind, async () => {
+        await page.evaluate(() => window.probe.reset());
+        await openPack(page);
+        await page.evaluate(kind => {
+          const q = window.probe;
+          q.mark();
+          const pack = q.PackLibrary.getById(q.packId);
+          if (kind === 'notes') q.PackLibrary.update(q.packId, { notes: 'nonvisual edit' });
+          else if (kind === 'position') {
+            const cases = structuredClone(pack.cases); cases[0].transform.position.x += 15;
+            q.PackLibrary.update(q.packId, { cases });
+          } else {
+            const library = structuredClone(q.StateStore.get('caseLibrary'));
+            const data = library.find(c => c.id === (kind === 'irrelevant' ? 'red-crate' : 'qa-carton'));
+            if (kind === 'appearance') data.isPallet = true; // Current renderer uses wood material and pallet labels.
+            else if (kind === 'category') data.category = 'preview-blue';
+            else if (kind === 'shadowedColor') data.color = '#ffeedd'; // Category color wins in the current renderer.
+            else data.name += ' changed';
+            q.StateStore.set({ caseLibrary: library });
+          }
+        }, kind);
+        await settlePreview(page);
+        const result = await counts(page);
+        assert.equal(result.readbacks, expected);
+        assert.equal(result.writes, expected);
+        assert.equal(result.successes, 0);
+      });
+    }
+
+    await t.test('PR-B signature tracks current rendering fields with deterministic ordering', async () => {
+      await page.evaluate(() => window.probe.reset());
+      const proof = await page.evaluate(() => {
+        const q = window.probe;
+        const base = q.PackLibrary.getById(q.packId);
+        const signature = pack => q.CaseScene.getVisualSignature(pack);
+        const original = signature(base);
+        const modified = edit => { const pack = structuredClone(base); edit(pack); return signature(pack); };
+        const changed = [
+          p => { p.truck.width += 1; }, p => { p.truck.shapeMode = 'wheelWells'; p.truck.shapeConfig = { wellHeight: 20 }; },
+          p => { p.cases[0].transform.rotation.y = 1; }, p => { p.cases[0].hidden = true; },
+          p => { p.cases[0].placement = 'packed'; }, p => { p.cases[0].orientedDims = { length: 8, width: 10, height: 12 }; },
+        ].every(edit => modified(edit) !== original);
+        const ignored = modified(p => {
+          p.notes = 'n'; p.client = 'c'; p.title = 't'; p.projectName = 'p'; p.drawnBy = 'd'; p.lastEdited = 999999;
+          p.thumbnail = 'data:irrelevant'; p.thumbnailVisualSignature = 'irrelevant'; p.customerReference = 'r';
+          p.loadPlanNumber = 'LP-1234'; p.cases[0].transform.scale.x = 2;
+          p.cases.reverse();
+        }) === original;
+        const a = { ...base, truck: { ...base.truck, shapeMode: 'wheelWells', shapeConfig: { wellWidth: 10, wellHeight: 20 } } };
+        const b = { ...a, truck: { ...a.truck, shapeConfig: { wellHeight: 20, wellWidth: 10 } } };
+        return { changed, ignored, ordered: signature(a) === signature(b) };
+      });
+      assert.deepEqual(proof, { changed: true, ignored: true, ordered: true });
+    });
+
+    await t.test('PR-B legacy future-clock Pack settles once and stays fresh after reload', async () => {
+      await page.evaluate(() => {
+        const q = window.probe; q.reset();
+        const pack = q.PackLibrary.getById(q.packId);
+        delete pack.thumbnailVisualSignature;
+        pack.lastEdited = Date.now() + 1000000000000;
+      });
+      await openPack(page);
+      await settlePreview(page);
+      assert.equal((await counts(page)).writes, 1);
+      await page.evaluate(() => {
+        const q = window.probe;
+        q.StateStore.replace(q.Normalizer.normalizeAppData(q.StateStore.snapshot()));
+        q.AutoPackPreviewScheduler.schedule(); q.mark();
+      });
+      await settlePreview(page);
+      assert.equal((await counts(page)).readbacks, 0);
+    });
+
+    await t.test('PR-B visual equivalence cannot authorize an ordinary unsynchronized Pack replacement', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page);
+      const rejected = await page.evaluate(() => {
+        const q = window.probe;
+        q.StateStore.set({ packLibrary: q.PackLibrary.getPacks().map(p => ({ ...p })) }, { skipNotify: true, skipHistory: true });
+        return q.EditorUI.getPreviewScene() === null;
+      });
+      assert.equal(rejected, true);
+    });
+
+    await t.test('PR-B Case Library changes during frame wait reject the old scene/signature', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page);
+      const accepted = await page.evaluate(async () => {
+        const q = window.probe; q.mark();
+        const promise = q.ExportService.capturePackPreview(q.packId, { source: 'auto' });
+        await new Promise(requestAnimationFrame);
+        const library = structuredClone(q.StateStore.get('caseLibrary'));
+        library[0].name = 'Changed during frame';
+        q.StateStore.set({ caseLibrary: library });
+        return promise;
+      });
+      assert.equal(accepted, false);
+      await settlePreview(page);
+      assert.equal((await counts(page)).writes, 1, 'only the replacement request captures final visual state');
+      assert.equal((await counts(page)).successes, 0);
+    });
+
+    await t.test('PR-B deleting final cargo clears image without readback, render or history step', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page);
+      await page.evaluate(async () => {
+        const q = window.probe;
+        await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+        q.StateStore.resetHistory(); q.mark();
+        q.PackLibrary.update(q.packId, { cases: [] });
+      });
+      await settlePreview(page);
+      const proof = await page.evaluate(() => {
+        const q = window.probe; const pack = q.PackLibrary.getById(q.packId);
+        const cleared = pack.thumbnail === null && pack.thumbnailVisualSignature === q.CaseScene.getVisualSignature(pack);
+        const renders = q.log.filter(e => e.type === 'render').length;
+        const syncs = q.log.filter(e => e.type === 'sync').length;
+        const reads = q.log.filter(e => e.type === 'readback').length;
+        const undo = q.StateStore.undo();
+        return { cleared, renders, syncs, reads, undo, restored: Boolean(q.PackLibrary.getById(q.packId).thumbnail),
+          cases: q.PackLibrary.getById(q.packId).cases.length, extraUndo: q.StateStore.undo() };
+      });
+      assert.deepEqual(proof, { cleared: true, renders: 1, syncs: 1, reads: 0, undo: true, restored: true, cases: TOTAL, extraUndo: false });
+    });
+
+    await t.test('PR-B Clear stays cleared on reopen; Undo/Redo restore metadata; visual edits recapture', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page);
+      const history = await page.evaluate(async () => {
+        const q = window.probe;
+        await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+        const previous = q.PackLibrary.getById(q.packId);
+        const image = previous.thumbnail; const signature = previous.thumbnailVisualSignature;
+        q.ExportService.clearPackPreview(q.packId);
+        const undo = q.StateStore.undo(); const restored = q.PackLibrary.getById(q.packId);
+        const matches = restored.thumbnail === image && restored.thumbnailVisualSignature === signature;
+        const redo = q.StateStore.redo();
+        q.AppShell.navigate('packs'); q.mark(); q.AppShell.navigate('editor');
+        return { undo, matches, redo, cleared: q.PackLibrary.getById(q.packId).thumbnail === null };
+      });
+      assert.deepEqual(history, { undo: true, matches: true, redo: true, cleared: true });
+      await settlePreview(page);
+      assert.equal((await counts(page)).writes, 0);
+      await page.evaluate(() => {
+        const q = window.probe; q.mark();
+        const cases = structuredClone(q.PackLibrary.getById(q.packId).cases);
+        cases[0].transform.position.x += 10; q.PackLibrary.update(q.packId, { cases });
+      });
+      await settlePreview(page);
+      assert.equal((await counts(page)).writes, 1);
+    });
+
+    await t.test('PR-B rapid Undo/Redo captures final state once; capture preserves Redo', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page);
+      await page.evaluate(() => {
+        const q = window.probe; q.mark();
+        const cases = structuredClone(q.PackLibrary.getById(q.packId).cases);
+        cases[0].transform.position.x += 30;
+        q.PackLibrary.update(q.packId, { cases });
+        q.StateStore.undo(); q.StateStore.redo();
+      });
+      await settlePreview(page);
+      assert.equal((await counts(page)).writes, 1);
+      const proof = await page.evaluate(async () => {
+        const q = window.probe;
+        q.StateStore.undo();
+        await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+        return { redo: q.StateStore.redo(), signature: q.PackLibrary.getById(q.packId).thumbnailVisualSignature };
+      });
+      assert.equal(proof.redo, true);
+    });
+
     assert.deepEqual(errors.filter(e => !e.includes('injected scene sync failure')), [], 'no uncaught error or unhandled rejection');
   } finally {
     await browser.close();

@@ -258,7 +258,7 @@ export function projectPortableCase(caseData) {
  */
 export function projectPortablePack(pack) {
   const p = pack && typeof pack === 'object' ? pack : {};
-  const { stats: _stats, thumbnail: _thumbnail, thumbnailUpdatedAt: _thumbnailUpdatedAt, thumbnailSource: _thumbnailSource, ...portable } = p;
+  const { stats: _stats, thumbnail: _thumbnail, thumbnailUpdatedAt: _thumbnailUpdatedAt, thumbnailSource: _thumbnailSource, thumbnailVisualSignature: _thumbnailVisualSignature, ...portable } = p;
   return portable;
 }
 

@@ -29,7 +29,7 @@ const read = (path, encoding = 'utf8') => readFile(new URL(path, repo), encoding
 
 const appSource = await read('src/app.js');
 const subscriberAnchor = appSource.indexOf("let prevScreen = StateStore.get('currentScreen');");
-const subscriberStart = appSource.indexOf('StateStore.subscribe(changes => {', subscriberAnchor);
+const subscriberStart = appSource.indexOf('StateStore.subscribe((changes, _state, notification) => {', subscriberAnchor);
 const subscriberEnd = appSource.indexOf('\n      });\n\n      try {\n        Router.init(', subscriberStart);
 assert.ok(subscriberAnchor >= 0 && subscriberStart > subscriberAnchor && subscriberEnd > subscriberStart,
   'app.js StateStore render subscriber is extractable');
@@ -157,8 +157,9 @@ async function capturePackPreview(previewPackId) {
     await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
     if (!OperationLifecycle.isCurrent(token) || !PackLibrary.getById(previewPackId)) return false;
     window.probe.log.push({ type: 'previewWrite', at: performance.now() });
-    CorePackLibrary.update(previewPackId, {
+    CorePackLibrary.updatePreview(previewPackId, {
       thumbnail: 'data:image/jpeg;base64,AAAA', thumbnailUpdatedAt: Date.now(), thumbnailSource: 'auto',
+      thumbnailVisualSignature: CaseScene.getVisualSignature(PackLibrary.getById(previewPackId)),
     }, { skipHistory: true });
     return true;
   } finally {
@@ -167,7 +168,7 @@ async function capturePackPreview(previewPackId) {
 }
 const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn createPackPreviewScheduler;')();
 const AutoPackPreviewScheduler = createPreviewScheduler({
-  StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getActiveWorkspaceKey: () => 'fixture-workspace',
+  StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => 'fixture-workspace',
 });
 
 const ExportService = { captureScreenshot() {}, generatePDF() {}, capturePackPreview, clearPackPreview: () => false };
@@ -507,7 +508,7 @@ test('P0-UNPACK-UX successful Unpack clears Results in its one commit render and
     assert.ok(geometry.bands.every(band => band.minX >= -EPS && band.maxX <= truck.length + EPS),
       'every group stays within the canonical staging strip');
 
-    // The remaining render comes from the automatic preview write, after the
+    // The automatic preview write must not render the Editor again after the
     // Unpack operation released the slot.
     await page.waitForFunction(() => window.probe.log.some(e => e.type === 'previewWrite'), null, { timeout: 10000 });
     await settle(page);
@@ -519,8 +520,8 @@ test('P0-UNPACK-UX successful Unpack clears Results in its one commit render and
     assert.ok(previewWrite >= 0, 'the automatic preview capture ran after Unpack');
     assert.equal(later.slice(0, previewWrite).filter(e => e.type === 'render').length, 0,
       'no render between the Unpack release and the preview write');
-    assert.equal(later.slice(previewWrite).filter(e => e.type === 'render').length, 1,
-      'the preview subsystem write drives one further render (P0-Preview Integrity)');
+    assert.equal(later.slice(previewWrite).filter(e => e.type === 'render').length, 0,
+      'preview metadata does not drive another Editor render');
     assert.equal(await probe(() => window.probe.results()), null, 'Results stay cleared');
 
     // Undo restores the packed cargo in one step; generated Results are not

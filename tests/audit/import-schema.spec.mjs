@@ -368,11 +368,13 @@ test('IMPORT-SCHEMA-14 projectPortableCase drops volume; projectPortablePack dro
       thumbnail: 'data:image/png;base64,xyz',
       thumbnailUpdatedAt: 1700000000000,
       thumbnailSource: 'auto',
+      thumbnailVisualSignature: 'preview-v1-fixture',
     });
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'stats'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnail'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnailUpdatedAt'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnailSource'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnailVisualSignature'), false);
     assert.equal(portablePack.id, 'p1');
     assert.equal(portablePack.title, 'Pack');
   } finally {
@@ -517,4 +519,27 @@ test('IMPORT-SCHEMA-18 the shared workspace graph validator still rejects dangli
   } finally {
     runtime.cleanup();
   }
+});
+
+
+test('PR-B preview signature normalizes safely, persists locally, and is excluded from portable workspace data', async () => {
+  const runtime = await createRuntime('preview-signature');
+  try {
+    const Normalizer = await import('../../src/core/normalizer.js');
+    const pack = baseWorkspaceData().packLibrary[0];
+    for (const invalid of [undefined, null, '', 17, {}, []]) {
+      assert.equal(Normalizer.normalizePack({ ...pack, thumbnailVisualSignature: invalid }).thumbnailVisualSignature, null);
+    }
+    const signature = '["preview-v1",123]';
+    const normalized = Normalizer.normalizePack({ ...pack, thumbnailVisualSignature: signature });
+    assert.equal(normalized.thumbnailVisualSignature, signature);
+    const portable = runtime.ImportSchema.projectPortableWorkspacePack(normalized);
+    assert.equal(Object.hasOwn(portable, 'thumbnailVisualSignature'), false);
+    runtime.StateStore.init(baseWorkspaceData({ packLibrary: [normalized] }));
+    runtime.Storage.saveNow();
+    const values = Array.from({ length: window.localStorage.length }, (_, i) =>
+      JSON.parse(window.localStorage.getItem(window.localStorage.key(i))));
+    const stored = values.find(value => value.packLibrary)?.packLibrary[0];
+    assert.equal(stored.thumbnailVisualSignature, signature);
+  } finally { runtime.cleanup(); }
 });

@@ -989,6 +989,40 @@ export function createCaseScene({
       ]);
     }
 
+    // Reuse the mesh/label signature so preview freshness follows production
+    // appearance. Camera, selection, hover and gizmos are deliberately excluded.
+    function getVisualSignature(pack) {
+      const truck = pack.truck || {};
+      const cfg = truck.shapeConfig || {};
+      const mode = truck.shapeMode || 'rect';
+      const configKeys = mode === 'wheelWells'
+        ? ['wellHeight', 'wellWidth', 'wellLength', 'wellOffsetFromRear']
+        : mode === 'frontBonus' ? ['bonusLength', 'bonusHeight'] : [];
+      let hasHiddenCargo = false;
+      const cargo = (pack.cases || []).flatMap(inst => {
+        const data = CaseLibrary.getById(inst.caseId);
+        if (!data) return [];
+        hasHiddenCargo ||= Boolean(inst.hidden);
+        const pos = inst.transform?.position || {};
+        const rot = inst.transform?.rotation || {};
+        const dims = inst.orientedDims || data.dimensions || {};
+        return [[inst.id, inst.caseId, buildSignature(inst, data),
+          [Number(pos.x) || 0, Number(pos.y) || 0, Number(pos.z) || 0],
+          [Number(rot.x) || 0, Number(rot.y) || 0, Number(rot.z) || 0],
+          [dims.length, dims.width, dims.height], Boolean(inst.hidden), inst.placement === 'staged']];
+      }).sort((a, b) => String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0);
+      // Scale is not applied by applyTransform; it is not rendered geometry.
+      return JSON.stringify(['preview-v1', truck.length, truck.width, truck.height,
+        mode, configKeys.map(key => [key, cfg[key]]), cargo,
+        hasHiddenCargo ? Utils.clamp(Number(PreferencesManager.get().hiddenCaseOpacity) || 0.3, 0, 1) : null]);
+    }
+
+    function rebindPreviewPack(previous, next) {
+      if (syncedPack !== previous || previous.cases !== next.cases || previous.truck !== next.truck) return false;
+      syncedPack = next;
+      return true;
+    }
+
     function acquireEdgeGeometry(signature, boxGeometry) {
       const cached = edgesCache.get(signature);
       if (cached) {
@@ -1897,6 +1931,8 @@ export function createCaseScene({
       clear,
       sync,
       getSyncedPack: () => syncedPack,
+      getVisualSignature,
+      rebindPreviewPack,
       setHover,
       setSelected,
       setDragging,
@@ -3588,10 +3624,21 @@ export function createEditorScreen({
     // Runtime authority only: navigation IDs cannot prove what the scene contains.
     // Publish after a complete committed render; replacement/departure kills it.
     let previewScene = null;
-    StateStore.subscribe(changes => {
+    StateStore.subscribe((changes, _state, notification) => {
       if (changes._replace || StateStore.get('currentScreen') !== 'editor' ||
           (previewScene && StateStore.get('currentPackId') !== previewScene.pack.id)) {
         previewScene = null;
+      }
+      // Only the whitelisted derived-metadata boundary can rebind authority.
+      // An ordinary Pack replacement still requires a full committed render.
+      if (notification?.type === 'pack-preview' && previewScene &&
+          previewScene.pack === notification.previousPack &&
+          PackLibrary.getById(notification.pack.id) === notification.pack &&
+          CoreStorage.isScopeContextCurrent(previewScene.scope) &&
+          previewScene.scene === SceneManager.getScene() &&
+          previewScene.visualSignature === CaseScene.getVisualSignature(notification.pack) &&
+          CaseScene.rebindPreviewPack(notification.previousPack, notification.pack)) {
+        previewScene = { ...previewScene, pack: notification.pack };
       }
     });
 
@@ -3602,6 +3649,7 @@ export function createEditorScreen({
           PackLibrary.getById(previewScene.pack.id) !== previewScene.pack ||
           SceneManager.getScene() !== previewScene.scene ||
           CaseScene.getSyncedPack() !== previewScene.pack ||
+          CaseScene.getVisualSignature(previewScene.pack) !== previewScene.visualSignature ||
           InteractionManager.hasProvisionalPose()) return null;
       const operation = OperationLifecycle && OperationLifecycle.currentOperation();
       if (operation && operation.busy && operation.kind !== 'capturingPreview') return null;
@@ -4471,11 +4519,13 @@ export function createEditorScreen({
       if (initialized && CaseScene.getSyncedPack() === pack) {
         // A same-commit repaint (including AutoPack's final UI render) is not
         // context loss. Preserve its identity so a valid frame wait can finish.
+        const visualSignature = CaseScene.getVisualSignature(pack);
         previewScene = previousPreviewScene && previousPreviewScene.pack === pack &&
+          previousPreviewScene.visualSignature === visualSignature &&
           previousPreviewScene.scene === SceneManager.getScene() &&
           CoreStorage.isScopeContextCurrent(previousPreviewScene.scope)
           ? previousPreviewScene
-          : { pack, scope: CoreStorage.captureScopeContext(), scene: SceneManager.getScene() };
+          : { pack, visualSignature, scope: CoreStorage.captureScopeContext(), scene: SceneManager.getScene() };
       }
     }
 

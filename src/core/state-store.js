@@ -52,9 +52,15 @@ function get(key) {
 function set(patch, options = {}) {
   const next = withWorkspaceDefaults({ ...state, ...patch });
   const significant = options.skipHistory ? false : isSignificantChange(patch);
+  // Clear Preview is one user step. Its undo base must include the latest
+  // derived image (capture deliberately skipped history), without adding a step
+  // or changing Redo for automatic preview writes.
+  if (significant && options.notification?.type === 'pack-preview') {
+    history[historyPointer] = historySlice(state);
+  }
   state = next;
   if (significant) pushHistory(historySlice(next));
-  if (!options.skipNotify) notify(patch, state);
+  if (!options.skipNotify) notify(patch, state, options.notification);
 }
 
 function replace(nextState, options = {}) {
@@ -108,10 +114,10 @@ function subscribe(fn) {
   };
 }
 
-function notify(changes, nextState) {
+function notify(changes, nextState, notification = undefined) {
   subscribers.forEach(fn => {
     try {
-      fn(changes, nextState);
+      fn(changes, nextState, notification);
     } catch (err) {
       console.error('Subscriber error', err);
     }

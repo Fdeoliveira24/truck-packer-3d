@@ -386,7 +386,7 @@ test('10A: captured tween and batch snap do not mutate a same-ID replacement mes
   });
 });
 
-test('10A: valid animated completion preserves Pack, Results, final scene, and automatic preview', async () => {
+test('10A: valid animated completion preserves Pack, Results, final scene, without owning preview capture', async () => {
   await withFixture({ tween: 'none' }, async f => {
     const promise = f.engine.pack();
     await f.initialFrames();
@@ -399,12 +399,12 @@ test('10A: valid animated completion preserves Pack, Results, final scene, and a
     assert.equal(f.lifecycle.isBusy(), false);
     assert.equal(f.overlays[0].closed, true);
     await f.clock.advanceBy(60);
-    assert.deepEqual(f.previews.map(item => item.id), ['a']);
+    assert.deepEqual(f.previews, [], 'central scheduler owns automatic capture');
     assert.equal(f.clock.jobs.size, 0);
   });
 });
 
-test('10A: delayed preview is suppressed after Pack or screen departure, including return', async () => {
+test('PR-B: no engine preview is scheduled after Pack or screen departure, including return', async () => {
   for (const transition of [
     [{ currentPackId: 'b' }],
     [{ currentScreen: 'cases' }],
@@ -435,7 +435,7 @@ test('10A: 300 animates and 301 snaps while both commit, publish Results, and re
       assert.equal(f.lifecycle.isBusy(), false);
       assert.equal(metrics?.skipped, count === 301);
       assert.equal(metrics?.strategy, count === 301 ? 'instant' : 'batched');
-      assert.equal(f.clock.jobs.size, 1, 'only the normal delayed preview remains');
+      assert.equal(f.clock.jobs.size, 0, 'no delayed preview timer remains');
     });
   }
 });
@@ -486,10 +486,10 @@ test('10A: same-context frozen tween fallback and tween start failure still fini
       }
       assert.equal(f.state.autoPackResults?.packId, 'a', tween);
       assert.equal(f.lifecycle.isBusy(), false, tween);
-      assert.equal(f.clock.jobs.size, 1, `${tween}: only the delayed preview remains`);
+      assert.equal(f.clock.jobs.size, 0, `${tween}: no delayed preview remains`);
       await f.clock.advanceBy(60);
-      assert.deepEqual(f.previews.map(item => item.id), ['a'], tween);
-      assert.equal(f.listenerCount(), 0, `${tween}: run watch released after preview`);
+      assert.deepEqual(f.previews, [], tween);
+      assert.equal(f.listenerCount(), 0, `${tween}: run watch released at completion`);
     });
   }
 });
@@ -547,12 +547,12 @@ test('10A: run watch never leaks across rejected, stale, and repeated runs', asy
       const promise = f.engine.pack();
       await f.initialFrames();
       await f.finish(promise);
-      assert.ok(f.listenerCount() <= 1, 'at most the pending-preview watch remains');
+      assert.equal(f.listenerCount(), 0, 'run watch released at completion');
     }
     await f.clock.advanceBy(60);
     await f.clock.microtasks();
     assert.equal(f.listenerCount(), 0);
-    assert.equal(f.previews.length, 1, 'a new run supersedes the previous pending preview');
+    assert.equal(f.previews.length, 0, 'engine no longer owns previews');
   });
 });
 

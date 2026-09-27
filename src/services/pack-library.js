@@ -2531,6 +2531,7 @@ export function create(packData) {
     thumbnail: null,
     thumbnailUpdatedAt: null,
     thumbnailSource: null,
+    thumbnailVisualSignature: null,
   };
   StateStore.set({ packLibrary: [...getPacks(), pack] });
   return pack;
@@ -2574,6 +2575,26 @@ export function update(packId, patch, { skipHistory = false } = {}) {
   return next;
 }
 
+// Derived preview boundary: only these four fields may change. Preserve cargo,
+// stats and business timestamps; capture writes never enter or truncate history.
+export function updatePreview(packId, patch, { skipHistory = true } = {}) {
+  const previousPack = getById(packId);
+  if (!previousPack) return null;
+  const next = { ...previousPack };
+  if (Object.hasOwn(patch, 'thumbnail')) next.thumbnail = typeof patch.thumbnail === 'string' ? patch.thumbnail : null;
+  if (Object.hasOwn(patch, 'thumbnailUpdatedAt')) next.thumbnailUpdatedAt = Number.isFinite(patch.thumbnailUpdatedAt) ? patch.thumbnailUpdatedAt : null;
+  if (Object.hasOwn(patch, 'thumbnailSource')) next.thumbnailSource = ['manual', 'auto'].includes(patch.thumbnailSource) ? patch.thumbnailSource : null;
+  if (Object.hasOwn(patch, 'thumbnailVisualSignature')) {
+    next.thumbnailVisualSignature = typeof patch.thumbnailVisualSignature === 'string' && patch.thumbnailVisualSignature
+      ? patch.thumbnailVisualSignature : null;
+  }
+  StateStore.set({ packLibrary: getPacks().map(p => p === previousPack ? next : p) }, {
+    skipHistory,
+    notification: { type: 'pack-preview', previousPack, pack: next },
+  });
+  return next;
+}
+
 export function remove(packId) {
   const packs = getPacks().filter(p => p.id !== packId);
   const current = StateStore.get('currentPackId');
@@ -2597,6 +2618,7 @@ export function duplicate(packId) {
   copy.thumbnail = null;
   copy.thumbnailUpdatedAt = null;
   copy.thumbnailSource = null;
+  copy.thumbnailVisualSignature = null;
   copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
   StateStore.set({ packLibrary: [...getPacks(), copy] });
   return copy;

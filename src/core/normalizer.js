@@ -444,6 +444,8 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     thumbnail,
     thumbnailUpdatedAt,
     thumbnailSource,
+    thumbnailVisualSignature: typeof p?.thumbnailVisualSignature === 'string' && p.thumbnailVisualSignature
+      ? p.thumbnailVisualSignature : null,
     handlingRulesValidatedSignature,
   };
 }

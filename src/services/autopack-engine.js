@@ -467,7 +467,6 @@ export function createAutoPackEngine({
   CaseLibrary,
   CaseScene,
   OperationLifecycle = null,
-  capturePackPreview,
   getActiveOrgIdForBilling,
   getOrgRoleHydrationState,
   getProRuleSet,
@@ -493,17 +492,14 @@ export function createAutoPackEngine({
   let isRunning = false;
   let workspaceGeneration = 0;
   // Per-run ownership. `activeRun` is the run that currently holds the AutoPack
-  // operation token; `previewRun` is a finished run whose delayed automatic
-  // preview has not fired yet. Neither is an operation authority —
+  // operation token. This is not an operation authority —
   // OperationLifecycle still owns the mutating slot; these only let a run
   // invalidate (monotonically) and settle its own deferred effects.
   let activeRun = null;
-  let previewRun = null;
 
   function bumpWorkspaceGeneration() {
     workspaceGeneration += 1;
     if (activeRun) invalidateRun(activeRun);
-    if (previewRun) dropPreviewRun(previewRun);
     return workspaceGeneration;
   }
 
@@ -516,10 +512,6 @@ export function createAutoPackEngine({
     if (!run || run.invalidated) return;
     run.invalidated = true;
     settleRunEffects(run);
-    if (run.previewTimer !== null) {
-      runtimeWindow.clearTimeout(run.previewTimer);
-      run.previewTimer = null;
-    }
   }
 
   function releaseRunWatch(run) {
@@ -527,15 +519,6 @@ export function createAutoPackEngine({
     const unsubscribe = run.unsubscribe;
     run.unsubscribe = null;
     unsubscribe();
-  }
-
-  // Invalidate a finished run's pending preview. The StateStore watch is
-  // released on a microtask because this can run inside a StateStore notify
-  // loop, where synchronous unsubscription would skip the next subscriber.
-  function dropPreviewRun(run) {
-    invalidateRun(run);
-    if (previewRun === run) previewRun = null;
-    Promise.resolve().then(() => releaseRunWatch(run));
   }
 
   function watchRunContext(run) {
@@ -549,8 +532,7 @@ export function createAutoPackEngine({
         StateStore.get('currentPackId') !== run.packId ||
         StateStore.get('currentScreen') !== 'editor'
       ) {
-        if (previewRun === run) dropPreviewRun(run);
-        else invalidateRun(run);
+        invalidateRun(run);
       }
     });
   }
@@ -567,16 +549,6 @@ export function createAutoPackEngine({
       return false;
     }
     return true;
-  }
-
-  function isPostRunPreviewValid(run) {
-    return Boolean(
-      run && !run.invalidated &&
-      run.workspaceGeneration === workspaceGeneration &&
-      StateStore.get('currentPackId') === run.packId &&
-      StateStore.get('currentScreen') === 'editor' &&
-      PackLibrary.getById(run.packId)
-    );
   }
 
   function cloneForAutoPackResults(value) {
@@ -872,7 +844,6 @@ export function createAutoPackEngine({
     // Everything after acquisition is inside one try/finally so any throw
     // releases the token, closes loading, and settles this run's effects.
     isRunning = true;
-    if (previewRun) dropPreviewRun(previewRun);
     const run = {
       token: opToken,
       packId,
@@ -880,7 +851,6 @@ export function createAutoPackEngine({
       invalidated: false,
       effects: new Set(),
       unsubscribe: null,
-      previewTimer: null,
     };
     activeRun = run;
     const isRunStale = () => !isActiveRunValid(run);
@@ -1170,19 +1140,6 @@ export function createAutoPackEngine({
         // ignore
       }
 
-      // The AutoPack token is released before this fires, so the preview uses
-      // post-run context validity (workspace/Pack/screen, never departed) rather
-      // than token ownership. The run's StateStore watch stays until it fires.
-      previewRun = run;
-      run.previewTimer = runtimeWindow.setTimeout(() => {
-        run.previewTimer = null;
-        const valid = isPostRunPreviewValid(run);
-        if (previewRun === run) previewRun = null;
-        releaseRunWatch(run);
-        if (!valid) return;
-        capturePackPreview(packId, { source: 'auto' });
-      }, 60);
-
     } catch (err) {
       if (isRunStale()) return;
       console.error('[AutoPack] Error:', err);
@@ -1198,7 +1155,7 @@ export function createAutoPackEngine({
       // No AutoPack-owned tween or fallback may outlive the token release.
       settleRunEffects(run);
       if (activeRun === run) activeRun = null;
-      if (previewRun !== run) releaseRunWatch(run);
+      releaseRunWatch(run);
       closeLoadingOverlay();
       isRunning = false;
       if (opToken && OperationLifecycle) OperationLifecycle.finishOperation(opToken);

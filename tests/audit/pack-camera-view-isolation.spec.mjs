@@ -72,6 +72,37 @@ test('camera metadata is outside cargo Undo and preserves Redo', () => {
   }
 });
 
+test('cargo Undo/Redo retains malformed history entries and the latest valid Pack view', () => {
+  seed();
+  PackLibrary.updateEditorView('A', viewA);
+  assert.equal(StateStore.undo(), false, 'camera movement adds no cargo history step');
+
+  const invalidEntries = [null, 7, 'legacy', {}, { id: '' }];
+  StateStore.set({ packLibrary: [
+    ...invalidEntries, { ...pack('A'), notes: 'older cargo' }, pack('B'),
+  ] });
+  StateStore.set({ packLibrary: [
+    { ...pack('A'), notes: 'newer cargo' }, pack('B'),
+  ] });
+  PackLibrary.updateEditorView('A', viewB);
+
+  assert.equal(StateStore.undo(), true, 'Undo reaches the preceding cargo edit');
+  const restored = StateStore.get('packLibrary');
+  assert.equal(restored.length, 7, 'Undo preserves history entry count and order');
+  assert.deepEqual(restored.slice(0, invalidEntries.length), invalidEntries);
+  assert.equal(restored[5].id, 'A');
+  assert.equal(restored[5].notes, 'older cargo');
+  assert.equal(editorViewSignature(restored[5].editorView), editorViewSignature(viewB));
+  assert.equal(restored[6].id, 'B');
+
+  assert.equal(StateStore.redo(), true, 'camera movement leaves Redo available');
+  const redone = StateStore.get('packLibrary');
+  assert.equal(redone.length, 2);
+  assert.equal(redone[0].notes, 'newer cargo');
+  assert.equal(editorViewSignature(redone[0].editorView), editorViewSignature(viewB));
+  assert.equal(StateStore.redo(), false, 'camera movement adds no extra cargo history step');
+});
+
 test('Load Plan export excludes view; workspace backup retains it and strips thumbnail freshness', () => {
   const source = { ...pack('A'), editorView: viewA, thumbnail: 'data:image/jpeg;base64,AA',
     thumbnailVisualSignature: 'cargo', thumbnailViewSignature: 'camera' };

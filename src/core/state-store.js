@@ -96,7 +96,9 @@ function restoreCargoHistory(entry) {
     .filter(pack => pack && pack.id && Object.hasOwn(pack, 'editorView'))
     .map(pack => [pack.id, pack.editorView]));
   restored.packLibrary = (restored.packLibrary || []).map(pack =>
-    currentViews.has(pack.id) ? { ...pack, editorView: deepClone(currentViews.get(pack.id)) } : pack);
+    pack && typeof pack === 'object' && currentViews.has(pack.id)
+      ? { ...pack, editorView: deepClone(currentViews.get(pack.id)) }
+      : pack);
   return restored;
 }
 

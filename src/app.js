@@ -423,9 +423,9 @@ function createPackPreviewScheduler({
     if (!packId) return null;
     const pack = PackLibrary.getById(packId);
     if (!pack) return null;
-    if (pack.thumbnailVisualSignature === getVisualSignature(pack)) return null;
     // Unknown empty Packs without an image need neither a readback nor a write.
     if (!pack.cases?.length && !pack.thumbnail) return null;
+    if (pack.thumbnailVisualSignature === getVisualSignature(pack)) return null;
     return { packId, workspaceKey: String(getActiveWorkspaceKey()) };
   }
 

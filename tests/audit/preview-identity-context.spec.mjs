@@ -366,6 +366,37 @@ const openPack = (page, id = A) => page.evaluate(id => {
   q.AppShell.navigate('editor');
 }, id);
 
+test('PR-B scheduler skips signature work for an empty Pack without a thumbnail but checks a stale image', () => {
+  const createScheduler = new Function(`${previewScheduler}\nreturn createPackPreviewScheduler;`)();
+  const pack = { id: 'empty', cases: [], thumbnail: null, thumbnailVisualSignature: null };
+  let signatureCalls = 0;
+  let captureCalls = 0;
+  let timer = null;
+  const scheduler = createScheduler({
+    StateStore: { get: key => key === 'currentScreen' ? 'editor' : pack.id },
+    PackLibrary: { getById: () => pack },
+    OperationLifecycle: { isBusy: () => false, subscribe: () => () => {} },
+    capturePackPreview: () => { captureCalls += 1; return true; },
+    getActiveWorkspaceKey: () => 'fixture-a',
+    getVisualSignature: () => { signatureCalls += 1; return 'current-signature'; },
+    setTimer: fn => { timer = fn; return 1; },
+    clearTimer: () => { timer = null; },
+  });
+  try {
+    assert.equal(scheduler.schedule(), false);
+    assert.equal(signatureCalls, 0);
+    assert.equal(captureCalls, 0);
+    pack.thumbnail = 'data:image/png;base64,stale';
+    pack.thumbnailVisualSignature = 'old-signature';
+    assert.equal(scheduler.schedule(), true);
+    assert.equal(signatureCalls, 1);
+    timer();
+    assert.equal(captureCalls, 1, 'the stale image still reaches the capture path that clears empty Packs');
+  } finally {
+    scheduler.dispose();
+  }
+});
+
 test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, async t => {
   const browser = await launch();
   try {
@@ -678,6 +709,30 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       assert.equal(instant.requests, 1);
       assert.equal(instant.successes, 0);
       assert.equal(await page.evaluate(() => window.probe.counts().packed), 301);
+    });
+
+    await t.test('PR-B updatePreview ignores non-object patches without changing preview metadata', async () => {
+      const proof = await page.evaluate(() => {
+        const q = window.probe;
+        q.reset();
+        q.CorePackLibrary.updatePreview(q.packId, {
+          thumbnail: 'data:image/png;base64,fixture', thumbnailUpdatedAt: 123,
+          thumbnailSource: 'manual', thumbnailVisualSignature: 'fixture-signature',
+        });
+        const before = q.PackLibrary.getById(q.packId);
+        const fields = pack => ({
+          thumbnail: pack.thumbnail, thumbnailUpdatedAt: pack.thumbnailUpdatedAt,
+          thumbnailSource: pack.thumbnailSource, thumbnailVisualSignature: pack.thumbnailVisualSignature,
+          lastEdited: pack.lastEdited, stats: pack.stats,
+        });
+        const expected = fields(before);
+        const results = [null, undefined, false, 42, 'invalid', []].map(patch => {
+          const updated = q.CorePackLibrary.updatePreview(q.packId, patch);
+          return { sameFields: JSON.stringify(fields(updated)) === JSON.stringify(expected), sameStats: updated.stats === before.stats };
+        });
+        return results;
+      });
+      assert.deepEqual(proof, Array.from({ length: 6 }, () => ({ sameFields: true, sameStats: true })));
     });
 
     await t.test('PR-B preview write persists, refreshes Packs only, preserves camera and scene authority', async () => {

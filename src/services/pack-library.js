@@ -2582,17 +2582,18 @@ export function update(packId, patch, { skipHistory = false } = {}) {
 export function updatePreview(packId, patch, { skipHistory = true } = {}) {
   const previousPack = getById(packId);
   if (!previousPack) return null;
+  const previewPatch = patch && typeof patch === 'object' && !Array.isArray(patch) ? patch : {};
   const next = { ...previousPack };
-  if (Object.hasOwn(patch, 'thumbnail')) next.thumbnail = typeof patch.thumbnail === 'string' ? patch.thumbnail : null;
-  if (Object.hasOwn(patch, 'thumbnailUpdatedAt')) next.thumbnailUpdatedAt = Number.isFinite(patch.thumbnailUpdatedAt) ? patch.thumbnailUpdatedAt : null;
-  if (Object.hasOwn(patch, 'thumbnailSource')) next.thumbnailSource = ['manual', 'auto'].includes(patch.thumbnailSource) ? patch.thumbnailSource : null;
-  if (Object.hasOwn(patch, 'thumbnailVisualSignature')) {
-    next.thumbnailVisualSignature = typeof patch.thumbnailVisualSignature === 'string' && patch.thumbnailVisualSignature
-      ? patch.thumbnailVisualSignature : null;
+  if (Object.hasOwn(previewPatch, 'thumbnail')) next.thumbnail = typeof previewPatch.thumbnail === 'string' ? previewPatch.thumbnail : null;
+  if (Object.hasOwn(previewPatch, 'thumbnailUpdatedAt')) next.thumbnailUpdatedAt = Number.isFinite(previewPatch.thumbnailUpdatedAt) ? previewPatch.thumbnailUpdatedAt : null;
+  if (Object.hasOwn(previewPatch, 'thumbnailSource')) next.thumbnailSource = ['manual', 'auto'].includes(previewPatch.thumbnailSource) ? previewPatch.thumbnailSource : null;
+  if (Object.hasOwn(previewPatch, 'thumbnailVisualSignature')) {
+    next.thumbnailVisualSignature = typeof previewPatch.thumbnailVisualSignature === 'string' && previewPatch.thumbnailVisualSignature
+      ? previewPatch.thumbnailVisualSignature : null;
   }
-  if (Object.hasOwn(patch, 'thumbnailViewSignature')) {
-    next.thumbnailViewSignature = typeof patch.thumbnailViewSignature === 'string' && patch.thumbnailViewSignature
-      ? patch.thumbnailViewSignature : null;
+  if (Object.hasOwn(previewPatch, 'thumbnailViewSignature')) {
+    next.thumbnailViewSignature = typeof previewPatch.thumbnailViewSignature === 'string' && previewPatch.thumbnailViewSignature
+      ? previewPatch.thumbnailViewSignature : null;
   }
   StateStore.set({ packLibrary: getPacks().map(p => p === previousPack ? next : p) }, {
     skipHistory,

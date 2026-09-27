@@ -426,12 +426,12 @@ function createPackPreviewScheduler({
     if (!packId) return null;
     const pack = PackLibrary.getById(packId);
     if (!pack) return null;
+    // Unknown empty Packs without an image need neither a readback nor a write.
+    if (!pack.cases?.length && !pack.thumbnail) return null;
     const viewSignature = getViewSignature(pack);
     if (!viewSignature) return null;
     if (pack.thumbnailVisualSignature === getVisualSignature(pack) &&
         pack.thumbnailViewSignature === viewSignature) return null;
-    // Unknown empty Packs without an image need neither a readback nor a write.
-    if (!pack.cases?.length && !pack.thumbnail) return null;
     return { packId, workspaceKey: String(getActiveWorkspaceKey()) };
   }
 

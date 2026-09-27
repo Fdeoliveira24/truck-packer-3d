@@ -19987,6 +19987,7 @@ test('OPERATION-LIFECYCLE assertIdle, subscribe, and invalid kinds behave correc
 function previewHarnessVisualSignature(pack) {
   return JSON.stringify((pack.cases || []).map(inst => ({ id: inst.id, transform: inst.transform || null })));
 }
+const previewHarnessViewSignature = () => 'settled-view';
 
 async function createPackPreviewSchedulerHarness({
   currentScreen = 'editor',
@@ -20042,6 +20043,7 @@ async function createPackPreviewSchedulerHarness({
     capturePackPreview,
     getActiveWorkspaceKey: () => activeWorkspaceKey,
     getVisualSignature: previewHarnessVisualSignature,
+    getViewSignature: previewHarnessViewSignature,
     delayMs: 300,
     setTimer,
     clearTimer,
@@ -20141,6 +20143,7 @@ test('PACK-PREVIEW-SCHEDULER thumbnail writes do not recurse and fresh Packs do 
     onCapture: ({ packId, packs }) => {
       const pack = packs.get(packId);
       pack.thumbnailVisualSignature = previewHarnessVisualSignature(pack);
+      pack.thumbnailViewSignature = previewHarnessViewSignature(pack);
       return true;
     },
   });
@@ -20155,6 +20158,7 @@ test('PACK-PREVIEW-SCHEDULER thumbnail writes do not recurse and fresh Packs do 
 
   const freshPack = { id: 'pack-a', cases: [{ id: 'instance-a' }], lastEdited: 200, thumbnailUpdatedAt: 100 };
   freshPack.thumbnailVisualSignature = previewHarnessVisualSignature(freshPack);
+  freshPack.thumbnailViewSignature = previewHarnessViewSignature(freshPack);
   const alreadyFresh = await createPackPreviewSchedulerHarness({ pack: freshPack });
   assert.equal(alreadyFresh.scheduler.schedule(), false);
   assert.equal(alreadyFresh.timers.size, 0);
@@ -20173,9 +20177,11 @@ test('PACK-PREVIEW-SCHEDULER wiring uses pre-navigation flush and shared manual 
     'preview-only writes refresh Packs and do not schedule another capture');
   assert.match(subscriber, /if \(previewContextChanged \|\| changes\.packLibrary \|\| changes\.caseLibrary \|\|\s*changes\.preferences \|\| changes\._undo \|\| changes\._redo\) AutoPackPreviewScheduler\.schedule\(\);/,
     'one producer evaluates freshness for context and visual dependencies');
-  assert.equal((subscriber.match(/AutoPackPreviewScheduler\.schedule\(\)/g) || []).length, 1,
-    'the render subscriber schedules preview freshness through one call');
-  assert.ok(subscriber.indexOf('EditorUI.render();') < subscriber.indexOf('AutoPackPreviewScheduler.schedule();'),
+  assert.match(subscriber, /if \(notification\?\.type === 'pack-view'\) \{\s*AutoPackPreviewScheduler\.schedule\(\);\s*return;/,
+    'settled camera metadata schedules preview freshness without reconstructing Editor');
+  assert.equal((subscriber.match(/AutoPackPreviewScheduler\.schedule\(\)/g) || []).length, 2,
+    'the subscriber schedules freshness once for Pack view metadata and once for normal visual dependencies');
+  assert.ok(subscriber.indexOf('EditorUI.render();') < subscriber.indexOf('if (previewContextChanged'),
     'Pack activation synchronizes Editor before preview freshness is scheduled');
   assert.ok(shellSrc.indexOf('beforeNavigate(previousScreen, screenKey)') < shellSrc.indexOf('StateStore.set({ currentScreen: screenKey }'));
   assert.equal((packsSrc.match(/ExportService\.capturePackPreviewFromLibrary\(pack\.id, openPack\)/g) || []).length, 2);
@@ -20321,8 +20327,8 @@ test('P0 EDITOR UNDO ATOMICITY: automatic preview capture writes skipHistory, ne
   assert.ok(captureEnd > captureStart, 'capturePackPreview() must be extractable up to clearPackPreview()');
   const captureBlock = appSrc.slice(captureStart, captureEnd);
 
-  assert.match(captureBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: dataUrl,\s*thumbnailUpdatedAt: Date\.now\(\),\s*thumbnailSource: source === 'manual' \? 'manual' : 'auto',\s*thumbnailVisualSignature: visualSignature,\s*\}, \{ skipHistory: true \}\)/,
-    'the derived preview write must persist visual freshness without consuming a user Undo step');
+  assert.match(captureBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: dataUrl,\s*thumbnailUpdatedAt: Date\.now\(\),\s*thumbnailSource: source === 'manual' \? 'manual' : 'auto',\s*thumbnailVisualSignature: visualSignature,\s*thumbnailViewSignature: viewSignature,\s*\}, \{ skipHistory: true \}\)/,
+    'the derived preview write must persist visual and view freshness without consuming a user Undo step');
   assert.doesNotMatch(captureBlock, /skipNotify/,
     'the preview write must keep notifying subscribers normally — only history recording is skipped');
 
@@ -20331,8 +20337,8 @@ test('P0 EDITOR UNDO ATOMICITY: automatic preview capture writes skipHistory, ne
   const clearStart = appSrc.indexOf('function clearPackPreview(');
   const clearEnd = appSrc.indexOf('\n      }', clearStart);
   const clearBlock = appSrc.slice(clearStart, clearEnd);
-  assert.match(clearBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,\s*thumbnailVisualSignature: CaseScene\.getVisualSignature\(pack\),\s*\}, \{ skipHistory: false \}\)/,
-    'Clear Preview intentionally clears the image at the current visual signature and remains undoable');
+  assert.match(clearBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,\s*thumbnailVisualSignature: CaseScene\.getVisualSignature\(pack\),\s*thumbnailViewSignature: editorViewSignature\(normalizeEditorView\(pack\.editorView\) \|\|\s*SceneManager\.getDefaultEditorView\(pack\.truck\)\),\s*\}, \{ skipHistory: false \}\)/,
+    'Clear Preview intentionally clears the image at the current visual and view signatures and remains undoable');
 });
 
 test('P0 EDITOR UNDO ATOMICITY: Hide/Show commits the whole selection in one PackLibrary.update() call', async () => {

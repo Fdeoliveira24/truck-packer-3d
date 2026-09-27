@@ -963,8 +963,9 @@ test('workspace reset clears the production Editor Qty-draft state but ordinary 
   assert.equal(getDraft('case-a'), 1, 'the same Case id starts from the default in the replacement workspace');
 
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  assert.match(src, /function resetWorkspaceState\(\) \{\s*previewScene = null;\s*resetEditorCaseQtyDrafts\(caseQtyDrafts\);\s*\}/);
-  assert.match(src, /return \{ init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, getPreviewScene \};/);
+  assert.match(src, /function resetWorkspaceState\(\) \{\s*previewScene = null;\s*invalidateViewOwner\(\);\s*resetEditorCaseQtyDrafts\(caseQtyDrafts\);\s*\}/,
+    'workspace replacement invalidates preview and camera ownership before clearing Qty drafts');
+  assert.match(src, /return \{ init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState,\s*getPreviewScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback \};/);
 });
 
 test('workspace reset clears the production Cases selection state without changing ordinary selection semantics', async () => {

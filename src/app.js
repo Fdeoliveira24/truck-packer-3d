@@ -389,6 +389,7 @@ try {
  *   OperationLifecycle: { isBusy: () => boolean, subscribe: (fn: (state: { busy: boolean }) => void) => (() => void) },
  *   capturePackPreview: (packId: string, options: { source: string, quiet: boolean }) => (boolean | Promise<boolean>),
  *   getActiveWorkspaceKey: () => string,
+ *   getVisualSignature: (pack: any) => string,
  *   delayMs?: number,
  *   setTimer?: (fn: () => void, delay: number) => any,
  *   clearTimer?: (timer: any) => void,
@@ -400,6 +401,7 @@ function createPackPreviewScheduler({
   OperationLifecycle,
   capturePackPreview,
   getActiveWorkspaceKey,
+  getVisualSignature,
   delayMs = 300,
   setTimer = (fn, delay) => setTimeout(fn, delay),
   clearTimer = timer => clearTimeout(timer),
@@ -421,10 +423,9 @@ function createPackPreviewScheduler({
     if (!packId) return null;
     const pack = PackLibrary.getById(packId);
     if (!pack) return null;
-    const lastEdited = Number.isFinite(pack.lastEdited) ? pack.lastEdited : 0;
-    const thumbnailUpdatedAt = Number.isFinite(pack.thumbnailUpdatedAt) ? pack.thumbnailUpdatedAt : 0;
-    const totalCases = Array.isArray(pack.cases) ? pack.cases.length : 0;
-    if (totalCases <= 0 || lastEdited <= thumbnailUpdatedAt) return null;
+    // Unknown empty Packs without an image need neither a readback nor a write.
+    if (!pack.cases?.length && !pack.thumbnail) return null;
+    if (pack.thumbnailVisualSignature === getVisualSignature(pack)) return null;
     return { packId, workspaceKey: String(getActiveWorkspaceKey()) };
   }
 
@@ -1556,7 +1557,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       CaseLibrary,
       CaseScene,
       OperationLifecycle,
-      capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
       getActiveOrgIdForBilling: BillingService.getActiveOrgIdForBilling,
       getOrgRoleHydrationState: orgId => _getOrgRoleHydrationStateAccessor(orgId),
       getProRuleSet: BillingService.getProRuleSet,
@@ -1592,6 +1592,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       async function capturePackPreview(packId, { source = 'auto', quiet = false, beforeDeparture = false } = {}) {
+        quiet = quiet || source !== 'manual';
         if (OperationLifecycle.isBusy()) {
           if (!quiet && source === 'manual') {
             UIComponents.showToast('Finish the current operation before capturing a preview.', 'info', { title: 'Preview' });
@@ -1604,6 +1605,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         try {
           const captureScope = CoreStorage.captureScopeContext();
           const captureScene = EditorUI.getPreviewScene();
+          const visualSignature = captureScene?.visualSignature;
           let contextInvalidated = false;
           const isCurrentContext = () => (
             !contextInvalidated &&
@@ -1613,7 +1615,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             StateStore.get('currentPackId') === packId &&
             captureScene && captureScene.pack.id === packId &&
             PackLibrary.getById(packId) === captureScene.pack &&
-            EditorUI.getPreviewScene() === captureScene
+            EditorUI.getPreviewScene() === captureScene &&
+            CaseScene.getVisualSignature(captureScene.pack) === visualSignature
           );
           const validateContext = () => {
             if (isCurrentContext()) return true;
@@ -1629,6 +1632,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (changes._replace || !isCurrentContext()) contextInvalidated = true;
           });
           if (!captureScene.pack.cases?.length) {
+            if (source !== 'manual') {
+              return Boolean(PackLibrary.updatePreview(packId, {
+                thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,
+                thumbnailVisualSignature: visualSignature,
+              }));
+            }
             if (!quiet && source === 'manual') {
               UIComponents.showToast('There are no cases to preview.', 'info', { title: 'Preview' });
             }
@@ -1649,10 +1658,11 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (bytes > 150 * 1024) throw new Error(`Preview too large (${Math.round(bytes / 1024)}KB)`);
 
           if (!validateContext()) return false;
-          const updated = PackLibrary.update(packId, {
+          const updated = PackLibrary.updatePreview(packId, {
             thumbnail: dataUrl,
             thumbnailUpdatedAt: Date.now(),
             thumbnailSource: source === 'manual' ? 'manual' : 'auto',
+            thumbnailVisualSignature: visualSignature,
           }, { skipHistory: true });
           if (!updated) throw new Error('Load plan not found');
           if (!quiet) UIComponents.showToast('Preview captured', 'success', { title: 'Preview' });
@@ -1693,9 +1703,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (previousScreen !== 'editor' || nextScreen === 'editor' || OperationLifecycle.isBusy()) return;
         const identity = EditorUI.getPreviewScene();
         const pack = identity && identity.pack;
-        const lastEdited = pack && Number.isFinite(pack.lastEdited) ? pack.lastEdited : 0;
-        const thumbAt = pack && Number.isFinite(pack.thumbnailUpdatedAt) ? pack.thumbnailUpdatedAt : 0;
-        if (pack && pack.cases?.length > 0 && lastEdited > thumbAt) {
+        if (pack && (pack.cases?.length > 0 || pack.thumbnail) &&
+            pack.thumbnailVisualSignature !== identity.visualSignature) {
           void capturePackPreview(pack.id, { source: 'auto', quiet: true, beforeDeparture: true });
         }
       }
@@ -1708,7 +1717,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const pack = PackLibrary.getById(packId);
         if (!pack) return false;
         if (!pack.thumbnail) return false;
-        PackLibrary.update(packId, { thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null });
+        PackLibrary.updatePreview(packId, {
+          thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,
+          thumbnailVisualSignature: CaseScene.getVisualSignature(pack),
+        }, { skipHistory: false });
         UIComponents.showToast('Preview cleared', 'info', { title: 'Preview' });
         return true;
       }
@@ -2198,6 +2210,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       OperationLifecycle,
       capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
       getActiveWorkspaceKey: () => `${getActiveWorkspaceKey()}|${CoreStorage.captureScopeContext().generation}`,
+      getVisualSignature: pack => CaseScene.getVisualSignature(pack),
     });
 
     // ==== UI: Packs Screen ====
@@ -6975,7 +6988,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
       let prevScreen = StateStore.get('currentScreen');
 
-      StateStore.subscribe(changes => {
+      StateStore.subscribe((changes, _state, notification) => {
         const previewContextChanged = changes._replace ||
           Object.prototype.hasOwnProperty.call(changes, 'currentPackId') ||
           (changes.currentScreen && changes.currentScreen !== prevScreen);
@@ -6996,16 +7009,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
         ) {
           Storage.saveSoon();
         }
+        if (notification?.type === 'pack-preview') {
+          PacksUI.render();
+          return;
+        }
         if (changes.preferences || changes._undo || changes._redo || changes._replace) {
           const prefs = StateStore.get('preferences');
           if (prefs && prefs.theme) PreferencesManager.applyTheme(prefs.theme);
           SceneManager.refreshTheme();
           SettingsUI.loadForm();
           if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
-        }
-
-        if (changes.packLibrary || changes._undo || changes._redo) {
-          AutoPackPreviewScheduler.schedule();
         }
 
         if (changes.currentScreen || changes._replace) {
@@ -7028,7 +7041,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         // Context loss clears pending work; activation schedules a NEW request
         // only after the real Editor render has synchronized the committed Pack.
-        if (previewContextChanged) AutoPackPreviewScheduler.schedule();
+        if (previewContextChanged || changes.packLibrary || changes.caseLibrary ||
+            changes.preferences || changes._undo || changes._redo) AutoPackPreviewScheduler.schedule();
         if (changes.autoPackResults) {
           EditorUI.render();
         }

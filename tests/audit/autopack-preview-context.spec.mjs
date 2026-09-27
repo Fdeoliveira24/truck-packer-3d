@@ -25,7 +25,7 @@ async function createCaptureHarness({ screen = 'editor', packId = 'pack-a', onRe
   const OperationLifecycle = createOperationLifecycle();
   let workspaceKey = 'user-a|workspace-a';
   let generation = 0;
-  let scene = { pack: packs.get(scenePackId) };
+  let scene = { pack: packs.get(scenePackId), visualSignature: 'fixture-visual' };
   const toasts = [];
   const StateStore = {
     get: key => state[key],
@@ -35,7 +35,7 @@ async function createCaptureHarness({ screen = 'editor', packId = 'pack-a', onRe
     },
     set(patch) {
       Object.assign(state, patch);
-      if (patch.currentScreen || patch.currentPackId) scene = { pack: packs.get(state.currentPackId) };
+      if (patch.currentScreen || patch.currentPackId) scene = { pack: packs.get(state.currentPackId), visualSignature: 'fixture-visual' };
       for (const fn of subscribers) fn(patch, state);
     },
     replaceSame() {
@@ -44,7 +44,7 @@ async function createCaptureHarness({ screen = 'editor', packId = 'pack-a', onRe
   };
   const PackLibrary = {
     getById: id => packs.get(id) || null,
-    update(id, patch, options) {
+    updatePreview(id, patch, options) {
       if (rejectWrite || !packs.has(id)) return null;
       updates.push({ id, patch, options });
       Object.assign(packs.get(id), patch);
@@ -61,6 +61,7 @@ async function createCaptureHarness({ screen = 'editor', packId = 'pack-a', onRe
       isScopeContextCurrent: scope => scope.generation === generation && scope.workspaceKey === workspaceKey,
     },
     EditorUI: { getPreviewScene: () => scene },
+    CaseScene: { getVisualSignature: () => 'fixture-visual' },
     getActiveWorkspaceKey: () => workspaceKey,
     requestAnimationFrame: callback => frames.push(callback),
     SceneManager: { getCamera: () => ({}) },

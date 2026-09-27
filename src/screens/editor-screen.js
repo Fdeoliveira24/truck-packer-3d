@@ -894,7 +894,10 @@ export function createCaseScene({
       }
     }
 
+    let syncedPack = null;
+
     function clear() {
+      syncedPack = null;
       const scene = SceneManager.getScene();
       if (!scene) return;
       instances.forEach(group => disposeGroup(scene, group));
@@ -909,6 +912,7 @@ export function createCaseScene({
     }
 
     function sync(pack) {
+      syncedPack = null;
       const scene = SceneManager.getScene();
       if (!scene) return;
       if (!pack) {
@@ -951,6 +955,7 @@ export function createCaseScene({
       recomputeVisualStates();
       refreshGizmo();
       if (pendingPoseWatcher) pendingPoseWatcher();
+      syncedPack = pack;
     }
 
     function buildSignature(inst, caseData) {
@@ -1891,6 +1896,7 @@ export function createCaseScene({
     return {
       clear,
       sync,
+      getSyncedPack: () => syncedPack,
       setHover,
       setSelected,
       setDragging,
@@ -2622,7 +2628,17 @@ export function createInteractionManager({
     }
 
     function onUp(ev) {
-      if (!isEditorActive()) return;
+      if (!isEditorActive()) {
+        // Departure never commits a provisional pose. Release the old gesture
+        // so re-entry can synchronize and preview the committed Pack normally.
+        if (pressed || draggingId) {
+          gizmoDragging = false;
+          gizmoAxis = null;
+          CaseScene.setGizmoActive(false);
+          resetDrag();
+        }
+        return;
+      }
       if (!pressed && !draggingId) return;
 
       if (draggingId) {
@@ -3539,7 +3555,10 @@ export function createInteractionManager({
       UIComponents.showToast(formatDeleteResultMessage(result, ids), 'info');
     }
 
-    return { init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical };
+    return {
+      init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical,
+      hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending),
+    };
   })();
 
   return InteractionManager;
@@ -3566,6 +3585,28 @@ export function createEditorScreen({
   OperationLifecycle = null,
 }) {
   const EditorUI = (() => {
+    // Runtime authority only: navigation IDs cannot prove what the scene contains.
+    // Publish after a complete committed render; replacement/departure kills it.
+    let previewScene = null;
+    StateStore.subscribe(changes => {
+      if (changes._replace || StateStore.get('currentScreen') !== 'editor' ||
+          (previewScene && StateStore.get('currentPackId') !== previewScene.pack.id)) {
+        previewScene = null;
+      }
+    });
+
+    function getPreviewScene() {
+      if (!previewScene || !CoreStorage.isScopeContextCurrent(previewScene.scope) ||
+          StateStore.get('currentScreen') !== 'editor' ||
+          StateStore.get('currentPackId') !== previewScene.pack.id ||
+          PackLibrary.getById(previewScene.pack.id) !== previewScene.pack ||
+          SceneManager.getScene() !== previewScene.scene ||
+          CaseScene.getSyncedPack() !== previewScene.pack ||
+          InteractionManager.hasProvisionalPose()) return null;
+      const operation = OperationLifecycle && OperationLifecycle.currentOperation();
+      if (operation && operation.busy && operation.kind !== 'capturingPreview') return null;
+      return previewScene;
+    }
     const shellEl = /** @type {HTMLElement|null} */ (document.querySelector('.editor-shell'));
     const leftEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-left'));
     const rightEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-right'));
@@ -3768,6 +3809,7 @@ export function createEditorScreen({
       return clamped;
     }
     function resetWorkspaceState() {
+      previewScene = null;
       resetEditorCaseQtyDrafts(caseQtyDrafts);
     }
     let layoutRaf = null;
@@ -4391,6 +4433,8 @@ export function createEditorScreen({
     }
 
     function render() {
+      const previousPreviewScene = previewScene;
+      previewScene = null;
       selectionRenderPending = false;
       if (StateStore.get('currentScreen') !== 'editor') {
         setValidationPopoverOpen(false);
@@ -4424,6 +4468,15 @@ export function createEditorScreen({
       renderAutoPackResultsPanel(pack);
       renderHandlingRulesStatus(pack);
       SceneManager.resize();
+      if (initialized && CaseScene.getSyncedPack() === pack) {
+        // A same-commit repaint (including AutoPack's final UI render) is not
+        // context loss. Preserve its identity so a valid frame wait can finish.
+        previewScene = previousPreviewScene && previousPreviewScene.pack === pack &&
+          previousPreviewScene.scene === SceneManager.getScene() &&
+          CoreStorage.isScopeContextCurrent(previousPreviewScene.scope)
+          ? previousPreviewScene
+          : { pack, scope: CoreStorage.captureScopeContext(), scene: SceneManager.getScene() };
+      }
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene
@@ -6051,6 +6104,7 @@ export function createEditorScreen({
           successMessage: successMsg || 'Truck updated',
           renderPreview: preview => {
             if (!preview || !preview.pack || StateStore.get('currentScreen') !== 'editor') return;
+            previewScene = null;
             ensureScene();
             SceneManager.setTruck(preview.pack.truck);
             CaseScene.sync(preview.pack);
@@ -7040,7 +7094,7 @@ export function createEditorScreen({
       return ok ? out : null;
     }
 
-    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState };
+    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, getPreviewScene };
   })();
 
   const onDeactivated = () => { };

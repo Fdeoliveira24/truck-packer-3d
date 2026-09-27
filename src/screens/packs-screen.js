@@ -1767,7 +1767,7 @@ export function createPacksScreen({
             {
               label: 'Capture Preview',
               icon: 'fa-solid fa-image',
-              onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+              onClick: () => ExportService.capturePackPreviewFromLibrary(pack.id, openPack),
             },
             {
               label: 'Clear Preview',
@@ -1970,7 +1970,7 @@ export function createPacksScreen({
             {
               label: 'Capture Preview',
               icon: 'fa-solid fa-image',
-              onClick: () => ExportService.capturePackPreview(pack.id, { source: 'manual' }),
+              onClick: () => ExportService.capturePackPreviewFromLibrary(pack.id, openPack),
             },
             {
               label: 'Clear Preview',

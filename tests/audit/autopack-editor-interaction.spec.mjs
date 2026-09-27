@@ -30,11 +30,13 @@ const read = (path, encoding = 'utf8') => readFile(new URL(path, repo), encoding
 
 const appSource = await read('src/app.js');
 const subscriberAnchor = appSource.indexOf("let prevScreen = StateStore.get('currentScreen');");
-const subscriberStart = appSource.indexOf('StateStore.subscribe(changes => {', subscriberAnchor);
+const subscriberStart = appSource.indexOf('StateStore.subscribe(', subscriberAnchor);
 const subscriberEnd = appSource.indexOf('\n      });\n\n      try {\n        Router.init(', subscriberStart);
 assert.ok(subscriberAnchor >= 0 && subscriberStart > subscriberAnchor && subscriberEnd > subscriberStart,
   'app.js StateStore render subscriber is extractable');
 const appSubscriber = appSource.slice(subscriberStart + 'StateStore.subscribe('.length, subscriberEnd + '\n      }'.length);
+assert.match(appSubscriber, /if \(notification\?\.type === 'pack-preview'\) \{\s*PacksUI\.render\(\);\s*return;/,
+  'derived preview notifications refresh Packs without reconstructing Editor or Cases');
 
 const importMap = JSON.stringify({
   imports: { three: '/node_modules/three/build/three.module.js', 'three/addons/': '/node_modules/three/examples/jsm/' },

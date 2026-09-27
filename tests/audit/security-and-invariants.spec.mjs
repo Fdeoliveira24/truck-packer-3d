@@ -7486,8 +7486,10 @@ test('AUTO-PACK-A1-CLEAN-2 app delegates AutoPack runtime without carrying orche
     'app.js must not call the legacy solver directly after A1-CLEAN-2');
   assert.match(engineSrc, /export function createAutoPackEngine\(\{/,
     'the runtime module must expose the AutoPack engine factory');
-  assert.match(engineSrc, /capturePackPreview\(packId, \{ source: 'auto' \}\);/,
-    'the runtime module must preserve preview capture after AutoPack');
+  assert.doesNotMatch(engineSrc, /capturePackPreview\(packId, \{ source: 'auto'/,
+    'AutoPack must leave automatic preview capture to the central scheduler');
+  assert.match(appSrc, /if \(previewContextChanged \|\| changes\.packLibrary \|\| changes\.caseLibrary \|\|\s*changes\.preferences \|\| changes\._undo \|\| changes\._redo\) AutoPackPreviewScheduler\.schedule\(\);/,
+    'the central scheduler must observe committed Pack changes');
   assert.match(engineSrc, /PackLibrary\.update\(packId, \{ cases: nextCases \}\);/,
     'the runtime module must preserve pack persistence');
 });
@@ -17901,11 +17903,11 @@ test('phase 0.7C-pre folderLibrary changes participate in autosave with packLibr
 
 test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with packLibrary changes', async () => {
   const src = await readAppSource();
-  const renderCall = 'PacksUI.render();';
-  const renderCallIndex = src.indexOf(renderCall, src.indexOf("let prevScreen = StateStore.get('currentScreen');"));
-  const conditionStart = src.lastIndexOf('if (', renderCallIndex);
+  const subscriberStart = src.indexOf("let prevScreen = StateStore.get('currentScreen');");
+  const conditionStart = src.indexOf('if (changes.caseLibrary || changes.packLibrary || changes.folderLibrary', subscriberStart);
+  const renderCallIndex = src.indexOf('PacksUI.render();', conditionStart);
   const renderBlock = conditionStart >= 0 && renderCallIndex > conditionStart
-    ? src.slice(conditionStart, renderCallIndex + renderCall.length)
+    ? src.slice(conditionStart, renderCallIndex + 'PacksUI.render();'.length)
     : '';
 
   assert.ok(renderBlock.length > 0,
@@ -19982,6 +19984,10 @@ test('OPERATION-LIFECYCLE assertIdle, subscribe, and invalid kinds behave correc
   assert.equal(events[events.length - 1], 'idle', 'unsubscribed callback receives no further events');
 });
 
+function previewHarnessVisualSignature(pack) {
+  return JSON.stringify((pack.cases || []).map(inst => ({ id: inst.id, transform: inst.transform || null })));
+}
+
 async function createPackPreviewSchedulerHarness({
   currentScreen = 'editor',
   currentPackId = 'pack-a',
@@ -20035,6 +20041,7 @@ async function createPackPreviewSchedulerHarness({
     OperationLifecycle,
     capturePackPreview,
     getActiveWorkspaceKey: () => activeWorkspaceKey,
+    getVisualSignature: previewHarnessVisualSignature,
     delayMs: 300,
     setTimer,
     clearTimer,
@@ -20074,12 +20081,15 @@ test('PACK-PREVIEW-SCHEDULER captures a stale active Pack while the user remains
 
 test('PACK-PREVIEW-SCHEDULER rapid Pack edits coalesce into one capture', async () => {
   const runtime = await createPackPreviewSchedulerHarness();
+  const pack = runtime.packs.get('pack-a');
+  const initialLastEdited = pack.lastEdited;
   runtime.scheduler.schedule();
-  runtime.packs.get('pack-a').lastEdited = 250;
+  pack.cases[0].transform = { position: { x: 1, y: 0, z: 0 } };
   runtime.scheduler.schedule();
-  runtime.packs.get('pack-a').lastEdited = 300;
+  pack.cases[0].transform = { position: { x: 2, y: 0, z: 0 } };
   runtime.scheduler.schedule();
 
+  assert.equal(pack.lastEdited, initialLastEdited, 'visual freshness does not require a lastEdited change');
   assert.equal(runtime.timers.size, 1, 'only the latest debounce remains scheduled');
   runtime.runTimers();
   assert.equal(runtime.captures.length, 1);
@@ -20130,7 +20140,7 @@ test('PACK-PREVIEW-SCHEDULER thumbnail writes do not recurse and fresh Packs do 
   const runtime = await createPackPreviewSchedulerHarness({
     onCapture: ({ packId, packs }) => {
       const pack = packs.get(packId);
-      pack.thumbnailUpdatedAt = pack.lastEdited + 1;
+      pack.thumbnailVisualSignature = previewHarnessVisualSignature(pack);
       return true;
     },
   });
@@ -20143,11 +20153,9 @@ test('PACK-PREVIEW-SCHEDULER thumbnail writes do not recurse and fresh Packs do 
   runtime.runTimers();
   assert.equal(runtime.captures.length, 1);
 
-  const alreadyFresh = await createPackPreviewSchedulerHarness({
-    pack: {
-      id: 'pack-a', cases: [{ id: 'instance-a' }], lastEdited: 200, thumbnailUpdatedAt: 200,
-    },
-  });
+  const freshPack = { id: 'pack-a', cases: [{ id: 'instance-a' }], lastEdited: 200, thumbnailUpdatedAt: 100 };
+  freshPack.thumbnailVisualSignature = previewHarnessVisualSignature(freshPack);
+  const alreadyFresh = await createPackPreviewSchedulerHarness({ pack: freshPack });
   assert.equal(alreadyFresh.scheduler.schedule(), false);
   assert.equal(alreadyFresh.timers.size, 0);
 });
@@ -20157,8 +20165,18 @@ test('PACK-PREVIEW-SCHEDULER wiring uses pre-navigation flush and shared manual 
     fs.readFile(appPath, 'utf8'), fs.readFile(packsScreenPath, 'utf8'),
     fs.readFile(new URL('../../src/ui/app-shell.js', import.meta.url), 'utf8'),
   ]);
-  assert.match(appSrc, /if \(changes\.packLibrary \|\| changes\._undo \|\| changes\._redo\) \{\s*AutoPackPreviewScheduler\.schedule\(\)/);
-  assert.match(appSrc, /if \(previewContextChanged\) AutoPackPreviewScheduler\.schedule\(\)/);
+  const subscriberStart = appSrc.indexOf('StateStore.subscribe((changes, _state, notification) => {');
+  const subscriberEnd = appSrc.indexOf('\n      });\n\n      try {\n        Router.init(', subscriberStart);
+  assert.ok(subscriberStart >= 0 && subscriberEnd > subscriberStart, 'render subscriber is extractable');
+  const subscriber = appSrc.slice(subscriberStart, subscriberEnd);
+  assert.match(subscriber, /if \(notification\?\.type === 'pack-preview'\) \{\s*PacksUI\.render\(\);\s*return;/,
+    'preview-only writes refresh Packs and do not schedule another capture');
+  assert.match(subscriber, /if \(previewContextChanged \|\| changes\.packLibrary \|\| changes\.caseLibrary \|\|\s*changes\.preferences \|\| changes\._undo \|\| changes\._redo\) AutoPackPreviewScheduler\.schedule\(\);/,
+    'one producer evaluates freshness for context and visual dependencies');
+  assert.equal((subscriber.match(/AutoPackPreviewScheduler\.schedule\(\)/g) || []).length, 1,
+    'the render subscriber schedules preview freshness through one call');
+  assert.ok(subscriber.indexOf('EditorUI.render();') < subscriber.indexOf('AutoPackPreviewScheduler.schedule();'),
+    'Pack activation synchronizes Editor before preview freshness is scheduled');
   assert.ok(shellSrc.indexOf('beforeNavigate(previousScreen, screenKey)') < shellSrc.indexOf('StateStore.set({ currentScreen: screenKey }'));
   assert.equal((packsSrc.match(/ExportService\.capturePackPreviewFromLibrary\(pack\.id, openPack\)/g) || []).length, 2);
   // Ordering and pixel identity are exercised by preview-identity-context.spec.mjs.
@@ -20303,18 +20321,18 @@ test('P0 EDITOR UNDO ATOMICITY: automatic preview capture writes skipHistory, ne
   assert.ok(captureEnd > captureStart, 'capturePackPreview() must be extractable up to clearPackPreview()');
   const captureBlock = appSrc.slice(captureStart, captureEnd);
 
-  assert.match(captureBlock, /PackLibrary\.update\(packId, \{\s*thumbnail: dataUrl,\s*thumbnailUpdatedAt: Date\.now\(\),\s*thumbnailSource: source === 'manual' \? 'manual' : 'auto',\s*\}, \{ skipHistory: true \}\)/,
-    'the derived preview write must pass skipHistory: true so it never consumes a user Undo step');
+  assert.match(captureBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: dataUrl,\s*thumbnailUpdatedAt: Date\.now\(\),\s*thumbnailSource: source === 'manual' \? 'manual' : 'auto',\s*thumbnailVisualSignature: visualSignature,\s*\}, \{ skipHistory: true \}\)/,
+    'the derived preview write must persist visual freshness without consuming a user Undo step');
   assert.doesNotMatch(captureBlock, /skipNotify/,
     'the preview write must keep notifying subscribers normally — only history recording is skipped');
 
-  // clearPackPreview() (an explicit manual user action) is intentionally left
-  // on normal history semantics and must not be touched by this guard.
+  // Clear Preview is an explicit, undoable user action even though it uses the
+  // same narrow preview metadata boundary as automatic capture.
   const clearStart = appSrc.indexOf('function clearPackPreview(');
   const clearEnd = appSrc.indexOf('\n      }', clearStart);
   const clearBlock = appSrc.slice(clearStart, clearEnd);
-  assert.doesNotMatch(clearBlock, /skipHistory/,
-    'clearPackPreview() is a manual user action and must remain normally undoable');
+  assert.match(clearBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,\s*thumbnailVisualSignature: CaseScene\.getVisualSignature\(pack\),\s*\}, \{ skipHistory: false \}\)/,
+    'Clear Preview intentionally clears the image at the current visual signature and remains undoable');
 });
 
 test('P0 EDITOR UNDO ATOMICITY: Hide/Show commits the whole selection in one PackLibrary.update() call', async () => {
@@ -24930,7 +24948,8 @@ test('APP-STABILIZATION-PHASE3 app shares one lifecycle with screens, dialogs, e
   const clearFn = src.slice(clearStart, clearEnd);
   assert.ok(clearFn.indexOf('OperationLifecycle.isBusy()') < clearFn.indexOf('PackLibrary.getById(packId)'),
     'preview clearing rejects busy state before reading or mutating the pack');
-  assert.ok(clearFn.indexOf('OperationLifecycle.isBusy()') < clearFn.indexOf('PackLibrary.update(packId'),
+  const previewWriteIndex = clearFn.indexOf('PackLibrary.updatePreview(packId');
+  assert.ok(previewWriteIndex >= 0 && clearFn.indexOf('OperationLifecycle.isBusy()') < previewWriteIndex,
     'preview clearing cannot race an active capture or editor operation');
 });
 

@@ -2532,6 +2532,8 @@ export function create(packData) {
     thumbnailUpdatedAt: null,
     thumbnailSource: null,
     thumbnailVisualSignature: null,
+    thumbnailViewSignature: null,
+    editorView: null,
   };
   StateStore.set({ packLibrary: [...getPacks(), pack] });
   return pack;
@@ -2575,7 +2577,7 @@ export function update(packId, patch, { skipHistory = false } = {}) {
   return next;
 }
 
-// Derived preview boundary: only these four fields may change. Preserve cargo,
+// Derived preview boundary: only thumbnail cache fields may change. Preserve cargo,
 // stats and business timestamps; capture writes never enter or truncate history.
 export function updatePreview(packId, patch, { skipHistory = true } = {}) {
   const previousPack = getById(packId);
@@ -2588,11 +2590,30 @@ export function updatePreview(packId, patch, { skipHistory = true } = {}) {
     next.thumbnailVisualSignature = typeof patch.thumbnailVisualSignature === 'string' && patch.thumbnailVisualSignature
       ? patch.thumbnailVisualSignature : null;
   }
+  if (Object.hasOwn(patch, 'thumbnailViewSignature')) {
+    next.thumbnailViewSignature = typeof patch.thumbnailViewSignature === 'string' && patch.thumbnailViewSignature
+      ? patch.thumbnailViewSignature : null;
+  }
   StateStore.set({ packLibrary: getPacks().map(p => p === previousPack ? next : p) }, {
     skipHistory,
     notification: { type: 'pack-preview', previousPack, pack: next },
   });
   return next;
+}
+
+/** Settled Pack view metadata, outside cargo stats, timestamps, Undo and Redo. */
+export function updateEditorView(packId, view) {
+  const previousPack = getById(packId);
+  const editorView = CoreNormalizer.normalizeEditorView(view);
+  if (!previousPack || !editorView) return null;
+  if (CoreNormalizer.editorViewSignature(previousPack.editorView) ===
+      CoreNormalizer.editorViewSignature(editorView)) return previousPack;
+  const pack = { ...previousPack, editorView };
+  StateStore.set({ packLibrary: getPacks().map(p => p === previousPack ? pack : p) }, {
+    skipHistory: true,
+    notification: { type: 'pack-view', previousPack, pack },
+  });
+  return pack;
 }
 
 export function remove(packId) {
@@ -2619,6 +2640,7 @@ export function duplicate(packId) {
   copy.thumbnailUpdatedAt = null;
   copy.thumbnailSource = null;
   copy.thumbnailVisualSignature = null;
+  copy.thumbnailViewSignature = null;
   copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
   StateStore.set({ packLibrary: [...getPacks(), copy] });
   return copy;

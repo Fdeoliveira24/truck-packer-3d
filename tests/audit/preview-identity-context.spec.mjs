@@ -49,6 +49,7 @@ const TOTAL = FIXTURE_CASES.reduce((sum, c) => sum + c.qty, 0);
 const bootstrap = `
 import * as CoreStorage from '/src/core/storage.js';
 import * as Normalizer from '/src/core/normalizer.js';
+const { editorViewSignature, normalizeEditorView } = Normalizer;
 import { createPacksScreen } from '/src/screens/packs-screen.js';
 import { createTableFooter } from '/src/ui/table-footer.js';
 import { createUIComponents } from '/src/ui/ui-components.js';
@@ -154,6 +155,8 @@ function capturePackPreview(id, options) {
 const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn createPackPreviewScheduler;')();
 const AutoPackPreviewScheduler = createPreviewScheduler({
   StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => getActiveWorkspaceKey() + '|' + CoreStorage.captureScopeContext().generation,
+  getViewSignature: pack => Normalizer.editorViewSignature(
+    Normalizer.normalizeEditorView(pack.editorView) || SceneManager.getDefaultEditorView(pack.truck)),
 });
 
 const ExportService = { captureScreenshot() {}, generatePDF() {}, capturePackPreview, clearPackPreview, capturePackPreviewFromLibrary, flushPackPreviewBeforeNavigation };
@@ -172,6 +175,7 @@ const EditorUI = createEditorScreen({
   AutoPackEngine, ExportService, SystemOverlay: { show() {}, hide() {} }, TrailerPresets, AppShell, SceneManager,
   CaseScene, InteractionManager, TruckChangeController, OperationLifecycle,
 });
+EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 const PacksUI = createPacksScreen({
   Utils, UIComponents, PreferencesManager, PackLibrary, CaseLibrary, StateStore, TrailerPresets,
   ImportExport: {}, ImportPackDialog: {}, createTableFooter, AppShell, ExportService,
@@ -296,7 +300,11 @@ window.probe.reset = () => {
   if (op.busy) OperationLifecycle.finishOperation(op.token);
   CoreStorage.setWorkspaceScope('fixture-a');
   StateStore.replace(structuredClone(seed), { resetHistory: true });
-  PackLibrary.getPacks().forEach(pack => { pack.thumbnailVisualSignature = CaseScene.getVisualSignature(pack); });
+  PackLibrary.getPacks().forEach(pack => {
+    pack.thumbnailVisualSignature = CaseScene.getVisualSignature(pack);
+    pack.thumbnailViewSignature = Normalizer.editorViewSignature(
+      Normalizer.normalizeEditorView(pack.editorView) || SceneManager.getDefaultEditorView(pack.truck));
+  });
   StateStore.resetHistory();
   window.probe.mark();
 };
@@ -895,6 +903,191 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         return { redo: q.StateStore.redo(), signature: q.PackLibrary.getById(q.packId).thumbnailVisualSignature };
       });
       assert.equal(proof.redo, true);
+    });
+
+    await t.test('Camera A/B views restore independently; settled orbit saves once and refreshes only A', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page, A);
+      const before = await page.evaluate(() => {
+        const q = window.probe;
+        q.mark();
+        const controls = q.SceneManager.getControls();
+        const defaultA = q.SceneManager.getEditorView();
+        controls.dispatchEvent({ type: 'start' });
+        q.SceneManager.getCamera().position.x += 6;
+        controls.update();
+        controls.dispatchEvent({ type: 'change' });
+        controls.dispatchEvent({ type: 'change' });
+        const during = q.PackLibrary.getById(q.packId).editorView;
+        controls.dispatchEvent({ type: 'end' });
+        return { defaultA, during };
+      });
+      assert.equal(before.during ?? null, null, 'change events do not persist an intermediate pose');
+      await settlePreview(page);
+      const savedA = await page.evaluate(() => {
+        const q = window.probe;
+        const pack = q.PackLibrary.getById(q.packId);
+        return { view: pack.editorView, signature: pack.thumbnailViewSignature,
+          expected: q.Normalizer.editorViewSignature(pack.editorView),
+          writes: q.log.filter(e => e.type === 'write').length };
+      });
+      assert.notDeepEqual(savedA.view, before.defaultA);
+      assert.equal(savedA.signature, savedA.expected);
+      assert.equal(savedA.writes, 1, 'camera only refreshes the thumbnail once');
+      await openPack(page, B);
+      const initialB = await page.evaluate(() => window.probe.SceneManager.getEditorView());
+      assert.notDeepEqual(initialB, savedA.view, 'B starts from its own default');
+      await page.evaluate(() => {
+        const q = window.probe;
+        const controls = q.SceneManager.getControls();
+        controls.dispatchEvent({ type: 'start' });
+        q.SceneManager.getCamera().position.z += 7;
+        controls.update();
+        controls.dispatchEvent({ type: 'end' });
+      });
+      await settlePreview(page);
+      const savedB = await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.otherPackId).editorView);
+      assert.notDeepEqual(savedB, savedA.view);
+      await openPack(page, A);
+      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), savedA.view);
+      await page.evaluate(() => window.probe.EditorUI.render());
+      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), savedA.view,
+        'same-Pack render keeps the established view');
+      await openPack(page, B);
+      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), savedB);
+      const hydratedB = await page.evaluate(() => {
+        const q = window.probe;
+        q.CoreStorage.saveNow();
+        const loaded = q.CoreStorage.load();
+        if (!loaded?.packLibrary?.find(pack => pack.id === q.otherPackId)?.editorView) return null;
+        q.StateStore.replace({ ...q.StateStore.snapshot(), ...loaded, currentScreen: 'editor' },
+          { resetHistory: true });
+        return q.SceneManager.getEditorView();
+      });
+      assert.deepEqual(hydratedB, savedB, 'persisted pose restores through the workspace storage load path');
+      assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).editorView), savedA.view,
+        'B never overwrites A metadata');
+    });
+
+    await t.test('moving view rejects mid-orbit capture; focus saves its final pose; empty Pack avoids readback', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page, A);
+      const mid = await page.evaluate(async () => {
+        const q = window.probe;
+        q.mark();
+        const controls = q.SceneManager.getControls();
+        controls.dispatchEvent({ type: 'start' });
+        q.SceneManager.getCamera().position.x += 4;
+        controls.update();
+        const accepted = await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+        const reads = q.log.filter(e => e.type === 'readback').length;
+        controls.dispatchEvent({ type: 'end' });
+        return { accepted, reads };
+      });
+      assert.deepEqual(mid, { accepted: false, reads: 0 });
+      await settlePreview(page);
+      assert.equal((await counts(page)).readbacks, 1, 'settled view captures once');
+      await page.evaluate(() => {
+        const q = window.probe;
+        q.mark();
+        q.SceneManager.focusOnWorldPoint(q.SceneManager.getControls().target.clone().addScalar(3), { duration: 90 });
+      });
+      await settlePreview(page);
+      const focus = await page.evaluate(() => {
+        const q = window.probe;
+        return { saved: q.Normalizer.editorViewSignature(q.PackLibrary.getById(q.packId).editorView),
+          live: q.EditorUI.getPreviewView()?.signature,
+          writes: q.log.filter(e => e.type === 'write').length };
+      });
+      assert.equal(focus.saved, focus.live);
+      assert.equal(focus.writes, 1);
+      await openPack(page, 'empty-pack');
+      await page.evaluate(() => {
+        const q = window.probe;
+        q.mark();
+        const controls = q.SceneManager.getControls();
+        controls.dispatchEvent({ type: 'start' });
+        q.SceneManager.getCamera().position.x += 5;
+        controls.update();
+        controls.dispatchEvent({ type: 'end' });
+      });
+      await settlePreview(page);
+      assert.equal((await counts(page)).readbacks, 0);
+      assert.ok(await page.evaluate(() => window.probe.PackLibrary.getById('empty-pack').editorView));
+    });
+
+    await t.test('Clear stays intentional until camera changes; scope generation invalidates view authority', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page, A);
+      const manual = await page.evaluate(async () => {
+        const q = window.probe;
+        const captured = await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+        return { captured,
+          stored: q.PackLibrary.getById(q.packId).thumbnailViewSignature,
+          live: q.EditorUI.getPreviewView()?.signature };
+      });
+      assert.equal(manual.captured, true);
+      assert.equal(manual.stored, manual.live, 'manual capture writes view freshness');
+      await page.evaluate(() => {
+        const q = window.probe;
+        q.AppShell.navigate('packs');
+        q.ExportService.clearPackPreview(q.packId);
+        q.AppShell.navigate('editor');
+        q.mark();
+      });
+      await settlePreview(page);
+      assert.equal((await counts(page)).readbacks, 0);
+      await page.evaluate(() => {
+        const q = window.probe;
+        const controls = q.SceneManager.getControls();
+        controls.dispatchEvent({ type: 'start' });
+        q.SceneManager.getCamera().position.z += 5;
+        controls.update();
+        controls.dispatchEvent({ type: 'end' });
+      });
+      await settlePreview(page);
+      assert.equal((await counts(page)).readbacks, 1);
+      assert.equal(await page.evaluate(() => {
+        const q = window.probe;
+        q.CoreStorage.setWorkspaceScope('fixture-new-generation');
+        return q.EditorUI.getPreviewView();
+      }), null);
+      await page.evaluate(() => window.probe.reset());
+    });
+
+    await t.test('two rapid orbit endings coalesce to one preview; immediate departure saves the final view', async () => {
+      await page.evaluate(() => window.probe.reset());
+      await openPack(page, A);
+      const departure = await page.evaluate(() => {
+        const q = window.probe;
+        q.mark();
+        const controls = q.SceneManager.getControls();
+        for (let i = 0; i < 2; i += 1) {
+          controls.dispatchEvent({ type: 'start' });
+          q.SceneManager.getCamera().position.x += 3;
+          controls.update();
+          controls.dispatchEvent({ type: 'end' });
+        }
+        q.AppShell.navigate('packs');
+        return { saved: q.PackLibrary.getById(q.packId).editorView,
+          signature: q.PackLibrary.getById(q.packId).thumbnailViewSignature,
+          reads: q.log.filter(e => e.type === 'readback').length };
+      });
+      assert.ok(departure.saved);
+      assert.equal(departure.reads, 1, 'the departure flush captures the final settled view once');
+      await openPack(page, A);
+      await settlePreview(page);
+      const after = await page.evaluate(() => {
+        const q = window.probe;
+        return { view: q.SceneManager.getEditorView(),
+          stored: q.PackLibrary.getById(q.packId).editorView,
+          signature: q.PackLibrary.getById(q.packId).thumbnailViewSignature,
+          viewSignature: q.Normalizer.editorViewSignature(q.SceneManager.getEditorView()),
+          reads: q.log.filter(e => e.type === 'readback').length };
+      });
+      assert.deepEqual(after.view, after.stored);
+      assert.equal(after.reads, 1, 'reopening needs no duplicate preview');
+      assert.equal(after.signature, after.viewSignature);
     });
 
     assert.deepEqual(errors.filter(e => !e.includes('injected scene sync failure')), [], 'no uncaught error or unhandled rejection');

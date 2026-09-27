@@ -33,6 +33,36 @@ import {
 } from './business-identity.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
+const EDITOR_VIEW_PRECISION = 1000;
+
+/** Pack presentation only: reject partial or nonfinite camera poses. */
+export function normalizeEditorView(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const vector = source => {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+    const result = {};
+    for (const axis of ['x', 'y', 'z']) {
+      if (typeof source[axis] !== 'number' || !Number.isFinite(source[axis])) return null;
+      const rounded = Math.round(source[axis] * EDITOR_VIEW_PRECISION) / EDITOR_VIEW_PRECISION;
+      if (!Number.isFinite(rounded)) return null;
+      result[axis] = Object.is(rounded, -0) ? 0 : rounded;
+    }
+    return result;
+  };
+  const cameraPosition = vector(value.cameraPosition);
+  const target = vector(value.target);
+  if (!cameraPosition || !target) return null;
+  const distanceSquared = ['x', 'y', 'z'].reduce((sum, axis) =>
+    sum + (cameraPosition[axis] - target[axis]) ** 2, 0);
+  if (!(distanceSquared > 0.000001) || !Number.isFinite(distanceSquared)) return null;
+  return { cameraPosition, target };
+}
+
+export function editorViewSignature(value) {
+  const view = normalizeEditorView(value);
+  return view ? JSON.stringify([view.cameraPosition.x, view.cameraPosition.y, view.cameraPosition.z,
+    view.target.x, view.target.y, view.target.z]) : null;
+}
 
 function finiteNumber(value, fallback) {
   const n = Number(value);
@@ -446,6 +476,9 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     thumbnailSource,
     thumbnailVisualSignature: typeof p?.thumbnailVisualSignature === 'string' && p.thumbnailVisualSignature
       ? p.thumbnailVisualSignature : null,
+    thumbnailViewSignature: typeof p?.thumbnailViewSignature === 'string' && p.thumbnailViewSignature
+      ? p.thumbnailViewSignature : null,
+    editorView: normalizeEditorView(p?.editorView),
     handlingRulesValidatedSignature,
   };
 }

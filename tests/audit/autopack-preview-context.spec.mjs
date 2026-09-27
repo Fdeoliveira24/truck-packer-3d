@@ -60,7 +60,10 @@ async function createCaptureHarness({ screen = 'editor', packId = 'pack-a', onRe
       captureScopeContext: () => ({ generation, workspaceKey }),
       isScopeContextCurrent: scope => scope.generation === generation && scope.workspaceKey === workspaceKey,
     },
-    EditorUI: { getPreviewScene: () => scene },
+    EditorUI: {
+      getPreviewScene: () => scene,
+      getPreviewView: () => scene ? { signature: 'fixture-view', revision: 0 } : null,
+    },
     CaseScene: { getVisualSignature: () => 'fixture-visual' },
     getActiveWorkspaceKey: () => workspaceKey,
     requestAnimationFrame: callback => frames.push(callback),

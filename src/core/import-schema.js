@@ -17,6 +17,7 @@
  */
 
 import { stripForbiddenCaseQuantityFields } from './cargo-canonical.js';
+import { normalizeEditorView } from './normalizer.js';
 
 // ============================================================================
 // SECTION: ENVELOPE CONSTANTS
@@ -258,7 +259,7 @@ export function projectPortableCase(caseData) {
  */
 export function projectPortablePack(pack) {
   const p = pack && typeof pack === 'object' ? pack : {};
-  const { stats: _stats, thumbnail: _thumbnail, thumbnailUpdatedAt: _thumbnailUpdatedAt, thumbnailSource: _thumbnailSource, thumbnailVisualSignature: _thumbnailVisualSignature, ...portable } = p;
+  const { stats: _stats, thumbnail: _thumbnail, thumbnailUpdatedAt: _thumbnailUpdatedAt, thumbnailSource: _thumbnailSource, thumbnailVisualSignature: _thumbnailVisualSignature, thumbnailViewSignature: _thumbnailViewSignature, editorView: _editorView, ...portable } = p;
   return portable;
 }
 
@@ -272,7 +273,8 @@ export function projectPortableWorkspacePack(pack) {
     solutions: _solutions,
     ...portable
   } = portablePack;
-  return portable;
+  const editorView = normalizeEditorView(pack?.editorView);
+  return editorView ? { ...portable, editorView } : portable;
 }
 
 /** Workspace folder DTO limited to the durable flat-folder contract. */

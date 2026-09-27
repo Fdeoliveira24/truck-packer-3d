@@ -19,6 +19,7 @@ import {
   createSpaceUtilizationGauge,
 } from '../ui/space-utilization-gauge.js';
 import * as CoreStorage from '../core/storage.js';
+import { editorViewSignature, normalizeEditorView } from '../core/normalizer.js';
 import { buildAutoPackCaseRuleSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
 import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
@@ -3624,14 +3625,109 @@ export function createEditorScreen({
     // Runtime authority only: navigation IDs cannot prove what the scene contains.
     // Publish after a complete committed render; replacement/departure kills it.
     let previewScene = null;
+    let viewOwner = null;
+    let viewRevision = 0;
+    let focusRevision = null;
+    let viewGestureActive = false;
+    let viewFocusActive = false;
+    let viewPendingEnd = false;
+    let viewSettleTimer = null;
+    let pendingViewSave = false;
+    let onPreviewViewSettled = null;
+
+    function clearViewSettle() {
+      if (viewSettleTimer !== null) window.clearTimeout(viewSettleTimer);
+      viewSettleTimer = null;
+      viewPendingEnd = false;
+    }
+
+    function invalidateViewOwner() {
+      clearViewSettle();
+      SceneManager.cancelFocus();
+      viewOwner = null;
+      viewGestureActive = false;
+      viewFocusActive = false;
+      focusRevision = null;
+      pendingViewSave = false;
+      viewRevision++;
+    }
+
+    function isViewOwnerCurrent() {
+      return Boolean(viewOwner && StateStore.get('currentScreen') === 'editor' &&
+        StateStore.get('currentPackId') === viewOwner.packId &&
+        CoreStorage.isScopeContextCurrent(viewOwner.scope));
+    }
+
+    function persistSettledView(revision = viewRevision) {
+      if (revision !== viewRevision || !isViewOwnerCurrent() ||
+          viewGestureActive || viewFocusActive || viewPendingEnd) return false;
+      const scene = getPreviewScene();
+      if (!scene) {
+        pendingViewSave = true;
+        return false;
+      }
+      pendingViewSave = false;
+      const view = SceneManager.getEditorView();
+      const signature = editorViewSignature(view);
+      const saved = normalizeEditorView(scene.pack.editorView) ||
+        SceneManager.getDefaultEditorView(scene.pack.truck);
+      if (!signature) return false;
+      if (signature === editorViewSignature(saved)) {
+        if (onPreviewViewSettled) onPreviewViewSettled();
+        return false;
+      }
+      return Boolean(PackLibrary.updateEditorView(scene.pack.id, view));
+    }
+
+    function scheduleViewSettle(revision) {
+      if (viewSettleTimer !== null) window.clearTimeout(viewSettleTimer);
+      viewSettleTimer = window.setTimeout(() => {
+        viewSettleTimer = null;
+        if (revision !== viewRevision) return;
+        viewPendingEnd = false;
+        persistSettledView(revision);
+      }, 150);
+    }
+
+    function getPreviewView() {
+      const scene = getPreviewScene();
+      if (!scene || !isViewOwnerCurrent() || viewGestureActive || viewFocusActive ||
+          viewPendingEnd || pendingViewSave) return null;
+      const view = SceneManager.getEditorView();
+      const signature = editorViewSignature(view);
+      return signature ? { view, signature, revision: viewRevision } : null;
+    }
+
+    function flushPendingView() {
+      if (!viewPendingEnd || viewGestureActive || viewFocusActive) return;
+      const controls = SceneManager.getControls();
+      if (controls) {
+        const damping = controls.enableDamping;
+        controls.enableDamping = false;
+        controls.update();
+        controls.enableDamping = damping;
+      }
+      clearViewSettle();
+      persistSettledView();
+    }
+
+    function setPreviewViewSettledCallback(callback) {
+      onPreviewViewSettled = callback;
+    }
+
     StateStore.subscribe((changes, _state, notification) => {
+      if (changes._replace ||
+          (changes.currentScreen && StateStore.get('currentScreen') !== 'editor') ||
+          (changes.currentPackId && viewOwner && StateStore.get('currentPackId') !== viewOwner.packId)) {
+        invalidateViewOwner();
+      }
       if (changes._replace || StateStore.get('currentScreen') !== 'editor' ||
           (previewScene && StateStore.get('currentPackId') !== previewScene.pack.id)) {
         previewScene = null;
       }
       // Only the whitelisted derived-metadata boundary can rebind authority.
       // An ordinary Pack replacement still requires a full committed render.
-      if (notification?.type === 'pack-preview' && previewScene &&
+      if ((notification?.type === 'pack-preview' || notification?.type === 'pack-view') && previewScene &&
           previewScene.pack === notification.previousPack &&
           PackLibrary.getById(notification.pack.id) === notification.pack &&
           CoreStorage.isScopeContextCurrent(previewScene.scope) &&
@@ -3858,6 +3954,7 @@ export function createEditorScreen({
     }
     function resetWorkspaceState() {
       previewScene = null;
+      invalidateViewOwner();
       resetEditorCaseQtyDrafts(caseQtyDrafts);
     }
     let layoutRaf = null;
@@ -4397,6 +4494,9 @@ export function createEditorScreen({
             renderSpaceUtilizationSection(PackLibrary.getById(StateStore.get('currentPackId')));
           }
           if (selectionRenderPending && !OperationLifecycle.isBusy()) render();
+          if (pendingViewSave && !OperationLifecycle.isBusy()) {
+            queueMicrotask(() => persistSettledView());
+          }
         });
       }
 
@@ -4475,6 +4575,40 @@ export function createEditorScreen({
     function ensureScene() {
       if (initialized || !supportsWebGL) return;
       SceneManager.init(viewportEl);
+      const controls = SceneManager.getControls();
+      controls.addEventListener('start', () => {
+        if (!isViewOwnerCurrent()) return;
+        clearViewSettle();
+        SceneManager.cancelFocus();
+        viewFocusActive = false;
+        focusRevision = null;
+        viewGestureActive = true;
+        viewRevision++;
+      });
+      controls.addEventListener('change', () => {
+        if (viewPendingEnd && isViewOwnerCurrent()) scheduleViewSettle(viewRevision);
+      });
+      controls.addEventListener('end', () => {
+        if (!viewGestureActive || !isViewOwnerCurrent()) return;
+        viewGestureActive = false;
+        viewPendingEnd = true;
+        scheduleViewSettle(viewRevision);
+      });
+      SceneManager.setFocusViewCallbacks({
+        onStart: () => {
+          if (!isViewOwnerCurrent()) return;
+          clearViewSettle();
+          viewGestureActive = false;
+          viewFocusActive = true;
+          focusRevision = ++viewRevision;
+        },
+        onComplete: () => {
+          if (!isViewOwnerCurrent() || focusRevision !== viewRevision) return;
+          viewFocusActive = false;
+          focusRevision = null;
+          persistSettledView();
+        },
+      });
       InteractionManager.init(SceneManager.getRenderer().domElement);
       wireDropToViewport(SceneManager.getRenderer().domElement);
       initialized = true;
@@ -4496,8 +4630,11 @@ export function createEditorScreen({
       refreshActionButtons();
 
       if (!pack) {
-        SceneManager.setTruck({ length: 636, width: 102, height: 98 });
+        invalidateViewOwner();
+        const defaultTruck = { length: 636, width: 102, height: 98 };
+        SceneManager.setTruck(defaultTruck);
         CaseScene.sync(null);
+        SceneManager.applyEditorView(SceneManager.getDefaultEditorView(defaultTruck));
         renderCaseBrowser();
         renderInspectorNoPack();
         renderAutoPackResultsPanel(null);
@@ -4508,6 +4645,14 @@ export function createEditorScreen({
 
       SceneManager.setTruck(pack.truck);
       CaseScene.sync(pack);
+      if (!isViewOwnerCurrent()) {
+        invalidateViewOwner();
+        const requestedView = normalizeEditorView(pack.editorView) ||
+          SceneManager.getDefaultEditorView(pack.truck);
+        const appliedView = SceneManager.applyEditorView(requestedView);
+        pendingViewSave = editorViewSignature(appliedView) !== editorViewSignature(requestedView);
+        viewOwner = { packId: pack.id, scope: CoreStorage.captureScopeContext() };
+      }
       CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
       CaseScene.applyOOGHighlights();
 
@@ -4527,6 +4672,7 @@ export function createEditorScreen({
           ? previousPreviewScene
           : { pack, visualSignature, scope: CoreStorage.captureScopeContext(), scene: SceneManager.getScene() };
       }
+      if (pendingViewSave) queueMicrotask(() => persistSettledView());
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene
@@ -7144,7 +7290,8 @@ export function createEditorScreen({
       return ok ? out : null;
     }
 
-    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, getPreviewScene };
+    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState,
+      getPreviewScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
   })();
 
   const onDeactivated = () => { };

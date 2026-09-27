@@ -533,6 +533,7 @@ test('MILESTONE-D-7 structural, category, physical, identity, kind, and version 
         data.packLibrary[0].truck.shapeConfig = { wellHeight: 'Infinity' };
       }, /shapeConfig\.wellHeight/i],
       ['transient Pack field', data => { data.packLibrary[0].stats = { totalCases: 1 }; }, /transient values/i],
+      ['derived preview render version', data => { data.packLibrary[0].thumbnailRenderVersion = 2; }, /transient values/i],
       ['non-portable preferences', data => { data.preferences = { theme: 'dark' }; }, /non-portable preference/i],
       ['duplicate Item Code', data => {
         data.caseLibrary.push({ ...portableCase(), id: 'case-source-2', name: 'Second Case' });
@@ -708,6 +709,7 @@ test('MILESTONE-D-11 legacy Workspace Backup and App Restore compatibility remai
     });
     assert.equal(plan.caseLibrary[0].id, 'case-ws-legacy-1');
     assert.equal(plan.packLibrary[0].loadPlanNumber, 'LP-WSLEGACY1');
+    assert.equal(plan.packLibrary[0].thumbnailRenderVersion, null);
 
     const legacyWorkspaceWithFolder = JSON.stringify({
       exportType: 'workspace',

@@ -34,7 +34,7 @@ const subscriberEnd = appSource.indexOf('\n      });\n\n      try {\n        Rou
 assert.ok(subscriberAnchor >= 0 && subscriberStart > subscriberAnchor && subscriberEnd > subscriberStart,
   'app.js StateStore render subscriber is extractable');
 const appSubscriber = appSource.slice(subscriberStart + 'StateStore.subscribe('.length, subscriberEnd + '\n      }'.length);
-const schedulerStart = appSource.indexOf('function createPackPreviewScheduler({');
+const schedulerStart = appSource.indexOf('const PREVIEW_RENDER_VERSION =');
 const schedulerEnd = appSource.indexOf('\n\nconst TP3D_BUILD_STAMP', schedulerStart);
 assert.ok(schedulerStart >= 0 && schedulerEnd > schedulerStart, 'app.js preview scheduler is extractable');
 const previewScheduler = appSource.slice(schedulerStart, schedulerEnd);

@@ -369,12 +369,14 @@ test('IMPORT-SCHEMA-14 projectPortableCase drops volume; projectPortablePack dro
       thumbnailUpdatedAt: 1700000000000,
       thumbnailSource: 'auto',
       thumbnailVisualSignature: 'preview-v1-fixture',
+      thumbnailRenderVersion: 2,
     });
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'stats'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnail'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnailUpdatedAt'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnailSource'), false);
     assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnailVisualSignature'), false);
+    assert.equal(Object.prototype.hasOwnProperty.call(portablePack, 'thumbnailRenderVersion'), false);
     assert.equal(portablePack.id, 'p1');
     assert.equal(portablePack.title, 'Pack');
   } finally {
@@ -541,5 +543,28 @@ test('PR-B preview signature normalizes safely, persists locally, and is exclude
       JSON.parse(window.localStorage.getItem(window.localStorage.key(i))));
     const stored = values.find(value => value.packLibrary)?.packLibrary[0];
     assert.equal(stored.thumbnailVisualSignature, signature);
+  } finally { runtime.cleanup(); }
+});
+
+test('preview render version accepts only positive safe integers, persists locally, and is not portable', async () => {
+  const runtime = await createRuntime('preview-render-version');
+  try {
+    const { normalizePack } = await import('../../src/core/normalizer.js');
+    const pack = baseWorkspaceData().packLibrary[0];
+    for (const invalid of [undefined, null, '', '2', 0, -1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1, {}, []]) {
+      assert.equal(normalizePack({ ...pack, thumbnailRenderVersion: invalid }).thumbnailRenderVersion, null);
+    }
+    for (const version of [1, 2, 3]) {
+      assert.equal(normalizePack({ ...pack, thumbnailRenderVersion: version }).thumbnailRenderVersion, version);
+    }
+    const normalized = normalizePack({ ...pack, thumbnailRenderVersion: 2 });
+    runtime.StateStore.init(baseWorkspaceData({ packLibrary: [normalized] }));
+    runtime.Storage.saveNow();
+    const values = Array.from({ length: window.localStorage.length }, (_, i) =>
+      JSON.parse(window.localStorage.getItem(window.localStorage.key(i))));
+    assert.equal(values.find(value => value.packLibrary)?.packLibrary[0].thumbnailRenderVersion, 2);
+    for (const project of [runtime.ImportSchema.projectPortablePack, runtime.ImportSchema.projectPortableWorkspacePack]) {
+      assert.equal(Object.hasOwn(project(normalized), 'thumbnailRenderVersion'), false);
+    }
   } finally { runtime.cleanup(); }
 });

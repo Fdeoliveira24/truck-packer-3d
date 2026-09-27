@@ -1398,7 +1398,7 @@ function validateWorkspaceInstance(instance, packIndex, instanceIndex, { legacy 
 function validateWorkspacePack(pack, packIndex, { legacy }) {
   const label = `packLibrary[${packIndex}]`;
   if (!legacy) {
-    ['stats', 'thumbnail', 'thumbnailUpdatedAt', 'thumbnailSource', 'thumbnailVisualSignature', 'thumbnailViewSignature', 'autoPackAlternatives',
+    ['stats', 'thumbnail', 'thumbnailUpdatedAt', 'thumbnailSource', 'thumbnailVisualSignature', 'thumbnailViewSignature', 'thumbnailRenderVersion', 'autoPackAlternatives',
       'autopackAlternatives', 'packingSolutions', 'solutions'].forEach(field => {
       if (Object.prototype.hasOwnProperty.call(pack, field)) {
         throw workspaceBackupError(`Invalid ${label}.${field}: transient values are not portable.`);
@@ -1777,6 +1777,7 @@ export function planWorkspaceRestore(imported, {
       thumbnailSource: null,
       thumbnailVisualSignature: null,
       thumbnailViewSignature: null,
+      thumbnailRenderVersion: null,
     };
   });
 

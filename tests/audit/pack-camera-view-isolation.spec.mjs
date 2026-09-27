@@ -105,20 +105,22 @@ test('cargo Undo/Redo retains malformed history entries and the latest valid Pac
 
 test('Load Plan export excludes view; workspace backup retains it and strips thumbnail freshness', () => {
   const source = { ...pack('A'), editorView: viewA, thumbnail: 'data:image/jpeg;base64,AA',
-    thumbnailVisualSignature: 'cargo', thumbnailViewSignature: 'camera' };
+    thumbnailVisualSignature: 'cargo', thumbnailViewSignature: 'camera', thumbnailRenderVersion: 2 };
   const portable = projectPortablePack(source);
   assert.equal(Object.hasOwn(portable, 'editorView'), false);
   assert.equal(Object.hasOwn(portable, 'thumbnailViewSignature'), false);
+  assert.equal(Object.hasOwn(portable, 'thumbnailRenderVersion'), false);
   const backup = projectPortableWorkspacePack(source);
   assert.deepEqual(backup.editorView, normalizeEditorView(viewA));
   assert.equal(Object.hasOwn(backup, 'thumbnailViewSignature'), false);
+  assert.equal(Object.hasOwn(backup, 'thumbnailRenderVersion'), false);
   assert.equal(normalizePack({ ...pack('A'), editorView: viewA,
     thumbnailViewSignature: 'camera' }).thumbnailViewSignature, 'camera');
 });
 
 test('view freshness schedules one debounced capture; fresh and empty Packs stay quiet', async () => {
   const app = await readFile(new URL('../../src/app.js', import.meta.url), 'utf8');
-  const start = app.indexOf('function createPackPreviewScheduler({');
+  const start = app.indexOf('const PREVIEW_RENDER_VERSION =');
   const end = app.indexOf('\n\nconst TP3D_BUILD_STAMP', start);
   assert.ok(start >= 0 && end > start);
   const sandbox = { Promise };
@@ -152,6 +154,7 @@ test('view freshness schedules one debounced capture; fresh and empty Packs stay
   await Promise.resolve();
   assert.deepEqual(captures, ['A']);
   packs.get('A').thumbnailViewSignature = 'new';
+  packs.get('A').thumbnailRenderVersion = 2;
   assert.equal(scheduler.schedule(), false);
   active = { ...active, currentPackId: 'B' };
   assert.equal(scheduler.schedule(), false, 'empty Pack never starts a readback');

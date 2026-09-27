@@ -12,6 +12,7 @@
 // ============================================================================
 
 // Editor scene runtime (extracted from src/app.js; behavior preserved)
+import { normalizeEditorView } from '../core/normalizer.js';
 
 export function createSceneRuntime({
   Utils,
@@ -28,6 +29,8 @@ export function createSceneRuntime({
     let camera = null;
     let renderer = null;
     let controls = null;
+    let focusTweens = [];
+    let focusViewCallbacks = null;
     let truck = null;
     let truckBoundsWorld = null;
     let truckSignature = '';
@@ -853,7 +856,6 @@ export function createSceneRuntime({
           new THREE.Vector3(0, 0, -widthW / 2),
           new THREE.Vector3(totalLengthW, heightW, widthW / 2)
         );
-        controls.target.set(totalLengthW / 2, Math.min(6, heightW / 2), 0);
         updateShadowBounds(totalLengthW, widthW, heightW);
         updateEnvironmentForTruck(truckInches);
         updateTrailerShapeGuides(truckInches);
@@ -1010,34 +1012,88 @@ export function createSceneRuntime({
         new THREE.Vector3(totalLengthW, heightW, widthW / 2)
       );
 
-      // Move camera target near the center of the full visual extent
-      // (including the front overhang, if any)
-      controls.target.set(totalLengthW / 2, Math.min(6, heightW / 2), 0);
       updateShadowBounds(totalLengthW, widthW, heightW);
       updateEnvironmentForTruck(truckInches);
       updateTrailerShapeGuides(truckInches);
     }
 
+    function getDefaultEditorView(truckInches) {
+      const lengthW = toWorld(getTotalTruckLengthInches(truckInches));
+      const widthW = toWorld(Number(truckInches?.width) || 102);
+      const heightW = toWorld(Number(truckInches?.height) || 98);
+      const target = { x: lengthW / 2, y: Math.min(6, heightW / 2), z: 0 };
+      return normalizeEditorView({
+        target,
+        cameraPosition: {
+          x: target.x + Math.max(12, lengthW * 0.42),
+          y: target.y + Math.max(12, heightW * 2.8),
+          z: Math.max(16, widthW * 3.8),
+        },
+      });
+    }
+
+    function getEditorView() {
+      if (!camera || !controls) return null;
+      return normalizeEditorView({
+        cameraPosition: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
+        target: { x: controls.target.x, y: controls.target.y, z: controls.target.z },
+      });
+    }
+
+    function cancelFocus() {
+      focusTweens.forEach(tween => tween.stop());
+      focusTweens = [];
+    }
+
+    function setFocusViewCallbacks(callbacks) {
+      focusViewCallbacks = callbacks;
+    }
+
+    function applyEditorView(view) {
+      if (!camera || !controls) return null;
+      const normalized = normalizeEditorView(view);
+      if (!normalized) return null;
+      cancelFocus();
+      camera.position.set(normalized.cameraPosition.x, normalized.cameraPosition.y, normalized.cameraPosition.z);
+      controls.target.set(normalized.target.x, normalized.target.y, normalized.target.z);
+      // Clear any OrbitControls damping left by the previous Pack before this
+      // Pack takes ownership of the one runtime camera.
+      const damping = controls.enableDamping;
+      controls.enableDamping = false;
+      controls.update();
+      controls.enableDamping = damping;
+      return getEditorView();
+    }
+
     function focusOnWorldPoint(targetWorld, options = {}) {
       if (!controls || !camera) return;
+      cancelFocus();
       const duration = Number(options.duration) || 700;
       const nextTarget = targetWorld.clone();
       const dir = camera.position.clone().sub(controls.target);
       const nextPos = nextTarget.clone().add(dir);
       const Tween = window.TWEEN || null;
+      if (focusViewCallbacks?.onStart) focusViewCallbacks.onStart();
       if (!Tween) {
         controls.target.copy(nextTarget);
         camera.position.copy(nextPos);
+        controls.update();
+        if (focusViewCallbacks?.onComplete) focusViewCallbacks.onComplete();
         return;
       }
-      new Tween.Tween(controls.target)
+      const targetTween = new Tween.Tween(controls.target)
         .to({ x: nextTarget.x, y: nextTarget.y, z: nextTarget.z }, duration)
-        .easing(Tween.Easing.Cubic.InOut)
-        .start();
-      new Tween.Tween(camera.position)
+        .easing(Tween.Easing.Cubic.InOut);
+      const cameraTween = new Tween.Tween(camera.position)
         .to({ x: nextPos.x, y: nextPos.y, z: nextPos.z }, duration)
         .easing(Tween.Easing.Cubic.InOut)
-        .start();
+        .onComplete(() => {
+          focusTweens = [];
+          if (focusViewCallbacks?.onComplete) focusViewCallbacks.onComplete();
+        });
+      focusTweens = [targetTween, cameraTween];
+      targetTween.start();
+      cameraTween.start();
     }
 
     function getTruckBoundsWorld() {
@@ -1118,6 +1174,11 @@ export function createSceneRuntime({
       updateTrailerShapeGuides,
       updateCoG,
       focusOnWorldPoint,
+      cancelFocus,
+      setFocusViewCallbacks,
+      getDefaultEditorView,
+      getEditorView,
+      applyEditorView,
       toggleGrid,
       toggleShadows,
       restoreShadows,

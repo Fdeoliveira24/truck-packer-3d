@@ -73,6 +73,7 @@ import * as CoreUtils from '/src/core/utils/index.js';
 import * as BrowserUtils from '/src/core/browser.js';
 import * as Defaults from '/src/core/defaults.js';
 import * as CoreStateStore from '/src/core/state-store.js';
+import { editorViewSignature, normalizeEditorView } from '/src/core/normalizer.js';
 import * as CategoryService from '/src/services/category-service.js';
 import * as CaseLibrary from '/src/services/case-library.js';
 import * as CorePackLibrary from '/src/services/pack-library.js';
@@ -160,6 +161,8 @@ async function capturePackPreview(previewPackId) {
     CorePackLibrary.updatePreview(previewPackId, {
       thumbnail: 'data:image/jpeg;base64,AAAA', thumbnailUpdatedAt: Date.now(), thumbnailSource: 'auto',
       thumbnailVisualSignature: CaseScene.getVisualSignature(PackLibrary.getById(previewPackId)),
+      thumbnailViewSignature: editorViewSignature(normalizeEditorView(PackLibrary.getById(previewPackId).editorView) ||
+        SceneManager.getDefaultEditorView(PackLibrary.getById(previewPackId).truck)),
     }, { skipHistory: true });
     return true;
   } finally {
@@ -169,6 +172,8 @@ async function capturePackPreview(previewPackId) {
 const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn createPackPreviewScheduler;')();
 const AutoPackPreviewScheduler = createPreviewScheduler({
   StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => 'fixture-workspace',
+  getViewSignature: pack => editorViewSignature(normalizeEditorView(pack.editorView) ||
+    SceneManager.getDefaultEditorView(pack.truck)),
 });
 
 const ExportService = { captureScreenshot() {}, generatePDF() {}, capturePackPreview, clearPackPreview: () => false };
@@ -187,6 +192,7 @@ const EditorUI = createEditorScreen({
   AutoPackEngine, ExportService, SystemOverlay: { show() {}, hide() {} }, TrailerPresets, AppShell, SceneManager,
   CaseScene, InteractionManager, TruckChangeController, OperationLifecycle,
 });
+EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 const Storage = { saveSoon() {}, saveNow() {} };
 const KeyboardManager = createKeyboardManager({
   StateStore, PackLibrary, CaseLibrary, CaseScene, SceneManager, InteractionManager, AutoPackEngine,

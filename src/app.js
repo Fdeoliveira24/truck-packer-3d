@@ -73,6 +73,7 @@ import * as BrowserUtils from './core/browser.js';
 import * as CoreDefaults from './core/defaults.js';
 import * as CoreStateStore from './core/state-store.js';
 import * as CoreStorage from './core/storage.js';
+import { editorViewSignature, normalizeEditorView } from './core/normalizer.js';
 import * as CoreSession from './core/session.js';
 import * as CategoryService from './services/category-service.js';
 import * as CoreCaseLibrary from './services/case-library.js';
@@ -390,6 +391,7 @@ try {
  *   capturePackPreview: (packId: string, options: { source: string, quiet: boolean }) => (boolean | Promise<boolean>),
  *   getActiveWorkspaceKey: () => string,
  *   getVisualSignature: (pack: any) => string,
+ *   getViewSignature: (pack: any) => string | null,
  *   delayMs?: number,
  *   setTimer?: (fn: () => void, delay: number) => any,
  *   clearTimer?: (timer: any) => void,
@@ -402,6 +404,7 @@ function createPackPreviewScheduler({
   capturePackPreview,
   getActiveWorkspaceKey,
   getVisualSignature,
+  getViewSignature,
   delayMs = 300,
   setTimer = (fn, delay) => setTimeout(fn, delay),
   clearTimer = timer => clearTimeout(timer),
@@ -425,7 +428,10 @@ function createPackPreviewScheduler({
     if (!pack) return null;
     // Unknown empty Packs without an image need neither a readback nor a write.
     if (!pack.cases?.length && !pack.thumbnail) return null;
-    if (pack.thumbnailVisualSignature === getVisualSignature(pack)) return null;
+    const viewSignature = getViewSignature(pack);
+    if (!viewSignature) return null;
+    if (pack.thumbnailVisualSignature === getVisualSignature(pack) &&
+        pack.thumbnailViewSignature === viewSignature) return null;
     return { packId, workspaceKey: String(getActiveWorkspaceKey()) };
   }
 
@@ -1605,7 +1611,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         try {
           const captureScope = CoreStorage.captureScopeContext();
           const captureScene = EditorUI.getPreviewScene();
+          const captureView = EditorUI.getPreviewView();
           const visualSignature = captureScene?.visualSignature;
+          const viewSignature = captureView?.signature;
+          const viewRevision = captureView?.revision;
           let contextInvalidated = false;
           const isCurrentContext = () => (
             !contextInvalidated &&
@@ -1616,6 +1625,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
             captureScene && captureScene.pack.id === packId &&
             PackLibrary.getById(packId) === captureScene.pack &&
             EditorUI.getPreviewScene() === captureScene &&
+            viewSignature &&
+            EditorUI.getPreviewView()?.signature === viewSignature &&
+            EditorUI.getPreviewView()?.revision === viewRevision &&
             CaseScene.getVisualSignature(captureScene.pack) === visualSignature
           );
           const validateContext = () => {
@@ -1636,6 +1648,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
               return Boolean(PackLibrary.updatePreview(packId, {
                 thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,
                 thumbnailVisualSignature: visualSignature,
+                thumbnailViewSignature: viewSignature,
               }));
             }
             if (!quiet && source === 'manual') {
@@ -1663,6 +1676,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             thumbnailUpdatedAt: Date.now(),
             thumbnailSource: source === 'manual' ? 'manual' : 'auto',
             thumbnailVisualSignature: visualSignature,
+            thumbnailViewSignature: viewSignature,
           }, { skipHistory: true });
           if (!updated) throw new Error('Load plan not found');
           if (!quiet) UIComponents.showToast('Preview captured', 'success', { title: 'Preview' });
@@ -1700,11 +1714,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       function flushPackPreviewBeforeNavigation(previousScreen, nextScreen) {
-        if (previousScreen !== 'editor' || nextScreen === 'editor' || OperationLifecycle.isBusy()) return;
+        if (previousScreen !== 'editor' || nextScreen === 'editor') return;
+        EditorUI.flushPendingView();
+        if (OperationLifecycle.isBusy()) return;
         const identity = EditorUI.getPreviewScene();
+        const view = EditorUI.getPreviewView();
         const pack = identity && identity.pack;
-        if (pack && (pack.cases?.length > 0 || pack.thumbnail) &&
-            pack.thumbnailVisualSignature !== identity.visualSignature) {
+        if (pack && view && (pack.cases?.length > 0 || pack.thumbnail) &&
+            (pack.thumbnailVisualSignature !== identity.visualSignature ||
+             pack.thumbnailViewSignature !== view.signature)) {
           void capturePackPreview(pack.id, { source: 'auto', quiet: true, beforeDeparture: true });
         }
       }
@@ -1720,6 +1738,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
         PackLibrary.updatePreview(packId, {
           thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,
           thumbnailVisualSignature: CaseScene.getVisualSignature(pack),
+          thumbnailViewSignature: editorViewSignature(normalizeEditorView(pack.editorView) ||
+            SceneManager.getDefaultEditorView(pack.truck)),
         }, { skipHistory: false });
         UIComponents.showToast('Preview cleared', 'info', { title: 'Preview' });
         return true;
@@ -2211,6 +2231,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
       getActiveWorkspaceKey: () => `${getActiveWorkspaceKey()}|${CoreStorage.captureScopeContext().generation}`,
       getVisualSignature: pack => CaseScene.getVisualSignature(pack),
+      getViewSignature: pack => editorViewSignature(normalizeEditorView(pack.editorView) ||
+        SceneManager.getDefaultEditorView(pack.truck)),
     });
 
     // ==== UI: Packs Screen ====
@@ -2303,6 +2325,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       TruckChangeController,
       OperationLifecycle,
     });
+    EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 
     // ============================================================================
     // SECTION: SCREEN UI (UPDATES)
@@ -7011,6 +7034,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
         }
         if (notification?.type === 'pack-preview') {
           PacksUI.render();
+          return;
+        }
+        if (notification?.type === 'pack-view') {
+          AutoPackPreviewScheduler.schedule();
           return;
         }
         if (changes.preferences || changes._undo || changes._redo || changes._replace) {

@@ -90,10 +90,22 @@ function pushHistory(entry) {
   historyPointer = history.length - 1;
 }
 
+function restoreCargoHistory(entry) {
+  const restored = deepClone(entry);
+  const currentViews = new Map((state.packLibrary || [])
+    .filter(pack => pack && pack.id && Object.hasOwn(pack, 'editorView'))
+    .map(pack => [pack.id, pack.editorView]));
+  restored.packLibrary = (restored.packLibrary || []).map(pack =>
+    pack && typeof pack === 'object' && currentViews.has(pack.id)
+      ? { ...pack, editorView: deepClone(currentViews.get(pack.id)) }
+      : pack);
+  return restored;
+}
+
 function undo() {
   if (historyPointer <= 0) return false;
   historyPointer--;
-  state = { ...state, ...deepClone(history[historyPointer]) };
+  state = { ...state, ...restoreCargoHistory(history[historyPointer]) };
   notify({ _undo: true }, state);
   return true;
 }
@@ -101,7 +113,7 @@ function undo() {
 function redo() {
   if (historyPointer >= history.length - 1) return false;
   historyPointer++;
-  state = { ...state, ...deepClone(history[historyPointer]) };
+  state = { ...state, ...restoreCargoHistory(history[historyPointer]) };
   notify({ _redo: true }, state);
   return true;
 }

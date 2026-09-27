@@ -20327,7 +20327,7 @@ test('P0 EDITOR UNDO ATOMICITY: automatic preview capture writes skipHistory, ne
   assert.ok(captureEnd > captureStart, 'capturePackPreview() must be extractable up to clearPackPreview()');
   const captureBlock = appSrc.slice(captureStart, captureEnd);
 
-  assert.match(captureBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: dataUrl,\s*thumbnailUpdatedAt: Date\.now\(\),\s*thumbnailSource: source === 'manual' \? 'manual' : 'auto',\s*thumbnailVisualSignature: visualSignature,\s*thumbnailViewSignature: viewSignature,\s*\}, \{ skipHistory: true \}\)/,
+  assert.match(captureBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: dataUrl,\s*thumbnailUpdatedAt: Date\.now\(\),\s*thumbnailSource: source === 'manual' \? 'manual' : 'auto',\s*thumbnailVisualSignature: visualSignature,\s*thumbnailViewSignature: viewSignature,\s*thumbnailRenderVersion: PREVIEW_RENDER_VERSION,\s*\}, \{ skipHistory: true \}\)/,
     'the derived preview write must persist visual and view freshness without consuming a user Undo step');
   assert.doesNotMatch(captureBlock, /skipNotify/,
     'the preview write must keep notifying subscribers normally — only history recording is skipped');
@@ -20337,7 +20337,7 @@ test('P0 EDITOR UNDO ATOMICITY: automatic preview capture writes skipHistory, ne
   const clearStart = appSrc.indexOf('function clearPackPreview(');
   const clearEnd = appSrc.indexOf('\n      }', clearStart);
   const clearBlock = appSrc.slice(clearStart, clearEnd);
-  assert.match(clearBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,\s*thumbnailVisualSignature: CaseScene\.getVisualSignature\(pack\),\s*thumbnailViewSignature: editorViewSignature\(normalizeEditorView\(pack\.editorView\) \|\|\s*SceneManager\.getDefaultEditorView\(pack\.truck\)\),\s*\}, \{ skipHistory: false \}\)/,
+  assert.match(clearBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,\s*thumbnailRenderVersion: PREVIEW_RENDER_VERSION,\s*thumbnailVisualSignature: CaseScene\.getVisualSignature\(pack\),\s*thumbnailViewSignature: editorViewSignature\(normalizeEditorView\(pack\.editorView\) \|\|\s*SceneManager\.getDefaultEditorView\(pack\.truck\)\),\s*\}, \{ skipHistory: false \}\)/,
     'Clear Preview intentionally clears the image at the current visual and view signatures and remains undoable');
 });
 

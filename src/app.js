@@ -670,6 +670,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     let PacksUI = null;
     let SceneManager = null;
     let ExportService = null;
+    let EditorUI = null;
     let bootstrapAuthGate = null;
 
     // ============================================================================
@@ -1505,6 +1506,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       StateStore,
       PackLibrary,
       Utils,
+      beforeNavigate: (from, to) => ExportService?.flushPackPreviewBeforeNavigation(from, to),
     });
 
     // ============================================================================
@@ -1589,10 +1591,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return Math.max(0, Math.floor((b64.length * 3) / 4) - padding);
       }
 
-      async function capturePackPreview(packId, { source = 'auto', quiet = false } = {}) {
-        // Never capture a thumbnail while another mutating operation is running — the
-        // scene is mid-flight and the snapshot would be wrong. Auto captures simply
-        // skip; an explicit manual capture surfaces a short "busy" notice.
+      async function capturePackPreview(packId, { source = 'auto', quiet = false, beforeDeparture = false } = {}) {
         if (OperationLifecycle.isBusy()) {
           if (!quiet && source === 'manual') {
             UIComponents.showToast('Finish the current operation before capturing a preview.', 'info', { title: 'Preview' });
@@ -1603,67 +1602,101 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (!captureToken) return false;
         let unsubscribeCaptureContext = null;
         try {
-          const captureWorkspaceKey = getActiveWorkspaceKey();
-          const automaticCapture = source !== 'manual';
-          let autoContextInvalidated = false;
-          const isCurrentAutoContext = () => (
-            !autoContextInvalidated &&
-            getActiveWorkspaceKey() === captureWorkspaceKey &&
+          const captureScope = CoreStorage.captureScopeContext();
+          const captureScene = EditorUI.getPreviewScene();
+          let contextInvalidated = false;
+          const isCurrentContext = () => (
+            !contextInvalidated &&
+            CoreStorage.isScopeContextCurrent(captureScope) &&
+            OperationLifecycle.isCurrent(captureToken) &&
             StateStore.get('currentScreen') === 'editor' &&
-            StateStore.get('currentPackId') === packId
+            StateStore.get('currentPackId') === packId &&
+            captureScene && captureScene.pack.id === packId &&
+            PackLibrary.getById(packId) === captureScene.pack &&
+            EditorUI.getPreviewScene() === captureScene
           );
-          if (automaticCapture) {
-            if (!isCurrentAutoContext()) return false;
-            // A return to the same Pack/screen cannot make an older frame wait safe.
-            unsubscribeCaptureContext = StateStore.subscribe(stateChanges => {
-              if (stateChanges._replace || !isCurrentAutoContext()) autoContextInvalidated = true;
-            });
-          }
-          const pack = PackLibrary.getById(packId);
-          if (!pack) throw new Error('Load plan not found');
-
-          // Ensure the latest transforms are rendered before capture.
-          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-          if (captureWorkspaceKey && getActiveWorkspaceKey() !== captureWorkspaceKey) return false;
-          if (!PackLibrary.getById(packId)) return false;
-          if (automaticCapture && !isCurrentAutoContext()) return false;
-
-          const width = 320;
-          const height = 180;
-          const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), width, height, {
-            mimeType: 'image/jpeg',
-            quality: 0.72,
-            hideGrid: true,
+          const validateContext = () => {
+            if (isCurrentContext()) return true;
+            if (!quiet && source === 'manual') {
+              UIComponents.showToast('The load plan or preview scene changed. Try again.', 'info', { title: 'Preview' });
+            }
+            return false;
+          };
+          if (!validateContext()) return false;
+          // Shared by manual and automatic capture. Returning to the same IDs
+          // cannot revive a frame wait invalidated by replacement or departure.
+          unsubscribeCaptureContext = StateStore.subscribe(changes => {
+            if (changes._replace || !isCurrentContext()) contextInvalidated = true;
           });
-
-          const bytes = estimateDataUrlBytes(dataUrl);
-          const maxBytes = 150 * 1024;
-          if (bytes > maxBytes) {
-            throw new Error(`Preview too large (${Math.round(bytes / 1024)}KB)`);
+          if (!captureScene.pack.cases?.length) {
+            if (!quiet && source === 'manual') {
+              UIComponents.showToast('There are no cases to preview.', 'info', { title: 'Preview' });
+            }
+            return false;
           }
 
-          if (captureWorkspaceKey && getActiveWorkspaceKey() !== captureWorkspaceKey) return false;
-          if (!PackLibrary.getById(packId)) return false;
-          if (automaticCapture && !isCurrentAutoContext()) return false;
-          // Stale-capture guard: if this capture slot was superseded, do not write
-          // a thumbnail over whatever newer state now owns the editor.
-          if (!OperationLifecycle.isCurrent(captureToken)) return false;
-          PackLibrary.update(packId, {
+          // The pre-navigation hook uses only an already synchronized stable
+          // scene. With no await on that path, readback/write/release finish
+          // synchronously before AppShell changes currentScreen.
+          if (!beforeDeparture) {
+            await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          }
+          if (!validateContext()) return false;
+          const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), 320, 180, {
+            mimeType: 'image/jpeg', quality: 0.72, hideGrid: true,
+          });
+          const bytes = estimateDataUrlBytes(dataUrl);
+          if (bytes > 150 * 1024) throw new Error(`Preview too large (${Math.round(bytes / 1024)}KB)`);
+
+          if (!validateContext()) return false;
+          const updated = PackLibrary.update(packId, {
             thumbnail: dataUrl,
             thumbnailUpdatedAt: Date.now(),
             thumbnailSource: source === 'manual' ? 'manual' : 'auto',
           }, { skipHistory: true });
-
+          if (!updated) throw new Error('Load plan not found');
           if (!quiet) UIComponents.showToast('Preview captured', 'success', { title: 'Preview' });
           return true;
         } catch (err) {
-          if (!quiet) {
-            UIComponents.showToast(`Preview failed: ${err.message || err}`, 'warning', { title: 'Preview' });
-          }
+          if (!quiet) UIComponents.showToast(`Preview failed: ${err.message || err}`, 'warning', { title: 'Preview' });
           return false;
         } finally {
           if (unsubscribeCaptureContext) unsubscribeCaptureContext();
           OperationLifecycle.finishOperation(captureToken);
+        }
+      }
+
+      function capturePackPreviewFromLibrary(packId, openPack) {
+        if (OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Finish the current operation before capturing a preview.', 'info', { title: 'Preview' });
+          return false;
+        }
+        const scope = CoreStorage.captureScopeContext();
+        let replaced = false;
+        const unsubscribe = StateStore.subscribe(changes => { if (changes._replace) replaced = true; });
+        try {
+          if (!PackLibrary.getById(packId)) throw new Error('Load plan not found');
+          if (EditorUI.getPreviewScene()?.pack.id !== packId) openPack(packId);
+          if (replaced || !CoreStorage.isScopeContextCurrent(scope) || !PackLibrary.getById(packId)) {
+            throw new Error('The load plan or workspace changed. Try again.');
+          }
+          return capturePackPreview(packId, { source: 'manual' });
+        } catch (err) {
+          UIComponents.showToast(`Preview failed: ${err.message || err}`, 'warning', { title: 'Preview' });
+          return false;
+        } finally {
+          unsubscribe();
+        }
+      }
+
+      function flushPackPreviewBeforeNavigation(previousScreen, nextScreen) {
+        if (previousScreen !== 'editor' || nextScreen === 'editor' || OperationLifecycle.isBusy()) return;
+        const identity = EditorUI.getPreviewScene();
+        const pack = identity && identity.pack;
+        const lastEdited = pack && Number.isFinite(pack.lastEdited) ? pack.lastEdited : 0;
+        const thumbAt = pack && Number.isFinite(pack.thumbnailUpdatedAt) ? pack.thumbnailUpdatedAt : 0;
+        if (pack && pack.cases?.length > 0 && lastEdited > thumbAt) {
+          void capturePackPreview(pack.id, { source: 'auto', quiet: true, beforeDeparture: true });
         }
       }
 
@@ -2156,7 +2189,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return canvas.toDataURL(mimeType, quality);
       }
 
-      return { captureScreenshot, generatePDF, capturePackPreview, clearPackPreview };
+      return { captureScreenshot, generatePDF, capturePackPreview, capturePackPreviewFromLibrary, flushPackPreviewBeforeNavigation, clearPackPreview };
     })();
 
     const AutoPackPreviewScheduler = createPackPreviewScheduler({
@@ -2164,7 +2197,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       PackLibrary,
       OperationLifecycle,
       capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
-      getActiveWorkspaceKey,
+      getActiveWorkspaceKey: () => `${getActiveWorkspaceKey()}|${CoreStorage.captureScopeContext().generation}`,
     });
 
     // ==== UI: Packs Screen ====
@@ -2237,7 +2270,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // ============================================================================
     // SECTION: SCREEN UI (EDITOR)
     // ============================================================================
-    const EditorUI = createEditorScreen({
+    EditorUI = createEditorScreen({
       StateStore,
       PackLibrary,
       CaseLibrary,
@@ -6943,6 +6976,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
       let prevScreen = StateStore.get('currentScreen');
 
       StateStore.subscribe(changes => {
+        const previewContextChanged = changes._replace ||
+          Object.prototype.hasOwnProperty.call(changes, 'currentPackId') ||
+          (changes.currentScreen && changes.currentScreen !== prevScreen);
         // P0.9 – While swapping storage scope, skip autosave so we don't
         // persist stale (old-user/workspace) data into the new scope.
         if (
@@ -6974,16 +7010,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         if (changes.currentScreen || changes._replace) {
           const nextScreen = StateStore.get('currentScreen');
-          if (!changes._replace && prevScreen === 'editor' && nextScreen !== 'editor') {
-            const packId = StateStore.get('currentPackId');
-            const pack = packId ? PackLibrary.getById(packId) : null;
-            const lastEdited = pack && Number.isFinite(pack.lastEdited) ? pack.lastEdited : 0;
-            const thumbAt = pack && Number.isFinite(pack.thumbnailUpdatedAt) ? pack.thumbnailUpdatedAt : 0;
-            const totalCases = pack && Array.isArray(pack.cases) ? pack.cases.length : 0;
-            if (pack && totalCases > 0 && lastEdited > thumbAt) {
-              ExportService.capturePackPreview(packId, { source: 'auto', quiet: true });
-            }
-          }
           prevScreen = nextScreen;
 
           AppShell.renderShell();
@@ -7000,6 +7026,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
           AppShell.renderShell();
           EditorUI.render();
         }
+        // Context loss clears pending work; activation schedules a NEW request
+        // only after the real Editor render has synchronized the committed Pack.
+        if (previewContextChanged) AutoPackPreviewScheduler.schedule();
         if (changes.autoPackResults) {
           EditorUI.render();
         }

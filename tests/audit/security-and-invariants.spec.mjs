@@ -17902,7 +17902,7 @@ test('phase 0.7C-pre folderLibrary changes participate in autosave with packLibr
 test('phase 0.7C-pre folderLibrary changes trigger Packs screen render with packLibrary changes', async () => {
   const src = await readAppSource();
   const renderCall = 'PacksUI.render();';
-  const renderCallIndex = src.indexOf(renderCall, src.indexOf('StateStore.subscribe(changes =>'));
+  const renderCallIndex = src.indexOf(renderCall, src.indexOf("let prevScreen = StateStore.get('currentScreen');"));
   const conditionStart = src.lastIndexOf('if (', renderCallIndex);
   const renderBlock = conditionStart >= 0 && renderCallIndex > conditionStart
     ? src.slice(conditionStart, renderCallIndex + renderCall.length)
@@ -20152,24 +20152,16 @@ test('PACK-PREVIEW-SCHEDULER thumbnail writes do not recurse and fresh Packs do 
   assert.equal(alreadyFresh.timers.size, 0);
 });
 
-test('PACK-PREVIEW-SCHEDULER wiring preserves fresh Editor-exit fallback and manual Capture Preview', async () => {
-  const [appSrc, packsSrc] = await Promise.all([
-    fs.readFile(appPath, 'utf8'),
-    fs.readFile(packsScreenPath, 'utf8'),
+test('PACK-PREVIEW-SCHEDULER wiring uses pre-navigation flush and shared manual preparation', async () => {
+  const [appSrc, packsSrc, shellSrc] = await Promise.all([
+    fs.readFile(appPath, 'utf8'), fs.readFile(packsScreenPath, 'utf8'),
+    fs.readFile(new URL('../../src/ui/app-shell.js', import.meta.url), 'utf8'),
   ]);
-  assert.match(appSrc, /if \(changes\.packLibrary \|\| changes\._undo \|\| changes\._redo\) \{\s*AutoPackPreviewScheduler\.schedule\(\)/,
-    'committed Pack changes schedule automatic preview without navigation');
-
-  const exitStart = appSrc.indexOf("if (!changes._replace && prevScreen === 'editor' && nextScreen !== 'editor')");
-  const exitEnd = appSrc.indexOf('\n          }', exitStart) + '\n          }'.length;
-  const exitBlock = appSrc.slice(exitStart, exitEnd);
-  assert.match(exitBlock, /lastEdited > thumbAt/,
-    'Editor-exit fallback captures only when the thumbnail remains stale');
-  assert.match(exitBlock, /totalCases > 0/,
-    'Editor-exit fallback preserves the empty Pack rule');
-
-  const manualCaptures = packsSrc.match(/ExportService\.capturePackPreview\(pack\.id, \{ source: 'manual' \}\)/g) || [];
-  assert.equal(manualCaptures.length, 2, 'grid and list Capture Preview actions remain wired as manual captures');
+  assert.match(appSrc, /if \(changes\.packLibrary \|\| changes\._undo \|\| changes\._redo\) \{\s*AutoPackPreviewScheduler\.schedule\(\)/);
+  assert.match(appSrc, /if \(previewContextChanged\) AutoPackPreviewScheduler\.schedule\(\)/);
+  assert.ok(shellSrc.indexOf('beforeNavigate(previousScreen, screenKey)') < shellSrc.indexOf('StateStore.set({ currentScreen: screenKey }'));
+  assert.equal((packsSrc.match(/ExportService\.capturePackPreviewFromLibrary\(pack\.id, openPack\)/g) || []).length, 2);
+  // Ordering and pixel identity are exercised by preview-identity-context.spec.mjs.
 });
 
 test('OPERATION-LIFECYCLE is wired into the AutoPack engine and editor unpack/truck paths', async () => {

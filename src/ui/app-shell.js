@@ -14,6 +14,7 @@ export function createAppShell({
   StateStore,
   PackLibrary,
   Utils,
+  beforeNavigate = null,
 }) {
   const AppShell = (() => {
     const appRoot = document.getElementById('app');
@@ -65,6 +66,12 @@ export function createAppShell({
 
     function navigate(screenKey) {
       const previousScreen = StateStore.get('currentScreen');
+      // Optional synchronous observer: a failed preview must never veto navigation.
+      try {
+        if (beforeNavigate && previousScreen !== screenKey) beforeNavigate(previousScreen, screenKey);
+      } catch (err) {
+        console.warn('[AppShell] Before-navigation hook failed', err);
+      }
       StateStore.set({ currentScreen: screenKey }, { skipHistory: true });
       if (previousScreen !== 'editor' && screenKey === 'editor') StateStore.resetHistory();
     }

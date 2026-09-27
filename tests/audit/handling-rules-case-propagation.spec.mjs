@@ -891,7 +891,7 @@ function runEditorRenderGate(StateStore, setValidationPopoverOpen) {
   const to = editorSource.indexOf('      ensureScene();', from);
   assert.ok(from >= 0 && to > from);
   const gate = editorSource.slice(from + marker.length, to);
-  return runInNewContext(`(function () {${gate}\nreturn true;\n})()`, { StateStore, setValidationPopoverOpen });
+  return runInNewContext(`(function () {${gate}\nreturn true;\n})()`, { StateStore, setValidationPopoverOpen, previewScene: null });
 }
 
 const stalePackFixture = () => ({ ...activePackFixture(), handlingRulesValidatedSignature: 'v1:OLD' });

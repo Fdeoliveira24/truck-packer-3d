@@ -1759,6 +1759,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // PDF views print on paper: a light neutral background, independent of the
       // UI theme, under the same ACES/exposure/sRGB pipeline as the Editor.
       const PDF_PRINT_BACKGROUND = '#ffffff';
+      // PDF views print at >= 180 pixels per inch at their placed width;
+      // aspect ratios (width, height) for Perspective, Top and Side.
+      const PDF_VIEW_PPI = 192;
+      const PDF_VIEW_ASPECTS = Object.freeze([[16, 9], [24, 13], [16, 7]]);
 
       function captureScreenshot() {
         try {
@@ -1867,210 +1871,181 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (!authority) return;
           const pack = authority.pack;
 
+          // One content model from the canonical statistics. Integrity content
+          // (cargo status, review warnings, truck) always prints; the statistics
+          // preference only adds optional analytics.
           const prefs = PreferencesManager.get();
+          const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
+          const report = ImportExport.buildLoadPlanReport(pack, {
+            stats: PackLibrary.computeStats(pack),
+            validationRequired: PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases()),
+            units: prefs.units,
+            getCategoryName: category => CategoryService.meta(category).name,
+          });
+
           const { jsPDF } = window.jspdf;
           const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'letter' });
+          const pdf = createPdfWriter(doc);
+          const { margin, pageWidth, pageHeight, contentWidth } = pdf;
 
-          const pageWidth = doc.internal.pageSize.getWidth();
-          const pageHeight = doc.internal.pageSize.getHeight();
-          const margin = 40;
-          let y = margin;
-
-          // Header
-          doc.setFontSize(22);
-          doc.setFont('helvetica', 'bold');
-          doc.text(pack.title || 'Load Plan', margin, y);
-          y += 22;
-
-          doc.setFontSize(10);
-          doc.setFont('helvetica', 'normal');
-          doc.text(`Generated: ${new Date().toLocaleString()}`, margin, y);
-          y += 16;
-
-          const stats = PackLibrary.computeStats(pack);
-          const details = [
-            pack.client ? `Client: ${pack.client}` : null,
-            pack.projectName ? `Project: ${pack.projectName}` : null,
-            pack.drawnBy ? `Drawn by: ${pack.drawnBy}` : null,
-            stats.totalWeight ? `Weight: ${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}` : null,
-          ].filter(Boolean);
-          details.forEach(line => {
-            doc.text(line, margin, y);
-            y += 14;
-          });
-          if (details.length) y += 8;
-
-          // Notes
-          if (pack.notes) {
-            doc.setFont('helvetica', 'bold');
-            doc.text('Load Plan Notes', margin, y);
-            y += 14;
-            doc.setFont('helvetica', 'normal');
-            const lines = doc.splitTextToSize(pack.notes, pageWidth - margin * 2);
-            doc.text(lines, margin, y);
-            y += lines.length * 12 + 10;
-          }
-
-          // Views: the committed scene on a print-safe background. Top/Side are
-          // truck-centric, so staged or truck-external cargo cannot project over
-          // the trailer silhouette; hidden cargo is omitted from every view.
-          const viewWPt = pageWidth - margin * 2;
-          const viewWpx = 960;
-          const viewHpx = 540;
+          // Views: the committed scene on a print-safe background, rastered for
+          // their printed width. Top/Side are truck-centric, so staged or
+          // truck-external cargo cannot project over the trailer silhouette;
+          // hidden cargo is omitted from every view.
+          const [perspectiveSize, topSize, sideSize] = PDF_VIEW_ASPECTS.map(aspect => pdfViewRasterSize(contentWidth, aspect));
           const truckCentricExclusions = getTruckCentricExclusions(pack);
           const { topCam, sideCam } = buildOrthoCameras(pack, truckCentricExclusions, {
-            top: [960, 520],
-            side: [960, 420],
+            top: topSize,
+            side: sideSize,
           });
           const [perspective, topView, sideView] = captureExportViews(authority, [
             {
-              camera: SceneManager.getCamera(), width: viewWpx, height: viewHpx,
+              camera: SceneManager.getCamera(), width: perspectiveSize[0], height: perspectiveSize[1],
               mimeType: 'image/jpeg', quality: 0.92, background: PDF_PRINT_BACKGROUND,
             },
             {
-              camera: topCam, width: 960, height: 520, mimeType: 'image/jpeg', quality: 0.9,
+              camera: topCam, width: topSize[0], height: topSize[1], mimeType: 'image/jpeg', quality: 0.9,
               background: PDF_PRINT_BACKGROUND, excludeIds: truckCentricExclusions,
             },
             {
-              camera: sideCam, width: 960, height: 420, mimeType: 'image/jpeg', quality: 0.9,
+              camera: sideCam, width: sideSize[0], height: sideSize[1], mimeType: 'image/jpeg', quality: 0.9,
               background: PDF_PRINT_BACKGROUND, excludeIds: truckCentricExclusions,
             },
           ]);
 
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(12);
-          doc.text('PERSPECTIVE VIEW', margin, y);
-          y += 10;
-          y += 6;
-          const pvH = viewWPt * (viewHpx / viewWpx);
-          doc.addImage(perspective, 'JPEG', margin, y, viewWPt, pvH);
-          y += pvH + 16;
+          // Header: title and the Pack's business identity (absent fields are omitted).
+          pdf.font(22, 'bold');
+          pdf.split(report.title, contentWidth).forEach(line => pdf.line(line, margin, 26));
+          report.identity.forEach(field => pdf.field(field.label, field.value));
+          pdf.field('Generated', formatPdfDateTime(Date.now()));
+          if (report.lastEdited) pdf.field('Last edited', formatPdfDateTime(report.lastEdited));
+          pdf.gap(10);
 
-          if (y + 220 > pageHeight - margin) {
-            doc.addPage();
-            y = margin;
+          // Transport-review context. Never optional, never a certification.
+          if (report.review.length) {
+            pdf.heading('LOAD PLAN REVIEW');
+            report.review.forEach(entry => {
+              pdf.ensureSpace(13 * 3);
+              pdf.paragraph(entry.title, { style: 'bold' });
+              if (entry.text) pdf.paragraph(entry.text, { x: margin + 12, width: contentWidth - 12 });
+              (entry.items || []).forEach(item => pdf.paragraph(`• ${item}`, { x: margin + 12, width: contentWidth - 12 }));
+              pdf.gap(5);
+            });
+            pdf.gap(8);
           }
 
-          doc.text('TOP VIEW', margin, y);
-          y += 10;
-          y += 6;
-          const tvH = viewWPt * (520 / 960);
-          doc.addImage(topView, 'JPEG', margin, y, viewWPt, tvH);
-          y += tvH + 16;
+          pdf.heading('LOAD SUMMARY');
+          report.summary.forEach(field => pdf.field(field.label, field.value));
+          if (includeStats) report.optionalStats.forEach(field => pdf.field(field.label, field.value));
+          report.summaryNotes.forEach(note => pdf.paragraph(note, { size: 9, lineHeight: 12 }));
+          pdf.gap(12);
 
-          if (y + 200 > pageHeight - margin) {
-            doc.addPage();
-            y = margin;
+          pdf.heading('TRUCK');
+          report.truck.fields.forEach(field => pdf.field(field.label, field.value));
+          pdf.gap(12);
+
+          // Notes
+          if (pack.notes) {
+            pdf.heading('Load Plan Notes');
+            pdf.paragraph(pack.notes);
+            pdf.gap(12);
           }
 
-          doc.text('SIDE VIEW', margin, y);
-          y += 10;
-          y += 6;
-          const svH = viewWPt * (420 / 960);
-          doc.addImage(sideView, 'JPEG', margin, y, viewWPt, svH);
+          pdf.image('PERSPECTIVE VIEW', perspective, perspectiveSize);
+          pdf.image('TOP VIEW', topView, topSize);
+          pdf.image('SIDE VIEW', sideView, sideSize);
 
-          // Checklist page
-          doc.addPage();
-          y = margin;
+          // Checklist page: one row per reusable Case with its status quantities.
+          pdf.newPage();
+          pdf.heading('CASE CHECKLIST', { size: 16, lineHeight: 22, gapAfter: 0 });
+          const { hidden, unresolved } = report.population;
+          const statusParts = ['In truck', 'Staged', hidden > 0 && 'Hidden', unresolved > 0 && 'Unresolved'].filter(Boolean);
+          pdf.paragraph(
+            `Qty counts every item of the Case in this load plan (${statusParts.join(' + ')} = Qty). ` +
+            'Base dims are the Case’s catalog dimensions (L×W×H), not the placed orientation of each item.',
+            { size: 8, lineHeight: 11 }
+          );
+          pdf.gap(8);
 
-          doc.setFont('helvetica', 'bold');
-          doc.setFontSize(16);
-          doc.text('CASE CHECKLIST', margin, y);
-          y += 22;
-
-          const entries = buildChecklist(pack);
-
-          doc.setFontSize(9);
-          doc.setFont('helvetica', 'bold');
-          const x0 = margin;
-          const xQty = margin + 22;
-          const xName = margin + 55;
-          const xCategory = margin + 255;
-          const xDims = margin + 350;
-          const xWeight = margin + 450;
+          const checklistColumns = [
+            { label: '#', width: 18 },
+            { label: 'Case', width: 0 },
+            { label: 'Category', width: 70 },
+            { label: 'Base dims (L×W×H)', width: 92 },
+            { label: 'Unit weight', width: 54 },
+            { label: 'Qty', width: 26 },
+            { label: 'In truck', width: 36 },
+            { label: 'Staged', width: 34 },
+            ...(hidden > 0 ? [{ label: 'Hidden', width: 34 }] : []),
+            ...(unresolved > 0 ? [{ label: 'Unresolved', width: 50 }] : []),
+          ];
+          checklistColumns[1].width = contentWidth - checklistColumns.reduce((sum, col) => sum + col.width, 0);
+          checklistColumns.reduce((x, col) => { col.x = x; return x + col.width; }, margin);
           const writeChecklistHeader = () => {
-            doc.setFontSize(9);
-            doc.setFont('helvetica', 'bold');
-            doc.text('#', x0, y);
-            doc.text('Qty', xQty, y);
-            doc.text('Name', xName, y);
-            doc.text('Category', xCategory, y);
-            doc.text('Dims', xDims, y);
-            doc.text('Unit Weight', xWeight, y);
-            y += 8;
-            doc.line(margin, y, pageWidth - margin, y);
-            y += 14;
-            doc.setFont('helvetica', 'normal');
+            pdf.font(8, 'bold');
+            pdf.tableRow(checklistColumns, checklistColumns.map(col => col.label), { lineHeight: 10, gapAfter: 0 });
+            doc.line(margin, pdf.y - 6, pageWidth - margin, pdf.y - 6);
+            pdf.y += 8;
+            pdf.font(8, 'normal');
           };
           writeChecklistHeader();
-
-          entries.forEach((e, idx) => {
-            const nameLines = doc.splitTextToSize(String(e.name || '—'), xCategory - xName - 8);
-            const categoryLines = doc.splitTextToSize(String(e.category || '—'), xDims - xCategory - 8);
-            const dimsLines = doc.splitTextToSize(String(e.dims || '—'), xWeight - xDims - 8);
-            const weightLines = doc.splitTextToSize(String(e.weight || '—'), pageWidth - margin - xWeight);
-            const rowHeight = Math.max(
-              nameLines.length,
-              categoryLines.length,
-              dimsLines.length,
-              weightLines.length
-            ) * 12;
-            if (y + rowHeight > pageHeight - margin) {
-              doc.addPage();
-              y = margin;
-              writeChecklistHeader();
-            }
-
-            doc.text(String(idx + 1), x0, y);
-            doc.text(String(e.qty), xQty, y);
-            doc.text(nameLines, xName, y);
-            doc.text(categoryLines, xCategory, y);
-            doc.text(dimsLines, xDims, y);
-            doc.text(weightLines, xWeight, y);
-            y += rowHeight;
+          pdf.pageTop = pdf.y;
+          // Continuation pages repeat the column header.
+          pdf.onPageBreak = () => {
+            pdf.font(10, 'bold');
+            pdf.line('CASE CHECKLIST (continued)', margin, 18);
+            writeChecklistHeader();
+          };
+          report.rows.forEach((row, index) => {
+            pdf.tableRow(checklistColumns, [
+              String(index + 1),
+              row.itemCode ? `${row.name}\nItem Code: ${row.itemCode}` : row.name,
+              row.category,
+              row.baseDims,
+              row.unitWeight,
+              String(row.qty),
+              String(row.counts.inTruck),
+              String(row.counts.staged),
+              ...(hidden > 0 ? [String(row.counts.hidden)] : []),
+              ...(unresolved > 0 ? [String(row.counts.unresolved)] : []),
+            ]);
           });
+          pdf.onPageBreak = null;
+
+          // Handling rules supplement (never replace) the user-authored notes below.
+          if (report.handling.length) {
+            pdf.gap(16);
+            pdf.heading('HANDLING RULES', { size: 16, lineHeight: 22, gapAfter: 2 });
+            report.handling.forEach(entry => {
+              pdf.ensureSpace(13 * 3);
+              pdf.paragraph(entry.itemCode ? `${entry.name} (Item Code: ${entry.itemCode})` : entry.name, { style: 'bold' });
+              pdf.paragraph(entry.rules.join(' · '), { x: margin + 12, width: contentWidth - 12 });
+              pdf.gap(6);
+            });
+          }
 
           // Cargo Instructions manifest. Standard Case Instructions are
           // rendered once per referenced Case; Item Notes are rendered once
           // for their owning Pack instance. Empty values are omitted.
           const cargoInstructions = ImportExport.buildCargoInstructionsManifest(pack);
           if (cargoInstructions.caseEntries.length || cargoInstructions.itemEntries.length) {
-            const ensureInstructionSpace = needed => {
-              if (y + needed <= pageHeight - margin) return;
-              doc.addPage();
-              y = margin;
-            };
             const writeInstructionField = (label, value) => {
-              ensureInstructionSpace(30);
-              doc.setFont('helvetica', 'bold');
-              doc.setFontSize(10);
-              doc.text(`${label}:`, margin, y);
-              y += 13;
-              doc.setFont('helvetica', 'normal');
-              const lines = doc.splitTextToSize(String(value || ''), pageWidth - margin * 2 - 12);
-              lines.forEach(line => {
-                ensureInstructionSpace(13);
-                doc.text(line, margin + 12, y);
-                y += 13;
-              });
-              y += 5;
+              pdf.font(10, 'bold');
+              pdf.ensureSpace(40);
+              pdf.line(`${label}:`, margin, 13);
+              pdf.paragraph(value, { x: margin + 12, width: contentWidth - 12 });
+              pdf.y += 5;
             };
             const writeInstructionEntry = (heading, fields) => {
-              ensureInstructionSpace(48);
-              doc.setFont('helvetica', 'bold');
-              doc.setFontSize(10);
-              doc.text(heading, margin, y);
-              y += 17;
+              pdf.font(10, 'bold');
+              pdf.ensureSpace(60);
+              pdf.split(heading, contentWidth).forEach(line => pdf.line(line, margin, 17));
               fields.forEach(([label, value]) => writeInstructionField(label, value));
-              y += 8;
+              pdf.y += 8;
             };
 
-            ensureInstructionSpace(52);
-            y += y > margin ? 16 : 0;
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(16);
-            doc.text('CARGO INSTRUCTIONS', margin, y);
-            y += 24;
+            pdf.gap(16);
+            pdf.heading('CARGO INSTRUCTIONS', { size: 16, lineHeight: 24, gapAfter: 0, keepWith: 60 });
 
             cargoInstructions.caseEntries.forEach(entry => {
               writeInstructionEntry('CASE INFORMATION', [
@@ -2086,48 +2061,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
             });
           }
 
-          // Summary
-          const includeStats = Boolean(prefs.export && prefs.export.pdfIncludeStats);
-          if (includeStats) {
-            if (y + 90 > pageHeight - margin) {
-              doc.addPage();
-              y = margin;
-            } else {
-              y += 16;
-            }
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(12);
-            doc.text('SUMMARY', margin, y);
-            y += 16;
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(10);
-            doc.text(`Cases loaded: ${stats.totalCases}`, margin, y);
-            y += 14;
-            doc.text(`Packed (in truck): ${stats.packedCases}`, margin, y);
-            y += 14;
-            const maxCapacityProfileCount = stats.maxCapacityProfileCount || 0;
-            if (maxCapacityProfileCount > 0) {
-              doc.text(`Max Capacity profile cases: ${maxCapacityProfileCount}`, margin, y);
-              y += 14;
-            }
-            doc.text(`Volume used: ${stats.volumePercent.toFixed(1)}%`, margin, y);
-            y += 14;
-            doc.text(`Total weight: ${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}`, margin, y);
-            y += 14;
-            doc.text(`Truck (in): ${pack.truck.length}×${pack.truck.width}×${pack.truck.height}`, margin, y);
-            // Make incompleteness explicit: never imply complete totals when some
-            // cargo could not be resolved.
-            const unresolved = stats.unresolvedInstances || 0;
-            if (unresolved > 0) {
-              y += 14;
-              doc.text(
-                `Unresolved cases: ${unresolved} (weight and volume totals are incomplete)`,
-                margin,
-                y
-              );
-            }
-          }
-
           const totalPages = doc.getNumberOfPages();
           for (let i = 1; i <= totalPages; i++) {
             doc.setPage(i);
@@ -2141,6 +2074,140 @@ const TP3D_BUILD_STAMP = Object.freeze({
           console.error(err);
           UIComponents.showToast('PDF export failed: ' + err.message, 'error', { title: 'Export' });
         }
+      }
+
+      // Page-aware layout for the PDF load plan. Every text baseline and image
+      // stays inside the margins: a block that does not fit starts a new page,
+      // and long text continues line by line onto following pages (never cut).
+      // Text is mapped by ImportExport.toPdfText for the built-in font only.
+      function createPdfWriter(doc) {
+        const pageWidth = doc.internal.pageSize.getWidth();
+        const pageHeight = doc.internal.pageSize.getHeight();
+        const margin = 40;
+        const bottom = pageHeight - margin;
+        let font = { size: 10, style: 'normal' };
+        const pdf = {
+          pageWidth, pageHeight, margin, bottom, contentWidth: pageWidth - margin * 2,
+          y: margin, pageTop: margin, onPageBreak: null,
+        };
+        pdf.font = (size, style = 'normal') => {
+          font = { size, style };
+          doc.setFontSize(size);
+          doc.setFont('helvetica', style);
+        };
+        pdf.newPage = () => {
+          const current = font;
+          doc.addPage();
+          pdf.y = margin;
+          pdf.pageTop = margin;
+          if (pdf.onPageBreak) pdf.onPageBreak();
+          pdf.pageTop = pdf.y;
+          pdf.font(current.size, current.style);
+        };
+        // A new page unless `height` more points fit or the page is still empty.
+        pdf.ensureSpace = height => {
+          if (pdf.y > pdf.pageTop && pdf.y + height > bottom) pdf.newPage();
+        };
+        pdf.gap = height => {
+          if (pdf.y > pdf.pageTop) pdf.y += height;
+        };
+        pdf.split = (text, width) => {
+          const lines = doc.splitTextToSize(ImportExport.toPdfText(text), width);
+          return lines.length ? lines : [''];
+        };
+        pdf.line = (text, x, lineHeight) => {
+          if (pdf.y > bottom) pdf.newPage();
+          doc.text(text, x, pdf.y);
+          pdf.y += lineHeight;
+        };
+        pdf.paragraph = (text, { x = margin, width = pdf.contentWidth, size = 10, style = 'normal', lineHeight = 13 } = {}) => {
+          pdf.font(size, style);
+          const lines = pdf.split(text, width);
+          pdf.ensureSpace(Math.min(lines.length, 2) * lineHeight);
+          lines.forEach(line => pdf.line(line, x, lineHeight));
+        };
+        pdf.heading = (text, { size = 12, lineHeight = size + 4, gapAfter = 2, keepWith = 30 } = {}) => {
+          pdf.font(size, 'bold');
+          const lines = pdf.split(text, pdf.contentWidth);
+          pdf.ensureSpace(lines.length * lineHeight + keepWith);
+          lines.forEach(line => pdf.line(line, margin, lineHeight));
+          pdf.y += gapAfter;
+        };
+        // "Label: value" with the value wrapping beside its bold label.
+        pdf.field = (label, value, { size = 10, lineHeight = 13 } = {}) => {
+          pdf.font(size, 'bold');
+          const labelText = `${ImportExport.toPdfText(label)}: `;
+          const labelWidth = doc.getTextWidth(labelText);
+          pdf.font(size, 'normal');
+          const lines = pdf.split(value, pdf.contentWidth - labelWidth);
+          pdf.ensureSpace(Math.min(lines.length, 2) * lineHeight);
+          lines.forEach((line, index) => {
+            if (pdf.y > bottom) pdf.newPage();
+            if (index === 0) {
+              pdf.font(size, 'bold');
+              doc.text(labelText, margin, pdf.y);
+              pdf.font(size, 'normal');
+            }
+            doc.text(line, margin + labelWidth, pdf.y);
+            pdf.y += lineHeight;
+          });
+        };
+        // A view heading plus its image, placed only where both fit in full.
+        pdf.image = (heading, dataUrl, [pxWidth, pxHeight]) => {
+          const headingGap = 16;
+          const after = 16;
+          let width = pdf.contentWidth;
+          let height = (width * pxHeight) / pxWidth;
+          const maxHeight = bottom - margin - headingGap - after;
+          if (height > maxHeight) {
+            height = maxHeight;
+            width = (height * pxWidth) / pxHeight;
+          }
+          pdf.font(12, 'bold');
+          pdf.ensureSpace(headingGap + height + after);
+          doc.text(heading, margin, pdf.y);
+          pdf.y += headingGap;
+          doc.addImage(dataUrl, 'JPEG', margin, pdf.y, width, height);
+          pdf.y += height + after;
+        };
+        // One table row; cells wrap within their columns. A row that does not
+        // fit moves to a new page; a row taller than a page continues there.
+        pdf.tableRow = (columns, cells, { lineHeight = 11, gapAfter = 4 } = {}) => {
+          const cellLines = columns.map((col, i) => pdf.split(cells[i], col.width - 6));
+          const count = Math.max(...cellLines.map(lines => lines.length));
+          if (pdf.y > pdf.pageTop && pdf.y + (count - 1) * lineHeight > bottom) pdf.newPage();
+          for (let i = 0; i < count; i++) {
+            if (pdf.y > bottom) pdf.newPage();
+            cellLines.forEach((lines, c) => {
+              if (lines[i]) doc.text(lines[i], columns[c].x, pdf.y);
+            });
+            pdf.y += lineHeight;
+          }
+          pdf.y += gapAfter;
+        };
+        return pdf;
+      }
+
+      // PDF views are rastered for their printed width (the letter content
+      // width, ~7.4 in, gives ~1420 px) within the capture bounds.
+      function pdfViewRasterSize(widthPt, aspect) {
+        const [aspectWidth, aspectHeight] = aspect;
+        let width = Math.ceil((widthPt / 72) * PDF_VIEW_PPI);
+        let height = Math.round((width * aspectHeight) / aspectWidth);
+        const scale = Math.min(1, MAX_CAPTURE_WIDTH / width, MAX_CAPTURE_HEIGHT / height);
+        if (scale < 1) {
+          width = Math.floor(width * scale);
+          height = Math.floor(height * scale);
+        }
+        return [width, height];
+      }
+
+      // Absolute local date and time with its time zone, so a printed plan's
+      // timestamps stay meaningful away from the app.
+      function formatPdfDateTime(timestamp) {
+        return new Date(timestamp).toLocaleString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', timeZoneName: 'short',
+        });
       }
 
       function getCurrentPack() {
@@ -2237,32 +2304,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
         sideCam.updateProjectionMatrix();
 
         return { topCam, sideCam };
-      }
-
-      function buildChecklist(pack) {
-        const prefs = PreferencesManager.get();
-        const unitLen = prefs.units.length;
-        const unitWt = prefs.units.weight;
-        return ImportExport.buildCaseChecklistRows(pack).map(row => {
-          const c = row.caseData;
-          if (!c) {
-            return {
-              qty: row.qty,
-              name: `Missing case (${row.caseId || 'unknown'})`,
-              category: '—',
-              dims: '—',
-              weight: '—',
-            };
-          }
-          const meta = CategoryService.meta(c.category);
-          return {
-            qty: row.qty,
-            name: c.name,
-            category: meta.name,
-            dims: Utils.formatDims(c.dimensions, unitLen),
-            weight: Utils.formatWeight(Number(c.weight) || 0, unitWt),
-          };
-        });
       }
 
       // Screenshot/PDF capture at an exact, bounded size through the same display

@@ -157,12 +157,14 @@ test('LOAD-PLAN-TERM-4 the Editor Pack Notes surface delegates to the shared Loa
 test('LOAD-PLAN-TERM-4B PDF renders saved pack.notes under the exact Load Plan Notes heading', async () => {
   const app = await fs.readFile(appPath, 'utf8');
 
-  assert.match(app, /if \(pack\.notes\) \{[\s\S]*?doc\.text\('Load Plan Notes', margin, y\)/,
+  assert.match(app, /if \(pack\.notes\) \{\s*pdf\.heading\('Load Plan Notes'\);\s*pdf\.paragraph\(pack\.notes\);/,
     'saved Load Plan Notes must render under the exact customer-facing PDF heading');
-  assert.doesNotMatch(app, /doc\.text\('(?:NOTES|Pack Notes|Truck Notes|Truck Note)', margin, y\)/,
+  assert.doesNotMatch(app, /(?:doc\.text|pdf\.heading)\('(?:NOTES|Pack Notes|Truck Notes|Truck Note)'/,
     'the PDF must not retain generic Pack- or Truck-facing notes headings');
-  assert.match(app, /const lines = doc\.splitTextToSize\(pack\.notes, pageWidth - margin \* 2\)[\s\S]*?doc\.text\(lines, margin, y\)[\s\S]*?y \+= lines\.length \* 12 \+ 10/,
-    'multiline notes must keep using the existing width-aware wrapping and advance subsequent PDF content');
+  // Export Integrity B: notes wrap to the content width and continue onto
+  // further pages line by line (behaviour proven in export-integrity-b-pdf).
+  assert.match(app, /pdf\.paragraph = \(text, \{ x = margin, width = pdf\.contentWidth,[\s\S]*?const lines = pdf\.split\(text, width\);[\s\S]*?lines\.forEach\(line => pdf\.line\(line, x, lineHeight\)\);/,
+    'multiline notes must keep using width-aware wrapping and advance subsequent PDF content');
 });
 
 test('CASE-NOTES-TERM active Case surfaces and PDF use Case Instructions/Notes with no rejected customer literal', async () => {

@@ -3108,6 +3108,42 @@ export function computeStats(pack, caseLibraryOverride) {
   return stats;
 }
 
+/**
+ * Per-instance cargo status aligned with pack.cases ('inTruck' | 'staged' |
+ * 'hidden' | 'unresolved'), read from the SAME classification a live
+ * computeStats() result reports, so per-Case tallies always reconcile with its
+ * totals. The space-utilization projection lists every resolved, non-hidden
+ * instance as loaded or staged; any other non-hidden instance is unresolved.
+ * Entries match by instance id + case id and are consumed once, in Pack order.
+ * Also returns the distinct reasons behind unresolved instances.
+ */
+export function getStatsInstanceStatuses(pack, stats) {
+  const utilization = stats && stats.spaceUtilization;
+  if (!utilization || !Array.isArray(utilization.instanceAabbs)) {
+    throw new Error('Load plan statistics are unavailable');
+  }
+  const key = (instanceId, caseId) => JSON.stringify([instanceId, caseId]);
+  const queues = new Map();
+  utilization.instanceAabbs.forEach(entry => {
+    if (entry.placement !== 'loaded' && entry.placement !== 'staged') return;
+    const k = key(entry.instanceId, entry.caseId);
+    if (!queues.has(k)) queues.set(k, []);
+    queues.get(k).push(entry.placement === 'loaded' ? 'inTruck' : 'staged');
+  });
+  const statuses = ((pack && pack.cases) || []).map(inst => {
+    if (inst && inst.hidden) return 'hidden';
+    const queue = queues.get(key(
+      inst && inst.id != null ? String(inst.id) : null,
+      inst && inst.caseId != null ? String(inst.caseId) : null
+    ));
+    return queue && queue.length ? queue.shift() : 'unresolved';
+  });
+  const unresolvedReasons = Array.from(new Set(
+    (utilization.diagnostics.unresolvedInstances || []).map(entry => entry.reason).filter(Boolean)
+  ));
+  return { statuses, unresolvedReasons };
+}
+
 // ============================================================================
 // SECTION: CASE INSTANCE COUNTS — derived, non-persisted quantity classification
 // ============================================================================

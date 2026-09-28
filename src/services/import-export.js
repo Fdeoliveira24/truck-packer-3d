@@ -912,6 +912,7 @@ const plural = (count, one, many) => (count === 1 ? one : many);
 
 // "<Case name> #<n>" per instance, numbered exactly like the Cargo
 // Instructions Item Notes (per Case, in Pack order, hidden included).
+// Instance ids are unique here: buildLoadPlanReport refuses duplicates.
 function buildInstanceLabels(pack, getCaseById) {
   const labels = new Map();
   const counts = new Map();
@@ -923,7 +924,7 @@ function buildInstanceLabels(pack, getCaseById) {
     const occurrenceKey = caseId || caseName;
     const occurrence = (counts.get(occurrenceKey) || 0) + 1;
     counts.set(occurrenceKey, occurrence);
-    if (inst.id != null && !labels.has(inst.id)) labels.set(inst.id, `${caseName} #${occurrence}`);
+    if (inst.id != null) labels.set(inst.id, `${caseName} #${occurrence}`);
   });
   return labels;
 }
@@ -1007,6 +1008,18 @@ export function buildLoadPlanReport(pack, {
   const lengthUnit = PDF_LENGTH_UNITS.has(units && units.length) ? units.length : 'in';
   const weightUnit = PDF_WEIGHT_UNITS.has(units && units.weight) ? units.weight : 'lb';
   const instances = Array.isArray(pack && pack.cases) ? pack.cases : [];
+  // Canonical OOG and pallet warnings name cargo by instance id alone, with no
+  // occurrence. Duplicate ids (invalid Pack identity that backup import already
+  // rejects) would make that attribution a guess, so the report is refused.
+  const instanceIds = new Set();
+  instances.forEach(inst => {
+    if (!inst || inst.id == null) return;
+    const id = String(inst.id).trim();
+    if (instanceIds.has(id)) {
+      throw new Error('Duplicate cargo instance IDs make this load plan invalid for a trustworthy PDF export.');
+    }
+    instanceIds.add(id);
+  });
   const { statuses, unresolvedReasons } = PackLibrary.getStatsInstanceStatuses(pack, stats);
 
   const population = { total: instances.length, inTruck: 0, staged: 0, hidden: 0, unresolved: 0 };

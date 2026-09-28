@@ -38,6 +38,7 @@ const INCH = 0.05;
 
 function recordingJsPDF(record) {
   return function RecordingJsPDF(options) {
+    record.docs += 1;
     const doc = new RealJsPDF(options);
     const page = () => doc.internal.getCurrentPageInfo().pageNumber;
     const font = () => ({ size: doc.getFontSize(), style: doc.getFont().fontStyle });
@@ -111,8 +112,8 @@ function setup({ pack = mixedPack(), cases = [baseCase(), baseCase({ id: 'case-b
   return pack.id;
 }
 
-function runPdf(packId) {
-  const record = { texts: [], images: [], captures: [], addPages: 0, saved: null, toasts: [], errors: [] };
+function runPdf(packId, { refused = false } = {}) {
+  const record = { docs: 0, texts: [], images: [], captures: [], addPages: 0, saved: null, toasts: [], errors: [] };
   const truck = PackLibrary.getById(packId).truck;
   const scene = { background: null };
   const camera = new THREE.PerspectiveCamera(40, 1.5, 0.1, 1000);
@@ -147,6 +148,7 @@ function runPdf(packId) {
   const service = new Function(...Object.keys(deps),
     `${exportConstantsCode}${exportCode}\nreturn { generatePDF };`)(...Object.values(deps));
   service.generatePDF();
+  if (refused) return record;
   assert.deepEqual(record.errors, [], 'PDF export must not throw');
   assert.ok(record.saved, `PDF saved (toasts: ${JSON.stringify(record.toasts)})`);
   return record;
@@ -291,12 +293,13 @@ test('EXPORT-B status classification reconciles for duplicate ids and unusable t
     instance('same', 'case-a', { x: 60, y: 10, z: 0 }, { hidden: true }),
   ] });
   setup({ pack: duplicate });
-  const report = ImportExport.buildLoadPlanReport(duplicate, { stats: PackLibrary.computeStats(duplicate) });
-  assert.deepEqual(report.population, { total: 4, inTruck: 1, staged: 1, hidden: 1, unresolved: 1 });
-  assert.deepEqual(report.rows.map(row => row.counts), [
-    { inTruck: 1, staged: 1, hidden: 1, unresolved: 0 },
-    { inTruck: 0, staged: 0, hidden: 0, unresolved: 1 },
-  ]);
+  const duplicateStats = PackLibrary.computeStats(duplicate);
+  const { statuses } = PackLibrary.getStatsInstanceStatuses(duplicate, duplicateStats);
+  const tally = statuses.reduce((counts, status) => ({ ...counts, [status]: (counts[status] || 0) + 1 }), {});
+  assert.deepEqual(tally, { inTruck: 1, staged: 1, unresolved: 1, hidden: 1 }, 'the projection still reconciles');
+  assert.throws(() => ImportExport.buildLoadPlanReport(duplicate, { stats: duplicateStats }),
+    /Duplicate cargo instance IDs make this load plan invalid for a trustworthy PDF export\./,
+    'the report itself refuses duplicate instance ids');
 
   const noTruck = basePack({ truck: { length: 0, width: 0, height: 0, shapeMode: 'rect' },
     cases: [instance('a1', 'case-a', { x: 30, y: 10, z: 0 })] });
@@ -308,6 +311,80 @@ test('EXPORT-B status classification reconciles for duplicate ids and unusable t
   assert.match(unclassified.review.map(entry => entry.text).join(' '), /could not be fully resolved/);
   assert.throws(() => ImportExport.buildLoadPlanReport(noTruck, { stats: { ...stats } }), /statistics are unavailable/,
     'persisted stats without the live classification are refused, never guessed');
+});
+
+// Canonical OOG and pallet warnings carry an instance id but no occurrence.
+// With duplicate ids the SAME warning comes from either occurrence, so the
+// PDF refuses the Load Plan instead of guessing which "<Case> #n" it means.
+const DUPLICATE_REFUSAL = ['PDF export failed: Duplicate cargo instance IDs make this load plan invalid for a trustworthy PDF export.', 'error'];
+
+function assertRefused(record) {
+  assert.equal(record.docs, 0, 'refused before any PDF document is created');
+  assert.equal(record.captures.length, 0, 'no view is captured');
+  assert.equal(record.saved, null, 'nothing is saved');
+  assert.deepEqual(record.texts, [], 'no "<Case> #n" attribution is ever written');
+  assert.deepEqual(record.toasts, [DUPLICATE_REFUSAL]);
+}
+
+test('EXPORT-B duplicate instance ids: an OOG warning from either occurrence is refused, never attributed', () => {
+  const oog = id => instance(id, 'case-a', { x: 30, y: 10, z: 40 });
+  const inside = id => instance(id, 'case-a', { x: 80, y: 10, z: 0 });
+  const warnings = [];
+  for (const [label, order, uniqueLabel] of [
+    ['first occurrence out of gauge', ids => [oog(ids[0]), inside(ids[1])], 'Crate A #1'],
+    ['second occurrence out of gauge', ids => [inside(ids[0]), oog(ids[1])], 'Crate A #2'],
+  ]) {
+    const pack = basePack({ cases: order(['x', 'x']) });
+    setup({ pack });
+    const stats = PackLibrary.computeStats(pack);
+    warnings.push(stats.oogWarnings);
+    assertRefused(runPdf(pack.id, { refused: true }));
+
+    const unique = basePack({ id: 'pack-unique', cases: order(['x1', 'x2']) });
+    const record = runPdf(setup({ pack: unique }));
+    assertInsidePage(record);
+    assert.match(allText(record), new RegExp(`• ${uniqueLabel} extends past the right side\\.`), `${label}: unique ids keep exact attribution`);
+    assert.equal((allText(record).match(/extends past the right side/g) || []).length, 1);
+  }
+  assert.deepEqual(warnings[0], warnings[1], 'the canonical warning cannot tell the occurrences apart');
+  assert.deepEqual(warnings[0], [{ instanceId: 'x', caseId: 'case-a', caseName: 'Crate A', issues: ['protrudesRight'] }]);
+});
+
+test('EXPORT-B duplicate instance ids: a pallet warning from either occurrence is refused, never attributed', () => {
+  const pallet = baseCase({ id: 'case-p', name: 'Pallet', isPallet: true, maxPalletWeight: 100,
+    dimensions: { length: 48, width: 40, height: 6 }, weight: 30 });
+  const heavy = baseCase({ id: 'case-h', name: 'Heavy', weight: 150 });
+  const loaded = id => instance(id, 'case-p', { x: 60, y: 3, z: 0 });
+  const empty = id => instance(id, 'case-p', { x: 160, y: 3, z: 0 });
+  const load = instance('h1', 'case-h', { x: 60, y: 16, z: 0 });
+  const warnings = [];
+  for (const [label, order, uniqueLabel] of [
+    ['first pallet overloaded', ids => [loaded(ids[0]), empty(ids[1]), load], 'Pallet #1'],
+    ['second pallet overloaded', ids => [empty(ids[0]), loaded(ids[1]), load], 'Pallet #2'],
+  ]) {
+    const pack = basePack({ cases: order(['p', 'p']) });
+    setup({ pack, cases: [baseCase(), pallet, heavy] });
+    warnings.push(PackLibrary.computeStats(pack).palletWarnings);
+    assertRefused(runPdf(pack.id, { refused: true }));
+
+    const unique = basePack({ id: 'pack-unique', cases: order(['p1', 'p2']) });
+    const record = runPdf(setup({ pack: unique, cases: [baseCase(), pallet, heavy] }));
+    assertInsidePage(record);
+    assert.match(allText(record), new RegExp(`• ${uniqueLabel}: 150 lb on top exceeds its 100 lb max load warning\\.`),
+      `${label}: unique ids keep exact attribution`);
+  }
+  assert.equal(warnings[0].length, 1);
+  assert.deepEqual(warnings[0], warnings[1], 'the canonical pallet warning cannot tell the occurrences apart');
+  assert.equal(warnings[0][0].palletInstanceId, 'p');
+});
+
+test('EXPORT-B duplicate instance ids are refused even without warnings; ids compare like backup import', () => {
+  for (const ids of [['dup', 'dup'], ['dup', ' dup ']]) {
+    const pack = basePack({ cases: [instance(ids[0], 'case-a', { x: 30, y: 10, z: 0 }), instance(ids[1], 'case-a', { x: 80, y: 10, z: 0 })] });
+    setup({ pack });
+    assert.deepEqual(PackLibrary.computeStats(pack).oogWarnings, []);
+    assertRefused(runPdf(pack.id, { refused: true }));
+  }
 });
 
 test('EXPORT-B status columns appear only when that population exists', () => {

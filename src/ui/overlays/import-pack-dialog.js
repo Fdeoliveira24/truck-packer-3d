@@ -1252,12 +1252,10 @@ export function createImportPackDialog({
           if (!mutationAllowed()) return;
           const result = PackLibrary.importPackPayload(parsedPayload.payload);
           const renamed = result && Array.isArray(result.caseConflicts) ? result.caseConflicts.length : 0;
-          UIComponents.showToast(
-            renamed > 0
-              ? `Load plan imported · ${renamed} case${renamed !== 1 ? 's' : ''} renamed to keep different local cargo`
-              : 'Load plan imported successfully',
-            'success'
-          );
+          const repairs = ImportExport.describePlacementRepairs(result && result.importStats);
+          let message = repairs ? `Load plan imported with ${repairs}` : 'Load plan imported successfully';
+          if (renamed > 0) message += ` · ${renamed} case${renamed !== 1 ? 's' : ''} renamed to keep different local cargo`;
+          UIComponents.showToast(message, repairs ? 'warning' : 'success');
           modalObj.close();
         } catch (err) {
           UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
@@ -1269,6 +1267,7 @@ export function createImportPackDialog({
       let imported = 0;
       let skipped = 0;
       let renamedTotal = 0;
+      const repairTotals = { placementsRepaired: 0, placementsStaged: 0 };
       let blocked = false;
       // Milestone C: each Load Plan still commits independently (unchanged
       // partial-not-atomic batch policy — see planPackImport/importPackPayload,
@@ -1283,6 +1282,10 @@ export function createImportPackDialog({
         try {
           const result = PackLibrary.importPackPayload(payload);
           if (result && Array.isArray(result.caseConflicts)) renamedTotal += result.caseConflicts.length;
+          if (result && result.importStats) {
+            repairTotals.placementsRepaired += Number(result.importStats.placementsRepaired) || 0;
+            repairTotals.placementsStaged += Number(result.importStats.placementsStaged) || 0;
+          }
           imported++;
         } catch (err) {
           skipped++;
@@ -1306,12 +1309,14 @@ export function createImportPackDialog({
       if (renamedTotal > 0) {
         msg += ' · ' + renamedTotal + ' case' + (renamedTotal !== 1 ? 's' : '') + ' renamed';
       }
+      const repairs = ImportExport.describePlacementRepairs(repairTotals);
+      if (repairs) msg += ' · ' + repairs;
       if (failures.length) {
         const shown = failures.slice(0, 3).map(f => `"${f.title}": ${f.reason}`).join('; ');
         const more = failures.length > 3 ? ` (+${failures.length - 3} more)` : '';
         msg += ' — ' + shown + more;
       }
-      UIComponents.showToast(msg, imported > 0 ? 'success' : 'warning');
+      UIComponents.showToast(msg, imported > 0 && !repairs ? 'success' : 'warning');
       if (imported > 0) {
         modalObj.close();
       }

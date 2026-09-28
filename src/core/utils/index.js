@@ -18,7 +18,16 @@ import {
   sanitizeJSON as sanitizeJSONImpl,
   safeJsonParse as safeJsonParseImpl,
 } from '../../utils/json.js';
-import { downloadText, formatRelativeTime, getCssVar, hasWebGL } from '../browser.js';
+import {
+  downloadText,
+  downloadBlob,
+  downloadDataUrl,
+  createDownloadActionGuard,
+  downloadActionGuard,
+  formatRelativeTime,
+  getCssVar,
+  hasWebGL,
+} from '../browser.js';
 
 // ============================================================================
 // SECTION: CORE PRIMITIVES
@@ -33,7 +42,16 @@ export const safeJsonParse = safeJsonParseImpl;
 export const sanitizeJSON = sanitizeJSONImpl;
 export const deepClone = deepCloneImpl;
 
-export { downloadText, formatRelativeTime, getCssVar, hasWebGL };
+export {
+  downloadText,
+  downloadBlob,
+  downloadDataUrl,
+  createDownloadActionGuard,
+  downloadActionGuard,
+  formatRelativeTime,
+  getCssVar,
+  hasWebGL,
+};
 
 export function escapeHtml(value) {
   return String(value == null ? '' : value).replace(/[&<>"']/g, ch => {
@@ -58,6 +76,67 @@ export function parseResolution(res) {
   const m = String(res || '').match(/^(\d+)x(\d+)$/);
   if (!m) return { width: 1920, height: 1080 };
   return { width: Number(m[1]), height: Number(m[2]) };
+}
+
+// ============================================================================
+// SECTION: EXPORT FILENAMES
+// ============================================================================
+
+// Export filenames are `{parts…}-{YYYYMMDD-HHmmss}.{ext}`. Each part keeps
+// letters and digits of any script; every other run (path separators,
+// reserved and control characters, whitespace, dots) becomes one hyphen. The
+// name before the timestamp is bounded in UTF-8 bytes, so the extension always
+// appears exactly once, last.
+const EXPORT_FILENAME_PART_MAX_CHARS = 60;
+const EXPORT_FILENAME_BASE_MAX_BYTES = 160;
+
+function utf8Bytes(text) {
+  return new TextEncoder().encode(text).length;
+}
+
+export function sanitizeFilenamePart(value, maxChars = EXPORT_FILENAME_PART_MAX_CHARS) {
+  const slug = String(value == null ? '' : value)
+    .normalize('NFC')
+    .replace(/[^\p{L}\p{M}\p{N}_]+/gu, '-')
+    .replace(/^[-_]+|[-_]+$/g, '');
+  return Array.from(slug).slice(0, maxChars).join('').replace(/[-_]+$/, '');
+}
+
+export function formatFilenameTimestamp(date = new Date()) {
+  const d = date instanceof Date && Number.isFinite(date.getTime()) ? date : new Date();
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-` +
+    `${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
+}
+
+/**
+ * @param {unknown[]|unknown} parts
+ * @param {string} extension
+ * @param {{ date?: Date }} [options]
+ */
+export function buildExportFilename(parts, extension, { date = new Date() } = {}) {
+  const joined = (Array.isArray(parts) ? parts : [parts])
+    .map(part => sanitizeFilenamePart(part))
+    .filter(Boolean)
+    .join('-') || 'export';
+  const chars = Array.from(joined);
+  let bytes = utf8Bytes(joined);
+  while (bytes > EXPORT_FILENAME_BASE_MAX_BYTES) bytes -= utf8Bytes(chars.pop() || '');
+  const base = chars.join('').replace(/[-_]+$/, '') || 'export';
+  const ext = sanitizeFilenamePart(extension).toLowerCase() || 'bin';
+  return `${base}-${formatFilenameTimestamp(date)}.${ext}`;
+}
+
+/**
+ * Load Plan files (PNG, PDF, JSON): `{Load Plan Number or load-plan}-{title}-…`.
+ * The internal Pack id is never used.
+ * @param {{ loadPlanNumber?: unknown, title?: unknown }|null|undefined} pack
+ * @param {string} extension
+ * @param {{ date?: Date }} [options]
+ */
+export function buildLoadPlanFilename(pack, extension, options) {
+  const p = pack && typeof pack === 'object' ? pack : {};
+  return buildExportFilename([sanitizeFilenamePart(p.loadPlanNumber) || 'load-plan', p.title], extension, options);
 }
 
 /**
@@ -243,7 +322,15 @@ export const Utils = {
   formatDims,
   volumeInCubicInches,
   formatVolume,
+  sanitizeFilenamePart,
+  formatFilenameTimestamp,
+  buildExportFilename,
+  buildLoadPlanFilename,
   downloadText,
+  downloadBlob,
+  downloadDataUrl,
+  createDownloadActionGuard,
+  downloadActionGuard,
   formatRelativeTime,
   getCssVar,
   hasWebGL,

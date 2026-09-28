@@ -1348,7 +1348,8 @@ test('PACK-IMPORT-SCHEMA-1 pack import modal uses pack-only class and batch clos
     'Pack import modal must include pack-only tp3d-ip-modal class alongside shared tp3d-ic-modal');
   assert.match(
     src,
-    /UIComponents\.showToast\(msg, imported > 0 \? ['"]success['"] : ['"]warning['"]\);\s*if\s*\(imported\s*>\s*0\)\s*\{\s*modalObj\.close\(\);\s*\}/,
+    // Export Integrity C: disclosed placement repairs downgrade the tone to warning.
+    /UIComponents\.showToast\(msg, imported > 0 && !repairs \? ['"]success['"] : ['"]warning['"]\);\s*if\s*\(imported\s*>\s*0\)\s*\{\s*modalObj\.close\(\);\s*\}/,
     'Batch import should close modal only when imported > 0'
   );
   assert.doesNotMatch(src, /imported\s*===\s*0[\s\S]*modalObj\.close\(\)/,
@@ -5213,9 +5214,9 @@ test('CARGO-RULE-V1 export/download action chains reach the right builder and sa
   const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
   // Cases template
   assert.match(casesSrc, /ImportExport\.downloadCasesTemplate\(\)/, 'cases template button calls downloadCasesTemplate');
-  // Pack export -> builder -> downloadText with sanitized filename
-  assert.match(packsSrc, /ImportExport\.buildPackExportJSON\(pack\)/, 'pack export uses buildPackExportJSON');
-  assert.match(packsSrc, /Utils\.downloadText\(`\$\{\(pack\.title \|\| 'load-plan'\)\.replace\(\/\[\^a-z0-9\]\+\/gi, '-'\)\}\.json`/, 'pack export filename is sanitized');
+  // Pack export -> restorable builder -> downloadText with the shared safe filename (Export Integrity C)
+  assert.match(packsSrc, /ImportExport\.buildRestorablePackExportJSON\(pack\)/, 'pack export uses the restorable Load Plan builder');
+  assert.match(packsSrc, /Utils\.downloadText\(Utils\.buildLoadPlanFilename\(pack, 'json'\), json\)/, 'pack export filename is sanitized');
 });
 
 test('CARGO-RULE-V1 workspace restore is exposed only in Settings; pack-batch guard points to it', async () => {
@@ -17304,8 +17305,8 @@ test('phase 0.7A-2 app exposes workspace export modal using existing download pa
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'openExportWorkspaceModal must be extractable');
-  assert.match(fn, /ImportExport\.buildWorkspaceExportJSON\(safeName, workspaceId\)/,
-    'workspace export modal must build workspace JSON through ImportExport');
+  assert.match(fn, /ImportExport\.buildRestorableWorkspaceExportJSON\(safeName, workspaceId\)/,
+    'workspace export modal must build restore-preflighted workspace JSON through ImportExport');
   assert.match(fn, /Utils\.downloadText\(filename, json\)/,
     'workspace export modal must use existing downloadText path');
   assert.match(fn, /UIComponents\.showModal\(/,

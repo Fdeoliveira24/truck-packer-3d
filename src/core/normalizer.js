@@ -35,6 +35,35 @@ import {
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
 const EDITOR_VIEW_PRECISION = 1000;
 
+// Editor-internal markers that may ride along on a truck object but are never
+// truck data. `__packId` scopes the Editor's pending (uncommitted) truck.
+export const INTERNAL_TRUCK_KEYS = Object.freeze(['__packId']);
+
+/**
+ * Remove only the known internal markers from a truck. Every other truck field
+ * is kept; the same object is returned when there is nothing to remove.
+ * @template T
+ * @param {T} truck
+ * @returns {T}
+ */
+export function stripInternalTruckFields(truck) {
+  if (!truck || typeof truck !== 'object' || Array.isArray(truck)) return truck;
+  if (!INTERNAL_TRUCK_KEYS.some(key => Object.prototype.hasOwnProperty.call(truck, key))) return truck;
+  const next = { ...truck };
+  INTERNAL_TRUCK_KEYS.forEach(key => { delete next[key]; });
+  return next;
+}
+
+// A blank or missing sequence is "no sequence", never 0 (Number(null) === 0).
+function normalizeDeliverySequence(value) {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'string' && value.trim()) {
+    const n = Number(value.trim());
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /** Pack presentation only: reject partial or nonfinite camera poses. */
 export function normalizeEditorView(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -236,7 +265,10 @@ export function normalizePreferences(prefs) {
   next.camera = next.camera && typeof next.camera === 'object' ? next.camera : base.camera;
   next.camera.defaultView = next.camera.defaultView === 'orthographic' ? 'orthographic' : 'perspective';
   next.export = next.export && typeof next.export === 'object' ? next.export : base.export;
-  next.export.screenshotResolution = safeString(next.export.screenshotResolution, base.export.screenshotResolution);
+  const screenshotResolution = safeString(next.export.screenshotResolution, '');
+  next.export.screenshotResolution = CoreDefaults.SCREENSHOT_RESOLUTIONS.includes(screenshotResolution)
+    ? screenshotResolution
+    : base.export.screenshotResolution;
   next.export.pdfIncludeStats = Boolean(next.export.pdfIncludeStats);
   const normalizeCatKey = key =>
     String(key || '')
@@ -371,8 +403,7 @@ export function normalizeInstance(inst, caseMap) {
       orientedDims = normalizeOrientedDims(inst && inst.orientedDims);
     }
   }
-  const deliverySequenceRaw = Number(inst && inst.deliverySequence);
-  const deliverySequence = Number.isFinite(deliverySequenceRaw) ? deliverySequenceRaw : null;
+  const deliverySequence = normalizeDeliverySequence(inst && inst.deliverySequence);
   return {
     id: safeId(inst && inst.id),
     caseId,

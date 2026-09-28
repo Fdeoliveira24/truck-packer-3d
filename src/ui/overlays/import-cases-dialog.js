@@ -791,7 +791,11 @@ export function createImportCasesDialog({
         parsedResult.warnings.forEach(e => lines.push(e));
         lines.push('');
       }
-      Utils.downloadText('import_errors.txt', lines.join('\n'), 'text/plain');
+      try {
+        Utils.downloadText('import_errors.txt', lines.join('\n'), 'text/plain');
+      } catch (err) {
+        UIComponents.showToast('Download failed: ' + (err && err.message), 'error');
+      }
     }
 
     // ── Import ────────────────────────────────────────────────────────────

@@ -762,7 +762,8 @@ test('MILESTONE-D-12 Settings exposes a role-gated Choose → Preflight → Repl
   assert.match(settings, /restoreWsBtn\.disabled = !isOwnerOrAdmin/);
   assert.match(settings, /getRoleForOrg\(plan\.destinationWorkspaceId\)/);
   assert.match(settings, /assertScopeContextCurrent\(originScope\)/);
-  assert.match(app, /-backup-\$\{new Date\(\)\.toISOString\(\)\.slice\(0, 10\)\}\.json/);
+  // Export Integrity C: shared safe filename contract (workspace-backup-{name}-{timestamp}.json).
+  assert.match(app, /Utils\.buildExportFilename\(\['workspace-backup', safeName\], 'json'\)/);
   assert.match(app, /Workspace Backup download started/);
   assert.match(settings, /Other account workspaces/);
   assert.match(appDialog, /Other account workspaces/);

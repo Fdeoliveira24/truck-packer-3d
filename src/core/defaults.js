@@ -68,6 +68,10 @@ export const defaultPreferences = {
   categories: [],
 };
 
+// Settings > Screenshot resolution choices. Any other stored or imported value
+// normalizes to defaultPreferences.export.screenshotResolution.
+export const SCREENSHOT_RESOLUTIONS = Object.freeze(['1920x1080', '2560x1440', '3840x2160']);
+
 export const categories = [
   { key: 'all', name: 'All', color: '#9b9ba8' },
   { key: 'audio', name: 'Audio', color: '#f59e0b' },

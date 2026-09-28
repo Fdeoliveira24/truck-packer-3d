@@ -37,7 +37,10 @@ const captureEnd = appSource.indexOf('      function captureScreenshot(', captur
 const readbackStart = appSource.indexOf('      function renderCameraToDataUrl(');
 const readbackEnd = appSource.indexOf('      return { captureScreenshot, generatePDF,', readbackStart);
 assert.ok(captureStart >= 0 && captureEnd > captureStart && readbackEnd > readbackStart);
-const captureCode = appSource.slice(captureStart, captureEnd).replace('async function capturePackPreview(', 'async function productionCapturePackPreview(');
+const captureCode = appSource.slice(captureStart, captureEnd).replace('async function capturePackPreview(', 'async function productionCapturePackPreview(')
+  // Export Integrity C: these suites issue separate programmatic exports back to
+  // back; the double-click hold is proven in export-integrity-c.spec.mjs.
+  .replace('Utils.createDownloadActionGuard()', 'Utils.createDownloadActionGuard({ schedule: release => release() })');
 const readbackCode = appSource.slice(readbackStart, readbackEnd)
   .replace('function renderCameraToDataUrl(', 'function productionRenderCameraToDataUrl(')
   .replace('function renderPreviewToDataUrl(', 'function productionRenderPreviewToDataUrl(');
@@ -676,7 +679,11 @@ function loadExportService({
     PreferencesManager: {
       get: () => ({ export: { screenshotResolution: resolution, pdfIncludeStats: false }, units: { length: 'in', weight: 'lb' } }),
     },
-    Utils: { parseResolution: CoreUtils.parseResolution, formatWeight: CoreUtils.formatWeight, formatDims: CoreUtils.formatDims },
+    Utils: {
+      parseResolution: CoreUtils.parseResolution, formatWeight: CoreUtils.formatWeight, formatDims: CoreUtils.formatDims,
+      createDownloadActionGuard: CoreUtils.createDownloadActionGuard, buildLoadPlanFilename: CoreUtils.buildLoadPlanFilename,
+      downloadDataUrl: (dataUrl, filename) => calls.downloads.push(filename),
+    },
     StateStore: { get: key => (key === 'currentPackId' ? currentPackId : null) },
     PackLibrary: {
       getById: id => (id === pack.id ? pack : null),
@@ -772,8 +779,8 @@ test('EXPORT-A Screenshot uses only supported sizes, the theme background and a 
     assert.ok(calls.repaints >= 1, 'the live Editor is repainted after capture');
     assert.equal(scene.background, themeBackground);
     assert.equal(calls.downloads.length, 1);
-    assert.match(calls.downloads[0], /^load-plan-fixture-plan-\d+\.png$/);
-    assert.deepEqual(calls.toasts, [['Screenshot saved', 'success']]);
+    assert.match(calls.downloads[0], /^load-plan-Fixture-Plan-\d{8}-\d{6}\.png$/);
+    assert.deepEqual(calls.toasts, [['Screenshot download started', 'success']]);
   }
 });
 
@@ -810,8 +817,8 @@ test('EXPORT-A PDF views: print background, truck-centric exclusions and one-sca
   assert.ok(topExtent.z[0] <= -48 * INCH && topExtent.z[1] >= 70 * INCH, 'truck width and straddling cargo are framed');
   assert.ok(sideExtent.y[0] <= 0 && sideExtent.y[1] >= 100 * INCH, 'full truck height is framed');
   assert.equal(doc.images.length, 3);
-  assert.equal(doc.saved, 'fixture-plan-plan.pdf');
-  assert.deepEqual(calls.toasts, [['PDF exported', 'success']]);
+  assert.match(doc.saved, /^load-plan-Fixture-Plan-\d{8}-\d{6}\.pdf$/);
+  assert.deepEqual(calls.toasts, [['PDF download started', 'success']]);
 });
 
 test('EXPORT-A capture failure or a changed scene restores state and never downloads or saves', () => {
@@ -855,8 +862,11 @@ test('EXPORT-A Workspace Backup dialog stays bound to its workspace scope, inclu
         showModal: options => calls.modals.push(options),
         showToast: (...args) => calls.toasts.push(args.slice(0, 2)),
       },
-      Utils: { escapeHtml: value => String(value), downloadText: name => calls.downloads.push(name) },
-      ImportExport: { buildWorkspaceExportJSON: (...args) => { calls.exports.push(args); return '{}'; } },
+      Utils: {
+        escapeHtml: value => String(value), downloadText: name => calls.downloads.push(name),
+        buildExportFilename: CoreUtils.buildExportFilename, downloadActionGuard: CoreUtils.createDownloadActionGuard(),
+      },
+      ImportExport: { buildRestorableWorkspaceExportJSON: (...args) => { calls.exports.push(args); return '{}'; } },
     };
     const open = new Function(...Object.keys(deps),
       `${appSource.slice(start, end)}\nreturn openExportWorkspaceModal;`)(...Object.values(deps));
@@ -1931,7 +1941,7 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
         assert.equal(result.difference, 0, `${result.background}: exported pixels equal the live display framebuffer`);
         assert.ok(result.legacyDifference > 16, `${result.background}: the legacy linear render target differs (${result.legacyDifference})`);
         assert.equal(result.downloads, 1);
-        assert.match(result.name, /^load-plan-red-b-\d+\.png$/);
+        assert.match(result.name, /^(?:LP-[0-9A-Z-]+|load-plan)-Red-B-\d{8}-\d{6}\.png$/);
         assert.deepEqual(result.size, [1920, 1080]);
         const rgb = [1, 3, 5].map(i => parseInt(result.background.slice(i, i + 2), 16));
         assert.ok(rgb.every((value, i) => Math.abs(result.corner[i] - value) <= 1), `theme background kept: ${JSON.stringify(result)}`);
@@ -1975,7 +1985,7 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       assert.deepEqual(proof.differences, [0, 0, 0], 'each PDF view equals the display pipeline render of its camera');
       for (const corner of proof.corners) assert.ok(corner.every(value => value >= 250), JSON.stringify(proof.corners));
       assert.deepEqual(proof.formats, ['JPEG', 'JPEG', 'JPEG']);
-      assert.equal(proof.saved, 'red-b-plan.pdf');
+      assert.match(proof.saved, /^(?:LP-[0-9A-Z-]+|load-plan)-Red-B-\d{8}-\d{6}\.pdf$/);
     });
 
     for (const shapeMode of ['rect', 'wheelWells', 'frontBonus']) {

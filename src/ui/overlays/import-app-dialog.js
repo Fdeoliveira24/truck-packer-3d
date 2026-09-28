@@ -119,7 +119,8 @@ export function createImportAppDialog({
       `;
       resultsEl.appendChild(summary);
 
-      UIComponents.showToast('App data imported', 'success');
+      const repairs = ImportExport.describePlacementRepairs(imported.importReport);
+      UIComponents.showToast(repairs ? `App data imported with ${repairs}.` : 'App data imported', repairs ? 'warning' : 'success');
       modal.close();
     } catch (err) {
       UIComponents.showToast('Import failed: ' + (err && err.message), 'error');

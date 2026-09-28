@@ -253,7 +253,17 @@ export function createCasesScreen({
       searchClearEl.addEventListener('click', clearSearch);
       updateSearchClearVisibility();
       btnNew.addEventListener('click', () => openCaseModal(null));
-      btnTemplate.addEventListener('click', () => ImportExport.downloadCasesTemplate());
+      btnTemplate.addEventListener('click', () => Utils.downloadActionGuard.run('cases-template', () => {
+        try {
+          ImportExport.downloadCasesTemplate();
+          UIComponents.showToast('Download started', 'success');
+          return true;
+        } catch (err) {
+          console.error(err);
+          UIComponents.showToast('Download failed: ' + (err && err.message), 'error');
+          return false;
+        }
+      }));
       btnImport.addEventListener('click', () => {
         if (mutationBlockedWhileBusy()) return;
         if (ImportCasesDialog && ImportCasesDialog.open) {
@@ -271,7 +281,7 @@ export function createCasesScreen({
           // are read when an export is chosen, in the same validated scope as the
           // category metadata the catalog export reads, never from menu-open time.
           const menuScope = captureScopeContext();
-          const exportCases = download => () => {
+          const exportCases = (key, download) => () => {
             if (!isScopeContextCurrent(menuScope)) {
               UIComponents.showToast('The workspace changed. Open Export again.', 'warning');
               return;
@@ -281,24 +291,33 @@ export function createCasesScreen({
               UIComponents.showToast('No cases to export', 'info');
               return;
             }
-            download(cases);
-            UIComponents.showToast('Download started', 'success');
+            Utils.downloadActionGuard.run(key, () => {
+              try {
+                download(cases);
+                UIComponents.showToast('Download started', 'success');
+                return true;
+              } catch (err) {
+                console.error(err);
+                UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+                return false;
+              }
+            });
           };
           UIComponents.openDropdown(btnExport, [
             {
               label: 'Case Catalog (JSON)',
               icon: 'fa-solid fa-file-code',
-              onClick: exportCases(cases => ImportExport.downloadCaseCatalogExportJSON(cases)),
+              onClick: exportCases('case-catalog-json', cases => ImportExport.downloadCaseCatalogExportJSON(cases)),
             },
             {
               label: 'Spreadsheet (CSV)',
               icon: 'fa-solid fa-file-csv',
-              onClick: exportCases(cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'csv' })),
+              onClick: exportCases('cases-csv', cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'csv' })),
             },
             {
               label: 'Spreadsheet (XLSX)',
               icon: 'fa-solid fa-file-excel',
-              onClick: exportCases(cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'xlsx' })),
+              onClick: exportCases('cases-xlsx', cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'xlsx' })),
             },
           ]);
         });

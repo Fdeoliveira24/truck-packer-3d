@@ -19,6 +19,7 @@ import * as StateStore from './state-store.js';
 import {
   normalizeAppData,
   sanitizeLegacyPackQuantityLibrary,
+  stripInternalTruckFields,
 } from './normalizer.js';
 import {
   migrateLoadPlanNumbers,
@@ -841,7 +842,10 @@ export function clearAll() {
 
 export function exportAppJSON() {
   const state = StateStore.get();
-  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
+  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary.map(pack => {
+    const truck = pack && stripInternalTruckFields(pack.truck);
+    return pack && truck !== pack.truck ? { ...pack, truck } : pack;
+  });
   const payload = {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
@@ -936,32 +940,53 @@ export function exportWorkspaceJSON(workspaceName, workspaceId = '') {
  * shape. Format/kind/schemaVersion/units are rejected before any graph
  * validation or normalization runs (see core/import-schema.js), and the
  * legacy path is byte-for-byte the pre-existing behavior.
+ *
+ * Pure (no events, no writes), so the App Backup exporter runs the exact same
+ * preflight on its own artifact before a download starts.
  */
+export function preflightAppBackupJSON(jsonText) {
+  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
+  if (!isPlainRecord(parsed)) throw new Error('Invalid JSON: expected an object');
+  let data;
+  if (isCargoPlannerEnvelope(parsed)) {
+    const envelope = parseCargoPlannerEnvelope(parsed, {
+      expectedKinds: [IMPORT_KIND.ACTIVE_WORKSPACE_BACKUP],
+    });
+    data = envelope.data;
+  } else {
+    const hasEnvelope = Object.prototype.hasOwnProperty.call(parsed, 'data');
+    if (hasEnvelope && !isPlainRecord(parsed.data)) {
+      throw new Error('Invalid App backup envelope: data must be an object');
+    }
+    data = hasEnvelope ? parsed.data : parsed;
+  }
+  const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: true });
+  const normalized = normalizeAppData({
+    caseLibrary: cases,
+    packLibrary: packs,
+    folderLibrary: folders,
+    preferences: data.preferences,
+    currentPackId: data.currentPackId || null,
+  });
+  // Normalization keeps every finite coordinate and replaces only malformed
+  // ones (and invalid placement labels), so a changed pose is exactly an
+  // instance with such a value. Reported, never persisted.
+  const isFiniteNumber = value => value !== null && value !== '' && Number.isFinite(Number(value));
+  const placementsRepaired = packs.reduce((total, pack) => total + (Array.isArray(pack.cases) ? pack.cases : [])
+    .filter(inst => {
+      const transform = inst && isPlainRecord(inst.transform) ? inst.transform : {};
+      const poseMalformed = ['position', 'rotation'].some(key =>
+        !isPlainRecord(transform[key]) || ['x', 'y', 'z'].some(axis => !isFiniteNumber(transform[key][axis])));
+      const placementInvalid = inst && inst.placement != null && inst.placement !== 'packed' && inst.placement !== 'staged';
+      return poseMalformed || placementInvalid;
+    }).length, 0);
+  Object.defineProperty(normalized, 'importReport', { value: { placementsRepaired }, enumerable: false });
+  return normalized;
+}
+
 export function importAppJSON(jsonText) {
   try {
-    const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
-    if (!isPlainRecord(parsed)) throw new Error('Invalid JSON: expected an object');
-    let data;
-    if (isCargoPlannerEnvelope(parsed)) {
-      const envelope = parseCargoPlannerEnvelope(parsed, {
-        expectedKinds: [IMPORT_KIND.ACTIVE_WORKSPACE_BACKUP],
-      });
-      data = envelope.data;
-    } else {
-      const hasEnvelope = Object.prototype.hasOwnProperty.call(parsed, 'data');
-      if (hasEnvelope && !isPlainRecord(parsed.data)) {
-        throw new Error('Invalid App backup envelope: data must be an object');
-      }
-      data = hasEnvelope ? parsed.data : parsed;
-    }
-    const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: true });
-    return normalizeAppData({
-      caseLibrary: cases,
-      packLibrary: packs,
-      folderLibrary: folders,
-      preferences: data.preferences,
-      currentPackId: data.currentPackId || null,
-    });
+    return preflightAppBackupJSON(jsonText);
   } catch (err) {
     emit('storage:import_error', {
       message: err && err.message ? err.message : 'Import failed',

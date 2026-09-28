@@ -50,13 +50,13 @@ test('AUTOPACK-CAROUSEL header has a chevron collapse/expand toggle separate fro
   assert.match(render, /fa-chevron-\$\{minimized \? 'down' : 'up'\}/,
     'the toggle must use a chevron (down to expand, up to collapse), not a minus line');
   assert.equal(render.includes('fa-minus'), false, 'the collapse control must not be a minus/line icon');
-  assert.match(render, /patchAutoPackResultsState\(\{ minimized: !minimized \}\)/,
+  assert.match(render, /patchAutoPackResultsState\(\{ minimized: !minimized \}, results\.runId\)/,
     'the toggle must flip the UI-only minimized state');
 
   // Close stays a separate dismiss.
   assert.match(render, /closeBtn\.setAttribute\('aria-label', 'Close AutoPack results'\);/,
     'a close control with an accessible label must exist');
-  assert.match(render, /closeBtn\.addEventListener\('click', \(\) => patchAutoPackResultsState\(\{ closed: true \}\)\);/,
+  assert.match(render, /closeBtn\.addEventListener\('click', \(\) => patchAutoPackResultsState\(\{ closed: true \}, results\.runId\)\);/,
     'close must remain separate from collapse');
 
   // 2×3 dot-grid drag grip on the header drag handle.
@@ -90,7 +90,7 @@ test('AUTOPACK-CAROUSEL collapse leaves only the header (no chip, no second drag
   const place = sliceFn(src, 'const placeAutoPackResultsEl = el =>', 'const makeAutoPackGrip = () =>');
   assert.match(place, /clampAutoPackResultsPosition\(host, el, results\.position\)/,
     'shared placement must reuse the existing position clamp');
-  assert.match(place, /attachAutoPackResultsDrag\(el, host\)/,
+  assert.match(place, /attachAutoPackResultsDrag\(el, host, results\.runId\)/,
     'shared placement must reuse the existing drag attachment');
 
   // Styling: is-minimized divider control + no chip CSS.
@@ -108,9 +108,9 @@ test('AUTOPACK-CAROUSEL Prev/Next stay view-only and never apply or mutate', asy
   assert.match(nav, /aria-label', 'Next AutoPack option'/, 'a Next control must be rendered');
   assert.match(nav, /prevBtn\.disabled = viewIndex <= 0;/, 'Previous must clamp/disable at the first option');
   assert.match(nav, /nextBtn\.disabled = viewIndex >= options\.length - 1;/, 'Next must clamp/disable at the last option');
-  assert.match(nav, /patchAutoPackResultsState\(\{ viewIndex: Math\.max\(0, viewIndex - 1\) \}\)/,
+  assert.match(nav, /patchAutoPackResultsState\(\{ viewIndex: Math\.max\(0, viewIndex - 1\) \}, results\.runId\)/,
     'Previous must only move the view index');
-  assert.match(nav, /patchAutoPackResultsState\(\{ viewIndex: Math\.min\(options\.length - 1, viewIndex \+ 1\) \}\)/,
+  assert.match(nav, /patchAutoPackResultsState\(\{ viewIndex: Math\.min\(options\.length - 1, viewIndex \+ 1\) \}, results\.runId\)/,
     'Next must only move the view index');
   assert.equal(nav.includes('applyAutoPackResultOption'), false, 'Prev/Next must not apply a solution');
   assert.equal(nav.includes('PackLibrary'), false, 'Prev/Next must not mutate the pack');
@@ -119,7 +119,7 @@ test('AUTOPACK-CAROUSEL Prev/Next stay view-only and never apply or mutate', asy
 test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a check, drops the rerun note', async () => {
   const { render, src } = await renderBlock();
 
-  assert.match(render, /apply\.addEventListener\('click', \(\) => applyAutoPackResultOption\(viewedOption\.id\)\);/,
+  assert.match(render, /apply\.addEventListener\('click', \(\) => applyAutoPackResultOption\(viewedOption\.id, results\.runId\)\);/,
     'carousel Apply must call the existing applyAutoPackResultOption path');
   assert.match(render, /apply\.disabled = isViewedCurrent \|\| stale;/,
     'Apply must be disabled for the applied option and for stale results');
@@ -129,13 +129,15 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
   assert.equal(render.includes('Rerun AutoPack after edits.'), false,
     'the rerun note text must not be rendered in the panel');
 
-  const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId)', 'function makeAutoPackResultStat(');
+  const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId, expectedRunId)', 'function makeAutoPackResultStat(');
   assert.match(apply, /if \(isAutoPackResultsStale\(pack, results\)\)/, 'apply must keep the stale guard');
-  assert.match(apply, /const appliedCases = buildAppliedAutoPackCases\(option, cloneAutoPackCases\);/,
+  assert.match(apply, /const appliedCases = buildAppliedAutoPackCases\(option, cloneAutoPackCases, pack\.cases\);/,
     'apply must derive the applied option cases through the profile-aware builder');
   // Source-level production wiring coverage (not behavioral Apply execution).
-  assert.match(apply, /const appliedSignature = PackLibrary\.buildHandlingRulesValiditySignature\(\s*\{ \.\.\.pack, cases: appliedCases \},\s*CaseLibrary\.getCases\(\)\s*\);/,
+  assert.match(apply, /const appliedSignature = PackLibrary\.buildHandlingRulesValiditySignature\(\s*projectedPack,\s*CaseLibrary\.getCases\(\)\s*\);/,
     'Apply must sign its post-apply cases against the current Case Library');
+  assert.match(apply, /getAppliedAutoPackOption\(projectedPack, results, caseId => CaseLibrary\.getById\(caseId\)\) !== option/,
+    'Apply must refuse a proposal that cannot become the exact unambiguous applied option');
   assert.equal((apply.match(/PackLibrary\.update\(/g) || []).length, 1,
     'Apply must publish cases and signature together, without a second Pack update');
   // HANDLING-RULES-P0A: a successfully applied AutoPack solution has gone
@@ -144,14 +146,16 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
   // — no second StateStore write.
   assert.match(apply, /PackLibrary\.update\(pack\.id, \{\s*cases: appliedCases,\s*handlingRulesValidatedSignature: appliedSignature,\s*\}\)/,
     'apply must commit the applied option AND the fresh handling-rules signature through one PackLibrary.update call');
-  assert.match(apply, /StateStore\.set\(\{ selectedInstanceIds: \[\] \}/,
-    'apply must keep clearing selection after swapping the load');
+  assert.match(apply, /StateStore\.set\(\{ selectedInstanceIds: \[\] \}, \{ skipHistory: true, skipNotify: true \}\)/,
+    'apply must clear selection without a separate render');
+  assert.equal(apply.includes('selectedId: option.id'), false, 'Apply must derive live authority without a Results write');
+  assert.equal(apply.includes('render();'), false, 'the Pack update already drives Editor render');
 });
 
 test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results start at Option 1', async () => {
   const { render } = await renderBlock();
 
-  assert.match(render, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option\.id === results\.selectedId\)\);/,
+  assert.match(render, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option === currentOption\)\);/,
     'the applied option index must remain available independently from the visual page');
   assert.match(render, /Number\.isFinite\(Number\(results\.viewIndex\)\) \? Number\(results\.viewIndex\) : 0/,
     'a missing/invalid view index must fall back to index 0 so fresh results open at Option 1');
@@ -169,7 +173,7 @@ test('AUTOPACK-CAROUSEL fresh view starts on Balanced when a non-first option is
   const { render } = await renderBlock();
   const viewBlock = sliceFn(
     render,
-    'const selectedIndex = Math.max(0, options.findIndex(option => option.id === results.selectedId));',
+    'const selectedIndex = Math.max(0, options.findIndex(option => option === currentOption));',
     '\n\n      // Position + drag'
   );
   const resolveView = new Function(
@@ -193,7 +197,7 @@ test('AUTOPACK-CAROUSEL fresh view starts on Balanced when a non-first option is
 
   assert.equal(view.selectedIndex, 2, 'the internally selected/applied option remains non-first');
   assert.equal(view.viewIndex, 0, 'a fresh missing viewIndex starts the visual carousel at Option 1');
-  assert.equal(view.viewedOption.id, 'default', 'Option 1 is Balanced while selectedId remains unchanged');
+  assert.equal(view.viewedOption.id, 'default', 'Option 1 is Balanced while the live applied option remains unchanged');
 });
 
 test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, neutral status badge', async () => {
@@ -376,36 +380,22 @@ test('AUTOPACK-STALE truck, case definitions, and instance handling rules remain
 });
 
 test('AUTOPACK-STALE production stale comparison stays current after staged-only movement', async () => {
-  const [Engine, editorSrc] = await Promise.all([
+  const [Engine, EditorScreen] = await Promise.all([
     import(enginePath.href),
-    fs.readFile(editorScreenPath, 'utf8'),
+    import(editorScreenPath.href),
   ]);
-  const staleBlock = sliceFn(
-    editorSrc,
-    'function isAutoPackResultsStale(pack, results)',
-    '\n\n    function getCurrentAutoPackOption'
-  );
   const casesById = new Map([
     ['case-A', { id: 'case-A', dimensions: { length: 24, width: 24, height: 24 }, weight: 10 }],
     ['case-B', { id: 'case-B', dimensions: { length: 24, width: 24, height: 24 }, weight: 10 }],
   ]);
-  const isStale = new Function(
-    'getEffectiveTruck',
-    'buildAutoPackResultSignature',
-    'buildAutoPackCaseRuleSignature',
-    'CaseLibrary',
-    `return (${staleBlock});`
-  )(
-    pack => pack.truck,
-    Engine.buildAutoPackResultSignature,
-    Engine.buildAutoPackCaseRuleSignature,
-    { getById: id => casesById.get(id) || null }
-  );
+  const getCaseById = id => casesById.get(id) || null;
+  const isStale = (pack, results) => !EditorScreen.getAppliedAutoPackOption(pack, results, getCaseById);
   const pack = makeStalenessAuditPack();
+  const signature = Engine.buildAutoPackResultSignature(pack);
   const results = {
     packId: pack.id,
-    currentSignature: Engine.buildAutoPackResultSignature(pack),
-    caseRuleSignature: Engine.buildAutoPackCaseRuleSignature(pack, id => casesById.get(id) || null),
+    caseRuleSignature: Engine.buildAutoPackCaseRuleSignature(pack, getCaseById),
+    options: [{ id: 'max-capacity', signature, layoutSignature: Engine.buildAutoPackLayoutSignature(pack) }],
   };
 
   const movedStaged = structuredClone(pack);
@@ -852,7 +842,7 @@ test('AUTOPACK-MAX-A selected normal option owns its dedupe group without changi
 
 test('AUTOPACK-CAROUSEL stale Apply button carries a reachable title and aria-label explanation', async () => {
   const { render } = await renderBlock();
-  const optionBlock = sliceFn(render, 'const isViewedCurrent = viewedOption.id === results.selectedId;', 'panel.appendChild(body);');
+  const optionBlock = sliceFn(render, 'const isViewedCurrent = viewedOption === currentOption;', 'panel.appendChild(body);');
 
   assert.match(optionBlock, /if \(stale\) \{\s*\n\s*const staleReason = /,
     'the disabled-but-not-applied case (stale) must set an explanatory reason');
@@ -888,7 +878,7 @@ test('AUTOPACK-CAROUSEL stale badge renders in the header so carousel, compact, 
 
 test('AUTOPACK-CAROUSEL apply is rejected while another operation owns the editor', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId)', 'function makeAutoPackResultStat(');
+  const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId, expectedRunId)', 'function makeAutoPackResultStat(');
 
   assert.match(apply, /OperationLifecycle\.isBusy\(\)/,
     'apply must check the operation lifecycle before mutating the pack');
@@ -1210,4 +1200,227 @@ test('AUTOPACK-CAROUSEL normal options keep packed-count ranking while Phase A M
     'Max Capacity is excluded from automatic winner selection even when it packs far more');
   assert.equal(maxPacksMost.selectedSolution.id, 'stack-priority',
     'the layout immediately applied by AutoPack remains the best normal portfolio result');
+});
+
+function resultsSyncPack(id, packedX, stagedX = 100) {
+  return {
+    id: 'results-sync-pack',
+    truck: { length: 240, width: 96, height: 96, shapeMode: 'rect' },
+    editorView: { camera: id },
+    cases: [
+      { id: 'packed', caseId: 'case-A', placement: packedX === null ? 'staged' : 'packed',
+        transform: { position: { x: packedX ?? 5, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+        orientedDims: { length: 24, width: 24, height: 24 }, notes: 'original' },
+      { id: 'staged', caseId: 'case-A', placement: 'staged',
+        transform: { position: { x: stagedX, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+        orientedDims: { length: 24, width: 24, height: 24 }, notes: 'original' },
+    ],
+  };
+}
+
+async function resultsSyncFixture({ maxCapacity = false } = {}) {
+  const [Engine, EditorScreen, StateStore, source] = await Promise.all([
+    import(enginePath.href), import(editorScreenPath.href),
+    import(new URL('../../src/core/state-store.js', import.meta.url).href),
+    fs.readFile(editorScreenPath, 'utf8'),
+  ]);
+  const caseData = { id: 'case-A', dimensions: { length: 24, width: 24, height: 24 }, weight: 10 };
+  const getCaseById = id => id === caseData.id ? caseData : null;
+  const pre = resultsSyncPack('view', null);
+  const winner = resultsSyncPack('view', 20);
+  const alternate = resultsSyncPack('view', 60, 120);
+  const option = (id, pack) => ({
+    id,
+    nextCases: structuredClone(pack.cases),
+    signature: Engine.buildAutoPackResultSignature(pack, id === 'max-capacity' ? 'max-capacity' : null),
+    layoutSignature: Engine.buildAutoPackLayoutSignature(pack),
+  });
+  const options = [option('default', winner), option(maxCapacity ? 'max-capacity' : 'floor-first', alternate)];
+  const results = {
+    runId: 'run-A', packId: winner.id, options,
+    selectedId: options[0].id, currentSignature: options[0].signature,
+    caseRuleSignature: Engine.buildAutoPackCaseRuleSignature(winner, getCaseById),
+    viewIndex: 0,
+  };
+  StateStore.init({ currentPackId: winner.id, currentScreen: 'editor',
+    selectedInstanceIds: ['packed'], packLibrary: [pre], caseLibrary: [caseData] });
+  StateStore.set({ packLibrary: [winner] }); // The already committed AutoPack winner.
+  StateStore.set({ autoPackResults: results }, { skipHistory: true });
+  const writes = [];
+  const notifications = [];
+  const unsubscribe = StateStore.subscribe((changes, state) => {
+    notifications.push({ keys: Object.keys(changes), selection: [...(state.selectedInstanceIds || [])] });
+  });
+  const PackLibrary = {
+    getById: id => StateStore.get('packLibrary').find(pack => pack.id === id) || null,
+    buildHandlingRulesValiditySignature: () => 'validated',
+    update: (id, patch) => {
+      writes.push({ id, patch });
+      const pack = PackLibrary.getById(id);
+      const next = { ...pack, ...structuredClone(patch) };
+      StateStore.set({ packLibrary: [next] });
+      return next;
+    },
+  };
+  const applied = () => EditorScreen.getAppliedAutoPackOption(PackLibrary.getById(winner.id), StateStore.get('autoPackResults'), getCaseById);
+  const applySource = sliceFn(source, 'function applyAutoPackResultOption(optionId, expectedRunId)', 'function makeAutoPackResultStat(');
+  const apply = new Function('getAutoPackResultsState', 'OperationLifecycle', 'UIComponents', 'PackLibrary',
+    'StateStore', 'isAutoPackResultsStale', 'getAppliedAutoPackOption', 'CaseLibrary',
+    'buildAppliedAutoPackCases', 'cloneAutoPackCases', 'CaseScene',
+    `${applySource}\nreturn applyAutoPackResultOption;`)(
+    () => StateStore.get('autoPackResults'), { isBusy: () => false }, { showToast() {} }, PackLibrary,
+    StateStore, (pack, result) => !EditorScreen.getAppliedAutoPackOption(pack, result, getCaseById),
+    EditorScreen.getAppliedAutoPackOption, { getById: getCaseById, getCases: () => [caseData] },
+    EditorScreen.buildAppliedAutoPackCases, structuredClone, { setSelected() {} }
+  );
+  const patchSource = sliceFn(source, 'function patchAutoPackResultsState(patch, expectedRunId)', 'function isAutoPackResultsStale(');
+  const patchResults = new Function('getAutoPackResultsState', 'StateStore', `${patchSource}\nreturn patchAutoPackResultsState;`)(
+    () => StateStore.get('autoPackResults'), StateStore);
+  return { Engine, EditorScreen, StateStore, pre, winner, alternate, options, results,
+    getCaseById, applied, apply, patchResults, writes, notifications, unsubscribe, PackLibrary };
+}
+
+test('AUTOPACK-RESULTS live Pack controls Applied through Apply, Undo, Redo, and pre-run Undo', async () => {
+  const f = await resultsSyncFixture();
+  try {
+    assert.equal(f.applied(), f.options[0], 'the committed winner is initially Applied');
+    const before = structuredClone(f.PackLibrary.getById(f.winner.id));
+    f.patchResults({ viewIndex: 1 }, 'run-A');
+    assert.deepEqual(f.PackLibrary.getById(f.winner.id), before, 'browsing changes no Pack or camera');
+    assert.equal(f.applied(), f.options[0], 'browsing B does not change Applied');
+    assert.equal(f.notifications.filter(event => event.keys.includes('packLibrary')).length, 0,
+      'browsing schedules no Pack preview or cargo history');
+    f.apply(f.options[1].id, 'run-A');
+    assert.equal(f.writes.length, 1, 'Apply commits exactly once');
+    assert.equal(f.applied(), f.options[1]);
+    assert.equal(f.StateStore.get('autoPackResults').selectedId, f.options[0].id,
+      'legacy selectedId is no longer written as live authority');
+    assert.deepEqual(f.StateStore.get('selectedInstanceIds'), []);
+    assert.deepEqual(f.notifications.filter(event => event.keys.includes('packLibrary')).map(event => event.selection), [[]],
+      'selection is cleared before the single cargo notification');
+    assert.equal(f.PackLibrary.getById(f.winner.id).editorView.camera, 'view');
+    assert.equal(f.StateStore.undo(), true);
+    assert.equal(f.applied(), f.options[0], 'Undo truthfully marks A Applied');
+    assert.equal(f.StateStore.redo(), true);
+    assert.equal(f.applied(), f.options[1], 'Redo truthfully marks B Applied');
+    assert.equal(f.StateStore.undo(), true);
+    assert.equal(f.StateStore.undo(), true);
+    assert.equal(f.applied(), null, 'pre-AutoPack layout matches no result');
+    assert.equal(f.StateStore.redo(), true);
+    assert.equal(f.applied(), f.options[0], 'Redo restores a current winner');
+  } finally { f.unsubscribe(); }
+});
+
+test('AUTOPACK-RESULTS Apply preserves allowed staged pose and current metadata, but takes chosen packed/staged layout', async () => {
+  const f = await resultsSyncFixture();
+  try {
+    const edited = structuredClone(f.winner);
+    edited.cases[0].notes = 'edited after solve';
+    edited.cases[1].notes = 'staged note';
+    edited.cases[1].transform.position.x = 135;
+    edited.cases[1].transform.rotation.y = Math.PI / 2;
+    edited.cases[1].orientedDims = { length: 24, width: 12, height: 24 };
+    f.StateStore.set({ packLibrary: [edited] });
+    assert.equal(f.applied(), f.options[0], 'allowed edits keep Results current');
+    f.apply(f.options[1].id, 'run-A');
+    const [packed, staged] = f.PackLibrary.getById(f.winner.id).cases;
+    assert.equal(packed.transform.position.x, 60, 'chosen packed solver pose wins');
+    assert.equal(packed.notes, 'edited after solve', 'current metadata survives');
+    assert.equal(staged.transform.position.x, 135, 'current staged position survives');
+    assert.equal(staged.transform.rotation.y, Math.PI / 2, 'current staged rotation survives');
+    assert.deepEqual(staged.orientedDims, { length: 24, width: 12, height: 24 });
+    assert.equal(staged.notes, 'staged note');
+    assert.equal(f.applied(), f.options[1]);
+
+    const toStaging = { id: 'floor-first', nextCases: structuredClone(f.alternate.cases) };
+    toStaging.nextCases[0].placement = 'staged';
+    toStaging.nextCases[0].transform.position.x = 200;
+    const changed = f.EditorScreen.buildAppliedAutoPackCases(toStaging, structuredClone, [packed, staged]);
+    assert.equal(changed[0].transform.position.x, 200, 'packed-to-staged uses chosen safe staging pose');
+    const missing = f.EditorScreen.buildAppliedAutoPackCases(toStaging, structuredClone, [packed]);
+    assert.equal(missing, null, 'membership mismatch fails without a partial result');
+
+    const toPacked = { id: 'floor-first', nextCases: structuredClone(f.alternate.cases) };
+    toPacked.nextCases[1].placement = 'packed';
+    toPacked.nextCases[1].transform.position.x = 75;
+    toPacked.nextCases[1].orientedDims = { length: 12, width: 24, height: 24 };
+    const packedAgain = f.EditorScreen.buildAppliedAutoPackCases(toPacked, structuredClone, [packed, staged]);
+    assert.equal(packedAgain[1].transform.position.x, 75, 'staged-to-packed takes the solver pose');
+    assert.equal(packedAgain[1].notes, 'staged note', 'staged-to-packed keeps current metadata');
+
+    const mismatchedId = structuredClone([packed, staged]);
+    mismatchedId[1].id = 'replacement';
+    assert.equal(f.EditorScreen.buildAppliedAutoPackCases(toPacked, structuredClone, mismatchedId), null);
+  } finally { f.unsubscribe(); }
+});
+
+test('AUTOPACK-RESULTS scope, truck, empty options, and significant edits fail closed', async () => {
+  const f = await resultsSyncFixture();
+  try {
+    const pendingTruck = { ...f.winner.truck, length: 300 };
+    assert.notDeepEqual(pendingTruck, f.PackLibrary.getById(f.winner.id).truck);
+    assert.equal(f.applied(), f.options[0], 'an uncommitted form truck has no Results authority');
+    const committedTruck = structuredClone(f.winner);
+    committedTruck.truck.length = 300;
+    f.StateStore.set({ packLibrary: [committedTruck] });
+    assert.equal(f.applied(), null, 'a committed truck change stales Results');
+    f.apply(f.options[1].id, 'run-A');
+    assert.equal(f.writes.length, 0, 'stale Apply mutates nothing');
+
+    f.StateStore.set({ packLibrary: [f.winner], currentPackId: 'another-pack' }, { skipHistory: true });
+    assert.equal(f.EditorScreen.getAppliedAutoPackOption({ ...f.winner, id: 'another-pack' }, f.results, f.getCaseById), null,
+      'Results cannot claim another Pack');
+    f.apply(f.options[1].id, 'run-A');
+    assert.equal(f.writes.length, 0, 'Pack switch cannot Apply old Results');
+    f.StateStore.set({ currentPackId: f.winner.id }, { skipHistory: true });
+    assert.equal(f.applied(), f.options[0], 'return to unchanged Pack restores valid Results');
+    f.StateStore.set({ autoPackResults: { ...f.results, options: [] } }, { skipHistory: true });
+    f.apply(f.options[1].id, 'run-A');
+    assert.equal(f.writes.length, 0, 'zero options have no valid action');
+    assert.equal(f.applied(), null);
+    f.StateStore.set({ autoPackResults: { ...f.results, options: [f.options[0]] } }, { skipHistory: true });
+    assert.equal(f.applied(), f.options[0], 'one option has an unambiguous applied state');
+    f.StateStore.replace({ currentPackId: f.winner.id, currentScreen: 'editor',
+      packLibrary: [f.winner], caseLibrary: [f.getCaseById('case-A')] }, { resetHistory: true });
+    assert.equal(f.StateStore.get('autoPackResults'), undefined, 'workspace replacement carries no transient Results');
+  } finally { f.unsubscribe(); }
+});
+
+test('AUTOPACK-RESULTS Max Capacity profiles, ambiguity, and old-run actions fail or resolve safely', async () => {
+  const f = await resultsSyncFixture({ maxCapacity: true });
+  try {
+    f.apply('max-capacity', 'run-A');
+    assert.equal(f.applied(), f.options[1]);
+    assert.equal(f.PackLibrary.getById(f.winner.id).cases[0].packedProfile, 'max-capacity');
+    assert.equal(Object.hasOwn(f.PackLibrary.getById(f.winner.id).cases[1], 'packedProfile'), false);
+    f.StateStore.undo();
+    assert.equal(f.applied(), f.options[0]);
+    f.StateStore.redo();
+    assert.equal(f.applied(), f.options[1]);
+    f.apply('default', 'run-A');
+    assert.equal(Object.hasOwn(f.PackLibrary.getById(f.winner.id).cases[0], 'packedProfile'), false);
+    const writes = f.writes.length;
+    f.StateStore.set({ autoPackResults: { ...f.results, runId: 'run-B' } }, { skipHistory: true });
+    f.apply('max-capacity', 'run-A');
+    f.patchResults({ viewIndex: 1, minimized: true, closed: true, position: { x: 2, y: 2 } }, 'run-A');
+    assert.equal(f.writes.length, writes, 'old Apply cannot write into a new run');
+    assert.equal(f.StateStore.get('autoPackResults').viewIndex, 0, 'old panel patches cannot alter a new run');
+
+    const collision = structuredClone(f.winner);
+    collision.cases[1].transform.position.x = 140;
+    const a = { ...f.options[0], layoutSignature: f.Engine.buildAutoPackLayoutSignature(f.winner) };
+    const b = { ...f.options[0], id: 'same-strict', layoutSignature: f.Engine.buildAutoPackLayoutSignature(collision) };
+    const ambiguous = { ...f.results, options: [a, b] };
+    assert.equal(f.EditorScreen.getAppliedAutoPackOption(f.winner, ambiguous, f.getCaseById), a,
+      'an exact existing layout signature may disambiguate staged-pose collisions');
+    const moved = structuredClone(f.winner);
+    moved.cases[1].transform.position.x = 150;
+    assert.equal(f.EditorScreen.getAppliedAutoPackOption(moved, ambiguous, f.getCaseById), null,
+      'otherwise duplicate strict matches are stale, never guessed');
+    f.StateStore.set({ packLibrary: [f.winner], autoPackResults: ambiguous }, { skipHistory: true });
+    const beforeAmbiguousApply = f.writes.length;
+    f.apply('same-strict', 'run-A');
+    assert.equal(f.writes.length, beforeAmbiguousApply,
+      'Apply refuses a strict-collision option that staged-pose preservation cannot distinguish');
+  } finally { f.unsubscribe(); }
 });

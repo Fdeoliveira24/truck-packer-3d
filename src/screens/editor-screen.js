@@ -20,7 +20,7 @@ import {
 } from '../ui/space-utilization-gauge.js';
 import * as CoreStorage from '../core/storage.js';
 import { editorViewSignature, normalizeEditorView } from '../core/normalizer.js';
-import { buildAutoPackCaseRuleSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
+import { buildAutoPackCaseRuleSignature, buildAutoPackLayoutSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
 import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
 
@@ -137,11 +137,32 @@ function formatDeleteResultMessage(result, fallbackDeletedIds = []) {
   return message;
 }
 
-export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.parse(JSON.stringify(value))) {
+export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.parse(JSON.stringify(value)), currentCases = option?.nextCases) {
   const isMaxCapacity = option && option.id === 'max-capacity';
   const sourceCases = option && Array.isArray(option.nextCases) ? option.nextCases : [];
-  return cloneCases(sourceCases).map(inst => {
-    const next = { ...inst };
+  if (!Array.isArray(currentCases) || sourceCases.length !== currentCases.length) return null;
+  const proposed = cloneCases(sourceCases);
+  const current = cloneCases(currentCases);
+  const proposedById = new Map(proposed.map(inst => [inst?.id, inst]));
+  if (proposedById.size !== proposed.length || current.some(inst => !inst?.id || !proposedById.has(inst.id)) ||
+      new Set(current.map(inst => inst.id)).size !== current.length) return null;
+
+  const rebased = current.map(inst => {
+    const chosen = proposedById.get(inst.id);
+    if (inst.caseId !== chosen.caseId || Boolean(inst.hidden) !== Boolean(chosen.hidden)) return null;
+    // buildAutoPackNextCases owns placement and packed pose. It does not own
+    // other instance metadata, or a staged pose edited after this result ran.
+    const next = { ...inst, placement: chosen.placement };
+    if (chosen.placement === 'packed' || (chosen.placement === 'staged' && inst.placement !== 'staged')) {
+      if (!chosen.transform?.position || !chosen.transform?.rotation) return null;
+      next.transform = {
+        ...inst.transform,
+        position: chosen.transform.position,
+        rotation: chosen.transform.rotation,
+      };
+      if (Object.hasOwn(chosen, 'orientedDims')) next.orientedDims = chosen.orientedDims;
+      else delete next.orientedDims;
+    }
     if (isMaxCapacity && next.placement === 'packed') {
       next.packedProfile = 'max-capacity';
     } else {
@@ -149,6 +170,23 @@ export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.par
     }
     return next;
   });
+  return rebased.every(Boolean) ? rebased : null;
+}
+
+export function getAppliedAutoPackOption(pack, results, getCaseById) {
+  if (!pack || !results || results.packId !== pack.id || !Array.isArray(results.options)) return null;
+  if (buildAutoPackCaseRuleSignature(pack, getCaseById) !== results.caseRuleSignature) return null;
+  const signature = buildAutoPackResultSignature(pack);
+  const matches = results.options.filter(option => option.signature === signature);
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) {
+    // Strict signatures intentionally omit staged pose. The existing layout
+    // signature distinguishes only an exact physical match; otherwise fail closed.
+    const layout = buildAutoPackLayoutSignature(pack);
+    const exact = matches.filter(option => option.layoutSignature === layout);
+    if (exact.length === 1) return exact[0];
+  }
+  return null;
 }
 
 function withoutPackedProfile(inst) {
@@ -3993,26 +4031,14 @@ export function createEditorScreen({
       return results && typeof results === 'object' ? results : null;
     }
 
-    function patchAutoPackResultsState(patch) {
+    function patchAutoPackResultsState(patch, expectedRunId) {
       const current = getAutoPackResultsState();
-      if (!current) return;
+      if (!current || current.runId !== expectedRunId) return;
       StateStore.set({ autoPackResults: { ...current, ...patch } }, { skipHistory: true });
     }
 
     function isAutoPackResultsStale(pack, results) {
-      if (!pack || !results || results.packId !== pack.id) return true;
-      const effectiveTruck = getEffectiveTruck(pack);
-      const signaturePack = effectiveTruck && effectiveTruck !== pack.truck
-        ? { ...pack, truck: effectiveTruck }
-        : pack;
-      if (buildAutoPackResultSignature(signaturePack) !== results.currentSignature) return true;
-      const caseRuleSignature = buildAutoPackCaseRuleSignature(signaturePack, caseId => CaseLibrary.getById(caseId));
-      return caseRuleSignature !== results.caseRuleSignature;
-    }
-
-    function getCurrentAutoPackOption(results) {
-      const options = Array.isArray(results && results.options) ? results.options : [];
-      return options.find(option => option.id === results.selectedId) || options[0] || null;
+      return !getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
     }
 
     function formatAutoPackResultNumber(value) {
@@ -4031,7 +4057,9 @@ export function createEditorScreen({
       return JSON.parse(JSON.stringify(cases));
     }
 
-    function applyAutoPackResultOption(optionId) {
+    function applyAutoPackResultOption(optionId, expectedRunId) {
+      const results = getAutoPackResultsState();
+      if (!results || results.runId !== expectedRunId) return;
       // Applying swaps the whole load — a mutating path that must respect the
       // single-operation lifecycle like every other editor mutation.
       if (OperationLifecycle && typeof OperationLifecycle.isBusy === 'function' && OperationLifecycle.isBusy()) {
@@ -4042,7 +4070,6 @@ export function createEditorScreen({
         );
         return;
       }
-      const results = getAutoPackResultsState();
       const pack = PackLibrary.getById(StateStore.get('currentPackId'));
       if (!results || !pack || results.packId !== pack.id) return;
       if (isAutoPackResultsStale(pack, results)) {
@@ -4051,33 +4078,34 @@ export function createEditorScreen({
       }
       const option = (results.options || []).find(item => item.id === optionId);
       if (!option || !Array.isArray(option.nextCases)) return;
-      if (option.id === results.selectedId) return;
+      const appliedOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
+      if (option === appliedOption) return;
 
-      const appliedCases = buildAppliedAutoPackCases(option, cloneAutoPackCases);
+      const appliedCases = buildAppliedAutoPackCases(option, cloneAutoPackCases, pack.cases);
+      if (!appliedCases) {
+        UIComponents.showToast('Rerun AutoPack after edits.', 'info', { title: 'AutoPack Results' });
+        return;
+      }
+      const projectedPack = { ...pack, cases: appliedCases };
+      if (getAppliedAutoPackOption(projectedPack, results, caseId => CaseLibrary.getById(caseId)) !== option) {
+        UIComponents.showToast('Rerun AutoPack after edits.', 'info', { title: 'AutoPack Results' });
+        return;
+      }
       // A successfully applied AutoPack solution has gone through the current
       // packing validation path, so it is safe to certify: stamp the fresh
       // handling-rules signature in the SAME existing Pack update (no second
       // StateStore write).
       const appliedSignature = PackLibrary.buildHandlingRulesValiditySignature(
-        { ...pack, cases: appliedCases },
+        projectedPack,
         CaseLibrary.getCases()
       );
+      StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true, skipNotify: true });
+      CaseScene.setSelected([]);
       PackLibrary.update(pack.id, {
         cases: appliedCases,
         handlingRulesValidatedSignature: appliedSignature,
       });
-      StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
-      CaseScene.setSelected([]);
-      StateStore.set({
-        autoPackResults: {
-          ...results,
-          selectedId: option.id,
-          currentSignature: option.signature,
-          closed: false,
-        },
-      }, { skipHistory: true });
       UIComponents.showToast(`Applied ${option.label || 'load option'}.`, 'success', { title: 'AutoPack Results' });
-      render();
     }
 
     function makeAutoPackResultStat(label, value) {
@@ -4141,7 +4169,7 @@ export function createEditorScreen({
       };
     }
 
-    function attachAutoPackResultsDrag(panel, host) {
+    function attachAutoPackResultsDrag(panel, host, expectedRunId) {
       const handle = panel.querySelector('[data-role="autopack-results-drag"]');
       if (!(handle instanceof HTMLElement) || !host) return;
       handle.addEventListener('pointerdown', ev => {
@@ -4177,7 +4205,7 @@ export function createEditorScreen({
           window.removeEventListener('pointermove', onMove);
           window.removeEventListener('pointerup', onUp);
           if (dragging && nextPosition) {
-            patchAutoPackResultsState({ position: nextPosition });
+            patchAutoPackResultsState({ position: nextPosition }, expectedRunId);
           }
         };
         window.addEventListener('pointermove', onMove);
@@ -4192,9 +4220,8 @@ export function createEditorScreen({
       const options = Array.isArray(results && results.options) ? results.options : [];
       if (!host || !pack || !results || results.closed || results.packId !== pack.id || !options.length) return;
 
-      const currentOption = getCurrentAutoPackOption(results);
-      if (!currentOption) return;
-      const stale = isAutoPackResultsStale(pack, results);
+      const currentOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
+      const stale = !currentOption;
       const hasAlternates = options.length > 1;
       // minimized is UI-only panel state (never persisted, never in the result
       // payload): collapse the panel to a small draggable chip separate from close.
@@ -4202,12 +4229,12 @@ export function createEditorScreen({
       // Carousel view index is UI-only view state (never persisted, never part of
       // the result payload): default fresh results to Option 1 and clamp into range
       // so a stale index from a larger prior result set can never point out of bounds.
-      const selectedIndex = Math.max(0, options.findIndex(option => option.id === results.selectedId));
+      const selectedIndex = Math.max(0, options.findIndex(option => option === currentOption));
       const requestedIndex = Number.isFinite(Number(results.viewIndex)) ? Number(results.viewIndex) : 0;
       const viewIndex = hasAlternates
         ? Math.min(Math.max(0, requestedIndex), options.length - 1)
         : selectedIndex;
-      const viewedOption = hasAlternates ? (options[viewIndex] || currentOption) : currentOption;
+      const viewedOption = hasAlternates ? (options[viewIndex] || options[0]) : (currentOption || options[0]);
 
       // Position + drag are shared by the full panel and the minimized chip, so
       // both reuse the one existing drag/position system (no second drag system).
@@ -4229,7 +4256,7 @@ export function createEditorScreen({
             el.style.transform = 'none';
           }
         }
-        attachAutoPackResultsDrag(el, host);
+        attachAutoPackResultsDrag(el, host, results.runId);
       };
 
       // 2×3 dot-grid grip hinting the header drag handle.
@@ -4282,14 +4309,14 @@ export function createEditorScreen({
       toggleBtn.className = 'tp3d-autopack-results__icon-btn';
       toggleBtn.setAttribute('aria-label', minimized ? 'Restore AutoPack results' : 'Minimize AutoPack results');
       toggleBtn.innerHTML = `<i class="fa-solid fa-chevron-${minimized ? 'down' : 'up'}"></i>`;
-      toggleBtn.addEventListener('click', () => patchAutoPackResultsState({ minimized: !minimized }));
+      toggleBtn.addEventListener('click', () => patchAutoPackResultsState({ minimized: !minimized }, results.runId));
       headerActions.appendChild(toggleBtn);
       const closeBtn = document.createElement('button');
       closeBtn.type = 'button';
       closeBtn.className = 'tp3d-autopack-results__icon-btn';
       closeBtn.setAttribute('aria-label', 'Close AutoPack results');
       closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
-      closeBtn.addEventListener('click', () => patchAutoPackResultsState({ closed: true }));
+      closeBtn.addEventListener('click', () => patchAutoPackResultsState({ closed: true }, results.runId));
       headerActions.appendChild(closeBtn);
 
       header.appendChild(headerLeft);
@@ -4317,7 +4344,7 @@ export function createEditorScreen({
         prevBtn.setAttribute('aria-label', 'Previous AutoPack option');
         prevBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
         prevBtn.disabled = viewIndex <= 0;
-        prevBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.max(0, viewIndex - 1) }));
+        prevBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.max(0, viewIndex - 1) }, results.runId));
 
         const counter = document.createElement('span');
         counter.className = 'tp3d-autopack-results__counter';
@@ -4329,7 +4356,7 @@ export function createEditorScreen({
         nextBtn.setAttribute('aria-label', 'Next AutoPack option');
         nextBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
         nextBtn.disabled = viewIndex >= options.length - 1;
-        nextBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.min(options.length - 1, viewIndex + 1) }));
+        nextBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.min(options.length - 1, viewIndex + 1) }, results.runId));
 
         nav.appendChild(prevBtn);
         nav.appendChild(counter);
@@ -4374,7 +4401,7 @@ export function createEditorScreen({
       // Multiple results: name the viewed option, show its status, mark the
       // applied one, and keep Apply on the existing validated apply path.
       if (hasAlternates) {
-        const isViewedCurrent = viewedOption.id === results.selectedId;
+        const isViewedCurrent = viewedOption === currentOption;
         const optionRow = document.createElement('div');
         optionRow.className = 'tp3d-autopack-results__carousel-body';
 
@@ -4426,7 +4453,7 @@ export function createEditorScreen({
             apply.setAttribute('aria-label', staleReason);
           }
         }
-        apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id));
+        apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id, results.runId));
         actions.appendChild(apply);
         optionRow.appendChild(actions);
         body.appendChild(optionRow);

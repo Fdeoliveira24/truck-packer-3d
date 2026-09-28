@@ -1619,35 +1619,40 @@ test('PDF source renders aggregated Qty rows while preserving views, Cargo Instr
   const pdfStart = src.indexOf('function generatePDF()');
   const pdfEnd = src.indexOf('\n      function getCurrentPack()', pdfStart);
   const pdfBlock = src.slice(pdfStart, pdfEnd);
-  const checklistStart = src.indexOf('function buildChecklist(pack)');
-  const checklistEnd = src.indexOf('\n      function renderCameraToDataUrl', checklistStart);
-  const checklistBlock = src.slice(checklistStart, checklistEnd);
+  const ieSrc = await fs.readFile(importExportUrl, 'utf8');
+  const reportBlock = extractFunctionBlock(ieSrc, 'export function buildLoadPlanReport(', '\n}\n');
 
-  for (const heading of ['PERSPECTIVE VIEW', 'TOP VIEW', 'SIDE VIEW', 'CASE CHECKLIST', 'CARGO INSTRUCTIONS', 'SUMMARY']) {
+  for (const heading of ['PERSPECTIVE VIEW', 'TOP VIEW', 'SIDE VIEW', 'CASE CHECKLIST', 'CARGO INSTRUCTIONS', 'LOAD SUMMARY']) {
     assert.match(pdfBlock, new RegExp(heading));
   }
-  for (const heading of ["doc.text('#', x0, y)", "doc.text('Qty', xQty, y)", "doc.text('Name', xName, y)", "doc.text('Category', xCategory, y)", "doc.text('Dims', xDims, y)", "doc.text('Unit Weight', xWeight, y)"]) {
+  for (const heading of ["{ label: '#'", "{ label: 'Case'", "{ label: 'Category'", "{ label: 'Base dims (L×W×H)'",
+    "{ label: 'Unit weight'", "{ label: 'Qty'", "{ label: 'In truck'", "{ label: 'Staged'"]) {
     assert.ok(pdfBlock.includes(heading), `PDF checklist must contain ${heading}`);
   }
-  assert.match(pdfBlock, /doc\.text\(String\(e\.qty\), xQty, y\)/);
+  assert.match(pdfBlock, /String\(row\.qty\)/);
   assert.match(pdfBlock, /writeChecklistHeader\(\)/, 'continuation pages retain checklist headers');
   assert.match(pdfBlock, /Page \$\{i\} of \$\{totalPages\}/, 'page footers remain intact');
   assert.match(pdfBlock, /ImportExport\.buildCargoInstructionsManifest\(pack\)/);
-  assert.match(pdfBlock, /Cases loaded: \$\{stats\.totalCases\}/);
-  assert.match(checklistBlock, /ImportExport\.buildCaseChecklistRows\(pack\)\.map\(row =>/);
-  assert.doesNotMatch(checklistBlock, /\(pack\.cases \|\| \[\]\)\.map/,
+  assert.match(pdfBlock, /ImportExport\.buildLoadPlanReport\(pack, \{/);
+  assert.doesNotMatch(pdfBlock, /Cases loaded/, 'Export Integrity B: total instances are never labelled as loaded');
+  assert.match(reportBlock, /buildCaseChecklistRows\(pack, getCaseById\)\.map\(row =>/);
+  assert.doesNotMatch(pdfBlock + reportBlock, /\(pack\.cases \|\| \[\]\)\.map/,
     'the old one-output-row-per-instance checklist path must be absent');
-  assert.doesNotMatch(pdfBlock, /caseRequirements|requiredQuantity|caseQtyDrafts|Target met|Over target/);
+  assert.doesNotMatch(pdfBlock + reportBlock, /caseRequirements|requiredQuantity|caseQtyDrafts|Target met|Over target/);
 });
 
 test('Requirement 59: PDF quantity aggregation reflects actual physical instances (stats.packedCases/totalCases), no Target/Missing/Qty-selector values', async () => {
+  const ieSrc = await fs.readFile(importExportUrl, 'utf8');
+  const reportBlock = extractFunctionBlock(ieSrc, 'export function buildLoadPlanReport(', '\n}\n');
+  assert.match(reportBlock, /population\.inTruck !== stats\.packedCases/);
+  assert.match(reportBlock, /population\.total !== stats\.totalCases/);
+  assert.match(reportBlock, /\{ label: 'In truck', value: String\(population\.inTruck\) \}/);
+  assert.match(reportBlock, /\{ label: 'Total cargo items', value: String\(population\.total\) \}/);
   const src = await fs.readFile(appJsPath, 'utf8');
-  assert.match(src, /doc\.text\(`Cases loaded: \$\{stats\.totalCases\}`, margin, y\);/);
-  assert.match(src, /doc\.text\(`Packed \(in truck\): \$\{stats\.packedCases\}`, margin, y\);/);
   const pdfFnStart = src.indexOf('function generatePDF()');
-  const pdfFnEnd = src.indexOf('\n      function buildChecklist', pdfFnStart);
+  const pdfFnEnd = src.indexOf('\n      function getCurrentPack', pdfFnStart);
   const pdfBlock = src.slice(pdfFnStart, pdfFnEnd > pdfFnStart ? pdfFnEnd : pdfFnStart + 20000);
-  assert.doesNotMatch(pdfBlock, /caseRequirements|requiredQuantity|Target met|Over target|caseQtyDrafts/);
+  assert.doesNotMatch(pdfBlock + reportBlock, /caseRequirements|requiredQuantity|Target met|Over target|caseQtyDrafts/);
 });
 
 test('Requirement 60: PNG capture path has no stored Qty metadata', async () => {

@@ -351,6 +351,7 @@ window.probe = {
         setFontSize() {}, setFont() {}, line() {}, setPage() {},
         text(value, x, y) { doc.texts.push({ value, x, y, page: doc.pages }); },
         splitTextToSize: text => String(text).split('\\n'),
+        getTextWidth: text => String(text).length * 5,
         addImage(data, format, x, y, w, h) {
           if (q.pdfFault === 'addImage') throw new Error('injected export fault: addImage');
           doc.images.push({ data, format, x, y, w, h, page: doc.pages });
@@ -655,7 +656,7 @@ function loadExportService({
   const doc = {
     pages: 1, saved: null, images: [],
     internal: { pageSize: { getWidth: () => 612, getHeight: () => 792 } },
-    getNumberOfPages: () => doc.pages, splitTextToSize: text => [text],
+    getNumberOfPages: () => doc.pages, splitTextToSize: text => [text], getTextWidth: text => String(text).length * 5,
     setFontSize() {}, setFont() {}, text() {}, line() {}, setPage() {},
     addPage() { doc.pages += 1; },
     addImage(...args) { doc.images.push(args); },
@@ -680,7 +681,9 @@ function loadExportService({
     PackLibrary: {
       getById: id => (id === pack.id ? pack : null),
       computeStats: () => ({ totalWeight: 0, totalCases: 6, packedCases: 3, volumePercent: 0 }),
+      isHandlingRulesValidationRequired: () => false,
     },
+    CaseLibrary: { getCases: () => [] },
     OperationLifecycle: { isBusy: () => busy },
     EditorUI: {
       getExportScene: () => {
@@ -708,7 +711,14 @@ function loadExportService({
       calls.captures.push({ camera: view, width, height, options, background: scene.background });
       return 'data:' + options.mimeType + ';base64,AAAA';
     },
-    ImportExport: { buildCargoInstructionsManifest: () => ({ caseEntries: [], itemEntries: [] }), buildCaseChecklistRows: () => [] },
+    ImportExport: {
+      buildCargoInstructionsManifest: () => ({ caseEntries: [], itemEntries: [] }),
+      buildLoadPlanReport: () => ({
+        title: pack.title, identity: [], lastEdited: null, population: { hidden: 0, unresolved: 0 },
+        summary: [], optionalStats: [], summaryNotes: [], truck: { fields: [] }, review: [], rows: [], handling: [],
+      }),
+      toPdfText: value => String(value == null ? '' : value),
+    },
     CategoryService: { meta: () => ({ name: 'Default' }) },
   };
   const service = new Function(...Object.keys(deps),
@@ -771,7 +781,8 @@ test('EXPORT-A PDF views: print background, truck-centric exclusions and one-sca
   const { service, calls, scene, themeBackground, camera, doc } = loadExportService();
   service.generatePDF();
   assert.deepEqual(calls.captures.map(c => [c.width, c.height, c.options.mimeType]),
-    [[960, 540, 'image/jpeg'], [960, 520, 'image/jpeg'], [960, 420, 'image/jpeg']]);
+    [[1419, 798, 'image/jpeg'], [1419, 769, 'image/jpeg'], [1419, 621, 'image/jpeg']],
+    'Export Integrity B: views raster at ~192 PPI of the printed width');
   for (const capture of calls.captures) {
     assert.ok(capture.background instanceof THREE.Color, 'a deliberate print background replaces the UI theme');
     assert.equal(capture.background.getHexString(), 'ffffff');
@@ -1958,7 +1969,7 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
           q.SceneManager.render();
         }
       });
-      assert.deepEqual(proof.sizes, [[960, 540, 'image/jpeg', 0.92], [960, 520, 'image/jpeg', 0.9], [960, 420, 'image/jpeg', 0.9]]);
+      assert.deepEqual(proof.sizes, [[1419, 798, 'image/jpeg', 0.92], [1419, 769, 'image/jpeg', 0.9], [1419, 621, 'image/jpeg', 0.9]]);
       assert.deepEqual(proof.backgrounds, ['ffffff', 'ffffff', 'ffffff'], 'print background replaces the dark UI theme');
       assert.equal(proof.restoredBackground, '121318', 'the Editor theme background is restored');
       assert.deepEqual(proof.differences, [0, 0, 0], 'each PDF view equals the display pipeline render of its camera');
@@ -2013,9 +2024,9 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
             scene.background = new THREE.Color('#ffffff');
             hidden.visible = false;
             staged.visible = false;
-            withoutStaged = q.referenceDisplay(side.camera, 960, 420);
+            withoutStaged = q.referenceDisplay(side.camera, side.width, side.height);
             staged.visible = true;
-            withStaged = q.referenceDisplay(side.camera, 960, 420);
+            withStaged = q.referenceDisplay(side.camera, side.width, side.height);
           } finally {
             hidden.visible = true; staged.visible = true;
             scene.background = theme;

@@ -20,6 +20,7 @@ import * as CaseLibrary from './case-library.js';
 import * as PackLibrary from './pack-library.js';
 import { APP_VERSION } from '../core/version.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
+import { getCaseHandlingSummary } from './case-rule-summary.js';
 import {
   migrateLoadPlanNumbers,
   normalizeBusinessIdentityLibraries,
@@ -805,7 +806,8 @@ export function buildCargoInstructionsManifest(pack, getCaseById = CaseLibrary.g
  *   identityKey: string,
  *   qty: number,
  *   caseId: string|null,
- *   caseData: Record<string, any>|null
+ *   caseData: Record<string, any>|null,
+ *   instanceIndexes: number[]
  * }>}
  */
 export function buildCaseChecklistRows(pack, getCaseById = CaseLibrary.getById) {
@@ -813,7 +815,7 @@ export function buildCaseChecklistRows(pack, getCaseById = CaseLibrary.getById) 
   const rowsByIdentity = new Map();
   const instances = Array.isArray(pack && pack.cases) ? pack.cases : [];
 
-  instances.forEach(instance => {
+  instances.forEach((instance, index) => {
     const caseId = String(instance && instance.caseId ? instance.caseId : '').trim();
     const caseData = caseId ? getCaseById(caseId) : null;
     const identityKey = caseData ? `case:${caseId}` : `missing:${caseId || 'unknown'}`;
@@ -824,14 +826,341 @@ export function buildCaseChecklistRows(pack, getCaseById = CaseLibrary.getById) 
         qty: 0,
         caseId: caseId || null,
         caseData: caseData || null,
+        instanceIndexes: [],
       };
       rowsByIdentity.set(identityKey, row);
       rows.push(row);
     }
     row.qty += 1;
+    row.instanceIndexes.push(index);
   });
 
   return rows;
+}
+
+// ============================================================================
+// SECTION: PDF LOAD PLAN REPORT
+// ============================================================================
+
+// jsPDF's built-in Helvetica encodes WinAnsi (CP1252) only, and one character
+// outside it makes jsPDF write the WHOLE string as two-byte codes that print as
+// garbage. PDF text is therefore mapped for display only (stored data never
+// changes): supported characters are kept exactly, Unicode spaces become
+// spaces, invisible control/format marks are dropped, letters lose accents the
+// font lacks (or use a small Latin fallback) and anything else becomes '?'.
+const PDF_WINANSI_EXTRAS = new Set(Array.from('€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ'));
+const PDF_TEXT_FALLBACKS = new Map([
+  ['Ł', 'L'], ['ł', 'l'], ['Đ', 'D'], ['đ', 'd'], ['Ħ', 'H'], ['ħ', 'h'], ['ı', 'i'],
+  ['Ŧ', 'T'], ['ŧ', 't'], ['Ŋ', 'N'], ['ŋ', 'n'], ['ẞ', 'SS'],
+  ['‐', '-'], ['‑', '-'], ['‒', '-'], ['−', '-'], ['⁄', '/'], ['′', "'"], ['″', '"'],
+  ['≤', '<='], ['≥', '>='], ['≠', '!='], ['→', '->'], ['←', '<-'],
+]);
+
+function isPdfEncodable(ch) {
+  const code = ch.codePointAt(0);
+  return (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff) || PDF_WINANSI_EXTRAS.has(ch);
+}
+
+/**
+ * Display-only PDF text: deterministic, never throws, keeps line breaks.
+ * @param {unknown} value
+ * @returns {string}
+ */
+export function toPdfText(value) {
+  const text = String(value == null ? '' : value).replace(/\r\n?/g, '\n').normalize('NFC');
+  let out = '';
+  for (const ch of text) {
+    if (ch === '\n' || isPdfEncodable(ch)) {
+      out += ch;
+    } else if (ch === '\t') {
+      out += ' ';
+    } else if (/^[\p{Cc}\p{Cf}\p{M}]$/u.test(ch)) {
+      continue;
+    } else if (/^\s$/u.test(ch)) {
+      out += ' ';
+    } else if (PDF_TEXT_FALLBACKS.has(ch)) {
+      out += PDF_TEXT_FALLBACKS.get(ch);
+    } else {
+      const base = ch.normalize('NFKD').replace(/\p{M}/gu, '');
+      out += base && Array.from(base).every(isPdfEncodable) ? base : '?';
+    }
+  }
+  return out;
+}
+
+const PDF_IDENTITY_FIELDS = Object.freeze([
+  ['loadPlanNumber', 'Load Plan Number'],
+  ['customerReference', 'Customer Reference'],
+  ['client', 'Client'],
+  ['projectName', 'Project'],
+  ['drawnBy', 'Drawn by'],
+]);
+const PDF_LENGTH_UNITS = new Set(['in', 'ft', 'mm', 'cm', 'm']);
+const PDF_WEIGHT_UNITS = new Set(['lb', 'kg']);
+const TRUCK_SHAPE_LABELS = Object.freeze({ rect: 'Standard', wheelWells: 'Wheel Wells', frontBonus: 'Front Overhang' });
+const OOG_ISSUE_LABELS = Object.freeze({
+  protrudesRear: 'extends past the rear',
+  protrudesFront: 'extends past the front',
+  belowFloor: 'extends below the floor',
+  exceedsHeight: 'exceeds the truck height',
+  protrudesLeft: 'extends past the left side',
+  protrudesRight: 'extends past the right side',
+  outsideUsableZone: 'is outside the usable truck space',
+});
+
+const plural = (count, one, many) => (count === 1 ? one : many);
+
+// "<Case name> #<n>" per instance, numbered exactly like the Cargo
+// Instructions Item Notes (per Case, in Pack order, hidden included).
+// Instance ids are unique here: buildLoadPlanReport refuses duplicates.
+function buildInstanceLabels(pack, getCaseById) {
+  const labels = new Map();
+  const counts = new Map();
+  (Array.isArray(pack && pack.cases) ? pack.cases : []).forEach(inst => {
+    if (!inst) return;
+    const caseId = String(inst.caseId || '').trim();
+    const caseData = caseId ? getCaseById(caseId) : null;
+    const caseName = String((caseData && caseData.name) || `Missing case (${caseId || 'unknown'})`).trim();
+    const occurrenceKey = caseId || caseName;
+    const occurrence = (counts.get(occurrenceKey) || 0) + 1;
+    counts.set(occurrenceKey, occurrence);
+    if (inst.id != null) labels.set(inst.id, `${caseName} #${occurrence}`);
+  });
+  return labels;
+}
+
+// Truck shape and its effective configuration, read back from the same
+// geometry authorities packing uses (defaults and clamping included).
+function describeTruck(truck, lengthUnit) {
+  const t = truck && typeof truck === 'object' ? truck : {};
+  const shapeMode = t.shapeMode === 'wheelWells' || t.shapeMode === 'frontBonus' ? t.shapeMode : 'rect';
+  const length = Number(t.length) || 0;
+  const len = inches => Utils.formatLength(inches, lengthUnit);
+  const fields = [
+    { label: 'Truck shape', value: TRUCK_SHAPE_LABELS[shapeMode] },
+    {
+      label: 'Truck dimensions (L×W×H)',
+      value: Utils.formatDims({ length, width: Number(t.width) || 0, height: Number(t.height) || 0 }, lengthUnit),
+    },
+  ];
+  if (shapeMode === 'frontBonus') {
+    const deck = PackLibrary.getTrailerUsableZones(t)
+      .find(zone => Math.abs(zone.min.x - length) <= 1e-6 && zone.max.x > length);
+    fields.push({
+      label: 'Front Overhang',
+      value: deck
+        ? `Length ${len(deck.max.x - deck.min.x)} · Deck height ${len(deck.min.y)}`
+        : 'No usable overhang space',
+    });
+  } else if (shapeMode === 'wheelWells') {
+    const well = PackLibrary.getWheelWellsBlockedZones(t)[0];
+    fields.push({
+      label: 'Wheel Wells',
+      value: well
+        ? `Length ${len(well.max.x - well.min.x)} · Width ${len(well.max.z - well.min.z)} · ` +
+          `Height ${len(well.max.y - well.min.y)} · Offset from rear ${len(well.min.x)}`
+        : 'No effective wheel wells',
+    });
+  }
+  return { shapeMode, fields };
+}
+
+// Case-level handling rules: the shared chip summary (with the pallet load
+// warning in the user's weight unit) plus the operational fields the solver
+// receives, and the delivery sequence of this Case's instances when set.
+function describeCaseHandling(caseData, deliverySequences, weightUnit) {
+  const c = caseData || {};
+  const palletWarning = Number(c.maxPalletWeight) || 0;
+  const rules = getCaseHandlingSummary(c).map(label => (
+    label.startsWith('Max load warning:') ? `Max load warning: ${Utils.formatWeight(palletWarning, weightUnit)}` : label
+  ));
+  if (c.mustLoadLast === true) rules.push('Must load last');
+  if (c.mustUnloadFirst === true) rules.push('Must unload first');
+  const text = value => String(value == null ? '' : value).trim();
+  if (text(c.hazmatClass)) rules.push(`Hazmat class: ${text(c.hazmatClass)}`);
+  if (text(c.stopGroup)) rules.push(`Stop group: ${text(c.stopGroup)}`);
+  if (text(c.keepTogetherGroup)) rules.push(`Keep together: ${text(c.keepTogetherGroup)}`);
+  if (deliverySequences.length) rules.push(`Delivery sequence: ${deliverySequences.join(', ')}`);
+  return rules;
+}
+
+/**
+ * The PDF load plan's content, derived from the committed Pack and the
+ * canonical PackLibrary.computeStats() result. Integrity content (cargo
+ * status, review warnings, truck, checklist status) is always present;
+ * `optionalStats` is what the "include statistics" preference may add.
+ * @param {Record<string, any>} pack
+ * @param {{
+ *   stats: Record<string, any>,
+ *   validationRequired?: boolean,
+ *   units?: { length?: string, weight?: string },
+ *   getCaseById?: (caseId: string) => Record<string, any>|null,
+ *   getCategoryName?: (category: string) => string,
+ * }} options
+ */
+export function buildLoadPlanReport(pack, {
+  stats,
+  validationRequired = false,
+  units = {},
+  getCaseById = CaseLibrary.getById,
+  getCategoryName = category => String(category || 'default'),
+}) {
+  const lengthUnit = PDF_LENGTH_UNITS.has(units && units.length) ? units.length : 'in';
+  const weightUnit = PDF_WEIGHT_UNITS.has(units && units.weight) ? units.weight : 'lb';
+  const instances = Array.isArray(pack && pack.cases) ? pack.cases : [];
+  // Canonical OOG and pallet warnings name cargo by instance id alone, with no
+  // occurrence. Duplicate ids (invalid Pack identity that backup import already
+  // rejects) would make that attribution a guess, so the report is refused.
+  const instanceIds = new Set();
+  instances.forEach(inst => {
+    if (!inst || inst.id == null) return;
+    const id = String(inst.id).trim();
+    if (instanceIds.has(id)) {
+      throw new Error('Duplicate cargo instance IDs make this load plan invalid for a trustworthy PDF export.');
+    }
+    instanceIds.add(id);
+  });
+  const { statuses, unresolvedReasons } = PackLibrary.getStatsInstanceStatuses(pack, stats);
+
+  const population = { total: instances.length, inTruck: 0, staged: 0, hidden: 0, unresolved: 0 };
+  statuses.forEach(status => { population[status] += 1; });
+  if (population.inTruck !== stats.packedCases || population.staged !== stats.stagedCases ||
+      population.hidden !== stats.hiddenCases || population.unresolved !== stats.unresolvedInstances ||
+      population.total !== stats.totalCases) {
+    throw new Error('Cargo status totals do not reconcile');
+  }
+  const complete = stats.totalsComplete === true;
+  const incomplete = complete ? '' : ' (incomplete)';
+
+  const summary = [
+    { label: 'Total cargo items', value: String(population.total) },
+    { label: 'In truck', value: String(population.inTruck) },
+    { label: 'Staged (outside the truck)', value: String(population.staged) },
+    { label: 'Hidden', value: String(population.hidden) },
+    { label: 'Unresolved', value: String(population.unresolved) },
+    { label: 'Loaded weight (in truck)', value: `${Utils.formatWeight(Number(stats.totalWeight) || 0, weightUnit)}${incomplete}` },
+  ];
+  const optionalStats = [
+    {
+      label: 'Volume used (in truck)',
+      value: `${(Number(stats.volumePercent) || 0).toFixed(1)}% of usable truck volume${incomplete}`,
+    },
+  ];
+  const maxCapacityProfileCount = Number(stats.maxCapacityProfileCount) || 0;
+  if (maxCapacityProfileCount > 0) {
+    optionalStats.push({ label: 'Max Capacity profile cases', value: String(maxCapacityProfileCount) });
+  }
+  const summaryNotes = [];
+  if (population.staged > 0) {
+    summaryNotes.push('Staged cargo is not in the truck. Cargo parked beside the truck may appear in the perspective ' +
+      'view but is left out of the top and side views.');
+  }
+  if (population.hidden > 0) {
+    summaryNotes.push('Hidden cargo is not shown in any view and is not counted in loaded weight or volume.');
+  }
+
+  const labels = buildInstanceLabels(pack, getCaseById);
+  const instanceLabel = (instanceId, fallback) => labels.get(instanceId) || fallback || 'Unknown item';
+  const review = [];
+  if (validationRequired) {
+    review.push({
+      title: 'Load plan needs review',
+      text: 'A case’s loading rules changed after this plan was last checked. ' +
+        'Review the plan to make sure the cargo still follows the latest rules.',
+    });
+  }
+  if (maxCapacityProfileCount > 0) {
+    review.push({
+      title: 'Max Capacity placements',
+      text: `${maxCapacityProfileCount} ${plural(maxCapacityProfileCount, 'case in the truck was', 'cases in the truck were')} ` +
+        'placed with the more permissive Max Capacity handling profile. This does not identify which handling rules, ' +
+        'if any, were relaxed for an individual case. Review these placements before treating the plan as transport-ready.',
+    });
+  }
+  if (population.unresolved > 0) {
+    review.push({
+      title: 'Incomplete cargo data',
+      text: `${population.unresolved} cargo ${plural(population.unresolved, 'item', 'items')} could not be fully resolved, ` +
+        'so loaded weight and volume totals may be incomplete.' +
+        (unresolvedReasons.length
+          ? ` ${plural(unresolvedReasons.length, 'Reason', 'Reasons')}: ${unresolvedReasons.join('; ')}.`
+          : ''),
+    });
+  } else if (!complete) {
+    review.push({
+      title: 'Incomplete cargo data',
+      text: 'The truck geometry could not be fully evaluated, so loaded weight and volume totals may be incomplete.',
+    });
+  }
+  // Explicitly staged cargo parks outside the truck by design; the Editor does
+  // not mark it out-of-gauge, and neither does the document.
+  const stagedIds = new Set(instances.filter(inst => inst && inst.placement === 'staged').map(inst => inst.id));
+  const oog = (stats.oogWarnings || []).filter(warning => !stagedIds.has(warning.instanceId));
+  if (oog.length) {
+    review.push({
+      title: 'Out-of-gauge cargo',
+      items: oog.map(warning => `${instanceLabel(warning.instanceId, warning.caseName)} ` +
+        `${(warning.issues || []).map(issue => OOG_ISSUE_LABELS[issue] || issue).join(', ')}.`),
+    });
+  }
+  const pallets = stats.palletWarnings || [];
+  if (pallets.length) {
+    review.push({
+      title: 'Pallet load warnings',
+      items: pallets.map(warning => `${instanceLabel(warning.palletInstanceId, warning.palletName)}: ` +
+        `${Utils.formatWeight(Number(warning.actualWeight) || 0, weightUnit)} on top exceeds its ` +
+        `${Utils.formatWeight(Number(warning.maxWeight) || 0, weightUnit)} max load warning.`),
+    });
+  }
+
+  const handling = [];
+  const rows = buildCaseChecklistRows(pack, getCaseById).map(row => {
+    const counts = { inTruck: 0, staged: 0, hidden: 0, unresolved: 0 };
+    const deliverySequences = [];
+    row.instanceIndexes.forEach(index => {
+      counts[statuses[index]] += 1;
+      const sequence = instances[index] && instances[index].deliverySequence;
+      if (sequence != null && Number.isFinite(Number(sequence)) && !deliverySequences.includes(Number(sequence))) {
+        deliverySequences.push(Number(sequence));
+      }
+    });
+    const c = row.caseData;
+    if (!c) {
+      return {
+        identityKey: row.identityKey, qty: row.qty, counts,
+        name: `Missing case definition (${row.caseId || 'unknown'})`,
+        itemCode: '', category: '—', baseDims: '—', unitWeight: '—',
+      };
+    }
+    const name = String(c.name || '').trim() || 'Unnamed case';
+    const itemCode = String(c.itemCode || '').trim();
+    const rules = describeCaseHandling(c, deliverySequences.sort((a, b) => a - b), weightUnit);
+    if (rules.length) handling.push({ name, itemCode, rules });
+    const d = c.dimensions;
+    const validDims = d && ['length', 'width', 'height'].every(k => Number.isFinite(Number(d[k])) && Number(d[k]) > 0);
+    return {
+      identityKey: row.identityKey, qty: row.qty, counts, name, itemCode,
+      category: getCategoryName(c.category),
+      baseDims: validDims ? Utils.formatDims(d, lengthUnit) : '—',
+      unitWeight: Utils.formatWeight(Number(c.weight) || 0, weightUnit),
+    };
+  });
+
+  return {
+    title: String((pack && pack.title) || '').trim() || 'Load Plan',
+    identity: PDF_IDENTITY_FIELDS
+      .map(([key, label]) => ({ label, value: String((pack && pack[key]) || '').trim() }))
+      .filter(field => field.value),
+    lastEdited: Number.isFinite(Number(pack && pack.lastEdited)) && Number(pack.lastEdited) > 0 ? Number(pack.lastEdited) : null,
+    population,
+    summary,
+    optionalStats,
+    summaryNotes,
+    truck: describeTruck(pack && pack.truck, lengthUnit),
+    review,
+    rows,
+    handling,
+  };
 }
 
 export function buildPackExportPayload(pack) {

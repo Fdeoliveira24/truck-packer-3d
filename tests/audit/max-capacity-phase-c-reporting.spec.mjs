@@ -12,6 +12,7 @@ const packLibraryPath = new URL('../../src/services/pack-library.js', import.met
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const appPath = new URL('../../src/app.js', import.meta.url);
+const importExportPath = new URL('../../src/services/import-export.js', import.meta.url);
 
 const RECT_TRUCK = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
 const MAX_PROFILE = 'max-capacity';
@@ -182,12 +183,17 @@ test('PHASE-C-RPT-9 standard strategies never render the Max Capacity indicator'
 // ── PDF/report summary (source-contract) ─────────────────────────────────────
 
 test('PHASE-C-RPT-10 PDF summary includes the Max Capacity profile line only when the count is positive', async () => {
-  const src = await fs.readFile(appPath, 'utf8');
-  const block = sliceFn(src, 'function generatePDF()', 'doc.save(`${safeName(pack.title)}-plan.pdf`);');
-  assert.match(block, /const maxCapacityProfileCount = stats\.maxCapacityProfileCount \|\| 0;/, 'must read from the canonical stats object already computed for this PDF');
+  // Export Integrity B: the PDF content model (import-export.js) owns the
+  // optional statistics; generatePDF prints them only with pdfIncludeStats.
+  const src = await fs.readFile(importExportPath, 'utf8');
+  const block = sliceFn(src, 'export function buildLoadPlanReport(', '\n  const summaryNotes = [];');
+  assert.match(block, /const maxCapacityProfileCount = Number\(stats\.maxCapacityProfileCount\) \|\| 0;/, 'must read from the canonical stats object already computed for this PDF');
   assert.match(block, /if \(maxCapacityProfileCount > 0\) \{/, 'the summary line must be conditional on a positive count (omitted at zero)');
-  const gated = sliceFn(block, 'if (maxCapacityProfileCount > 0) {', 'doc.text(`Volume used:');
-  assert.match(gated, /Max Capacity profile cases: \$\{maxCapacityProfileCount\}/, 'wording must describe profile membership, not individual violations');
+  const gated = sliceFn(block, 'if (maxCapacityProfileCount > 0) {', '\n  }');
+  assert.match(gated, /optionalStats\.push\(\{ label: 'Max Capacity profile cases', value: String\(maxCapacityProfileCount\) \}\)/, 'wording must describe profile membership, not individual violations');
   assert.equal(gated.includes('Rules violated'), false);
   assert.equal(gated.includes('Unsafe'), false);
+  const app = await fs.readFile(appPath, 'utf8');
+  const pdf = sliceFn(app, 'function generatePDF()', 'doc.save(`${safeName(pack.title)}-plan.pdf`);');
+  assert.match(pdf, /if \(includeStats\) report\.optionalStats\.forEach/, 'the profile count stays an optional statistic');
 });

@@ -17,7 +17,7 @@ import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.
 import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
 import { getCaseHandlingSummary } from '../services/case-rule-summary.js';
 import { compareBusinessIdentityValues } from '../core/business-identity.js';
-import { getStorageScope, getWorkspaceScope } from '../core/storage.js';
+import { captureScopeContext, getStorageScope, getWorkspaceScope, isScopeContextCurrent } from '../core/storage.js';
 
 export function resetCasesSelection(selectedIds) {
   selectedIds.clear();
@@ -263,35 +263,42 @@ export function createCasesScreen({
       btnExport &&
         btnExport.addEventListener('click', ev => {
           ev.stopPropagation();
-          const cases = CaseLibrary.getCases();
-          if (!cases.length) {
+          if (!CaseLibrary.getCases().length) {
             UIComponents.showToast('No cases to export', 'info');
             return;
           }
+          // The menu is bound to the workspace it was opened in. Case definitions
+          // are read when an export is chosen, in the same validated scope as the
+          // category metadata the catalog export reads, never from menu-open time.
+          const menuScope = captureScopeContext();
+          const exportCases = download => () => {
+            if (!isScopeContextCurrent(menuScope)) {
+              UIComponents.showToast('The workspace changed. Open Export again.', 'warning');
+              return;
+            }
+            const cases = CaseLibrary.getCases();
+            if (!cases.length) {
+              UIComponents.showToast('No cases to export', 'info');
+              return;
+            }
+            download(cases);
+            UIComponents.showToast('Download started', 'success');
+          };
           UIComponents.openDropdown(btnExport, [
             {
               label: 'Case Catalog (JSON)',
               icon: 'fa-solid fa-file-code',
-              onClick: () => {
-                ImportExport.downloadCaseCatalogExportJSON(cases);
-                UIComponents.showToast('Download started', 'success');
-              },
+              onClick: exportCases(cases => ImportExport.downloadCaseCatalogExportJSON(cases)),
             },
             {
               label: 'Spreadsheet (CSV)',
               icon: 'fa-solid fa-file-csv',
-              onClick: () => {
-                ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'csv' });
-                UIComponents.showToast('Download started', 'success');
-              },
+              onClick: exportCases(cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'csv' })),
             },
             {
               label: 'Spreadsheet (XLSX)',
               icon: 'fa-solid fa-file-excel',
-              onClick: () => {
-                ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'xlsx' });
-                UIComponents.showToast('Download started', 'success');
-              },
+              onClick: exportCases(cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'xlsx' })),
             },
           ]);
         });

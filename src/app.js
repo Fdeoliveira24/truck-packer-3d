@@ -1750,25 +1750,93 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return true;
       }
 
+      // Screenshot sizes are the Settings choices only; any other stored value
+      // (e.g. from an imported backup) falls back to the product default.
+      const SCREENSHOT_RESOLUTIONS = Object.freeze(['1920x1080', '2560x1440', '3840x2160']);
+      const DEFAULT_SCREENSHOT_RESOLUTION = '1920x1080';
+      const MAX_CAPTURE_WIDTH = 3840;
+      const MAX_CAPTURE_HEIGHT = 2160;
+      // PDF views print on paper: a light neutral background, independent of the
+      // UI theme, under the same ACES/exposure/sRGB pipeline as the Editor.
+      const PDF_PRINT_BACKGROUND = '#ffffff';
+
       function captureScreenshot() {
         try {
-          const pack = getCurrentPack();
-          if (!pack) {
-            UIComponents.showToast('Open a load plan first', 'warning', { title: 'Export' });
-            return;
-          }
+          const authority = resolveVisualExportAuthority();
+          if (!authority) return;
           const prefs = PreferencesManager.get();
-          const res = Utils.parseResolution(prefs.export && prefs.export.screenshotResolution);
-          const dataUrl = renderCameraToDataUrl(SceneManager.getCamera(), res.width, res.height, {
+          const res = resolveScreenshotResolution(prefs.export && prefs.export.screenshotResolution);
+          // The Screenshot keeps the Editor's current theme background.
+          const [dataUrl] = captureExportViews(authority, [{
+            camera: SceneManager.getCamera(),
+            width: res.width,
+            height: res.height,
             mimeType: 'image/png',
-            hideGrid: true,
-          });
-          downloadDataUrl(dataUrl, `load-plan-${safeName(pack.title)}-${Date.now()}.png`);
+          }]);
+          downloadDataUrl(dataUrl, `load-plan-${safeName(authority.pack.title)}-${Date.now()}.png`);
           UIComponents.showToast('Screenshot saved', 'success', { title: 'Export' });
         } catch (err) {
           console.error(err);
           UIComponents.showToast('Screenshot failed: ' + err.message, 'error', { title: 'Export' });
         }
+      }
+
+      function resolveScreenshotResolution(value) {
+        return Utils.parseResolution(SCREENSHOT_RESOLUTIONS.includes(value) ? value : DEFAULT_SCREENSHOT_RESOLUTION);
+      }
+
+      // Visual exports render only the committed, synchronized scene of the
+      // current Pack (EditorUI.getExportScene). The toolbar being enabled is not
+      // authority: the lifecycle and scene are re-checked here, at execution time.
+      function resolveVisualExportAuthority() {
+        const pack = getCurrentPack();
+        if (!pack) {
+          UIComponents.showToast('Open a load plan first', 'warning', { title: 'Export' });
+          return null;
+        }
+        if (OperationLifecycle.isBusy()) {
+          UIComponents.showToast('Finish the current operation before exporting.', 'info', { title: 'Export' });
+          return null;
+        }
+        const scene = EditorUI.getExportScene();
+        if (!scene || scene.pack !== pack) {
+          UIComponents.showToast('The load plan is still changing. Try again when the scene settles.', 'info', { title: 'Export' });
+          return null;
+        }
+        return { pack, scene };
+      }
+
+      // Each view renders the committed scene without interaction emphasis or
+      // hidden cargo (plus any view-specific exclusions), then scene state is
+      // restored and the live Editor repainted, on success and on failure.
+      // Authority is re-checked afterwards so an image can never be attributed
+      // to a scene that changed underneath it.
+      function captureExportViews(authority, views) {
+        const scene = SceneManager.getScene();
+        if (!scene) throw new Error('3D viewport not ready');
+        const images = [];
+        try {
+          views.forEach(view => {
+            const restoreScene = CaseScene.beginExportCapture({ excludeIds: view.excludeIds || null });
+            const background = scene.background;
+            try {
+              if (view.background) scene.background = new THREE.Color(view.background);
+              images.push(renderCameraToDataUrl(view.camera, view.width, view.height, {
+                mimeType: view.mimeType,
+                quality: view.quality,
+              }));
+            } finally {
+              scene.background = background;
+              restoreScene();
+            }
+          });
+        } finally {
+          SceneManager.render();
+        }
+        if (EditorUI.getExportScene() !== authority.scene) {
+          throw new Error('The load plan changed during export. Try again.');
+        }
+        return images;
       }
 
       function generatePDF() {
@@ -1795,11 +1863,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
         try {
           if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not available');
-          const pack = getCurrentPack();
-          if (!pack) {
-            UIComponents.showToast('Open a load plan first', 'warning', { title: 'Export' });
-            return;
-          }
+          const authority = resolveVisualExportAuthority();
+          if (!authority) return;
+          const pack = authority.pack;
 
           const prefs = PreferencesManager.get();
           const { jsPDF } = window.jspdf;
@@ -1845,27 +1911,31 @@ const TP3D_BUILD_STAMP = Object.freeze({
             y += lines.length * 12 + 10;
           }
 
-          // Views
+          // Views: the committed scene on a print-safe background. Top/Side are
+          // truck-centric, so staged or truck-external cargo cannot project over
+          // the trailer silhouette; hidden cargo is omitted from every view.
           const viewWPt = pageWidth - margin * 2;
           const viewWpx = 960;
           const viewHpx = 540;
-          const perspective = renderCameraToDataUrl(SceneManager.getCamera(), viewWpx, viewHpx, {
-            mimeType: 'image/jpeg',
-            quality: 0.92,
-            hideGrid: true,
+          const truckCentricExclusions = getTruckCentricExclusions(pack);
+          const { topCam, sideCam } = buildOrthoCameras(pack, truckCentricExclusions, {
+            top: [960, 520],
+            side: [960, 420],
           });
-
-          const { topCam, sideCam } = buildOrthoCameras(pack);
-          const topView = renderCameraToDataUrl(topCam, 960, 520, {
-            mimeType: 'image/jpeg',
-            quality: 0.9,
-            hideGrid: true,
-          });
-          const sideView = renderCameraToDataUrl(sideCam, 960, 420, {
-            mimeType: 'image/jpeg',
-            quality: 0.9,
-            hideGrid: true,
-          });
+          const [perspective, topView, sideView] = captureExportViews(authority, [
+            {
+              camera: SceneManager.getCamera(), width: viewWpx, height: viewHpx,
+              mimeType: 'image/jpeg', quality: 0.92, background: PDF_PRINT_BACKGROUND,
+            },
+            {
+              camera: topCam, width: 960, height: 520, mimeType: 'image/jpeg', quality: 0.9,
+              background: PDF_PRINT_BACKGROUND, excludeIds: truckCentricExclusions,
+            },
+            {
+              camera: sideCam, width: 960, height: 420, mimeType: 'image/jpeg', quality: 0.9,
+              background: PDF_PRINT_BACKGROUND, excludeIds: truckCentricExclusions,
+            },
+          ]);
 
           doc.setFont('helvetica', 'bold');
           doc.setFontSize(12);
@@ -2097,37 +2167,73 @@ const TP3D_BUILD_STAMP = Object.freeze({
         document.body.removeChild(link);
       }
 
-      function buildOrthoCameras(pack) {
-        const lengthW = SceneManager.toWorld(pack.truck.length);
-        const widthW = SceneManager.toWorld(pack.truck.width);
-        const heightW = SceneManager.toWorld(pack.truck.height);
-        const centerX = lengthW / 2;
-        const centerY = heightW / 2;
-        const margin = 3;
+      // Truck-centric views show cargo that occupies the truck body. Staged
+      // cargo, and any cargo wholly outside the truck footprint, would otherwise
+      // project over the trailer silhouette in an orthographic view and read as
+      // loaded. Excluded from Top/Side only; cargo is never repositioned.
+      function getTruckCentricExclusions(pack) {
+        const truck = SceneManager.getTruckBoundsWorld();
+        const excluded = new Set();
+        (pack.cases || []).forEach(inst => {
+          if (!inst) return;
+          if (inst.placement === 'staged') {
+            excluded.add(inst.id);
+            return;
+          }
+          const aabb = CaseScene.getAabbWorld(inst.id);
+          if (!aabb || !truck) return;
+          const overlapsTruck = aabb.max.x > truck.min.x && aabb.min.x < truck.max.x &&
+            aabb.max.z > truck.min.z && aabb.min.z < truck.max.z;
+          if (!overlapsTruck) excluded.add(inst.id);
+        });
+        return excluded;
+      }
 
-        const topCam = new THREE.OrthographicCamera(
-          -(lengthW / 2 + margin),
-          lengthW / 2 + margin,
-          widthW / 2 + margin,
-          -(widthW / 2 + margin),
-          0.1,
-          2000
-        );
-        topCam.position.set(centerX, heightW + 40, 0);
+      // Authoritative scene truck bounds (full length including any Front
+      // Overhang; Wheel Wells lie inside them) grown by every cargo box the
+      // truck-centric views show, so out-of-gauge cargo is never cropped.
+      function getTruckCentricBounds(pack, excludeIds) {
+        const truck = SceneManager.getTruckBoundsWorld();
+        if (!truck) throw new Error('3D viewport not ready');
+        const bounds = truck.clone();
+        (pack.cases || []).forEach(inst => {
+          if (!inst || inst.hidden || excludeIds.has(inst.id)) return;
+          const aabb = CaseScene.getAabbWorld(inst.id);
+          if (!aabb) return;
+          bounds.expandByPoint(new THREE.Vector3(aabb.min.x, aabb.min.y, aabb.min.z));
+          bounds.expandByPoint(new THREE.Vector3(aabb.max.x, aabb.max.y, aabb.max.z));
+        });
+        return bounds;
+      }
+
+      // One world scale per view: the frustum is the truck-centric bounds plus a
+      // margin, widened on one axis to the raster aspect. Proportions stay
+      // physical (no stretch) and nothing inside the bounds is cropped.
+      function buildOrthoCameras(pack, excludeIds, sizes) {
+        const bounds = getTruckCentricBounds(pack, excludeIds);
+        const center = bounds.getCenter(new THREE.Vector3());
+        const size = bounds.getSize(new THREE.Vector3());
+        const margin = Math.max(SceneManager.toWorld(12), 0.05 * Math.max(size.x, size.y, size.z));
+        const fit = (spanH, spanV, [width, height]) => {
+          const aspect = width / height;
+          let halfH = spanH / 2 + margin;
+          let halfV = spanV / 2 + margin;
+          if (halfH / halfV > aspect) halfV = halfH / aspect;
+          else halfH = halfV * aspect;
+          return { halfH, halfV };
+        };
+
+        const top = fit(size.x, size.z, sizes.top);
+        const topCam = new THREE.OrthographicCamera(-top.halfH, top.halfH, top.halfV, -top.halfV, 0.1, size.y + 20);
+        topCam.position.set(center.x, bounds.max.y + 10, center.z);
         topCam.up.set(0, 0, -1);
-        topCam.lookAt(centerX, 0, 0);
+        topCam.lookAt(center.x, bounds.min.y, center.z);
         topCam.updateProjectionMatrix();
 
-        const sideCam = new THREE.OrthographicCamera(
-          -(lengthW / 2 + margin),
-          lengthW / 2 + margin,
-          heightW / 2 + margin,
-          -(heightW / 2 + margin),
-          0.1,
-          2000
-        );
-        sideCam.position.set(centerX, centerY, widthW / 2 + 60);
-        sideCam.lookAt(centerX, centerY, 0);
+        const side = fit(size.x, size.y, sizes.side);
+        const sideCam = new THREE.OrthographicCamera(-side.halfH, side.halfH, side.halfV, -side.halfV, 0.1, size.z + 20);
+        sideCam.position.set(center.x, center.y, bounds.max.z + 10);
+        sideCam.lookAt(center.x, center.y, bounds.min.z);
         sideCam.updateProjectionMatrix();
 
         return { topCam, sideCam };
@@ -2159,76 +2265,32 @@ const TP3D_BUILD_STAMP = Object.freeze({
         });
       }
 
+      // Screenshot/PDF capture at an exact, bounded size through the same display
+      // framebuffer as Preview, so exports keep the live ACES tone mapping,
+      // exposure, sRGB output and framebuffer antialiasing. A browser-clamped
+      // buffer or an unusable encoding fails the export instead of downloading.
       function renderCameraToDataUrl(camera, width, height, options = {}) {
-        const renderer = SceneManager.getRenderer();
-        const scene = SceneManager.getScene();
-        if (!renderer || !scene || !camera) throw new Error('3D viewport not ready');
-
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0 ||
+            width > MAX_CAPTURE_WIDTH || height > MAX_CAPTURE_HEIGHT) {
+          throw new Error(`Unsupported image size ${width}×${height}`);
+        }
         const mimeType = options.mimeType || 'image/png';
         const quality = Number.isFinite(options.quality) ? options.quality : 0.92;
-
-        const prevTarget = renderer.getRenderTarget();
-        const prevViewport = new THREE.Vector4();
-        const prevScissor = new THREE.Vector4();
-        renderer.getViewport(prevViewport);
-        renderer.getScissor(prevScissor);
-        const prevScissorTest = renderer.getScissorTest ? renderer.getScissorTest() : false;
-        const prevPixelRatio = renderer.getPixelRatio();
-        const prevBg = scene.background;
-
-        const gridObj = scene.getObjectByName('grid');
-        const prevGridVisible = gridObj ? gridObj.visible : null;
-
-        const prevAspect = camera.isPerspectiveCamera ? camera.aspect : null;
-
-        const rt = new THREE.WebGLRenderTarget(width, height, { format: THREE.RGBAFormat });
-        const pixels = new Uint8Array(width * height * 4);
-
-        try {
-          if (options.hideGrid && gridObj) gridObj.visible = false;
-          renderer.setPixelRatio(1);
-          renderer.setRenderTarget(rt);
-          renderer.setViewport(0, 0, width, height);
-          renderer.setScissorTest(false);
-          if (camera.isPerspectiveCamera) {
-            camera.aspect = width / height;
-            camera.updateProjectionMatrix();
-          }
-          renderer.render(scene, camera);
-          renderer.readRenderTargetPixels(rt, 0, 0, width, height, pixels);
-        } finally {
-          renderer.setRenderTarget(prevTarget);
-          renderer.setPixelRatio(prevPixelRatio);
-          renderer.setViewport(prevViewport.x, prevViewport.y, prevViewport.z, prevViewport.w);
-          renderer.setScissor(prevScissor.x, prevScissor.y, prevScissor.z, prevScissor.w);
-          renderer.setScissorTest(prevScissorTest);
-          scene.background = prevBg;
-          if (gridObj && prevGridVisible != null) gridObj.visible = prevGridVisible;
-          if (camera.isPerspectiveCamera && prevAspect != null) {
-            camera.aspect = prevAspect;
-            camera.updateProjectionMatrix();
-          }
-          rt.dispose();
+        const dataUrl = renderDisplayCapture(camera, width, height, { mimeType, quality, exactBuffer: true });
+        const prefix = `data:${mimeType};base64,`;
+        if (typeof dataUrl !== 'string' || !dataUrl.startsWith(prefix) || dataUrl.length <= prefix.length) {
+          throw new Error('The image could not be encoded');
         }
-
-        // Flip Y and encode
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        const img = ctx.createImageData(width, height);
-        for (let y = 0; y < height; y++) {
-          const src = (height - y - 1) * width * 4;
-          const dst = y * width * 4;
-          img.data.set(pixels.subarray(src, src + width * 4), dst);
-        }
-        ctx.putImageData(img, 0, 0);
-        return canvas.toDataURL(mimeType, quality);
+        return dataUrl;
       }
 
-      // Preview alone uses the display framebuffer: ordinary render targets omit
-      // the live ACES/exposure/sRGB pipeline. Screenshot/PDF retain their helper.
+      // Preview and Screenshot/PDF share the display framebuffer: ordinary render
+      // targets omit the live ACES/exposure/sRGB pipeline.
       function renderPreviewToDataUrl(camera, width, height) {
+        return renderDisplayCapture(camera, width, height, { mimeType: 'image/jpeg', quality: 0.80 });
+      }
+
+      function renderDisplayCapture(camera, width, height, { mimeType, quality, exactBuffer = false }) {
         const renderer = SceneManager.getRenderer();
         const scene = SceneManager.getScene();
         if (!renderer || !scene || !camera) throw new Error('3D viewport not ready');
@@ -2237,7 +2299,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d', { colorSpace: 'srgb' });
-        if (!ctx) throw new Error('Preview canvas not available');
+        if (!ctx) throw new Error('Image canvas not available');
 
         const size = renderer.getSize(new THREE.Vector2());
         const pixelRatio = renderer.getPixelRatio();
@@ -2261,6 +2323,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
           renderer.setRenderTarget(null);
           // r185 sets only the backing buffer and DPR, never canvas CSS size.
           renderer.setDrawingBufferSize(width, height, 1);
+          if (exactBuffer) {
+            const gl = renderer.getContext();
+            if (gl.drawingBufferWidth !== width || gl.drawingBufferHeight !== height) {
+              throw new Error(`This device cannot capture ${width}×${height} images`);
+            }
+          }
           renderer.setScissorTest(false);
           if (camera.isPerspectiveCamera) {
             camera.aspect = width / height;
@@ -2270,7 +2338,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           // No await: the browser may clear the WebGL buffer after this task.
           // Render only the main scene here, omitting the separate axis widget.
           ctx.drawImage(renderer.domElement, 0, 0);
-          return canvas.toDataURL('image/jpeg', 0.80);
+          return canvas.toDataURL(mimeType, quality);
         } finally {
           if (grid) grid.visible = gridVisible;
           if (camera.isPerspectiveCamera) camera.aspect = aspect;
@@ -2488,6 +2556,16 @@ const TP3D_BUILD_STAMP = Object.freeze({
     }
 
     function openExportWorkspaceModal(workspaceName, workspaceId = '') {
+      // The dialog belongs to the workspace it was opened for. A later switch,
+      // including A→B→A (new scope generation), must never export another
+      // scope's libraries under this workspace's name and id.
+      const openedScope = CoreStorage.captureScopeContext();
+      const isOpenedWorkspace = () => CoreStorage.isScopeContextCurrent(openedScope) &&
+        String(workspaceId || 'no-org').trim().toLowerCase() === String(CoreStorage.getWorkspaceScope()).toLowerCase();
+      if (!isOpenedWorkspace()) {
+        UIComponents.showToast('This workspace is no longer active. Reopen Settings and try again.', 'warning');
+        return;
+      }
       const safeName = workspaceName ? String(workspaceName).trim() : 'workspace';
       const slugName = safeName
         .replace(/[^a-zA-Z0-9_-]/g, '-')
@@ -2523,6 +2601,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
             label: 'Export Workspace Backup',
             variant: 'primary',
             onClick: () => {
+              if (!isOpenedWorkspace()) {
+                UIComponents.showToast('The active workspace changed. Nothing was exported.', 'warning');
+                return;
+              }
               try {
                 const json = ImportExport.buildWorkspaceExportJSON(safeName, workspaceId);
                 Utils.downloadText(filename, json);
@@ -3918,6 +4000,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (EditorUI && typeof EditorUI.resetWorkspaceState === 'function') {
           EditorUI.resetWorkspaceState();
         }
+        // Menus opened in the previous workspace (e.g. a Pack's Export action)
+        // are dismissed; their actions also re-check scope when chosen.
+        UIComponents.closeAllDropdowns();
       } catch {
         // ignore
       }

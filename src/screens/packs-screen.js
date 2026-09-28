@@ -15,7 +15,7 @@
 
 import * as FolderLibrary from '../services/folder-library.js';
 import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
-import { getStorageScope, getWorkspaceScope } from '../core/storage.js';
+import { captureScopeContext, getStorageScope, getWorkspaceScope, isScopeContextCurrent } from '../core/storage.js';
 import {
   checkLoadPlanNumberAvailability,
   compareBusinessIdentityValues,
@@ -1751,6 +1751,9 @@ export function createPacksScreen({
         kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>';
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
+          // Pack IDs can repeat across workspaces: the menu's export stays bound
+          // to the workspace scope this menu was opened in.
+          const menuScope = captureScopeContext();
           UIComponents.openDropdown(kebabBtn, [
             { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
             { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
@@ -1775,7 +1778,7 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Load Plan JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Load Plan JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id, menuScope) },
             {
               label: 'Move to Folder',
               icon: 'fa-solid fa-folder-open',
@@ -1954,6 +1957,9 @@ export function createPacksScreen({
         kebabBtn.innerHTML = '<i class="fa-solid fa-ellipsis-vertical" aria-hidden="true"></i>';
         kebabBtn.addEventListener('click', ev => {
           ev.stopPropagation();
+          // Pack IDs can repeat across workspaces: the menu's export stays bound
+          // to the workspace scope this menu was opened in.
+          const menuScope = captureScopeContext();
           UIComponents.openDropdown(kebabBtn, [
             { label: 'Open', icon: 'fa-solid fa-folder-open', onClick: () => openPack(pack.id) },
             { label: 'Edit', icon: 'fa-solid fa-pen-to-square', onClick: () => openEditPackModal(pack.id) },
@@ -1978,7 +1984,7 @@ export function createPacksScreen({
               disabled: !pack.thumbnail,
               onClick: () => ExportService.clearPackPreview(pack.id),
             },
-            { label: 'Export Load Plan JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id) },
+            { label: 'Export Load Plan JSON', icon: 'fa-solid fa-file-export', onClick: () => exportPack(pack.id, menuScope) },
             {
               label: 'Move to Folder',
               icon: 'fa-solid fa-folder-open',
@@ -2481,7 +2487,11 @@ export function createPacksScreen({
       });
     }
 
-    function exportPack(packId) {
+    function exportPack(packId, menuScope) {
+      if (!isScopeContextCurrent(menuScope)) {
+        toast('The workspace changed. Open the menu again to export.', 'warning');
+        return;
+      }
       const pack = PackLibrary.getById(packId);
       if (!pack) return;
       const json = ImportExport.buildPackExportJSON(pack);

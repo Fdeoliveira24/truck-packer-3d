@@ -1966,10 +1966,73 @@ export function createCaseScene({
       recomputeVisualStates();
     }
 
+    // Visual-export authority: every rendered group sits exactly at the pose
+    // applyTransform derives from its committed Pack instance, so no drag, hold,
+    // return tween or other scene-only motion can reach an exported image.
+    function matchesCommittedPoses(pack) {
+      if (!pack || syncedPack !== pack) return false;
+      let rendered = 0;
+      for (const inst of pack.cases || []) {
+        if (!inst || !CaseLibrary.getById(inst.caseId)) continue;
+        rendered += 1;
+        const group = instances.get(inst.id);
+        if (!group || !inst.transform) return false;
+        const expected = SceneManager.vecInchesToWorld(inst.transform.position || { x: 0, y: 0, z: 0 });
+        const halfY = group.userData.halfWorld ? group.userData.halfWorld.y : 0;
+        expected.y = Math.max(halfY || 0.01, expected.y);
+        const rot = inst.transform.rotation || {};
+        if (group.position.distanceTo(expected) > 1e-6 ||
+            Math.abs(group.rotation.x - (Number(rot.x) || 0)) > 1e-9 ||
+            Math.abs(group.rotation.y - (Number(rot.y) || 0)) > 1e-9 ||
+            Math.abs(group.rotation.z - (Number(rot.z) || 0)) > 1e-9) return false;
+      }
+      return rendered === instances.size;
+    }
+
+    // Clean export capture: drop interaction-only emphasis (selection, hover,
+    // drag, collision, gizmo) and omit hidden cargo plus caller-excluded
+    // instances. Committed OOG warnings stay. The returned restore() puts every
+    // changed value back and must run in a finally.
+    function beginExportCapture({ excludeIds = null } = {}) {
+      const saved = {
+        hoveredId,
+        draggedId,
+        selectedIds,
+        collisions: new Set(collisionIds),
+        gizmoVisible: gizmoGroup ? gizmoGroup.visible : null,
+        visibility: new Map(),
+      };
+      hoveredId = null;
+      draggedId = null;
+      selectedIds = new Set();
+      collisionIds.clear();
+      if (gizmoGroup) gizmoGroup.visible = false;
+      instances.forEach((group, id) => {
+        saved.visibility.set(group, group.visible);
+        if (group.userData.hidden === true || (excludeIds && excludeIds.has(id))) group.visible = false;
+      });
+      recomputeVisualStates();
+      let restored = false;
+      return () => {
+        if (restored) return;
+        restored = true;
+        hoveredId = saved.hoveredId;
+        draggedId = saved.draggedId;
+        selectedIds = saved.selectedIds;
+        collisionIds.clear();
+        saved.collisions.forEach(id => collisionIds.add(id));
+        if (gizmoGroup && saved.gizmoVisible !== null) gizmoGroup.visible = saved.gizmoVisible;
+        saved.visibility.forEach((visible, group) => { group.visible = visible; });
+        recomputeVisualStates();
+      };
+    }
+
     return {
       clear,
       sync,
       getSyncedPack: () => syncedPack,
+      matchesCommittedPoses,
+      beginExportCapture,
       getVisualSignature,
       rebindPreviewPack,
       setHover,
@@ -2038,6 +2101,9 @@ export function createInteractionManager({
     // valid spot: { instanceId }. Never persisted; the pack keeps the committed
     // pose until a validated drop commits or the hold is cancelled/invalidated.
     let gizmoPending = null;
+    // Rejected-drop return tweens still moving meshes back to their committed
+    // poses. Scene-only motion: provisional until the tween's settle timeout.
+    let revertHolds = 0;
     let dragStartPosWorld = null;
     let dragGroupIds = null;
     let dragGroupStartWorld = null; // Map<instanceId, THREE.Vector3>
@@ -3304,7 +3370,9 @@ export function createInteractionManager({
 
       if (Tween) {
         // Ensure hover/drag visuals restore once the tweens complete.
+        revertHolds += 1;
         window.setTimeout(() => {
+          revertHolds = Math.max(0, revertHolds - 1);
           CaseScene.setDragging(null);
           CaseScene.setHover(hoveredId);
           CaseScene.updateGizmoTransform();
@@ -3632,7 +3700,7 @@ export function createInteractionManager({
 
     return {
       init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical,
-      hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending),
+      hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending || revertHolds > 0),
     };
   })();
 
@@ -3788,6 +3856,17 @@ export function createEditorScreen({
       const operation = OperationLifecycle && OperationLifecycle.currentOperation();
       if (operation && operation.busy && operation.kind !== 'capturingPreview') return null;
       return previewScene;
+    }
+
+    // Screenshot/PDF authority: the Preview boundary plus a fully idle lifecycle
+    // (no capture either), the current Pack's own camera owner, and every mesh at
+    // its committed pose. The runtime camera is used as-is, including a camera
+    // focus/orbit in motion: camera movement never changes cargo authority.
+    function getExportScene() {
+      if (OperationLifecycle && OperationLifecycle.isBusy()) return null;
+      const scene = getPreviewScene();
+      if (!scene || !isViewOwnerCurrent() || !CaseScene.matchesCommittedPoses(scene.pack)) return null;
+      return scene;
     }
     const shellEl = /** @type {HTMLElement|null} */ (document.querySelector('.editor-shell'));
     const leftEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-left'));
@@ -7318,7 +7397,7 @@ export function createEditorScreen({
     }
 
     return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState,
-      getPreviewScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
+      getPreviewScene, getExportScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
   })();
 
   const onDeactivated = () => { };

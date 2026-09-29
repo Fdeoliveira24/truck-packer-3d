@@ -5626,7 +5626,7 @@ export function createEditorScreen({
     function syncCaseFilterIndicators() {
       const activeCount = (caseBrowserGroupBy === 'manufacturer' ? browserManufacturers : browserCats).size;
       if (caseFilterToggleEl) {
-        let badge = caseFilterToggleEl.querySelector('.tp3d-filter-active-count');
+        let badge = /** @type {HTMLElement|null} */ (caseFilterToggleEl.querySelector('.tp3d-filter-active-count'));
         if (!badge) {
           badge = document.createElement('span');
           badge.className = 'tp3d-filter-active-count';
@@ -5643,7 +5643,7 @@ export function createEditorScreen({
         const retained = (isManufacturer ? browserManufacturers : browserCats).size;
         btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy);
         btn.setAttribute('aria-pressed', String(btn.dataset.groupBy === caseBrowserGroupBy));
-        let countEl = btn.querySelector('.tp3d-browser-tab-count');
+        let countEl = /** @type {HTMLElement|null} */ (btn.querySelector('.tp3d-browser-tab-count'));
         if (!countEl) {
           countEl = document.createElement('span');
           countEl.className = 'tp3d-browser-tab-count';

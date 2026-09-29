@@ -2832,7 +2832,8 @@ test('CASES-CATEGORY-UI Editor Case Browser still sources category options from 
     'the Case Browser category grouping/filter options are still sourced from the shared CategoryService authority');
   assert.match(browserCatalog, /browserCats/, 'browserCats semantics are untouched');
   assert.match(browserCatalog, /browserManufacturers/, 'Manufacturer grouping/filtering is unaffected');
-  assert.match(browserCatalog, /CategoryService\.resetToDefaultIfNoCases\(allCases\)/);
+  assert.doesNotMatch(browserCatalog, /resetToDefaultIfNoCases/,
+    'rendering the Case Browser is read-only; the empty-library category reset belongs to Case deletion');
 });
 
 // ---------------------------------------------------------------------------

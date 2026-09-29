@@ -2242,6 +2242,11 @@ export function commitCaseDeletion(caseIds) {
   });
 
   const setPatch = { caseLibrary: nextCaseLibrary };
+  // Deleting the last Case(s) is the authoritative empty-library transition:
+  // the Default-only category reset rides in this same write (one Undo step),
+  // so the Cases screen and Editor Case Browser can render it read-only.
+  const emptyLibraryPreferences = CategoryService.calculateResetToDefaultIfNoCases(nextCaseLibrary);
+  if (emptyLibraryPreferences) setPatch.preferences = emptyLibraryPreferences;
   if (result.packImpacts.length) {
     setPatch.packLibrary = nextPacks;
 

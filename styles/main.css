@@ -810,6 +810,20 @@ textarea:focus {
   white-space: nowrap;
 }
 
+/* Editor chips split "Name" and ": 12": only the name ellipsizes, the count
+   never shrinks and sits flush after the name (cancelling the chip gap). */
+#editor-case-chips .chip span.tp3d-browser-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+#editor-case-chips .chip span.tp3d-browser-chip-count {
+  flex-shrink: 0;
+  margin-left: calc(var(--space-2) * -1);
+}
+
 @media (max-width: 768px) {
   #cases-filters,
   #packs-filters {
@@ -6272,6 +6286,48 @@ body.tp3d-shared-modal-lock #app .nav {
   min-width: 0;
 }
 
+/* Active-filter count on the Case Browser filter toggle. Yellow on the toggle
+   still means "popup open"; this dark badge means "filters active". */
+#editor-case-filters-toggle {
+  position: relative;
+}
+
+.tp3d-filter-active-count {
+  position: absolute;
+  top: -7px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  border: 2px solid var(--bg-secondary);
+  border-radius: 999px;
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
+
+.tp3d-editor-case-empty {
+  display: grid;
+  gap: var(--space-2);
+  justify-items: start;
+  padding: var(--space-2) var(--space-1);
+}
+
+.tp3d-editor-case-empty__message {
+  margin: 0;
+  font-size: var(--text-sm);
+}
+
+.tp3d-editor-case-empty__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
 .tp3d-editor-instance-chooser {
   margin-bottom: var(--space-3);
 }
@@ -6290,6 +6346,7 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-editor-browser-tabs {
   position: relative;
   z-index: 2;
+  min-width: 0;
   display: flex;
   gap: 8px;
   align-items: center;
@@ -6316,6 +6373,42 @@ body.tp3d-shared-modal-lock #app .nav {
   background: transparent;
   box-shadow: none;
   border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+/* Without retained counts the tabs stay equal-width. With counts they size from
+   their content and may shrink, so a label ellipsizes only under real width
+   pressure (narrow drawer) and the count always stays visible. */
+.tp3d-editor-browser-group-tabs.has-retained-counts .tp3d-browser-tab {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: var(--space-2);
+}
+
+.tp3d-browser-tab-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Selections a group-by tab retains (shown whether or not it is the active mode). */
+.tp3d-browser-tab-count {
+  display: inline-block;
+  flex-shrink: 0;
+  min-width: 16px;
+  height: 16px;
+  margin-left: calc(var(--space-1) * -1);
+  padding: 0 4px;
+  border: 1px solid currentcolor;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  line-height: 14px;
+  text-align: center;
+}
+
+.tp3d-browser-tab-count[hidden] {
+  display: none;
 }
 
 .tp3d-editor-browser-group-tabs .tp3d-browser-tab:hover {

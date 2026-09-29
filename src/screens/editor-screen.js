@@ -4069,6 +4069,9 @@ export function createEditorScreen({
     const supportsWebGL = Utils.hasWebGL();
     const browserCats = new Set();
     const browserManufacturers = new Set();
+    const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
+    let showCaseFilters = false;
+    let caseBrowserGroupBy = 'category';
     // Ephemeral per-Case Qty selector drafts, keyed by caseId and scoped to the
     // active workspace. Never read from or written to StateStore/localStorage/
     // Pack/Case. Survives same-workspace re-renders, Pack changes and navigation;
@@ -4092,11 +4095,16 @@ export function createEditorScreen({
       previewScene = null;
       invalidateViewOwner();
       resetEditorCaseQtyDrafts(caseQtyDrafts);
+      // Case Browser search/filter/group-by are workspace-scoped presentation
+      // state: kept across Pack changes, reset only when the workspace changes.
+      browserCats.clear();
+      browserManufacturers.clear();
+      if (caseSearchEl) caseSearchEl.value = '';
+      caseBrowserGroupBy = 'category';
+      setCaseFiltersVisible(false, false);
+      syncCaseFilterIndicators();
     }
     let layoutRaf = null;
-    const caseFiltersStorageKey = 'tp3d.editor.caseBrowser.showFilters';
-    let showCaseFilters = false;
-    let caseBrowserGroupBy = 'category';
     let sceneHostResizeObserver = null;
     // Pending (uncommitted) truck geometry edited via the preset/shape dropdowns.
     // The committed truck stays pack.truck and the scene keeps rendering it until the
@@ -4635,9 +4643,22 @@ export function createEditorScreen({
         document.addEventListener('click', ev => {
           if (!showCaseFilters) return;
           if (!(ev.target instanceof Node)) return;
-          if (caseFilterToggleEl.contains(ev.target)) return;
-          if (caseChipsEl && caseChipsEl.contains(ev.target)) return;
+          // A chip click rebuilds the popup before the click reaches here, so the
+          // clicked chip is already detached; composedPath() is fixed at dispatch
+          // and still records it as inside the filter surface.
+          const path = ev.composedPath();
+          if (path.includes(caseFilterToggleEl)) return;
+          if (caseChipsEl && path.includes(caseChipsEl)) return;
           setCaseFiltersVisible(false, true);
+        });
+        // Escape closes the open filter popup first (focus back on its toggle),
+        // before the global deselect shortcut or the mobile drawer close.
+        leftEl.addEventListener('keydown', ev => {
+          if (ev.key !== 'Escape' || !showCaseFilters) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          setCaseFiltersVisible(false, true);
+          caseFilterToggleEl.focus();
         });
       }
       btnLeft.addEventListener('click', () => togglePanel('left'));
@@ -4935,6 +4956,9 @@ export function createEditorScreen({
         const key = getManufacturerFilterKey(c && c.manufacturer);
         const label = getManufacturerFilterLabel(c && c.manufacturer);
         const existing = options.get(key) || { key, name: label, count: 0, color: getManufacturerFilterColor(label) };
+        // Spelling variants ("Acme", "ACME", " acme ") share one key; show one
+        // deterministic label regardless of Case Library order.
+        if (label.localeCompare(existing.name) < 0) existing.name = label;
         existing.count += 1;
         options.set(key, existing);
       });
@@ -4962,12 +4986,12 @@ export function createEditorScreen({
         btnCat.type = 'button';
         btnCat.className = 'btn btn-sm tp3d-browser-tab';
         btnCat.dataset.groupBy = 'category';
-        btnCat.textContent = 'Category';
+        btnCat.innerHTML = '<span class="tp3d-browser-tab-label">Category</span>';
         const btnMfg = document.createElement('button');
         btnMfg.type = 'button';
         btnMfg.className = 'btn btn-sm tp3d-browser-tab';
         btnMfg.dataset.groupBy = 'manufacturer';
-        btnMfg.textContent = 'Manufacturer';
+        btnMfg.innerHTML = '<span class="tp3d-browser-tab-label">Manufacturer</span>';
         groupTabsEl.appendChild(btnCat);
         groupTabsEl.appendChild(btnMfg);
         const btnNewCase = document.createElement('button');
@@ -4983,9 +5007,12 @@ export function createEditorScreen({
         });
         tabsEl.appendChild(groupTabsEl);
         tabsEl.appendChild(btnNewCase);
+        // Keep the (absolutely positioned) filter popup directly after the search
+        // row in DOM order so Tab goes filter toggle → filter chips; the popup's
+        // containing block is the sticky search block, so layout is unchanged.
         const searchRow = browserControlsHost.querySelector('.tp3d-editor-case-search-row');
-        if (searchRow && searchRow.nextSibling) browserControlsHost.insertBefore(tabsEl, searchRow.nextSibling);
-        else browserControlsHost.appendChild(tabsEl);
+        const tabsAnchor = caseChipsEl && caseChipsEl.parentElement === browserControlsHost ? caseChipsEl : searchRow;
+        browserControlsHost.insertBefore(tabsEl, tabsAnchor ? tabsAnchor.nextSibling : null);
         tabsEl.addEventListener('click', ev => {
           if (!(ev.target instanceof Element)) return;
           const btn = ev.target.closest('[data-group-by]');
@@ -4994,26 +5021,26 @@ export function createEditorScreen({
           renderCaseBrowser();
         });
       }
-      const tabBtns = document.querySelectorAll('.tp3d-browser-tab');
-      tabBtns.forEach(btn => {
-        if (!(btn instanceof HTMLElement)) return;
-        btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy);
-        btn.setAttribute('aria-pressed', String(btn.dataset.groupBy === caseBrowserGroupBy));
-      });
-
       const allCases = CaseLibrary.getCases();
-      if (CategoryService.resetToDefaultIfNoCases(allCases)) {
+      // Read-only: the empty-library category reset is published by the Case
+      // deletion transition (PackLibrary.commitCaseDeletion), never by render.
+      if (!allCases.length) {
         browserCats.clear();
         browserManufacturers.clear();
       }
       const activeBrowserFilters = caseBrowserGroupBy === 'manufacturer' ? browserManufacturers : browserCats;
-      const browserFilterOptions = caseBrowserGroupBy === 'manufacturer'
-        ? getManufacturerFilterOptions(allCases)
-        : CategoryService.listWithCounts(allCases);
-      const validFilterKeys = new Set(browserFilterOptions.map(option => option.key));
-      Array.from(activeBrowserFilters).forEach(key => {
-        if (!validFilterKeys.has(key)) activeBrowserFilters.delete(key);
+      const manufacturerFilterOptions = getManufacturerFilterOptions(allCases);
+      const categoryFilterOptions = CategoryService.listWithCounts(allCases);
+      const browserFilterOptions = caseBrowserGroupBy === 'manufacturer' ? manufacturerFilterOptions : categoryFilterOptions;
+      // Prune both group-by modes (each keeps its own selections across tab
+      // switches) so retained counts never include options that no longer exist.
+      [[browserCats, categoryFilterOptions], [browserManufacturers, manufacturerFilterOptions]].forEach(([filters, options]) => {
+        const validFilterKeys = new Set(options.map(option => option.key));
+        Array.from(filters).forEach(key => {
+          if (!validFilterKeys.has(key)) filters.delete(key);
+        });
       });
+      syncCaseFilterIndicators();
       const allFilterCount = allCases.length;
       const q = String(caseSearchEl.value || '').trim();
       const prefs = PreferencesManager.get ? PreferencesManager.get() : { units: { length: 'in', weight: 'lb' } };
@@ -5051,10 +5078,18 @@ export function createEditorScreen({
       }
       cases = cases.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
+      // Rebuilding the chips (including from the chip's own click) must not drop
+      // focus to BODY or jump the popup: restore both by stable filter key.
+      const focusedChipEl = document.activeElement;
+      const focusedFilterKey = focusedChipEl instanceof HTMLElement && caseChipsEl.contains(focusedChipEl)
+        ? focusedChipEl.dataset.filterKey
+        : null;
+      const savedChipsScrollTop = caseChipsEl.scrollTop;
       caseChipsEl.innerHTML = '';
       caseChipsEl.appendChild(
         makeBrowserChip(
-          `All: ${allFilterCount}`,
+          'All',
+          allFilterCount,
           'all',
           activeBrowserFilters.size === 0,
           () => {
@@ -5068,7 +5103,8 @@ export function createEditorScreen({
         const active = activeBrowserFilters.has(c.key);
         caseChipsEl.appendChild(
           makeBrowserChip(
-            `${c.name}: ${c.count}`,
+            c.name,
+            c.count,
             c.key,
             active,
             () => {
@@ -5081,6 +5117,11 @@ export function createEditorScreen({
         );
       });
       setCaseFiltersVisible(showCaseFilters, false);
+      caseChipsEl.scrollTop = savedChipsScrollTop;
+      if (focusedFilterKey != null) {
+        const nextChipEl = caseChipsEl.querySelector(`[data-filter-key="${CSS.escape(focusedFilterKey)}"]`);
+        if (nextChipEl instanceof HTMLElement) nextChipEl.focus({ preventScroll: true });
+      }
 
       // Quantity Controls: a target quantity commit triggers a StateStore-driven
       // re-render, which tears down and rebuilds every card below. Capture scroll
@@ -5122,26 +5163,37 @@ export function createEditorScreen({
       };
 
       caseListEl.innerHTML = '';
+      if (!cases.length) {
+        caseListEl.appendChild(buildCaseBrowserEmptyState({
+          libraryEmpty: allCases.length === 0,
+          hasSearch: Boolean(q),
+          hasFilters: activeBrowserFilters.size > 0,
+        }));
+        restoreCaseBrowserFocusAndScroll();
+        return;
+      }
       if (caseBrowserGroupBy === 'manufacturer') {
-        const mfgGroups = new Map();
+        // Group by the same normalized key (and label/order) as the Manufacturer
+        // filter options, so spelling variants share one heading and bucket.
+        const mfgGroups = new Map(
+          manufacturerFilterOptions.map(option => [option.key, { name: option.name, cases: [] }])
+        );
         cases.forEach(c => {
-          const key = (c.manufacturer && c.manufacturer.trim()) || '(No manufacturer)';
-          if (!mfgGroups.has(key)) mfgGroups.set(key, []);
-          mfgGroups.get(key).push(c);
+          const group = mfgGroups.get(getManufacturerFilterKey(c && c.manufacturer));
+          if (group) group.cases.push(c);
         });
-        Array.from(mfgGroups.entries())
-          .sort(([a], [b]) => (a === '(No manufacturer)' ? 1 : b === '(No manufacturer)' ? -1 : a.localeCompare(b)))
-          .forEach(([groupName, groupCases]) => {
-            const hdr = document.createElement('div');
-            hdr.className = 'tp3d-editor-mfg-group-header';
-            hdr.textContent = groupName;
-            caseListEl.appendChild(hdr);
-            groupCases.forEach(c => {
-              caseListEl.appendChild(
-                buildCaseBrowserCard(c, lengthUnit, prefs, selectedCaseIds.has(c.id), browserPack)
-              );
-            });
+        mfgGroups.forEach(group => {
+          if (!group.cases.length) return;
+          const hdr = document.createElement('div');
+          hdr.className = 'tp3d-editor-mfg-group-header';
+          hdr.textContent = group.name;
+          caseListEl.appendChild(hdr);
+          group.cases.forEach(c => {
+            caseListEl.appendChild(
+              buildCaseBrowserCard(c, lengthUnit, prefs, selectedCaseIds.has(c.id), browserPack)
+            );
           });
+        });
         restoreCaseBrowserFocusAndScroll();
         return;
       }
@@ -5567,18 +5619,108 @@ export function createEditorScreen({
       }
     }
 
-    function makeBrowserChip(label, key, active, onClick, color) {
+    // Presentation-only indicators for the Case Browser filters. Yellow on the
+    // toggle (btn-primary) keeps meaning "popup open"; the count badge and the
+    // accessible name report the ACTIVE group-by mode's selections, and each
+    // mode tab shows the selections it retains while inactive.
+    function syncCaseFilterIndicators() {
+      const activeCount = (caseBrowserGroupBy === 'manufacturer' ? browserManufacturers : browserCats).size;
+      if (caseFilterToggleEl) {
+        let badge = caseFilterToggleEl.querySelector('.tp3d-filter-active-count');
+        if (!badge) {
+          badge = document.createElement('span');
+          badge.className = 'tp3d-filter-active-count';
+          badge.setAttribute('aria-hidden', 'true');
+          caseFilterToggleEl.appendChild(badge);
+        }
+        badge.textContent = activeCount ? String(activeCount) : '';
+        badge.hidden = !activeCount;
+        caseFilterToggleEl.setAttribute('aria-label', activeCount ? `Toggle filters, ${activeCount} active` : 'Toggle filters');
+      }
+      document.querySelectorAll('.tp3d-browser-tab').forEach(btn => {
+        if (!(btn instanceof HTMLElement)) return;
+        const isManufacturer = btn.dataset.groupBy === 'manufacturer';
+        const retained = (isManufacturer ? browserManufacturers : browserCats).size;
+        btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy);
+        btn.setAttribute('aria-pressed', String(btn.dataset.groupBy === caseBrowserGroupBy));
+        let countEl = btn.querySelector('.tp3d-browser-tab-count');
+        if (!countEl) {
+          countEl = document.createElement('span');
+          countEl.className = 'tp3d-browser-tab-count';
+          countEl.setAttribute('aria-hidden', 'true');
+          btn.appendChild(countEl);
+        }
+        countEl.textContent = retained ? String(retained) : '';
+        countEl.hidden = !retained;
+        const label = isManufacturer ? 'Manufacturer' : 'Category';
+        if (retained) btn.setAttribute('aria-label', `${label}, ${retained} selected`);
+        else btn.removeAttribute('aria-label');
+      });
+      const groupTabsEl = document.querySelector('.tp3d-editor-browser-group-tabs');
+      if (groupTabsEl) groupTabsEl.classList.toggle('has-retained-counts', browserCats.size + browserManufacturers.size > 0);
+    }
+
+    function buildCaseBrowserEmptyState({ libraryEmpty, hasSearch, hasFilters }) {
+      const el = document.createElement('div');
+      el.className = 'tp3d-editor-case-empty';
+      const message = document.createElement('p');
+      message.className = 'tp3d-editor-case-empty__message muted';
+      message.textContent = libraryEmpty ? 'No cases yet.' : 'No cases match.';
+      el.appendChild(message);
+      if (libraryEmpty) return el;
+      const actions = document.createElement('div');
+      actions.className = 'tp3d-editor-case-empty__actions';
+      const addAction = (label, onClick) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn btn-sm';
+        btn.textContent = label;
+        btn.addEventListener('click', onClick);
+        actions.appendChild(btn);
+      };
+      if (hasSearch) {
+        addAction('Clear search', () => {
+          caseSearchEl.value = '';
+          renderCaseBrowser();
+          caseSearchEl.focus();
+        });
+      }
+      if (hasFilters) {
+        // Clears BOTH group-by modes; "All" in the popup clears only the current one.
+        addAction('Clear filters', () => {
+          browserCats.clear();
+          browserManufacturers.clear();
+          renderCaseBrowser();
+          if (caseFilterToggleEl) caseFilterToggleEl.focus();
+        });
+      }
+      if (actions.childElementCount) el.appendChild(actions);
+      return el;
+    }
+
+    function makeBrowserChip(name, count, key, active, onClick, color) {
       const el = document.createElement('button');
       el.type = 'button';
       el.className = `chip ${active ? 'active' : ''}`;
       el.setAttribute('aria-pressed', String(active));
+      el.dataset.filterKey = key;
+      const fullLabel = `${name}: ${count}`;
+      el.title = fullLabel;
+      el.setAttribute('aria-label', fullLabel);
       const dot = document.createElement('span');
       dot.className = 'chip-dot';
       dot.style.background = color || 'var(--border-strong)';
+      // Name shrinks/ellipsizes; the count is its own non-shrinking span so a
+      // long name can never hide it.
       const text = document.createElement('span');
-      text.textContent = label;
+      text.className = 'tp3d-browser-chip-label';
+      text.textContent = name;
+      const countEl = document.createElement('span');
+      countEl.className = 'tp3d-browser-chip-count';
+      countEl.textContent = `: ${count}`;
       el.appendChild(dot);
       el.appendChild(text);
+      el.appendChild(countEl);
       el.addEventListener('click', onClick);
       return el;
     }

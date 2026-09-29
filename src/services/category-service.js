@@ -77,8 +77,12 @@ export function listWithCounts(cases) {
   return ordered.filter((k, idx, arr) => arr.indexOf(k) === idx).map(k => ({ ...meta(k), count: counts[k] || 0 }));
 }
 
-export function resetToDefaultIfNoCases(cases) {
-  if (Array.isArray(cases) && cases.length > 0) return false;
+// Pure: the next preferences an EMPTY Case Library should publish (category
+// list reset to Default only), or null when nothing needs to change. Lets the
+// Case deletion transition bundle the reset into its single StateStore.set()
+// (one history entry), so rendering an empty library never has to write it.
+export function calculateResetToDefaultIfNoCases(cases) {
+  if (Array.isArray(cases) && cases.length > 0) return null;
   const defaultCategory = meta('default');
   const nextDefault = {
     key: 'default',
@@ -91,8 +95,14 @@ export function resetToDefaultIfNoCases(cases) {
     current.length === 1 &&
     normalizeKey(current[0].key || current[0].name) === 'default' &&
     normalizeHex(current[0].color) === nextDefault.color;
-  if (alreadyDefaultOnly) return false;
-  savePreferences({ ...prefs, categories: [nextDefault] });
+  if (alreadyDefaultOnly) return null;
+  return { ...prefs, categories: [nextDefault] };
+}
+
+export function resetToDefaultIfNoCases(cases) {
+  const nextPreferences = calculateResetToDefaultIfNoCases(cases);
+  if (!nextPreferences) return false;
+  savePreferences(nextPreferences);
   return true;
 }
 
@@ -176,4 +186,13 @@ export function rename(oldKey, name, color) {
   return meta(to);
 }
 
-export default { all, meta, listWithCounts, resetToDefaultIfNoCases, upsert, remove, rename };
+export default {
+  all,
+  meta,
+  listWithCounts,
+  calculateResetToDefaultIfNoCases,
+  resetToDefaultIfNoCases,
+  upsert,
+  remove,
+  rename,
+};

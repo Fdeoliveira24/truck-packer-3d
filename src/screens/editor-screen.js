@@ -2120,6 +2120,8 @@ export function createInteractionManager({
       domEl.addEventListener('pointermove', onMove);
       domEl.addEventListener('pointerdown', onDown);
       window.addEventListener('pointerup', onUp);
+      domEl.addEventListener('pointercancel', onCancel);
+      domEl.addEventListener('lostpointercapture', onCancel);
       domEl.addEventListener('dblclick', onDblClick);
       window.addEventListener('keydown', onKeyDown);
       if (typeof CaseScene.setPendingPoseWatcher === 'function') {
@@ -2812,6 +2814,20 @@ export function createInteractionManager({
         else setSelection([...current, id]);
       } else {
         setSelection([id]);
+      }
+      pressed = null;
+    }
+
+    function onCancel() {
+      if (!pressed && !draggingId && !gizmoDragging) return;
+      if (gizmoDragging) {
+        cancelGizmoDrag();
+      } else {
+        const ids = Array.isArray(dragGroupIds) && dragGroupIds.length
+          ? dragGroupIds : (draggingId ? [draggingId] : []);
+        if (ids.length) { revertGroupToStart(ids, dragGroupStartWorld || new Map()); }
+        resetDrag();
+        CaseScene.refreshGizmo();
       }
       pressed = null;
     }

@@ -315,6 +315,42 @@ test('P0-SM-OF-2 unowned Escape still cancels a live gizmo drag after KeyboardMa
   assert.equal(cargo.position.y, 0, 'Editor continuation restores the drag start');
 });
 
+test('Editor pointer cancellation restores gizmo pose and camera without committing', t => {
+  const dom = installDom(t);
+  const controls = { enabled: true };
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
+  camera.position.z = 10;
+  camera.updateMatrixWorld();
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+  handle.userData.gizmoHandle = 'y';
+  handle.updateMatrixWorld();
+  t.after(() => { handle.geometry.dispose(); handle.material.dispose(); });
+  const cargo = { position: new THREE.Vector3() };
+  const selection = ['cargo'];
+  const canvas = dom.doc.createElement('canvas');
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100 });
+  canvas.setPointerCapture = () => {};
+  createInteractionManager({
+    UIComponents: dom.UI,
+    StateStore: { get: key => key === 'currentScreen' ? 'editor' : selection },
+    SceneManager: { getCamera: () => camera, getControls: () => controls },
+    CaseScene: {
+      getGizmoHandleMeshes: () => [handle], getGizmoTargetId: () => 'cargo',
+      getObject: () => cargo, setDragging() {}, setGizmoActive() {},
+      updateGizmoTransform() {}, setCollision() {}, refreshGizmo() {}, setHover() {},
+    },
+  }).init(canvas);
+  canvas.emit('pointerdown', { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
+  assert.equal(controls.enabled, false);
+  cargo.position.y = 5;
+  canvas.emit('pointercancel', { pointerId: 1 });
+  assert.equal(cargo.position.y, 0);
+  assert.equal(controls.enabled, true);
+  assert.deepEqual(selection, ['cargo']);
+  canvas.emit('lostpointercapture', { pointerId: 1 });
+  assert.equal(cargo.position.y, 0, 'a following lost-capture event is harmless');
+});
+
 test('P0-SM-OF-2 Settings reuses, closes, reopens and cleans disconnected ownership', t => {
   const dom = installDom(t);
   const { calls } = installKeyboard(dom);

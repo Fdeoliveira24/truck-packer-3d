@@ -478,6 +478,51 @@ test('Editor fixture preserves AutoPack Results focus through controls and close
   }
 });
 
+test('Editor fixture cancels a selected cargo-group pointer stroke without a Pack commit', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.locator('#btn-autopack').click();
+    await page.waitForFunction(() => window.probe.op() === 'idle' &&
+      (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
+    await page.locator('[data-focus-key="results-close"]').click();
+    const cargo = await page.evaluate(() => window.probe.cargoPoint());
+    assert.ok(cargo, 'a visible cargo mesh is available for the disposable gesture');
+    const before = await page.evaluate(id => {
+      const p = window.probe;
+      const other = p.StateStore.get('packLibrary')[0].cases.find(inst => inst.id !== id).id;
+      p.StateStore.set({ selectedInstanceIds: [id, other] }, { skipHistory: true });
+      return { cases: p.casesJson(), poses: p.poses(), selection: p.selection() };
+    }, cargo.id);
+    await page.mouse.move(cargo.x, cargo.y);
+    await page.mouse.down();
+    await page.mouse.move(cargo.x + 35, cargo.y + 20, { steps: 5 });
+    const duringPoses = JSON.parse(await page.evaluate(() => window.probe.poses()));
+    const startPoses = JSON.parse(before.poses);
+    assert.ok(duringPoses.some((pose, index) => pose.some((value, axis) =>
+      Math.abs(value - startPoses[index][axis]) > 1e-3)), 'the group gesture reached a provisional pose');
+    await page.evaluate(() => {
+      const canvas = window.probe.SceneManager.getRenderer().domElement;
+      canvas.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+    });
+    await page.mouse.up();
+    await page.waitForTimeout(350);
+    const after = await page.evaluate(() => ({
+      cases: window.probe.casesJson(), poses: window.probe.poses(),
+      selection: window.probe.selection(), controlsEnabled: window.probe.SceneManager.getControls().enabled,
+    }));
+    assert.equal(after.cases, before.cases);
+    const endPoses = JSON.parse(after.poses);
+    assert.ok(endPoses.every((pose, index) => pose.every((value, axis) =>
+      Math.abs(value - startPoses[index][axis]) < 1e-6)), 'every scene pose returned to its pre-drag position');
+    assert.deepEqual(after.selection, before.selection);
+    assert.equal(after.controlsEnabled, true);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs the animating scene', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {

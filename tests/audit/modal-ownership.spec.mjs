@@ -251,7 +251,7 @@ test('P0-SM-OF-2 actual document and Editor window listeners share the entry sna
     StateStore: { get: key => key === 'currentScreen' ? 'editor' : [] },
     CaseScene: {},
     OperationLifecycle: { isBusy() { editorMutatingAttempts++; return true; } },
-  }).init(dom.doc.createElement('canvas'));
+  }).init(dom.doc.body.appendChild(dom.doc.createElement('div')).appendChild(dom.doc.createElement('canvas')));
   const owner = dom.UI.modalOwnership.register({ onDismiss: () => owner.release() });
   const escape = dom.dispatch(dom.key('Escape'));
   assert.equal(dom.UI.modalOwnership.getActiveOwner(), null);
@@ -267,8 +267,10 @@ test('P0-SM-OF-2 actual document and Editor window listeners share the entry sna
   assert.equal(editorMutatingAttempts, 0);
   dom.dispatch(dom.key('r', dom.doc.createElement('input')));
   assert.equal(editorMutatingAttempts, 0);
-  assert.equal(dom.dispatch(dom.key('r')).defaultPrevented, true);
-  assert.equal(editorMutatingAttempts, 1, 'ordinary Editor dispatch resumes');
+  assert.equal(dom.dispatch(dom.key('r')).defaultPrevented, false, 'unfocused Editor key does not rotate');
+  const viewport = dom.doc.body.children.at(-1);
+  assert.equal(dom.dispatch(dom.key('r', viewport)).defaultPrevented, true);
+  assert.equal(editorMutatingAttempts, 1, 'focused viewport dispatch resumes');
   dom.dispatch(dom.key('Escape'));
   assert.equal(calls.deselect, 1);
 });

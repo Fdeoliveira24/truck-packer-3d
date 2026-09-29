@@ -7,11 +7,13 @@ import { checkItemCodeAvailability } from '../../core/business-identity.js';
 
 export { canonicalOrientationLock };
 
+let caseFieldId = 0;
+
 function createField(doc, label, type = 'text', placeholder = '', required = false) {
   const wrap = doc.createElement('div');
   wrap.className = 'field';
 
-  const l = doc.createElement('div');
+  const l = doc.createElement('label');
   l.className = 'label';
   l.textContent = required ? `${label} (required)` : label;
 
@@ -19,6 +21,9 @@ function createField(doc, label, type = 'text', placeholder = '', required = fal
   input.className = 'input';
   input.type = type;
   input.placeholder = placeholder;
+  input.id = `tp3d-case-field-${++caseFieldId}`;
+  input.required = required;
+  l.htmlFor = input.id;
 
   wrap.appendChild(l);
   wrap.appendChild(input);
@@ -31,6 +36,8 @@ function createIdentityField(doc, label, placeholder = '') {
   error.className = 'tp3d-field-error';
   error.setAttribute('role', 'alert');
   error.hidden = true;
+  error.id = `${field.input.id}-error`;
+  field.input.setAttribute('aria-describedby', error.id);
   field.wrap.appendChild(error);
   field.input.addEventListener('input', () => {
     error.textContent = '';
@@ -38,6 +45,23 @@ function createIdentityField(doc, label, placeholder = '') {
     field.input.removeAttribute('aria-invalid');
   });
   return { ...field, error };
+}
+
+function setFieldError(field, message) {
+  let error = field.error || field.wrap.querySelector('.tp3d-field-error');
+  if (!error) {
+    error = field.input.ownerDocument.createElement('div');
+    error.className = 'tp3d-field-error';
+    error.id = `${field.input.id}-error`;
+    error.setAttribute('role', 'alert');
+    field.wrap.appendChild(error);
+    field.input.setAttribute('aria-describedby', error.id);
+    field.input.addEventListener('input', () => setFieldError(field, ''));
+  }
+  error.textContent = message;
+  error.hidden = !message;
+  if (message) field.input.setAttribute('aria-invalid', 'true');
+  else field.input.removeAttribute('aria-invalid');
 }
 
 function setIdentityFieldError(field, message) {
@@ -58,11 +82,13 @@ function itemCodeErrorMessage(result) {
 function createSelectField(doc, label, options, value, help = '') {
   const wrap = doc.createElement('div');
   wrap.className = 'field';
-  const l = doc.createElement('div');
+  const l = doc.createElement('label');
   l.className = 'label';
   l.textContent = label;
   const select = doc.createElement('select');
   select.className = 'input';
+  select.id = `tp3d-case-field-${++caseFieldId}`;
+  l.htmlFor = select.id;
   options.forEach(([val, text]) => {
     const opt = doc.createElement('option');
     opt.value = val;
@@ -517,11 +543,13 @@ export function openCaseModal({
   const notesWrap = doc.createElement('div');
   notesWrap.className = 'field';
   notesWrap.classList.add('tp3d-grid-span-full');
-  const notesLabel = doc.createElement('div');
+  const notesLabel = doc.createElement('label');
   notesLabel.className = 'label';
   notesLabel.textContent = 'Case Instructions/Notes';
   const notes = doc.createElement('textarea');
   notes.className = 'input';
+  notes.id = `tp3d-case-field-${++caseFieldId}`;
+  notesLabel.htmlFor = notes.id;
   notes.classList.add('tp3d-textarea-minh-60');
   notes.value = initial.notes || '';
   notesWrap.appendChild(notesLabel);
@@ -554,7 +582,7 @@ export function openCaseModal({
         onClick: () => {
           const name = String(fName.input.value || '').trim();
           if (!name) {
-            UIComponents.showToast('Name is required', 'warning');
+            setFieldError(fName, 'Name is required.');
             fName.input.focus();
             return false;
           }
@@ -572,7 +600,9 @@ export function openCaseModal({
           const width = Utils.unitToInches(Number(fW.input.value) || 0, lengthUnit);
           const height = Utils.unitToInches(Number(fH.input.value) || 0, lengthUnit);
           if (length <= 0 || width <= 0 || height <= 0) {
-            UIComponents.showToast('Dimensions must be > 0', 'warning');
+            const invalid = length <= 0 ? fL : width <= 0 ? fW : fH;
+            setFieldError(invalid, 'Enter a value greater than zero.');
+            invalid.input.focus();
             return false;
           }
           const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);

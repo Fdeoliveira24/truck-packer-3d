@@ -42,11 +42,15 @@
   --accent-primary-12: rgb(255, 159, 28, 0.12);
   --accent-primary-14: rgb(255, 159, 28, 0.14);
   --accent-primary-25: rgb(255, 159, 28, 0.25);
+  --accent-readable: #9a5100;
+  --focus-strong: #9a5100;
+  --warning-readable: #7a4500;
 
   /* Semantic */
   --success: #10b981;
   --warning: #f59e0b;
   --error: #ef4444;
+  --danger-text: #b42318;
   --error-hover: #dc2626;
   --error-pressed: #b91c1c;
   --info: #3b82f6;
@@ -118,6 +122,10 @@
   --text-secondary: #a0a0ab;
   --text-muted: #6b6b78;
   --text-inverse: #1a1a1f;
+  --accent-readable: #ffbd66;
+  --focus-strong: #ffbd66;
+  --warning-readable: #ffbd66;
+  --danger-text: #ff7777;
 
   --border-subtle: #2a2d39;
   --border-strong: #3a3a47;
@@ -279,6 +287,18 @@ body[data-auth="signed_in"] #app {
   background: var(--accent-primary-14);
   color: var(--text-primary);
   border: 1px solid var(--accent-primary-25);
+}
+
+.nav-btn:focus-visible,
+#btn-sidebar:focus-visible {
+  outline: 3px solid var(--focus-strong);
+  outline-offset: 2px;
+}
+
+@media (min-width: 900px) {
+  .app.sidebar-collapsed .sidebar {
+    visibility: hidden;
+  }
 }
 
 /* ================================
@@ -448,7 +468,7 @@ body[data-auth="signed_in"] #app {
 .btn-primary {
   border-color: rgb(255, 159, 28, 0.4);
   background: var(--accent-primary);
-  color: var(--text-inverse);
+  color: #1a1a1f;
 }
 
 .btn-primary:hover {
@@ -458,7 +478,7 @@ body[data-auth="signed_in"] #app {
 .btn-danger {
   border-color: rgb(239, 68, 68, 0.4);
   background: rgb(239, 68, 68, 0.12);
-  color: var(--error);
+  color: var(--danger-text);
 }
 
 .btn-danger:hover {
@@ -472,7 +492,7 @@ body[data-auth="signed_in"] #app {
 /* Danger-ghost baseline: icon inherits red from the button's color.
    The modal/org-member solid-red variant overrides this to --text-inverse below. */
 .btn-danger i {
-  color: var(--error);
+  color: inherit;
 }
 
 .modal .btn-danger,
@@ -555,7 +575,8 @@ textarea {
 .input:focus,
 .select:focus,
 textarea:focus {
-  outline: none;
+  outline: 2px solid var(--focus-strong);
+  outline-offset: 1px;
   border-color: var(--accent-primary);
   box-shadow: 0 0 0 3px var(--accent-primary-14);
 }
@@ -4197,6 +4218,9 @@ body.tp3d-shared-modal-lock #app .nav {
   z-index: 6;
   transform: translateX(-50%);
   display: flex;
+  max-width: calc(100% - 16px);
+  flex-wrap: wrap;
+  justify-content: center;
   gap: var(--space-2);
   padding: 8px;
   border-radius: 999px;
@@ -4205,6 +4229,11 @@ body.tp3d-shared-modal-lock #app .nav {
   box-shadow: var(--shadow-md);
   -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
+}
+
+#viewport:focus-visible {
+  outline: 3px solid var(--focus-strong);
+  outline-offset: -4px;
 }
 
 @supports not (backdrop-filter: blur(8px)) {
@@ -4240,7 +4269,7 @@ body.tp3d-shared-modal-lock #app .nav {
 .toolbar-btn.active {
   border-color: rgb(255, 159, 28, 0.32);
   background: var(--accent-primary-14);
-  color: var(--accent-primary);
+  color: var(--accent-readable);
 }
 
 .toolbar-btn .tp3d-toolbar-caret {
@@ -4330,7 +4359,7 @@ body.tp3d-shared-modal-lock #app .nav {
   padding: 1px 8px;
   border-radius: 999px;
   background: rgb(245, 158, 11, 0.16);
-  color: var(--warning, #f59e0b);
+  color: var(--warning-readable);
   font-size: 10px;
   font-weight: var(--font-semibold);
   letter-spacing: 0.2px;
@@ -4550,7 +4579,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-autopack-results__current-pill {
   background: var(--accent-primary-14);
-  color: var(--accent-primary);
+  color: var(--accent-readable);
   font-weight: var(--font-semibold);
 }
 
@@ -4985,6 +5014,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
   .sidebar.open {
     transform: translateX(0);
+    visibility: visible;
   }
 
   .topbar {
@@ -5008,6 +5038,7 @@ body.tp3d-shared-modal-lock #app .nav {
     z-index: 14000;
     transform: translateX(-110%);
     transition: transform 0.25s ease;
+    visibility: hidden;
   }
 
   .panel.right {
@@ -5018,10 +5049,16 @@ body.tp3d-shared-modal-lock #app .nav {
   .panel.left.open {
     left: 0;
     transform: translateX(0);
+    visibility: visible;
   }
 
   .panel.right.open {
     transform: translateX(0);
+    visibility: visible;
+  }
+
+  .sidebar:not(.open) {
+    visibility: hidden;
   }
 
   .pack-grid {
@@ -5805,7 +5842,7 @@ body.tp3d-shared-modal-lock #app .nav {
 #inspector-body .card .tp3d-editor-dims-row .field .label {
   font-size: 11px;
   font-weight: var(--font-medium);
-  color: var(--text-muted);
+  color: var(--text-secondary);
   letter-spacing: 0.01em;
 }
 
@@ -6228,6 +6265,25 @@ body.tp3d-shared-modal-lock #app .nav {
   position: relative;
   z-index: 2;
   background: var(--bg-secondary);
+}
+
+.tp3d-editor-case-search-row > div:first-child {
+  min-width: 0;
+}
+
+.tp3d-editor-instance-chooser {
+  margin-bottom: var(--space-3);
+}
+
+.tp3d-editor-instance-chooser .select {
+  width: 100%;
+  min-width: 0;
+}
+
+.tp3d-editor-oog-warning {
+  margin: 0;
+  color: var(--danger-text);
+  font-size: var(--text-sm);
 }
 
 .tp3d-editor-browser-tabs {

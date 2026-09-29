@@ -41,6 +41,9 @@ export function createKeyboardManager({
       if (event.defaultPrevented || UIComponents.modalOwnership?.blocksKeyboardEvent(event)) return;
       if (isTypingContext(event)) return;
       const key = buildKeyString(event);
+      const interactionSurface = document.getElementById('viewport');
+      const spatialKey = ['delete', 'backspace', 'g', 's', 'p'].includes(key);
+      if (inEditor() && spatialKey && event.target !== interactionSurface) return;
       const handler = shortcuts[key];
       if (!handler) return;
       const handled = handler(event);

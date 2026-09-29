@@ -182,6 +182,7 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
         }
         isolationLock?.release();
         if (!isolationLock) modalIsolation.update();
+        windowRef.dispatchEvent?.(new Event('tp3d-modal-ownership-change'));
         if (restoreFocus && restoreOnRelease && ownedFocus) {
           const releasedOrder = order;
           queueMicrotask(() => {
@@ -195,6 +196,7 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
     owners.set(id, owner);
     if (kind !== 'popup' && element) isolationLock = modalIsolation.acquire(owner);
     else modalIsolation.update();
+    windowRef.dispatchEvent?.(new Event('tp3d-modal-ownership-change'));
     if (focusRoot) queueMicrotask(() => modalFocus.enter(owner, true));
     return owner;
   }

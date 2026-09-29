@@ -4218,6 +4218,7 @@ body.tp3d-shared-modal-lock #app .nav {
   z-index: 6;
   transform: translateX(-50%);
   display: flex;
+  width: max-content;
   max-width: calc(100% - 16px);
   flex-wrap: wrap;
   justify-content: center;

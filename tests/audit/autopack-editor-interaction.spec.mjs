@@ -298,6 +298,10 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    const desktopToolbarRows = await page.locator('#viewport-toolbar').evaluate(toolbar =>
+      new Set([...toolbar.querySelectorAll('button:not(.tp3d-toolbar-hidden-action)')]
+        .map(button => Math.round(button.getBoundingClientRect().top))).size);
+    assert.equal(desktopToolbarRows, 1, 'desktop viewport toolbar keeps all five actions on one row');
     assert.equal(await page.locator('#sidebar').evaluate(el => getComputedStyle(el).visibility), 'hidden');
     assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'false');
     await page.locator('#btn-sidebar').click();

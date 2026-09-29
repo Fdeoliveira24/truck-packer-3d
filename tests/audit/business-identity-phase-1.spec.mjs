@@ -2759,9 +2759,11 @@ test('CASES-CATEGORY-UI Case Save still resolves the selected category key and c
   const config = openTestCaseModal(harness, { onSaved: c => { saved = c; } });
 
   const requiredInput = label => {
-    const wrapLabel = config.content.querySelectorAll('div').find(d => d.classList.contains('label') && d.textContent === label);
+    const wrapLabel = config.content.querySelectorAll('label').find(d => d.classList.contains('label') && d.textContent === label);
     assert.ok(wrapLabel, `missing field label: ${label}`);
-    return wrapLabel.parentElement.children.find(el => el !== wrapLabel && el.tagName === 'INPUT');
+    const input = wrapLabel.parentElement.children.find(el => el !== wrapLabel && el.tagName === 'INPUT');
+    assert.equal(wrapLabel.htmlFor, input.id, `${label} is associated with its input`);
+    return input;
   };
   requiredInput('Name (required)').value = 'New Case';
   requiredInput('Length (in) (required)').value = '10';

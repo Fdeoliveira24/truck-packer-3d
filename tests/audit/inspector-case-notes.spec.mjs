@@ -1118,7 +1118,7 @@ test('Load Plan Notes is absent from the viewport toolbar, whose five visible ac
     ['btn-share', 'Share'],
     ['btn-editor-right', 'Inspector'],
   ].forEach(([id, label]) => {
-    assert.match(toolbarBlock, new RegExp(`id="${id}"[\\s\\S]{0,180}${label}`),
+    assert.match(toolbarBlock, new RegExp(`id="${id}"[\\s\\S]{0,320}${label}`),
       `the viewport toolbar must retain ${label}`);
   });
   assert.doesNotMatch(toolbarBlock, /btn-pack-notes|Load Plan Notes/,

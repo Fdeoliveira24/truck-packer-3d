@@ -7654,11 +7654,11 @@ test('EDITOR inspector unit labels follow preferences and repaint on preference 
     'editor inspector must convert displayed values back to internal inches before save');
   assert.match(truckBlock, /const lengthUnit = getLengthUnit\(prefs\)/,
     'truck inspector must derive its display unit from preferences');
-  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\((?:pack\.truck|effectiveTruck)\.length,\s*lengthUnit\)\)/,
+  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\((?:pack\.truck|effectiveTruck)\.length,\s*lengthUnit\),\s*'truck-length'\)/,
     'truck length field must display the active length unit');
   assert.match(truckBlock, /length:\s*Math\.max\(24,\s*displayLengthToInches\(fL\.input\.value,\s*(?:pack\.truck|effectiveTruck)\.length,\s*lengthUnit\)\)/,
     'truck length save must convert the displayed unit back to inches');
-  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\(bonusLength,\s*lengthUnit\)\)/,
+  assert.match(truckBlock, /smallField\(`Length \(\$\{lengthUnit\}\)`,\s*Utils\.inchesToUnit\(bonusLength,\s*lengthUnit\),\s*'overhang-length'\)/,
     'front overhang config fields must display the active length unit');
   assert.match(truckBlock, /wellOffsetFromRear:\s*Utils\.clamp\(displayLengthToInches\(fWO\.input\.value,\s*wellOffset,\s*lengthUnit\)/,
     'wheel well config fields must save active-unit values back to inches');

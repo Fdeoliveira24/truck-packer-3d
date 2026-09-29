@@ -5776,13 +5776,13 @@ export function createEditorScreen({
         empty.textContent = 'No individual case selected';
         select.appendChild(empty);
         const occurrence = new Map();
+        const unit = getLengthUnit(prefs);
         (pack.cases || []).forEach(inst => {
           const caseData = CaseLibrary.getById(inst.caseId);
           const name = caseData?.name || 'Unresolved case';
           const number = (occurrence.get(inst.caseId) || 0) + 1;
           occurrence.set(inst.caseId, number);
           const position = inst.transform?.position;
-          const unit = getLengthUnit(prefs);
           const location = position
             ? `, X ${Utils.inchesToUnit(Number(position.x), unit).toFixed(1)}, Y ${Utils.inchesToUnit(Number(position.y), unit).toFixed(1)}, Z ${Utils.inchesToUnit(Number(position.z), unit).toFixed(1)} ${unit}`
             : '';

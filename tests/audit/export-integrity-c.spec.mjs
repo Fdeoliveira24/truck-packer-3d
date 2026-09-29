@@ -42,6 +42,7 @@ const Utils = await import('../../src/core/utils/index.js');
 const ImportExport = await import('../../src/services/import-export.js');
 const PackLibrary = await import('../../src/services/pack-library.js');
 const CaseLibrary = await import('../../src/services/case-library.js');
+const CategoryService = await import('../../src/services/category-service.js');
 const { createTruckChangeController } = await import('../../src/ui/truck-change-controller.js');
 
 const read = rel => fs.readFile(`${repoRoot}${rel}`, 'utf8');
@@ -1009,4 +1010,148 @@ test('EXPORT-C-RESOLUTION stored/imported Screenshot resolution normalizes to su
   assert.match(app, /const SCREENSHOT_RESOLUTIONS = Object\.freeze\(\['1920x1080', '2560x1440', '3840x2160'\]\);/);
   const html = await read('index.html');
   for (const value of Defaults.SCREENSHOT_RESOLUTIONS) assert.ok(html.includes(`value="${value}"`), `Settings offers ${value}`);
+});
+
+// ===========================================================================
+// C25 follow-up — every referenced category travels with display metadata
+// ===========================================================================
+
+// The live QA workspace referenced these keys with no preferences entry.
+const QA_CATEGORY_KEYS = ['boxes', 'appliances', 'cylindrical cargo', 'fragile-like', 'long items'];
+
+function categoryState({ keys = QA_CATEGORY_KEYS, perKey = 2, categories = [] } = {}) {
+  const cases = keys.flatMap((key, k) => Array.from({ length: perKey }, (_, i) => caseRecord({
+    id: `cat-${k}-${i}`, itemCode: `CAT-${k}-${i}`, name: `Category Case ${k}.${i}`, category: key,
+  })));
+  return {
+    caseLibrary: cases,
+    packLibrary: [packRecord({ folderId: null, cases: [instanceRecord('cat-inst', 20, { caseId: cases[0].id })] })],
+    folderLibrary: [],
+    preferences: { theme: 'light', categories },
+  };
+}
+
+const exportedCategories = () => {
+  const parsed = JSON.parse(ImportExport.buildRestorableWorkspaceExportJSON('Categories', 'org-1'));
+  return parsed.data.categories || [];
+};
+
+test('EXPORT-C-CATEGORY shared primitives: CategoryService and the backup use one fallback algorithm', async () => {
+  const [service, storage, defaults] = await Promise.all([
+    read('src/services/category-service.js'), read('src/core/storage.js'), read('src/core/defaults.js'),
+  ]);
+  assert.equal((`${service}${storage}${defaults}`.match(/h \* 31 \+ s\.charCodeAt\(i\)/g) || []).length, 1,
+    'the deterministic color hash exists once');
+  assert.match(service, /const colorForKey = Defaults\.categoryFallbackColor;/);
+  assert.match(storage, /Defaults\.categoryFallbackColor\(key\)/);
+  assert.doesNotMatch(storage, /category-service/, 'core storage does not depend on the service layer');
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: { categories: [{ key: 'x', name: 'X', color: '#000000' }] } });
+  for (const key of [...QA_CATEGORY_KEYS, 'default', 'Mixed Case']) {
+    const k = Defaults.normalizeCategoryKey(key);
+    assert.deepEqual(CategoryService.meta(key),
+      { key: k, name: Defaults.categoryFallbackName(k), color: Defaults.categoryFallbackColor(k) }, key);
+  }
+});
+
+test('EXPORT-C-CATEGORY referenced keys without metadata export the runtime fallback, once, without mutation', () => {
+  init(categoryState());
+  const before = JSON.stringify(StateStore.get('preferences'));
+  const casesBefore = StateStore.get('caseLibrary').map(c => c.category);
+  const categories = exportedCategories();
+  assert.deepEqual(categories.map(c => c.key), QA_CATEGORY_KEYS, 'each missing key is included exactly once');
+  for (const category of categories) {
+    assert.deepEqual(category, CategoryService.meta(category.key), `${category.key} matches the app display`);
+    assert.ok(category.name.trim() && /^#[0-9a-f]{6}$/.test(category.color));
+  }
+  assert.equal(JSON.stringify(StateStore.get('preferences')), before, 'preferences are not mutated by export');
+  assert.deepEqual(StateStore.get('caseLibrary').map(c => c.category), casesBefore, 'live Case keys unchanged');
+  const parsed = JSON.parse(ImportExport.buildRestorableWorkspaceExportJSON('Categories', 'org-1'));
+  assert.deepEqual([...new Set(parsed.data.caseLibrary.map(c => c.category))], QA_CATEGORY_KEYS,
+    'exported Cases keep their keys (never reassigned to default)');
+});
+
+test('EXPORT-C-CATEGORY precedence: explicit metadata, then built-in, then fallback; unreferenced never added', () => {
+  init(categoryState({
+    keys: ['boxes', 'audio', 'touring-audio', 'default'],
+    categories: [
+      { key: 'touring-audio', name: 'Touring Audio', color: '#123ABC' },
+      { key: 'unused', name: 'Unused', color: '#445566' },
+    ],
+  }));
+  const categories = exportedCategories();
+  assert.deepEqual(categories, [
+    { key: 'boxes', name: 'Boxes', color: Defaults.categoryFallbackColor('boxes') },
+    { key: 'touring-audio', name: 'Touring Audio', color: '#123abc' },
+  ], 'explicit name/color kept exactly (color canonicalized); built-ins and unreferenced keys are not synthesized');
+  const plan = ImportExport.planWorkspaceRestore(
+    ImportExport.parseWorkspaceImportJSON(ImportExport.buildRestorableWorkspaceExportJSON('P', 'org-1')), { currentState: {} });
+  const slice = Object.fromEntries(plan.categorySlice.map(c => [c.key, c]));
+  const builtIn = key => Defaults.categories.find(c => c.key === key);
+  assert.deepEqual(slice.audio, { key: 'audio', name: builtIn('audio').name, color: builtIn('audio').color },
+    'a referenced built-in key restores with canonical built-in metadata');
+  assert.deepEqual(slice.default, { key: 'default', name: 'Default', color: builtIn('default').color });
+  assert.equal(slice.unused, undefined);
+
+  init(categoryState({ keys: ['audio'], categories: [] }));
+  assert.deepEqual(exportedCategories(), [], 'a built-in-only workspace needs no synthesized metadata');
+  const builtInOnly = ImportExport.planWorkspaceRestore(
+    ImportExport.parseWorkspaceImportJSON(ImportExport.buildRestorableWorkspaceExportJSON('B', 'org-1')), { currentState: {} });
+  assert.deepEqual(builtInOnly.categorySlice, [], 'restore keeps the built-in seeding contract');
+});
+
+test('EXPORT-C-CATEGORY malformed explicit metadata follows CategoryService display normalization', () => {
+  const categories = [
+    { key: 'boxes', name: '', color: 'red' },
+    { key: ' Appliances ', name: 'Appliances', color: 'ABCDEF' },
+    { name: 'Long Items' },
+    { key: 'fragile-like', name: 'First', color: '#111111' },
+    { key: 'fragile-like', name: 'Second', color: '#222222' },
+    { key: '', name: '' },
+  ];
+  init(categoryState({ categories }));
+  const exported = Object.fromEntries(exportedCategories().map(c => [c.key, c]));
+  for (const key of QA_CATEGORY_KEYS) {
+    assert.deepEqual(exported[key], CategoryService.meta(key), `${key} matches what the app displays`);
+  }
+  assert.deepEqual(exported.boxes, { key: 'boxes', name: 'Boxes', color: Defaults.categoryFallbackColor('boxes') },
+    'blank name / unparseable color use the runtime fallback');
+  assert.equal(exported.appliances.color, '#abcdef', 'a hex without # is canonicalized, not replaced');
+  assert.equal(exported['long items'].name, 'Long Items', 'a name-only entry is keyed by its name');
+  assert.equal(exported['fragile-like'].name, 'Second', 'the last duplicate wins, as in CategoryService.all()');
+});
+
+test('EXPORT-C-CATEGORY the backup restores keys and metadata; the importer still rejects malformed categories', () => {
+  const state = categoryState({ categories: [{ key: 'appliances', name: 'Home Appliances', color: '#0a0b0c' }] });
+  init(state);
+  const json = ImportExport.buildRestorableWorkspaceExportJSON('Restore', 'org-1');
+  const exported = JSON.parse(json).data.categories;
+
+  Storage.setStorageScope('cat-user');
+  Storage.setWorkspaceScope('cat-ws');
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: { theme: 'dark', categories: [] } });
+  Storage.saveNow();
+  const plan = ImportExport.planWorkspaceRestore(ImportExport.parseWorkspaceImportJSON(json), {
+    currentState: StateStore.snapshot(), destinationWorkspaceId: 'cat-ws', destinationWorkspaceName: 'Destination',
+  });
+  ImportExport.restoreWorkspaceImport(plan, {
+    StateStore, Storage, originScope: Storage.captureScopeContext(),
+    pauseAutoSave: () => () => {}, authorization: { role: 'owner', destinationWorkspaceId: 'cat-ws' },
+  });
+  assert.deepEqual([...new Set(StateStore.get('caseLibrary').map(c => c.category))], QA_CATEGORY_KEYS);
+  for (const category of exported) {
+    assert.deepEqual(CategoryService.meta(category.key), category, `${category.key} restores with its portable metadata`);
+  }
+  assert.equal(CategoryService.meta('appliances').name, 'Home Appliances');
+
+  const tamper = mutate => { const doc = JSON.parse(json); mutate(doc.data.categories); return JSON.stringify(doc); };
+  for (const [text, pattern] of [
+    [tamper(c => { c[0].name = ' '; }), /categories\[0\]\.name: value is blank/],
+    [tamper(c => { c[0].color = 'red'; }), /categories\[0\]\.color/],
+    [tamper(c => { c.push({ key: 'unused', name: 'Unused', color: '#123456' }); }), /not referenced by any Case/],
+    [tamper(c => { c.push({ ...c[0] }); }), /duplicate key/],
+    [tamper(c => { c.splice(0, 1); }), /category reference "boxes": portable metadata is missing/],
+  ]) {
+    expectExportError(() => ImportExport.parseWorkspaceImportJSON(text), pattern);
+    expectExportError(() => ImportExport.assertRestorableWorkspaceBackup(text), /would not pass restore in this version/);
+  }
 });

@@ -14,35 +14,10 @@
 import * as StateStore from '../core/state-store.js';
 import * as Defaults from '../core/defaults.js';
 
-const normalizeKey = value =>
-  String(value || '')
-    .trim()
-    .toLowerCase();
-
-function normalizeHex(value) {
-  const s = String(value || '')
-    .trim()
-    .toLowerCase();
-  const hexMatch = s.match(/^#?([0-9a-f]{6})$/);
-  return hexMatch ? `#${hexMatch[1]}` : null;
-}
-
-function colorForKey(key) {
-  const k = normalizeKey(key);
-  if (k === 'default') {
-    const def = (Defaults.categories || []).find(c => normalizeKey(c.key) === 'default');
-    const c = def && normalizeHex(def.color);
-    return c || '#9ca3af';
-  }
-  // Tiny hash to deterministic rgb hex
-  let h = 0;
-  const s = k || 'x';
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
-  const r = (h & 0xff).toString(16).padStart(2, '0');
-  const g = ((h >> 8) & 0xff).toString(16).padStart(2, '0');
-  const b = ((h >> 16) & 0xff).toString(16).padStart(2, '0');
-  return `#${r}${g}${b}`;
-}
+// Shared with the Workspace Backup projection (see core/defaults.js).
+const normalizeKey = Defaults.normalizeCategoryKey;
+const normalizeHex = Defaults.normalizeCategoryColor;
+const colorForKey = Defaults.categoryFallbackColor;
 
 function ensureDefault(list) {
   const hasDefault = list.some(c => normalizeKey(c.key) === 'default');
@@ -73,7 +48,7 @@ export function all() {
     const color = normalizeHex(c.color) || colorForKey(k);
     dedup.set(k, {
       key: k,
-      name: c.name || k.charAt(0).toUpperCase() + k.slice(1),
+      name: c.name || Defaults.categoryFallbackName(k),
       color,
     });
   });
@@ -85,7 +60,7 @@ export function meta(key) {
   const found = all().find(c => c.key === k);
   if (found) return found;
   if (k === 'default') return { key: 'default', name: 'Default', color: colorForKey('default') };
-  return { key: k, name: k.charAt(0).toUpperCase() + k.slice(1), color: colorForKey(k) };
+  return { key: k, name: Defaults.categoryFallbackName(k), color: colorForKey(k) };
 }
 
 export function listWithCounts(cases) {

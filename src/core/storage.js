@@ -33,7 +33,6 @@ import {
   parseCargoPlannerEnvelope,
   validateWorkspaceGraph,
   buildEnvelopeJSON,
-  projectPortableCategories,
   projectPortableCase,
   projectPortableWorkspacePack,
   projectPortableFolder,
@@ -867,53 +866,41 @@ export function exportWorkspaceJSON(workspaceName, workspaceId = '') {
   const caseLibrary = (Array.isArray(state.caseLibrary) ? state.caseLibrary : []).map(caseData =>
     projectPortableCase({
       ...(caseData || {}),
-      category: String((caseData && caseData.category) || 'default').trim().toLowerCase() || 'default',
+      category: Defaults.normalizeCategoryKey(caseData && caseData.category) || 'default',
     })
   );
-  const referencedCategoryKeys = new Set(
-    caseLibrary.map(caseData =>
-      String((caseData && caseData.category) || 'default').trim().toLowerCase() || 'default'
-    )
-  );
-  const categoryKeys = new Set();
-  const categories = projectPortableCategories(state.preferences || {})
-    .filter(category =>
-      referencedCategoryKeys.has(String(category && category.key || '').trim().toLowerCase())
-    )
-    .map(category => ({
-      key: String((category && category.key) || '').trim().toLowerCase(),
-      name: String((category && category.name) || '').trim(),
-      color: String((category && category.color) || '').trim().toLowerCase(),
-    }));
-  categories.forEach(category => {
-    if (!category.key || !category.name || !/^#[0-9a-f]{6}$/.test(category.color)) {
-      throw new Error(
-        `Workspace Backup cannot be created because category metadata is invalid for: ` +
-        (category.key || '(blank category key)')
-      );
-    }
-    if (categoryKeys.has(category.key)) {
-      throw new Error(
-        `Workspace Backup cannot be created because category metadata is duplicated for: ${category.key}`
-      );
-    }
-    categoryKeys.add(category.key);
+  const referencedCategoryKeys = new Set(caseLibrary.map(caseData => caseData.category));
+  // Every referenced category travels with the display metadata the app shows
+  // for it (CategoryService semantics): an explicit preferences entry (key
+  // from key or name, canonical color or the key's fallback color, name or the
+  // key's fallback name, last duplicate wins); a built-in key the importer
+  // already knows is left to Defaults; any other key gets its deterministic
+  // fallback metadata. Case keys and preferences are never changed.
+  const explicitCategories = new Map();
+  const preferenceCategories = state.preferences && Array.isArray(state.preferences.categories)
+    ? state.preferences.categories
+    : [];
+  preferenceCategories.forEach(category => {
+    if (!category || typeof category !== 'object') return;
+    const key = Defaults.normalizeCategoryKey(category.key || category.name);
+    if (!key) return;
+    explicitCategories.set(key, {
+      key,
+      name: String(category.name == null ? '' : category.name).trim() || Defaults.categoryFallbackName(key),
+      color: Defaults.normalizeCategoryColor(category.color) || Defaults.categoryFallbackColor(key),
+    });
   });
   const builtInCategoryKeys = new Set(
-    (Defaults.categories || [])
-      .map(category => String((category && category.key) || '').trim().toLowerCase())
-      .filter(Boolean)
+    (Defaults.categories || []).map(category => Defaults.normalizeCategoryKey(category && category.key)).filter(Boolean)
   );
-  const portableCategoryKeys = new Set(categories.map(category => category.key));
-  const missingCustomCategoryKeys = Array.from(referencedCategoryKeys).filter(
-    key => !builtInCategoryKeys.has(key) && !portableCategoryKeys.has(key)
-  );
-  if (missingCustomCategoryKeys.length) {
-    throw new Error(
-      `Workspace Backup cannot be created because category metadata is missing for: ` +
-      missingCustomCategoryKeys.join(', ')
-    );
-  }
+  const categories = [];
+  referencedCategoryKeys.forEach(key => {
+    if (explicitCategories.has(key)) {
+      categories.push(explicitCategories.get(key));
+    } else if (!builtInCategoryKeys.has(key)) {
+      categories.push({ key, name: Defaults.categoryFallbackName(key), color: Defaults.categoryFallbackColor(key) });
+    }
+  });
   const data = {
     caseLibrary,
     packLibrary: portablePacks.map(projectPortableWorkspacePack),

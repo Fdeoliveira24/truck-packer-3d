@@ -334,11 +334,14 @@ test('MILESTONE-D-1 Workspace Backup export is a self-contained portable v1 grap
       folderLibrary: [portableFolder()],
       preferences: { theme: 'dark', categories: [] },
     });
-    assert.throws(
-      () => runtime.ImportExport.buildWorkspaceExportJSON('Source Workspace', 'source-workspace-id'),
-      /category metadata is missing.*touring-audio/i,
-      'a referenced custom category must never be exported without its portable display metadata'
-    );
+    // Export Integrity C follow-up: a referenced custom category is never
+    // exported without portable display metadata — when preferences hold none,
+    // the backup carries the same fallback metadata the app displays.
+    const fallback = JSON.parse(
+      runtime.ImportExport.buildWorkspaceExportJSON('Source Workspace', 'source-workspace-id')
+    ).data.categories;
+    assert.deepEqual(fallback, [{ key: 'touring-audio', name: 'Touring-audio', color: '#d30e6c' }],
+      'a referenced custom category must never be exported without its portable display metadata');
   } finally {
     runtime.cleanup();
   }

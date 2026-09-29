@@ -3186,9 +3186,11 @@ export function createSettingsOverlay({
                 },
               });
               close();
+              const repairs = ImportExport.describePlacementRepairs(plan);
               UIComponents.showToast(
-                `Workspace restored: ${plan.counts.cases} Cases and ${plan.counts.packs} Load Plans.`,
-                'success'
+                `Workspace restored: ${plan.counts.cases} Cases and ${plan.counts.packs} Load Plans` +
+                  (repairs ? `, with ${repairs}.` : '.'),
+                repairs ? 'warning' : 'success'
               );
               return true;
             } catch (error) {
@@ -3253,7 +3255,7 @@ export function createSettingsOverlay({
     blurb.textContent =
       'Download the active workspace\'s local load plans, cases, and folders together with your local user preferences. Other account workspaces, login, membership, billing, and payment data are not included.';
 
-    const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    const buildFilename = () => Utils.buildExportFilename('truck-packer-app-backup', 'json');
     const meta = doc.createElement('div');
     meta.className = 'card tp3d-resources-card';
 
@@ -3263,7 +3265,7 @@ export function createSettingsOverlay({
 
     const metaValue = doc.createElement('div');
     metaValue.className = 'muted tp3d-resources-card-sub';
-    metaValue.textContent = `File: ${filename}`;
+    metaValue.textContent = `File: ${buildFilename()}`;
 
     meta.appendChild(metaTitle);
     meta.appendChild(metaValue);
@@ -3275,13 +3277,20 @@ export function createSettingsOverlay({
     exportBtn.className = 'btn btn-primary';
     exportBtn.textContent = 'Download App Backup';
     exportBtn.addEventListener('click', () => {
-      try {
-        const json = ImportExport.buildAppExportJSON();
-        Utils.downloadText(filename, json);
-        UIComponents.showToast('App JSON exported', 'success');
-      } catch (err) {
-        UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
-      }
+      Utils.downloadActionGuard.run('app-backup', () => {
+        try {
+          const json = ImportExport.buildRestorableAppExportJSON();
+          const filename = buildFilename();
+          Utils.downloadText(filename, json);
+          metaValue.textContent = `File: ${filename}`;
+          UIComponents.showToast('App Backup download started', 'success');
+          return true;
+        } catch (err) {
+          console.error(err);
+          UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+          return false;
+        }
+      });
     });
     actions.appendChild(exportBtn);
 
@@ -3395,7 +3404,8 @@ export function createSettingsOverlay({
       summary.appendChild(badges);
       resultsEl.appendChild(summary);
 
-      UIComponents.showToast('App data imported', 'success');
+      const repairs = ImportExport.describePlacementRepairs(imported.importReport);
+      UIComponents.showToast(repairs ? `App data imported with ${repairs}.` : 'App data imported', repairs ? 'warning' : 'success');
     } catch (err) {
       UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
     }

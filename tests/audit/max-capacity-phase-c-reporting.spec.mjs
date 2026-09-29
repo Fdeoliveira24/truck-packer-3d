@@ -194,6 +194,6 @@ test('PHASE-C-RPT-10 PDF summary includes the Max Capacity profile line only whe
   assert.equal(gated.includes('Rules violated'), false);
   assert.equal(gated.includes('Unsafe'), false);
   const app = await fs.readFile(appPath, 'utf8');
-  const pdf = sliceFn(app, 'function generatePDF()', 'doc.save(`${safeName(pack.title)}-plan.pdf`);');
+  const pdf = sliceFn(app, 'function exportPDF()', "doc.save(Utils.buildLoadPlanFilename(pack, 'pdf'));");
   assert.match(pdf, /if \(includeStats\) report\.optionalStats\.forEach/, 'the profile count stays an optional statistic');
 });

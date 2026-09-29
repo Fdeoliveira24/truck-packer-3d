@@ -1459,14 +1459,20 @@ export function createPacksScreen({
       const count = selectedIds.size;
       if (count === 0) return;
       const idsToExport = Array.from(selectedIds);
-      const packsToExport = idsToExport.map(id => PackLibrary.getById(id)).filter(Boolean);
-      if (!packsToExport.length) return;
-      try {
-        ImportExport.downloadPackBatchExportJSON(packsToExport);
-        UIComponents.showToast('Download started', 'success');
-      } catch (err) {
-        UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
-      }
+      Utils.downloadActionGuard.run('load-plan-batch-json', () => {
+        try {
+          // Every selected Load Plan is exported, or nothing is.
+          const packsToExport = ImportExport.resolvePackExportSelection(idsToExport, id => PackLibrary.getById(id));
+          const json = ImportExport.buildRestorablePackBatchExportJSON(packsToExport);
+          Utils.downloadText(Utils.buildExportFilename('load-plans', 'json'), json);
+          UIComponents.showToast('Download started', 'success');
+          return true;
+        } catch (err) {
+          console.error(err);
+          UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+          return false;
+        }
+      });
     }
 
     async function handleBulkDelete() {
@@ -2492,11 +2498,19 @@ export function createPacksScreen({
         toast('The workspace changed. Open the menu again to export.', 'warning');
         return;
       }
-      const pack = PackLibrary.getById(packId);
-      if (!pack) return;
-      const json = ImportExport.buildPackExportJSON(pack);
-      Utils.downloadText(`${(pack.title || 'load-plan').replace(/[^a-z0-9]+/gi, '-')}.json`, json);
-      toast('Load plan JSON exported', 'success');
+      Utils.downloadActionGuard.run(`load-plan-json:${packId}`, () => {
+        try {
+          const pack = PackLibrary.getById(packId);
+          const json = ImportExport.buildRestorablePackExportJSON(pack);
+          Utils.downloadText(Utils.buildLoadPlanFilename(pack, 'json'), json);
+          toast('Load plan JSON download started', 'success');
+          return true;
+        } catch (err) {
+          console.error(err);
+          toast('Export failed: ' + (err && err.message), 'error');
+          return false;
+        }
+      });
     }
 
     async function deletePack(packId) {

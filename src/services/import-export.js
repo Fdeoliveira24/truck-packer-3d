@@ -22,6 +22,7 @@ import { APP_VERSION } from '../core/version.js';
 import { canonicalOrientationLock } from '../core/orientation.js';
 import { getCaseHandlingSummary } from './case-rule-summary.js';
 import {
+  assertBusinessIdentityValue,
   migrateLoadPlanNumbers,
   normalizeBusinessIdentityLibraries,
 } from '../core/business-identity.js';
@@ -603,14 +604,6 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
 // SECTION: CASE CATALOG EXCHANGE (Milestone C)
 // ============================================================================
 
-function pad2(n) {
-  return String(n).padStart(2, '0');
-}
-function todayDateStamp() {
-  const d = new Date();
-  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
-}
-
 /** Versioned, workspace-agnostic Case Catalog export (kind: case-catalog). */
 export function buildCaseCatalogExportJSON(cases = CaseLibrary.getCases()) {
   const portableCases = (cases || []).map(projectPortableCase);
@@ -629,8 +622,18 @@ export function buildCaseCatalogExportJSON(cases = CaseLibrary.getCases()) {
   });
 }
 
+/** The Case Catalog file must pass the Case Catalog importer before it downloads. */
 export function downloadCaseCatalogExportJSON(cases = CaseLibrary.getCases()) {
-  Utils.downloadText(`cases-${todayDateStamp()}.json`, buildCaseCatalogExportJSON(cases), 'application/json');
+  const json = buildCaseCatalogExportJSON(cases);
+  try {
+    const imported = parseCaseCatalogImportPayloadJSON(json);
+    if (imported.cases.length !== (cases || []).length) throw new Error('the Case count changed during export.');
+  } catch (error) {
+    throw exportError(`Case Catalog would not pass import in this version: ${error && error.message}`);
+  }
+  const filename = Utils.buildExportFilename('case-catalog', 'json');
+  Utils.downloadText(filename, json, 'application/json');
+  return filename;
 }
 
 /**
@@ -746,9 +749,25 @@ export function buildCaseSpreadsheetExport(cases = CaseLibrary.getCases(), { for
   return { content: window.XLSX.utils.sheet_to_csv(sheet), mime: 'text/csv' };
 }
 
+// Basic artifact check before download: a CSV starts with the exact header
+// row; an XLSX is a non-empty workbook from the spreadsheet library.
+function assertCaseSpreadsheetArtifact(content, format) {
+  if (format === 'xlsx') {
+    const size = content && (content.byteLength != null ? content.byteLength : content.length);
+    if (!(size > 0)) throw exportError('The spreadsheet library did not produce an XLSX file. Nothing was downloaded.');
+    return;
+  }
+  const header = typeof content === 'string' ? content.split(/\r?\n/, 1)[0] : '';
+  if (header !== CASE_SPREADSHEET_COLUMNS.join(',')) {
+    throw exportError('The CSV export is missing its header row. Nothing was downloaded.');
+  }
+}
+
 export function downloadCaseSpreadsheetExport(cases = CaseLibrary.getCases(), { format = 'csv' } = {}) {
+  const extension = format === 'xlsx' ? 'xlsx' : 'csv';
   const { content, mime } = buildCaseSpreadsheetExport(cases, { format });
-  const filename = `cases-${todayDateStamp()}.${format === 'xlsx' ? 'xlsx' : 'csv'}`;
+  assertCaseSpreadsheetArtifact(content, extension);
+  const filename = Utils.buildExportFilename('cases', extension);
   // Blob accepts binary (ArrayBuffer) chunks the same as a string, so the
   // shared downloadText helper works for both text and xlsx content.
   Utils.downloadText(filename, content, mime);
@@ -1231,6 +1250,28 @@ export function buildPackExportPayload(pack) {
   return payload;
 }
 
+function projectPackExportEntry(payload) {
+  const entry = {
+    pack: projectPortablePack(payload.pack),
+    bundledCases: (payload.bundledCases || []).map(projectPortableCase),
+  };
+  if (payload.categories) entry.categories = payload.categories;
+  if (payload.unresolvedCaseRefs) {
+    entry.unresolvedCaseRefs = payload.unresolvedCaseRefs;
+    entry.unresolvedNote = payload.unresolvedNote;
+  }
+  return entry;
+}
+
+function buildPackExportEnvelopeJSON(payload) {
+  return buildEnvelopeJSON({
+    kind: IMPORT_KIND.LOAD_PLAN,
+    data: projectPackExportEntry(payload),
+    appVersion: APP_VERSION,
+    createdAt: new Date(payload.exportedAt).toISOString(),
+  });
+}
+
 /**
  * New exports use the versioned Cargo Planner v1 envelope (kind: "pack" — the
  * wire vocabulary intentionally stays "pack", see IMPORT_KIND). Legacy files
@@ -1239,22 +1280,7 @@ export function buildPackExportPayload(pack) {
  * NEW exports look like, never what old exports can still import.
  */
 export function buildPackExportJSON(pack) {
-  const payload = buildPackExportPayload(pack);
-  const data = {
-    pack: projectPortablePack(payload.pack),
-    bundledCases: (payload.bundledCases || []).map(projectPortableCase),
-  };
-  if (payload.categories) data.categories = payload.categories;
-  if (payload.unresolvedCaseRefs) {
-    data.unresolvedCaseRefs = payload.unresolvedCaseRefs;
-    data.unresolvedNote = payload.unresolvedNote;
-  }
-  return buildEnvelopeJSON({
-    kind: IMPORT_KIND.LOAD_PLAN,
-    data,
-    appVersion: APP_VERSION,
-    createdAt: new Date(payload.exportedAt).toISOString(),
-  });
+  return buildPackExportEnvelopeJSON(buildPackExportPayload(pack));
 }
 
 /**
@@ -1294,28 +1320,148 @@ export function parsePackImportJSON(jsonText) {
 export function buildPackBatchExportJSON(packs) {
   const list = Array.isArray(packs) ? packs.filter(Boolean) : [];
   if (!list.length) throw new Error('Select at least one load plan to export.');
-  const entries = list.map(pack => {
-    const payload = buildPackExportPayload(pack);
-    const entry = {
-      pack: projectPortablePack(payload.pack),
-      bundledCases: (payload.bundledCases || []).map(projectPortableCase),
-    };
-    if (payload.categories) entry.categories = payload.categories;
-    if (payload.unresolvedCaseRefs) {
-      entry.unresolvedCaseRefs = payload.unresolvedCaseRefs;
-      entry.unresolvedNote = payload.unresolvedNote;
-    }
-    return entry;
-  });
   return buildEnvelopeJSON({
     kind: IMPORT_KIND.LOAD_PLAN_BATCH,
-    data: { packs: entries },
+    data: { packs: list.map(pack => projectPackExportEntry(buildPackExportPayload(pack))) },
     appVersion: APP_VERSION,
   });
 }
 
-export function downloadPackBatchExportJSON(packs) {
-  Utils.downloadText(`load-plans-${todayDateStamp()}.json`, buildPackBatchExportJSON(packs), 'application/json');
+// ----------------------------------------------------------------------------
+// Restorable Load Plan JSON (the user-facing export contract)
+// ----------------------------------------------------------------------------
+// buildPackExportPayload/buildPackExportJSON keep their diagnostic contract: a
+// Pack whose instances reference missing Cases is preserved and reported via
+// unresolvedCaseRefs. The Load Plan import refuses such a file, so a user
+// export must never produce one: it fails before any download starts, and the
+// exact artifact is checked against the importer's own structural rules.
+
+function exportError(message, code = 'EXPORT_PREFLIGHT_FAILED') {
+  return Object.assign(new Error(message), { code });
+}
+
+function countUnresolvedCargo(payload) {
+  const refs = new Set(payload.unresolvedCaseRefs || []);
+  if (!refs.size) return 0;
+  return (payload.pack.cases || []).filter(inst => {
+    const caseId = String((inst && inst.caseId) || '').trim();
+    return !caseId || refs.has(caseId);
+  }).length;
+}
+
+function countLabel(count, word) {
+  return `${count} ${word}${count === 1 ? '' : 's'}`;
+}
+
+// The Load Plan importer's destination-independent rules, run with no local
+// Cases so every referenced Case must be bundled: pack shape, truck
+// dimensions, blank references, bundled Case definitions, unresolved
+// references, business identity values and duplicate bundled Case ids.
+function assertRestorableLoadPlanEntry(entry) {
+  const { incomingPack, bundled } = PackLibrary.validatePackImportPayload(entry);
+  const truck = incomingPack.truck;
+  if (!['length', 'width', 'height'].every(axis => Number.isFinite(Number(truck[axis])) && Number(truck[axis]) > 0)) {
+    throw new Error('Invalid load plan — truck dimensions must be positive numbers.');
+  }
+  assertBusinessIdentityValue(incomingPack.loadPlanNumber, { field: 'loadPlanNumber', required: false });
+  assertBusinessIdentityValue(incomingPack.customerReference, { field: 'customerReference', required: false });
+  const bundledIds = bundled.map(c => String(c.id).trim());
+  if (new Set(bundledIds).size !== bundledIds.length) throw new Error('Bundled Case definitions have duplicate ids.');
+}
+
+/** Self-preflight of a serialized single Load Plan JSON artifact. */
+export function assertRestorablePackExportJSON(jsonText) {
+  try {
+    if (typeof jsonText !== 'string' || !jsonText.trim()) throw new Error('The file is empty.');
+    const payload = parsePackImportJSON(jsonText);
+    assertRestorableLoadPlanEntry(payload);
+    return payload;
+  } catch (error) {
+    throw exportError(`Load Plan JSON would not pass import in this version: ${error && error.message}`);
+  }
+}
+
+/** User-facing single Load Plan JSON: restorable by the current importer, or it throws. */
+export function buildRestorablePackExportJSON(pack) {
+  if (!pack) throw exportError('This load plan no longer exists. Nothing was exported.', 'EXPORT_SOURCE_MISSING');
+  const payload = buildPackExportPayload(pack);
+  const unresolved = countUnresolvedCargo(payload);
+  if (unresolved) {
+    throw exportError(
+      `This load plan contains ${countLabel(unresolved, 'unresolved cargo item')} and cannot be exported as a ` +
+      'restorable Load Plan. Restore the missing Cases or remove those items, then export again.',
+      'EXPORT_UNRESOLVED_CARGO'
+    );
+  }
+  const json = buildPackExportEnvelopeJSON(payload);
+  assertRestorablePackExportJSON(json);
+  return json;
+}
+
+/**
+ * Resolve a batch selection against the current workspace. Every selected id
+ * must still resolve; a partial batch is never exported.
+ * @param {unknown[]} ids
+ * @param {(id: any) => any} [getById]
+ */
+export function resolvePackExportSelection(ids, getById = PackLibrary.getById) {
+  const list = Array.isArray(ids) ? ids : [];
+  if (!list.length) throw exportError('Select at least one load plan to export.', 'EXPORT_SOURCE_MISSING');
+  const packs = list.map(id => getById(id) || null);
+  const missing = packs.filter(pack => !pack).length;
+  if (missing) {
+    throw exportError(
+      `${missing} of the ${countLabel(list.length, 'selected load plan')} no longer exist${missing === 1 ? 's' : ''}. ` +
+      'Nothing was exported. Review the selection and try again.',
+      'EXPORT_SOURCE_MISSING'
+    );
+  }
+  return packs;
+}
+
+/** Self-preflight of a serialized Load Plan batch artifact. */
+export function assertRestorablePackBatchExportJSON(jsonText, expectedCount) {
+  try {
+    if (typeof jsonText !== 'string' || !jsonText.trim()) throw new Error('The file is empty.');
+    const entries = parsePackBatchImportJSON(jsonText);
+    if (entries.length !== expectedCount) {
+      throw new Error(`expected ${expectedCount} load plans, found ${entries.length}.`);
+    }
+    entries.forEach(entry => {
+      if (!entry) throw new Error('a load plan entry is malformed.');
+      assertRestorableLoadPlanEntry(entry);
+    });
+    return entries;
+  } catch (error) {
+    throw exportError(`Load Plan batch would not pass import in this version: ${error && error.message}`);
+  }
+}
+
+/** User-facing batch Load Plan JSON: every selected Pack, all restorable, or it throws. */
+export function buildRestorablePackBatchExportJSON(packs) {
+  const list = Array.isArray(packs) ? packs : [];
+  if (!list.length) throw exportError('Select at least one load plan to export.', 'EXPORT_SOURCE_MISSING');
+  if (list.some(pack => !pack)) {
+    throw exportError('A selected load plan no longer exists. Nothing was exported.', 'EXPORT_SOURCE_MISSING');
+  }
+  const payloads = list.map(buildPackExportPayload);
+  const unresolved = list.filter((pack, index) => countUnresolvedCargo(payloads[index]) > 0);
+  if (unresolved.length) {
+    const titles = unresolved.slice(0, 3).map(pack => `"${pack.title || 'Untitled'}"`).join(', ') +
+      (unresolved.length > 3 ? ', …' : '');
+    throw exportError(
+      `${countLabel(unresolved.length, 'selected load plan')} contain${unresolved.length === 1 ? 's' : ''} unresolved ` +
+      `cargo and cannot be exported as restorable Load Plans (${titles}). Nothing was exported.`,
+      'EXPORT_UNRESOLVED_CARGO'
+    );
+  }
+  const json = buildEnvelopeJSON({
+    kind: IMPORT_KIND.LOAD_PLAN_BATCH,
+    data: { packs: payloads.map(projectPackExportEntry) },
+    appVersion: APP_VERSION,
+  });
+  assertRestorablePackBatchExportJSON(json, list.length);
+  return json;
 }
 
 /**
@@ -1502,6 +1648,32 @@ function utf8ByteLength(value) {
     else bytes += 4;
   }
   return bytes;
+}
+
+const WORKSPACE_BACKUP_COUNT_LIMITS = Object.freeze([
+  ['cases', 'maxCases', 'Cases'],
+  ['packs', 'maxPacks', 'Load Plans'],
+  ['folders', 'maxFolders', 'folders'],
+  ['categories', 'maxCategories', 'categories'],
+  ['instances', 'maxInstances', 'instances'],
+]);
+
+/**
+ * The Workspace Backup record-count limits, shared by restore preflight and the
+ * exporter (which checks them before serializing). Absent counts are skipped.
+ * @param {{ cases?: number, packs?: number, folders?: number, categories?: number, instances?: number }} counts
+ */
+export function assertWorkspaceBackupCounts(counts) {
+  WORKSPACE_BACKUP_COUNT_LIMITS.forEach(([key, limitKey, label]) => {
+    const count = counts && counts[key];
+    const limit = WORKSPACE_BACKUP_LIMITS[limitKey];
+    if (Number.isFinite(count) && count > limit) {
+      throw workspaceBackupError(
+        `Workspace Backup contains too many ${label} (${count}; maximum ${limit}).`,
+        'WORKSPACE_BACKUP_LIMIT_EXCEEDED'
+      );
+    }
+  });
 }
 
 export function assertWorkspaceBackupFileSize(size) {
@@ -1827,9 +1999,7 @@ function validateWorkspaceCategories(data, cases, { legacy }) {
     throw workspaceBackupError('Invalid categories: expected an array.');
   }
   const rawCategories = Array.isArray(data.categories) ? data.categories : [];
-  if (rawCategories.length > WORKSPACE_BACKUP_LIMITS.maxCategories) {
-    throw workspaceBackupError('Workspace Backup contains too many categories.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
-  }
+  assertWorkspaceBackupCounts({ categories: rawCategories.length });
   const referencedKeys = new Set();
   cases.forEach((caseData, index) => {
     if (caseData.category == null && legacy) {
@@ -1895,6 +2065,11 @@ function validateWorkspaceCategories(data, cases, { legacy }) {
   };
 }
 
+function countWorkspaceInstances(packs) {
+  return (Array.isArray(packs) ? packs : []).reduce((total, pack) =>
+    total + (pack && Array.isArray(pack.cases) ? pack.cases.length : 0), 0);
+}
+
 function validateWorkspaceRestoreData(data, { legacy }) {
   if (!legacy && (Object.prototype.hasOwnProperty.call(data, 'preferences') ||
       Object.prototype.hasOwnProperty.call(data, 'currentPackId'))) {
@@ -1904,20 +2079,13 @@ function validateWorkspaceRestoreData(data, { legacy }) {
     throw workspaceBackupError('Invalid folderLibrary: expected an array.');
   }
   const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: false });
-  if (cases.length > WORKSPACE_BACKUP_LIMITS.maxCases) {
-    throw workspaceBackupError('Workspace Backup contains too many Cases.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
-  }
-  if (packs.length > WORKSPACE_BACKUP_LIMITS.maxPacks) {
-    throw workspaceBackupError('Workspace Backup contains too many Load Plans.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
-  }
-  if (folders.length > WORKSPACE_BACKUP_LIMITS.maxFolders) {
-    throw workspaceBackupError('Workspace Backup contains too many folders.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
-  }
-  const instanceCount = packs.reduce((total, pack) =>
-    total + (pack && Array.isArray(pack.cases) ? pack.cases.length : 0), 0);
-  if (instanceCount > WORKSPACE_BACKUP_LIMITS.maxInstances) {
-    throw workspaceBackupError('Workspace Backup contains too many instances.', 'WORKSPACE_BACKUP_LIMIT_EXCEEDED');
-  }
+  const instanceCount = countWorkspaceInstances(packs);
+  assertWorkspaceBackupCounts({
+    cases: cases.length,
+    packs: packs.length,
+    folders: folders.length,
+    instances: instanceCount,
+  });
 
   cases.forEach((caseData, index) => validateWorkspaceCase(caseData, index, { legacy }));
   packs.forEach((pack, index) => validateWorkspacePack(pack, index, { legacy }));
@@ -2043,7 +2211,7 @@ function buildWorkspaceRestoreCategorySlice(cases, categories) {
 function positionsDiffer(before, after) {
   if (!before || !after) return true;
   return ['x', 'y', 'z'].some(axis =>
-    Math.abs(Number(before[axis]) - Number(after[axis])) > PackLibrary.PLACEMENT_EPS
+    !(Math.abs(Number(before[axis]) - Number(after[axis])) <= PackLibrary.PLACEMENT_EPS)
   );
 }
 
@@ -2147,6 +2315,73 @@ export function planWorkspaceRestore(imported, {
   };
   Object.defineProperty(plan, WORKSPACE_RESTORE_PLAN, { value: true });
   return plan;
+}
+
+/**
+ * Self-preflight of a serialized Workspace Backup: the exact text runs through
+ * the restore preflight (UTF-8 byte limit, JSON complexity, envelope, graph
+ * integrity, record limits, field validation, category graph, normalization
+ * and placement planning). Nothing is written. Throws a user-facing error.
+ */
+export function assertRestorableWorkspaceBackup(jsonText) {
+  try {
+    const imported = parseWorkspaceImportJSON(jsonText);
+    planWorkspaceRestore(imported, { currentState: {} });
+    return imported;
+  } catch (error) {
+    const detail = error && error.message ? error.message : 'unknown error';
+    if (error && error.code === 'WORKSPACE_BACKUP_LIMIT_EXCEEDED') {
+      throw workspaceBackupError(`Workspace Backup is too large to restore in this version. ${detail}`, error.code);
+    }
+    throw workspaceBackupError(`Workspace Backup would not pass restore in this version: ${detail}`);
+  }
+}
+
+/**
+ * User-facing Workspace Backup: record limits are checked before anything is
+ * serialized, then the exact artifact must pass restore preflight.
+ */
+export function buildRestorableWorkspaceExportJSON(workspaceName, workspaceId = '') {
+  const state = AppStateStore.get() || {};
+  const packs = Array.isArray(state.packLibrary) ? state.packLibrary : [];
+  try {
+    assertWorkspaceBackupCounts({
+      cases: Array.isArray(state.caseLibrary) ? state.caseLibrary.length : 0,
+      packs: packs.length,
+      folders: Array.isArray(state.folderLibrary) ? state.folderLibrary.length : 0,
+      instances: countWorkspaceInstances(packs),
+    });
+  } catch (error) {
+    throw workspaceBackupError(`Workspace Backup is too large to restore in this version. ${error.message}`, error.code);
+  }
+  const json = buildWorkspaceExportJSON(workspaceName, workspaceId);
+  assertRestorableWorkspaceBackup(json);
+  return json;
+}
+
+/** User-facing App Backup: the exact artifact must pass the App Backup import preflight. */
+export function buildRestorableAppExportJSON() {
+  const json = buildAppExportJSON();
+  try {
+    CoreStorage.preflightAppBackupJSON(json);
+  } catch (error) {
+    throw exportError(`App Backup would not pass import in this version: ${error && error.message}`);
+  }
+  return json;
+}
+
+/**
+ * One-line disclosure of import placement repairs, or '' when every placement
+ * was kept exactly. Shared by Load Plan, App and Workspace import results.
+ * @param {{ placementsRepaired?: number, placementsStaged?: number }|null|undefined} report
+ */
+export function describePlacementRepairs(report) {
+  const repaired = Number(report && report.placementsRepaired) || 0;
+  const staged = Number(report && report.placementsStaged) || 0;
+  const parts = [];
+  if (repaired > 0) parts.push(`${countLabel(repaired, 'cargo placement')} repaired`);
+  if (staged > 0) parts.push(`${countLabel(staged, 'cargo placement')} moved to staging`);
+  return parts.length ? `${parts.join(' and ')} for safety` : '';
 }
 
 export function canRestoreWorkspace(role) {

@@ -89,17 +89,87 @@ export function formatRelativeTime(ts) {
   return new Date(ts).toLocaleDateString();
 }
 
-export function downloadText(filename, text, mime = 'application/json') {
-  const blob = new Blob([text], { type: mime });
-  const url = URL.createObjectURL(blob);
+// Browser code can only start a download; it cannot observe the file reaching
+// disk. Callers report "download started", never "saved".
+//
+// A Blob URL revoked in the same task as the click can cancel the download in
+// some browsers, so it is revoked later. 40 s matches the FileSaver behavior
+// jsPDF uses for PDF downloads.
+export const OBJECT_URL_REVOKE_DELAY_MS = 40000;
+// A started download holds its action key briefly so a double click cannot
+// start an identical second download; a deliberate re-export is unaffected.
+export const DOWNLOAD_ACTION_HOLD_MS = 1000;
+
+function clickDownloadAnchor(href, filename) {
   const a = document.createElement('a');
-  a.href = url;
+  a.href = href;
   a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  try {
+    document.body.appendChild(a);
+    a.click();
+  } finally {
+    if (a.parentNode) a.parentNode.removeChild(a);
+  }
 }
+
+export function downloadBlob(filename, blob) {
+  if (!blob || !(blob.size > 0)) throw new Error('The export file is empty. Nothing was downloaded.');
+  const url = URL.createObjectURL(blob);
+  try {
+    clickDownloadAnchor(url, filename);
+  } catch (error) {
+    URL.revokeObjectURL(url);
+    throw error;
+  }
+  window.setTimeout(() => URL.revokeObjectURL(url), OBJECT_URL_REVOKE_DELAY_MS);
+}
+
+export function downloadText(filename, text, mime = 'application/json') {
+  downloadBlob(filename, new Blob([text], { type: mime }));
+}
+
+export function downloadDataUrl(dataUrl, filename) {
+  if (typeof dataUrl !== 'string' || !dataUrl.startsWith('data:')) {
+    throw new Error('The export image is empty. Nothing was downloaded.');
+  }
+  clickDownloadAnchor(dataUrl, filename);
+}
+
+/**
+ * Single-activation guard for user download actions. While a key's action runs,
+ * and for `holdMs` after it reports a started download, repeat activations are
+ * ignored. An action that returns false or throws releases its key at once so
+ * the user can retry. Nothing is persisted.
+ * @param {{ holdMs?: number, schedule?: (fn: () => void, ms: number) => any }} [options]
+ */
+export function createDownloadActionGuard({
+  holdMs = DOWNLOAD_ACTION_HOLD_MS,
+  schedule = (fn, ms) => setTimeout(fn, ms),
+} = {}) {
+  const active = new Set();
+  return {
+    isActive: key => active.has(key),
+    /**
+     * @param {string} key
+     * @param {() => boolean|void} action
+     * @returns {boolean} whether a download was started by this activation
+     */
+    run(key, action) {
+      if (active.has(key)) return false;
+      active.add(key);
+      let started = false;
+      try {
+        started = action() !== false;
+        return started;
+      } finally {
+        if (started) schedule(() => active.delete(key), holdMs);
+        else active.delete(key);
+      }
+    },
+  };
+}
+
+export const downloadActionGuard = createDownloadActionGuard();
 
 export function hasWebGL() {
   try {

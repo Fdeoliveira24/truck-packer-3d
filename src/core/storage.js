@@ -19,6 +19,7 @@ import * as StateStore from './state-store.js';
 import {
   normalizeAppData,
   sanitizeLegacyPackQuantityLibrary,
+  stripInternalTruckFields,
 } from './normalizer.js';
 import {
   migrateLoadPlanNumbers,
@@ -32,7 +33,6 @@ import {
   parseCargoPlannerEnvelope,
   validateWorkspaceGraph,
   buildEnvelopeJSON,
-  projectPortableCategories,
   projectPortableCase,
   projectPortableWorkspacePack,
   projectPortableFolder,
@@ -841,7 +841,10 @@ export function clearAll() {
 
 export function exportAppJSON() {
   const state = StateStore.get();
-  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary;
+  const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary.map(pack => {
+    const truck = pack && stripInternalTruckFields(pack.truck);
+    return pack && truck !== pack.truck ? { ...pack, truck } : pack;
+  });
   const payload = {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
@@ -863,53 +866,41 @@ export function exportWorkspaceJSON(workspaceName, workspaceId = '') {
   const caseLibrary = (Array.isArray(state.caseLibrary) ? state.caseLibrary : []).map(caseData =>
     projectPortableCase({
       ...(caseData || {}),
-      category: String((caseData && caseData.category) || 'default').trim().toLowerCase() || 'default',
+      category: Defaults.normalizeCategoryKey(caseData && caseData.category) || 'default',
     })
   );
-  const referencedCategoryKeys = new Set(
-    caseLibrary.map(caseData =>
-      String((caseData && caseData.category) || 'default').trim().toLowerCase() || 'default'
-    )
-  );
-  const categoryKeys = new Set();
-  const categories = projectPortableCategories(state.preferences || {})
-    .filter(category =>
-      referencedCategoryKeys.has(String(category && category.key || '').trim().toLowerCase())
-    )
-    .map(category => ({
-      key: String((category && category.key) || '').trim().toLowerCase(),
-      name: String((category && category.name) || '').trim(),
-      color: String((category && category.color) || '').trim().toLowerCase(),
-    }));
-  categories.forEach(category => {
-    if (!category.key || !category.name || !/^#[0-9a-f]{6}$/.test(category.color)) {
-      throw new Error(
-        `Workspace Backup cannot be created because category metadata is invalid for: ` +
-        (category.key || '(blank category key)')
-      );
-    }
-    if (categoryKeys.has(category.key)) {
-      throw new Error(
-        `Workspace Backup cannot be created because category metadata is duplicated for: ${category.key}`
-      );
-    }
-    categoryKeys.add(category.key);
+  const referencedCategoryKeys = new Set(caseLibrary.map(caseData => caseData.category));
+  // Every referenced category travels with the display metadata the app shows
+  // for it (CategoryService semantics): an explicit preferences entry (key
+  // from key or name, canonical color or the key's fallback color, name or the
+  // key's fallback name, last duplicate wins); a built-in key the importer
+  // already knows is left to Defaults; any other key gets its deterministic
+  // fallback metadata. Case keys and preferences are never changed.
+  const explicitCategories = new Map();
+  const preferenceCategories = state.preferences && Array.isArray(state.preferences.categories)
+    ? state.preferences.categories
+    : [];
+  preferenceCategories.forEach(category => {
+    if (!category || typeof category !== 'object') return;
+    const key = Defaults.normalizeCategoryKey(category.key || category.name);
+    if (!key) return;
+    explicitCategories.set(key, {
+      key,
+      name: String(category.name == null ? '' : category.name).trim() || Defaults.categoryFallbackName(key),
+      color: Defaults.normalizeCategoryColor(category.color) || Defaults.categoryFallbackColor(key),
+    });
   });
   const builtInCategoryKeys = new Set(
-    (Defaults.categories || [])
-      .map(category => String((category && category.key) || '').trim().toLowerCase())
-      .filter(Boolean)
+    (Defaults.categories || []).map(category => Defaults.normalizeCategoryKey(category && category.key)).filter(Boolean)
   );
-  const portableCategoryKeys = new Set(categories.map(category => category.key));
-  const missingCustomCategoryKeys = Array.from(referencedCategoryKeys).filter(
-    key => !builtInCategoryKeys.has(key) && !portableCategoryKeys.has(key)
-  );
-  if (missingCustomCategoryKeys.length) {
-    throw new Error(
-      `Workspace Backup cannot be created because category metadata is missing for: ` +
-      missingCustomCategoryKeys.join(', ')
-    );
-  }
+  const categories = [];
+  referencedCategoryKeys.forEach(key => {
+    if (explicitCategories.has(key)) {
+      categories.push(explicitCategories.get(key));
+    } else if (!builtInCategoryKeys.has(key)) {
+      categories.push({ key, name: Defaults.categoryFallbackName(key), color: Defaults.categoryFallbackColor(key) });
+    }
+  });
   const data = {
     caseLibrary,
     packLibrary: portablePacks.map(projectPortableWorkspacePack),
@@ -936,32 +927,53 @@ export function exportWorkspaceJSON(workspaceName, workspaceId = '') {
  * shape. Format/kind/schemaVersion/units are rejected before any graph
  * validation or normalization runs (see core/import-schema.js), and the
  * legacy path is byte-for-byte the pre-existing behavior.
+ *
+ * Pure (no events, no writes), so the App Backup exporter runs the exact same
+ * preflight on its own artifact before a download starts.
  */
+export function preflightAppBackupJSON(jsonText) {
+  const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
+  if (!isPlainRecord(parsed)) throw new Error('Invalid JSON: expected an object');
+  let data;
+  if (isCargoPlannerEnvelope(parsed)) {
+    const envelope = parseCargoPlannerEnvelope(parsed, {
+      expectedKinds: [IMPORT_KIND.ACTIVE_WORKSPACE_BACKUP],
+    });
+    data = envelope.data;
+  } else {
+    const hasEnvelope = Object.prototype.hasOwnProperty.call(parsed, 'data');
+    if (hasEnvelope && !isPlainRecord(parsed.data)) {
+      throw new Error('Invalid App backup envelope: data must be an object');
+    }
+    data = hasEnvelope ? parsed.data : parsed;
+  }
+  const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: true });
+  const normalized = normalizeAppData({
+    caseLibrary: cases,
+    packLibrary: packs,
+    folderLibrary: folders,
+    preferences: data.preferences,
+    currentPackId: data.currentPackId || null,
+  });
+  // Normalization keeps every finite coordinate and replaces only malformed
+  // ones (and invalid placement labels), so a changed pose is exactly an
+  // instance with such a value. Reported, never persisted.
+  const isFiniteNumber = value => value !== null && value !== '' && Number.isFinite(Number(value));
+  const placementsRepaired = packs.reduce((total, pack) => total + (Array.isArray(pack.cases) ? pack.cases : [])
+    .filter(inst => {
+      const transform = inst && isPlainRecord(inst.transform) ? inst.transform : {};
+      const poseMalformed = ['position', 'rotation'].some(key =>
+        !isPlainRecord(transform[key]) || ['x', 'y', 'z'].some(axis => !isFiniteNumber(transform[key][axis])));
+      const placementInvalid = inst && inst.placement != null && inst.placement !== 'packed' && inst.placement !== 'staged';
+      return poseMalformed || placementInvalid;
+    }).length, 0);
+  Object.defineProperty(normalized, 'importReport', { value: { placementsRepaired }, enumerable: false });
+  return normalized;
+}
+
 export function importAppJSON(jsonText) {
   try {
-    const parsed = Utils.sanitizeJSON(Utils.safeJsonParse(jsonText, null));
-    if (!isPlainRecord(parsed)) throw new Error('Invalid JSON: expected an object');
-    let data;
-    if (isCargoPlannerEnvelope(parsed)) {
-      const envelope = parseCargoPlannerEnvelope(parsed, {
-        expectedKinds: [IMPORT_KIND.ACTIVE_WORKSPACE_BACKUP],
-      });
-      data = envelope.data;
-    } else {
-      const hasEnvelope = Object.prototype.hasOwnProperty.call(parsed, 'data');
-      if (hasEnvelope && !isPlainRecord(parsed.data)) {
-        throw new Error('Invalid App backup envelope: data must be an object');
-      }
-      data = hasEnvelope ? parsed.data : parsed;
-    }
-    const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: true });
-    return normalizeAppData({
-      caseLibrary: cases,
-      packLibrary: packs,
-      folderLibrary: folders,
-      preferences: data.preferences,
-      currentPackId: data.currentPackId || null,
-    });
+    return preflightAppBackupJSON(jsonText);
   } catch (err) {
     emit('storage:import_error', {
       message: err && err.message ? err.message : 'Import failed',

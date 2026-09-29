@@ -1763,11 +1763,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
       // aspect ratios (width, height) for Perspective, Top and Side.
       const PDF_VIEW_PPI = 192;
       const PDF_VIEW_ASPECTS = Object.freeze([[16, 9], [24, 13], [16, 7]]);
+      // A double click cannot start a second identical Screenshot or PDF.
+      const exportDownloadGuard = Utils.createDownloadActionGuard();
 
       function captureScreenshot() {
+        return exportDownloadGuard.run('screenshot', exportScreenshot);
+      }
+
+      function exportScreenshot() {
         try {
           const authority = resolveVisualExportAuthority();
-          if (!authority) return;
+          if (!authority) return false;
           const prefs = PreferencesManager.get();
           const res = resolveScreenshotResolution(prefs.export && prefs.export.screenshotResolution);
           // The Screenshot keeps the Editor's current theme background.
@@ -1777,11 +1783,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
             height: res.height,
             mimeType: 'image/png',
           }]);
-          downloadDataUrl(dataUrl, `load-plan-${safeName(authority.pack.title)}-${Date.now()}.png`);
-          UIComponents.showToast('Screenshot saved', 'success', { title: 'Export' });
+          Utils.downloadDataUrl(dataUrl, Utils.buildLoadPlanFilename(authority.pack, 'png'));
+          UIComponents.showToast('Screenshot download started', 'success', { title: 'Export' });
+          return true;
         } catch (err) {
           console.error(err);
           UIComponents.showToast('Screenshot failed: ' + err.message, 'error', { title: 'Export' });
+          return false;
         }
       }
 
@@ -1844,13 +1852,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
 
       function generatePDF() {
+        return exportDownloadGuard.run('pdf', exportPDF);
+      }
+
+      function exportPDF() {
         // Billing gate: PDF export requires active Pro subscription
         try {
           const _bs = window.__TP3D_BILLING && typeof window.__TP3D_BILLING.getBillingState === 'function'
             ? window.__TP3D_BILLING.getBillingState() : null;
           if (!_bs || !_bs.ok) {
             UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'Export' });
-            return;
+            return false;
           }
           const _rules = BillingService.getProRuleSet(_bs, window.OrgContext && typeof window.OrgContext.getActiveRole === 'function' ? window.OrgContext.getActiveRole() : null);
           if (!_rules.canUseProFeature) {
@@ -1858,17 +1870,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
             if (_rules.isOwner && (_rules.blockReason === 'trial_expired' || _rules.blockReason === 'payment_failed')) {
               try { openSettingsOverlay('billing'); } catch (_) { /* ignore */ }
             }
-            return;
+            return false;
           }
         } catch (_) {
           UIComponents.showToast('Billing unavailable. Please try again.', 'warning', { title: 'Export' });
-          return;
+          return false;
         }
 
         try {
           if (!window.jspdf || !window.jspdf.jsPDF) throw new Error('jsPDF not available');
           const authority = resolveVisualExportAuthority();
-          if (!authority) return;
+          if (!authority) return false;
           const pack = authority.pack;
 
           // One content model from the canonical statistics. Integrity content
@@ -2068,11 +2080,13 @@ const TP3D_BUILD_STAMP = Object.freeze({
             doc.setFont('helvetica', 'normal');
             doc.text(`Page ${i} of ${totalPages}`, pageWidth / 2, pageHeight - 20, { align: 'center' });
           }
-          doc.save(`${safeName(pack.title)}-plan.pdf`);
-          UIComponents.showToast('PDF exported', 'success', { title: 'Export' });
+          doc.save(Utils.buildLoadPlanFilename(pack, 'pdf'));
+          UIComponents.showToast('PDF download started', 'success', { title: 'Export' });
+          return true;
         } catch (err) {
           console.error(err);
           UIComponents.showToast('PDF export failed: ' + err.message, 'error', { title: 'Export' });
+          return false;
         }
       }
 
@@ -2213,25 +2227,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       function getCurrentPack() {
         const packId = StateStore.get('currentPackId');
         return packId ? PackLibrary.getById(packId) : null;
-      }
-
-      function safeName(name) {
-        return (
-          String(name || 'load-plan')
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9]+/g, '-')
-            .replace(/^-+|-+$/g, '') || 'load-plan'
-        );
-      }
-
-      function downloadDataUrl(dataUrl, filename) {
-        const link = document.createElement('a');
-        link.href = dataUrl;
-        link.download = filename;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
       }
 
       // Truck-centric views show cargo that occupies the truck body. Staged
@@ -2563,7 +2558,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       blurb.innerHTML =
         '<div>Download the active workspace\'s local load plans, cases, and folders together with local user preferences. Other account workspaces, login, membership, billing, and payment data are not included.</div>';
 
-      const filename = `truck-packer-app-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      const filename = Utils.buildExportFilename('truck-packer-app-backup', 'json');
       const meta = document.createElement('div');
       meta.className = 'card';
       meta.innerHTML = `
@@ -2583,13 +2578,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
             label: 'Download App Backup',
             variant: 'primary',
             onClick: () => {
-              try {
-                const json = ImportExport.buildAppExportJSON();
-                Utils.downloadText(filename, json);
-                UIComponents.showToast('App JSON exported', 'success');
-              } catch (err) {
-                UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
-              }
+              Utils.downloadActionGuard.run('app-backup', () => {
+                try {
+                  const json = ImportExport.buildRestorableAppExportJSON();
+                  Utils.downloadText(filename, json);
+                  UIComponents.showToast('App Backup download started', 'success');
+                  return true;
+                } catch (err) {
+                  console.error(err);
+                  UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
+                  return false;
+                }
+              });
             },
           },
         ],
@@ -2608,11 +2608,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         return;
       }
       const safeName = workspaceName ? String(workspaceName).trim() : 'workspace';
-      const slugName = safeName
-        .replace(/[^a-zA-Z0-9_-]/g, '-')
-        .replace(/-{2,}/g, '-')
-        .replace(/^-|-$/g, '') || 'workspace';
-      const filename = `${slugName}-backup-${new Date().toISOString().slice(0, 10)}.json`;
+      const filename = Utils.buildExportFilename(['workspace-backup', safeName], 'json');
       const content = document.createElement('div');
       content.style.display = 'grid';
       content.style.gap = '12px';
@@ -2646,13 +2642,18 @@ const TP3D_BUILD_STAMP = Object.freeze({
                 UIComponents.showToast('The active workspace changed. Nothing was exported.', 'warning');
                 return;
               }
-              try {
-                const json = ImportExport.buildWorkspaceExportJSON(safeName, workspaceId);
-                Utils.downloadText(filename, json);
-                UIComponents.showToast('Workspace Backup download started', 'success');
-              } catch (err) {
-                UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
-              }
+              Utils.downloadActionGuard.run('workspace-backup', () => {
+                try {
+                  const json = ImportExport.buildRestorableWorkspaceExportJSON(safeName, workspaceId);
+                  Utils.downloadText(filename, json);
+                  UIComponents.showToast('Workspace Backup download started', 'success');
+                  return true;
+                } catch (err) {
+                  console.error(err);
+                  UIComponents.showToast('Export failed: ' + (err && err.message), 'error', { duration: 7000 });
+                  return false;
+                }
+              });
             },
           },
         ],

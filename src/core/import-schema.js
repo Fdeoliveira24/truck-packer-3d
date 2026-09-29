@@ -17,7 +17,7 @@
  */
 
 import { stripForbiddenCaseQuantityFields } from './cargo-canonical.js';
-import { normalizeEditorView } from './normalizer.js';
+import { normalizeEditorView, stripInternalTruckFields } from './normalizer.js';
 
 // ============================================================================
 // SECTION: ENVELOPE CONSTANTS
@@ -256,10 +256,13 @@ export function projectPortableCase(caseData) {
  * `orientedDims`) are intentionally left untouched here — see
  * docs/engineering/autopack-engine-contract.md before stripping any placement
  * geometry field, since not every import path recomputes it unconditionally.
+ * Known Editor-internal truck markers are removed even from older stored data;
+ * every other truck field is exported unchanged.
  */
 export function projectPortablePack(pack) {
   const p = pack && typeof pack === 'object' ? pack : {};
   const { stats: _stats, thumbnail: _thumbnail, thumbnailUpdatedAt: _thumbnailUpdatedAt, thumbnailSource: _thumbnailSource, thumbnailVisualSignature: _thumbnailVisualSignature, thumbnailViewSignature: _thumbnailViewSignature, thumbnailRenderVersion: _thumbnailRenderVersion, editorView: _editorView, ...portable } = p;
+  if (Object.prototype.hasOwnProperty.call(portable, 'truck')) portable.truck = stripInternalTruckFields(portable.truck);
   return portable;
 }
 

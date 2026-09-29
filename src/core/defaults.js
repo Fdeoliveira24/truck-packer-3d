@@ -68,6 +68,10 @@ export const defaultPreferences = {
   categories: [],
 };
 
+// Settings > Screenshot resolution choices. Any other stored or imported value
+// normalizes to defaultPreferences.export.screenshotResolution.
+export const SCREENSHOT_RESOLUTIONS = Object.freeze(['1920x1080', '2560x1440', '3840x2160']);
+
 export const categories = [
   { key: 'all', name: 'All', color: '#9b9ba8' },
   { key: 'audio', name: 'Audio', color: '#f59e0b' },
@@ -76,6 +80,42 @@ export const categories = [
   { key: 'backline', name: 'Backline', color: '#ec4899' },
   { key: 'default', name: 'Default', color: '#9ca3af' },
 ];
+
+// Category display primitives shared by CategoryService (runtime display) and
+// the Workspace Backup projection, so a category key resolves to the same
+// name and color in the app and in a backup.
+export function normalizeCategoryKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase();
+}
+
+export function normalizeCategoryColor(value) {
+  const hexMatch = normalizeCategoryKey(value).match(/^#?([0-9a-f]{6})$/);
+  return hexMatch ? `#${hexMatch[1]}` : null;
+}
+
+export function categoryFallbackColor(key) {
+  const k = normalizeCategoryKey(key);
+  if (k === 'default') {
+    const def = categories.find(c => normalizeCategoryKey(c.key) === 'default');
+    const c = def && normalizeCategoryColor(def.color);
+    return c || '#9ca3af';
+  }
+  // Tiny hash to deterministic rgb hex
+  let h = 0;
+  const s = k || 'x';
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+  const r = (h & 0xff).toString(16).padStart(2, '0');
+  const g = ((h >> 8) & 0xff).toString(16).padStart(2, '0');
+  const b = ((h >> 16) & 0xff).toString(16).padStart(2, '0');
+  return `#${r}${g}${b}`;
+}
+
+export function categoryFallbackName(key) {
+  const k = normalizeCategoryKey(key);
+  return k.charAt(0).toUpperCase() + k.slice(1);
+}
 
 /**
  * Seed Cases are volume-less until the caller computes and assigns `volume`

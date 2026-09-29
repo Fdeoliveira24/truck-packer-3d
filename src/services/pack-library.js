@@ -2558,6 +2558,11 @@ export function update(packId, patch, { skipHistory = false } = {}) {
       required: false,
     });
   }
+  // Durable truck writes (every truck commit ends here) keep all truck data but
+  // never an Editor-internal marker such as the pending truck's __packId.
+  if (Object.prototype.hasOwnProperty.call(cloned || {}, 'truck')) {
+    cloned.truck = CoreNormalizer.stripInternalTruckFields(cloned.truck);
+  }
   const next = CoreNormalizer.sanitizeLegacyPackQuantityFields({ ...prev, ...cloned });
 
   const lastEditedKeys = [
@@ -3233,21 +3238,20 @@ function validateBundledCaseDefinition(c) {
   return null;
 }
 
-// PURE preflight: parse, validate, canonicalize and plan a pack import WITHOUT
-// mutating the case library, pack library, or StateStore. Returns a complete
-// import plan ({ currentCases, currentPacks, newCases, pack, caseConflicts }) or
-// throws with zero side effects. The single state commit happens only in
-// importPackPayload after the entire plan succeeds.
-export function planPackImport(payload) {
-  const now = Date.now();
+// The destination-independent structural gates of a pack import. planPackImport
+// runs them against the local Case ids; a Load Plan export runs them with no
+// local Cases, proving the file is self-contained. Pure; throws on failure.
+/**
+ * @param {any} payload
+ * @param {Set<string>} [localCaseIds]
+ */
+export function validatePackImportPayload(payload, localCaseIds = new Set()) {
   const incomingPack = payload && payload.pack;
   if (!incomingPack || !incomingPack.truck || !Array.isArray(incomingPack.cases)) {
     throw new Error('Invalid pack format');
   }
 
   const bundled = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
-  const currentCases = CaseLibrary.getCases();
-  const currentPacks = getPacks();
 
   // Reject blank/missing instance caseId up front — these can never resolve to a
   // real case and previously slipped past the missing-reference gate.
@@ -3267,16 +3271,6 @@ export function planPackImport(payload) {
     if (err) throw new Error(`Pack import blocked: ${err}.`);
   }
 
-  const caseById = new Map(currentCases.map(c => [c.id, c]));
-  const caseByName = new Map(
-    currentCases.map(c => [
-      String(c.name || '')
-        .trim()
-        .toLowerCase(),
-      c,
-    ])
-  );
-
   // Integrity gate: every instance must reference a case that resolves to either
   // an existing local case or a bundled case definition. Block the whole pack
   // import otherwise — never save a partial pack as a successful import.
@@ -3284,7 +3278,7 @@ export function planPackImport(payload) {
   const unresolvedRefs = [...new Set(
     (incomingPack.cases || [])
       .map(inst => inst && inst.caseId)
-      .filter(cid => cid && !caseById.has(cid) && !bundledIds.has(cid))
+      .filter(cid => cid && !localCaseIds.has(cid) && !bundledIds.has(cid))
   )];
   if (unresolvedRefs.length) {
     const shown = unresolvedRefs.slice(0, 3).join(', ') + (unresolvedRefs.length > 3 ? ', …' : '');
@@ -3293,6 +3287,28 @@ export function planPackImport(payload) {
       'The pack file must bundle every case its instances use.'
     );
   }
+  return { incomingPack, bundled };
+}
+
+// PURE preflight: parse, validate, canonicalize and plan a pack import WITHOUT
+// mutating the case library, pack library, or StateStore. Returns a complete
+// import plan ({ currentCases, currentPacks, newCases, pack, caseConflicts }) or
+// throws with zero side effects. The single state commit happens only in
+// importPackPayload after the entire plan succeeds.
+export function planPackImport(payload) {
+  const now = Date.now();
+  const currentCases = CaseLibrary.getCases();
+  const currentPacks = getPacks();
+  const caseById = new Map(currentCases.map(c => [c.id, c]));
+  const { incomingPack, bundled } = validatePackImportPayload(payload, new Set(caseById.keys()));
+  const caseByName = new Map(
+    currentCases.map(c => [
+      String(c.name || '')
+        .trim()
+        .toLowerCase(),
+      c,
+    ])
+  );
 
   const caseIdMap = new Map();
   const caseConflicts = [];
@@ -3447,10 +3463,10 @@ export function planPackImport(payload) {
     const before = prePlacementSnapshot[index] || {};
     const beforePos = before.position;
     const afterPos = inst && inst.transform && inst.transform.position;
+    // A malformed (non-finite) incoming coordinate that repair replaced is a
+    // change, never "preserved".
     const positionChanged = !beforePos || !afterPos ||
-      Math.abs(Number(beforePos.x) - Number(afterPos.x)) > PLACEMENT_EPS ||
-      Math.abs(Number(beforePos.y) - Number(afterPos.y)) > PLACEMENT_EPS ||
-      Math.abs(Number(beforePos.z) - Number(afterPos.z)) > PLACEMENT_EPS;
+      ['x', 'y', 'z'].some(axis => !(Math.abs(Number(beforePos[axis]) - Number(afterPos[axis])) <= PLACEMENT_EPS));
     // An imported file is not required to state `placement` up front (repair
     // always derives it fresh); only treat a placement CHANGE as meaningful
     // when the incoming file actually claimed one, so gaining a freshly

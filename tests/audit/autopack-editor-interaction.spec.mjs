@@ -158,7 +158,7 @@ window.probe = {
   canvasPointerDowns: 0,
   toasts: [],
   opLog: [],
-  StateStore, OperationLifecycle, SceneManager, CaseScene, AppShell,
+  StateStore, OperationLifecycle, SceneManager, CaseScene, AppShell, UIComponents,
   op: () => OperationLifecycle.currentOperation().kind,
   selection: () => (StateStore.get('selectedInstanceIds') || []).slice(),
   casesJson: () => JSON.stringify(livePack().cases),
@@ -293,6 +293,239 @@ async function openEditor(browser) {
 }
 
 const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+
+test('Editor accessibility fixture keeps focusable regions, selection, Share and narrow toolbar usable', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const desktopToolbarRows = await page.locator('#viewport-toolbar').evaluate(toolbar =>
+      new Set([...toolbar.querySelectorAll('button:not(.tp3d-toolbar-hidden-action)')]
+        .map(button => Math.round(button.getBoundingClientRect().top))).size);
+    assert.equal(desktopToolbarRows, 1, 'desktop viewport toolbar keeps all five actions on one row');
+    assert.equal(await page.locator('#sidebar').evaluate(el => getComputedStyle(el).visibility), 'hidden');
+    assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'false');
+    await page.locator('#btn-sidebar').click();
+    assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'true');
+    await page.locator('#btn-sidebar').click();
+
+    const names = await page.locator('#editor-right select, #editor-right input[type="number"]').evaluateAll(elements =>
+      elements.slice(0, 7).map(el => ({ name: el.labels?.[0]?.textContent?.trim() || '', id: el.id })));
+    assert.ok(names.every(item => item.name && item.id), 'Inspector controls have native labels');
+
+    await page.locator('[data-focus-key="instance-chooser"]').selectOption('cargo-7');
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-7']);
+    assert.equal(await page.locator('[data-focus-key="instance-chooser"]').inputValue(), 'cargo-7');
+    const before = await page.evaluate(() => window.probe.casesJson());
+    await page.locator('#btn-share').focus();
+    await page.keyboard.press('r');
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), before,
+      'single-character transform key from Share does not mutate cargo');
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#btn-share').getAttribute('aria-expanded'), 'true');
+    assert.match(await page.evaluate(() => document.activeElement.textContent), /Screenshot/);
+    await page.keyboard.press('ArrowDown');
+    assert.match(await page.evaluate(() => document.activeElement.textContent), /Export PDF/);
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-share');
+
+    await page.setViewportSize({ width: 900, height: 768 });
+    assert.equal(await page.locator('#editor-left').evaluate(el => getComputedStyle(el).visibility), 'visible');
+    await page.setViewportSize({ width: 899, height: 768 });
+    assert.equal(await page.locator('#editor-left').evaluate(el => getComputedStyle(el).visibility), 'hidden');
+    await page.setViewportSize({ width: 768, height: 600 });
+    assert.equal(await page.locator('#editor-right').evaluate(el => getComputedStyle(el).visibility), 'hidden');
+    for (const width of [496, 495, 480, 390, 375, 320]) {
+      await page.setViewportSize({ width, height: 568 });
+      const visible = await page.locator('#viewport-toolbar').evaluate(toolbar => {
+        const canvas = toolbar.closest('.canvas-wrap').getBoundingClientRect();
+        return [...toolbar.querySelectorAll('button:not(.tp3d-toolbar-hidden-action)')].map(button => {
+          const rect = button.getBoundingClientRect();
+          return rect.left >= canvas.left && rect.right <= canvas.right && rect.top >= canvas.top && rect.bottom <= canvas.bottom;
+        });
+      });
+      assert.deepEqual(visible, [true, true, true, true, true], `toolbar fits at ${width}px`);
+    }
+    assert.equal(await page.locator('#editor-left').evaluate(el => getComputedStyle(el).visibility), 'hidden');
+    assert.equal(await page.locator('#editor-right').evaluate(el => getComputedStyle(el).visibility), 'hidden');
+    await page.locator('#btn-editor-left').click();
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-left-close');
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'true');
+    await page.locator('#editor-case-filters-toggle').click();
+    const filter = page.locator('#editor-case-chips button').nth(1);
+    await filter.focus();
+    await page.keyboard.press('Space');
+    assert.equal(await page.locator('#editor-case-chips button').nth(1).getAttribute('aria-pressed'), 'true');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-editor-left');
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'false');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Editor fixture keeps rebuilt focus, rejects invalid truck input and exposes modal errors', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const beforeTruck = await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('packLibrary')[0].truck));
+    await page.locator('[data-focus-key="truck-length"]').fill('');
+    await page.locator('#inspector-body button').filter({ hasText: 'Update truck' }).click();
+    assert.equal(await page.locator('[data-focus-key="truck-length"]').getAttribute('aria-invalid'), 'true');
+    assert.match(await page.locator('[data-focus-key="truck-length"]').locator('..').textContent(), /Enter at least/);
+    assert.equal(await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('packLibrary')[0].truck)), beforeTruck);
+    assert.equal(await page.locator('.modal-overlay').count(), 0);
+
+    await page.locator('[data-focus-key="truck-length"]').fill('636');
+    const preset = page.locator('[data-focus-key="truck-preset"]');
+    await preset.focus();
+    await preset.selectOption({ index: 1 });
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'truck-preset');
+    const shape = page.locator('[data-focus-key="truck-shape"]');
+    await shape.focus();
+    await shape.selectOption('wheelWells');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'truck-shape');
+
+    await page.locator('[data-role="editor-new-case"]').click();
+    assert.equal(await page.locator('#toast-container').evaluate(el => el.parentElement === document.body), true);
+    const fields = await page.locator('.modal input[required], .modal select').evaluateAll(elements =>
+      elements.map(el => ({ name: el.labels?.[0]?.textContent?.trim() || el.getAttribute('aria-label'), required: el.required })));
+    assert.ok(fields.some(field => field.name?.startsWith('Name') && field.required));
+    assert.ok(fields.filter(field => /Length|Width|Height/.test(field.name || '')).every(field => field.required));
+    await page.locator('.modal-footer button').filter({ hasText: 'Save' }).click();
+    const name = page.locator('.modal input[required]').first();
+    assert.equal(await name.getAttribute('aria-invalid'), 'true');
+    assert.match(await page.locator('.modal .tp3d-field-error:not([hidden])').first().textContent(), /Name is required/);
+    await page.setViewportSize({ width: 320, height: 568 });
+    const toastBounds = await page.evaluate(() => {
+      window.probe.UIComponents.showToast('This validation message explains the required value for the selected case field.', 'warning');
+      const toast = document.querySelector('#toast-container .toast:last-child');
+      const rect = toast.getBoundingClientRect();
+      return { left: rect.left, right: rect.right, parent: toast.parentElement.parentElement === document.body };
+    });
+    assert.equal(toastBounds.parent, true);
+    assert.ok(toastBounds.left >= 0 && toastBounds.right <= 320, 'modal toast fits the 320px viewport');
+    await page.keyboard.press('Escape');
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await page.waitForFunction(() => document.querySelector('#toast-container')?.parentElement?.classList.contains('canvas-wrap'));
+    const contrast = await page.evaluate(() => {
+      const luminance = value => {
+        const rgb = value.match(/[\d.]+/g).slice(0, 3).map(Number).map(channel => {
+          const c = channel / 255;
+          return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+        });
+        return rgb[0] * 0.2126 + rgb[1] * 0.7152 + rgb[2] * 0.0722;
+      };
+      const ratio = (a, b) => {
+        const values = [luminance(a), luminance(b)].sort((x, y) => y - x);
+        return (values[0] + 0.05) / (values[1] + 0.05);
+      };
+      return ['light', 'dark'].map(theme => {
+        document.documentElement.dataset.theme = theme;
+        document.querySelector('[data-focus-key="truck-length"]').focus();
+        const primary = getComputedStyle(document.querySelector('#inspector-body .btn-primary'));
+        const label = getComputedStyle(document.querySelector('#inspector-body .tp3d-editor-dims-row .label'));
+        const panel = getComputedStyle(document.querySelector('#inspector-body .card'));
+        const input = getComputedStyle(document.querySelector('[data-focus-key="truck-length"]'));
+        return {
+          theme,
+          primary: ratio(primary.color, primary.backgroundColor),
+          label: ratio(label.color, panel.backgroundColor),
+          focus: ratio(input.outlineColor, panel.backgroundColor),
+        };
+      });
+    });
+    for (const sample of contrast) {
+      assert.ok(sample.primary >= 4.5, `${sample.theme} primary text contrast ${sample.primary}`);
+      assert.ok(sample.label >= 4.5, `${sample.theme} dimension label contrast ${sample.label}`);
+      assert.ok(sample.focus >= 3, `${sample.theme} focus contrast ${sample.focus}`);
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Editor fixture preserves AutoPack Results focus through controls and close', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.locator('#btn-autopack').click();
+    await page.waitForFunction(() => window.probe.op() === 'idle' &&
+      (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
+    await page.setViewportSize({ width: 320, height: 568 });
+    const resultsFit = await page.locator('[data-role="autopack-results-panel"]').evaluate(panel => {
+      const rect = panel.getBoundingClientRect();
+      const canvas = panel.closest('.canvas-wrap').getBoundingClientRect();
+      return rect.left >= canvas.left && rect.right <= canvas.right &&
+        rect.top >= canvas.top && rect.bottom <= canvas.bottom;
+    });
+    assert.equal(resultsFit, true, 'short-height Results remains inside the canvas');
+    const next = page.locator('[data-focus-key="results-next"]');
+    if (await next.count()) {
+      await next.focus();
+      await next.click();
+      const afterNext = await page.evaluate(() => document.activeElement.dataset.focusKey);
+      assert.ok(['results-next', 'results-prev'].includes(afterNext));
+    }
+    const toggle = page.locator('[data-focus-key="results-toggle"]');
+    await toggle.focus();
+    await toggle.click();
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'results-toggle');
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'results-toggle');
+    await page.locator('[data-focus-key="results-close"]').click();
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-autopack');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Editor fixture cancels a selected cargo-group pointer stroke without a Pack commit', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.locator('#btn-autopack').click();
+    await page.waitForFunction(() => window.probe.op() === 'idle' &&
+      (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
+    await page.locator('[data-focus-key="results-close"]').click();
+    const cargo = await page.evaluate(() => window.probe.cargoPoint());
+    assert.ok(cargo, 'a visible cargo mesh is available for the disposable gesture');
+    const before = await page.evaluate(id => {
+      const p = window.probe;
+      const other = p.StateStore.get('packLibrary')[0].cases.find(inst => inst.id !== id).id;
+      p.StateStore.set({ selectedInstanceIds: [id, other] }, { skipHistory: true });
+      return { cases: p.casesJson(), poses: p.poses(), selection: p.selection() };
+    }, cargo.id);
+    await page.mouse.move(cargo.x, cargo.y);
+    await page.mouse.down();
+    await page.mouse.move(cargo.x + 35, cargo.y + 20, { steps: 5 });
+    const duringPoses = JSON.parse(await page.evaluate(() => window.probe.poses()));
+    const startPoses = JSON.parse(before.poses);
+    assert.ok(duringPoses.some((pose, index) => pose.some((value, axis) =>
+      Math.abs(value - startPoses[index][axis]) > 1e-3)), 'the group gesture reached a provisional pose');
+    await page.evaluate(() => {
+      const canvas = window.probe.SceneManager.getRenderer().domElement;
+      canvas.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
+    });
+    await page.mouse.up();
+    await page.waitForTimeout(350);
+    const after = await page.evaluate(() => ({
+      cases: window.probe.casesJson(), poses: window.probe.poses(),
+      selection: window.probe.selection(), controlsEnabled: window.probe.SceneManager.getControls().enabled,
+    }));
+    assert.equal(after.cases, before.cases);
+    const endPoses = JSON.parse(after.poses);
+    assert.ok(endPoses.every((pose, index) => pose.every((value, axis) =>
+      Math.abs(value - startPoses[index][axis]) < 1e-6)), 'every scene pose returned to its pre-drag position');
+    assert.deepEqual(after.selection, before.selection);
+    assert.equal(after.controlsEnabled, true);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
 
 test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs the animating scene', { timeout: 120000 }, async () => {
   const browser = await launch();

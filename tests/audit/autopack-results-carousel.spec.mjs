@@ -848,8 +848,8 @@ test('AUTOPACK-CAROUSEL stale Apply button carries a reachable title and aria-la
     'the disabled-but-not-applied case (stale) must set an explanatory reason');
   assert.match(optionBlock, /apply\.title = staleReason;/,
     'the stale Apply button must carry a hover tooltip explaining why it is disabled');
-  assert.match(optionBlock, /apply\.setAttribute\('aria-label', staleReason\);/,
-    'the stale Apply button must carry an accessible label explaining why it is disabled');
+  assert.match(optionBlock, /apply\.setAttribute\('aria-label', `Apply this option\. \$\{staleReason\}`\);/,
+    'the stale Apply button must retain its visible label and explain why it is disabled');
   assert.equal(optionBlock.includes("'Rerun AutoPack after edits.'"), false,
     'the stale explanation must not reuse the removed persistent panel text verbatim');
 });
@@ -1130,8 +1130,8 @@ test('AUTOPACK-CAROUSEL Floor/Stacked stats derive from phaseStats and the Parti
     'a partial option must derive a readable reason');
   assert.match(render, /status\.title = partialReason;/,
     'the Partial pill must carry the reason as a hover tooltip');
-  assert.match(render, /status\.setAttribute\('aria-label', partialReason\);/,
-    'the Partial pill reason must also be accessible');
+  assert.match(render, /status\.setAttribute\('aria-label', `Partial\. \$\{partialReason\}`\);/,
+    'the Partial pill label and reason must also be accessible');
 });
 
 test('AUTOPACK-CAROUSEL dedupe-collapsed results explain that other strategies produced the same layout', async () => {

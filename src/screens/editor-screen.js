@@ -2120,6 +2120,8 @@ export function createInteractionManager({
       domEl.addEventListener('pointermove', onMove);
       domEl.addEventListener('pointerdown', onDown);
       window.addEventListener('pointerup', onUp);
+      domEl.addEventListener('pointercancel', onCancel);
+      domEl.addEventListener('lostpointercapture', onCancel);
       domEl.addEventListener('dblclick', onDblClick);
       window.addEventListener('keydown', onKeyDown);
       if (typeof CaseScene.setPendingPoseWatcher === 'function') {
@@ -2629,6 +2631,7 @@ export function createInteractionManager({
       // Modal-owned events above must never enter that continuation.
       if (ev.defaultPrevented && !(ev.key === 'Escape' && (gizmoDragging || gizmoPending))) return;
       if (!isEditorActive()) { return; }
+      if (ev.key !== 'Escape' && ev.target !== domEl?.parentElement) return;
       // Don't intercept when typing in an input
       const tag = ev.target && ev.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return; }
@@ -2736,6 +2739,7 @@ export function createInteractionManager({
     function onDown(ev) {
       if (!isEditorActive()) return;
       if (ev.button !== 0) return;
+      domEl.parentElement?.focus({ preventScroll: true });
       updatePointer(ev);
 
       // V3A: gizmo handles take grab priority over case picking.
@@ -2810,6 +2814,20 @@ export function createInteractionManager({
         else setSelection([...current, id]);
       } else {
         setSelection([id]);
+      }
+      pressed = null;
+    }
+
+    function onCancel() {
+      if (!pressed && !draggingId && !gizmoDragging) return;
+      if (gizmoDragging) {
+        cancelGizmoDrag();
+      } else {
+        const ids = Array.isArray(dragGroupIds) && dragGroupIds.length
+          ? dragGroupIds : (draggingId ? [draggingId] : []);
+        if (ids.length) { revertGroupToStart(ids, dragGroupStartWorld || new Map()); }
+        resetDrag();
+        CaseScene.refreshGizmo();
       }
       pressed = null;
     }
@@ -3891,6 +3909,7 @@ export function createEditorScreen({
     const validationPopoverEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-validation-popover'));
     const handlingRulesValidateBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('editor-handling-rules-validate-btn'));
     let packNotesButton = null;
+    let editorFieldId = 0;
 
     // Handling Rules validation STATUS: a compact warning icon plus a small anchored
     // panel. Presentation only — PackLibrary.isHandlingRulesValidationRequired() is
@@ -4110,6 +4129,31 @@ export function createEditorScreen({
       return results && typeof results === 'object' ? results : null;
     }
 
+    function captureEditorFocus(root) {
+      const active = document.activeElement;
+      if (!root?.contains(active) || !(active instanceof HTMLElement)) return null;
+      return {
+        key: active.dataset.focusKey || '',
+        tag: active.tagName,
+        name: active.getAttribute('aria-label') || active.textContent?.trim() || '',
+      };
+    }
+
+    function restoreEditorFocus(snapshot, root, fallback) {
+      if (!snapshot || UIComponents.modalOwnership?.getActiveOwner()) return;
+      if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body &&
+          document.activeElement.isConnected) return;
+      const candidates = Array.from(root?.querySelectorAll('button, input, select, textarea') || []);
+      const match = candidates.find(el => snapshot.key && el.dataset.focusKey === snapshot.key) ||
+        candidates.find(el => el.tagName === snapshot.tag &&
+          (el.getAttribute('aria-label') || el.textContent?.trim() || '') === snapshot.name);
+      const alternateKey = snapshot.key === 'results-next' ? 'results-prev'
+        : snapshot.key === 'results-prev' ? 'results-next' : '';
+      const alternate = candidates.find(el => alternateKey && el.dataset.focusKey === alternateKey && !el.disabled);
+      const target = match && !match.disabled ? match : (alternate || fallback);
+      target?.focus({ preventScroll: true });
+    }
+
     function patchAutoPackResultsState(patch, expectedRunId) {
       const current = getAutoPackResultsState();
       if (!current || current.runId !== expectedRunId) return;
@@ -4293,11 +4337,15 @@ export function createEditorScreen({
     }
 
     function renderAutoPackResultsPanel(pack) {
+      const previousFocus = captureEditorFocus(getAutoPackResultsHost()?.querySelector('[data-role="autopack-results-panel"]'));
       removeAutoPackResultsPanel();
       const host = getAutoPackResultsHost();
       const results = getAutoPackResultsState();
       const options = Array.isArray(results && results.options) ? results.options : [];
-      if (!host || !pack || !results || results.closed || results.packId !== pack.id || !options.length) return;
+      if (!host || !pack || !results || results.closed || results.packId !== pack.id || !options.length) {
+        restoreEditorFocus(previousFocus, null, btnAutopack);
+        return;
+      }
 
       const currentOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
       const stale = !currentOption;
@@ -4387,6 +4435,7 @@ export function createEditorScreen({
       toggleBtn.type = 'button';
       toggleBtn.className = 'tp3d-autopack-results__icon-btn';
       toggleBtn.setAttribute('aria-label', minimized ? 'Restore AutoPack results' : 'Minimize AutoPack results');
+      toggleBtn.dataset.focusKey = 'results-toggle';
       toggleBtn.innerHTML = `<i class="fa-solid fa-chevron-${minimized ? 'down' : 'up'}"></i>`;
       toggleBtn.addEventListener('click', () => patchAutoPackResultsState({ minimized: !minimized }, results.runId));
       headerActions.appendChild(toggleBtn);
@@ -4394,6 +4443,7 @@ export function createEditorScreen({
       closeBtn.type = 'button';
       closeBtn.className = 'tp3d-autopack-results__icon-btn';
       closeBtn.setAttribute('aria-label', 'Close AutoPack results');
+      closeBtn.dataset.focusKey = 'results-close';
       closeBtn.innerHTML = '<i class="fa-solid fa-xmark"></i>';
       closeBtn.addEventListener('click', () => patchAutoPackResultsState({ closed: true }, results.runId));
       headerActions.appendChild(closeBtn);
@@ -4405,6 +4455,7 @@ export function createEditorScreen({
       // Collapsed: render only the header (still the drag handle) — nothing below.
       if (minimized) {
         placeAutoPackResultsEl(panel);
+        restoreEditorFocus(previousFocus, panel, toggleBtn);
         return;
       }
 
@@ -4421,6 +4472,7 @@ export function createEditorScreen({
         prevBtn.type = 'button';
         prevBtn.className = 'tp3d-autopack-results__icon-btn tp3d-autopack-results__carousel-arrow';
         prevBtn.setAttribute('aria-label', 'Previous AutoPack option');
+        prevBtn.dataset.focusKey = 'results-prev';
         prevBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
         prevBtn.disabled = viewIndex <= 0;
         prevBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.max(0, viewIndex - 1) }, results.runId));
@@ -4433,6 +4485,7 @@ export function createEditorScreen({
         nextBtn.type = 'button';
         nextBtn.className = 'tp3d-autopack-results__icon-btn tp3d-autopack-results__carousel-arrow';
         nextBtn.setAttribute('aria-label', 'Next AutoPack option');
+        nextBtn.dataset.focusKey = 'results-next';
         nextBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
         nextBtn.disabled = viewIndex >= options.length - 1;
         nextBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.min(options.length - 1, viewIndex + 1) }, results.runId));
@@ -4464,7 +4517,7 @@ export function createEditorScreen({
         const maxCapacityChipHelp = 'This result used the more permissive Max Capacity handling profile. ' +
           'Review these placements before treating the plan as transport-ready.';
         maxCapacityChip.title = maxCapacityChipHelp;
-        maxCapacityChip.setAttribute('aria-label', maxCapacityChipHelp);
+        maxCapacityChip.setAttribute('aria-label', `${maxCapacityChip.textContent}. ${maxCapacityChipHelp}`);
         statChips.appendChild(maxCapacityChip);
       }
       metrics.appendChild(statChips);
@@ -4497,7 +4550,7 @@ export function createEditorScreen({
           const partialReason = formatAutoPackPartialReason(viewedOption);
           if (partialReason) {
             status.title = partialReason;
-            status.setAttribute('aria-label', partialReason);
+            status.setAttribute('aria-label', `Partial. ${partialReason}`);
           }
         }
         labelRow.appendChild(status);
@@ -4515,6 +4568,7 @@ export function createEditorScreen({
         actions.className = 'tp3d-autopack-results__carousel-actions';
         const apply = document.createElement('button');
         apply.type = 'button';
+        apply.dataset.focusKey = 'results-apply';
         apply.className = `btn btn-sm btn-primary tp3d-autopack-results__apply-btn${isViewedCurrent ? ' tp3d-autopack-results__apply-btn--applied' : ''}`;
         apply.disabled = isViewedCurrent || stale;
         if (isViewedCurrent) {
@@ -4529,7 +4583,7 @@ export function createEditorScreen({
           if (stale) {
             const staleReason = 'Outdated — rerun AutoPack to refresh this option.';
             apply.title = staleReason;
-            apply.setAttribute('aria-label', staleReason);
+            apply.setAttribute('aria-label', `Apply this option. ${staleReason}`);
           }
         }
         apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id, results.runId));
@@ -4550,6 +4604,7 @@ export function createEditorScreen({
 
       panel.appendChild(body);
       placeAutoPackResultsEl(panel);
+      restoreEditorFocus(previousFocus, panel, toggleBtn);
     }
 
     function initEditorUI() {
@@ -4589,6 +4644,22 @@ export function createEditorScreen({
       btnRight.addEventListener('click', () => togglePanel('right'));
       btnLeftClose.addEventListener('click', () => setPanelVisible('left', false));
       btnRightClose.addEventListener('click', () => setPanelVisible('right', false));
+      window.addEventListener('keydown', ev => {
+        if (ev.key !== 'Escape' || UIComponents.modalOwnership?.getActiveOwner() ||
+            StateStore.get('currentScreen') !== 'editor' ||
+            !window.matchMedia('(max-width: 899px)').matches) return;
+        if (rightEl.classList.contains('open')) {
+          setPanelVisible('right', false);
+          btnRight.focus();
+        } else if (leftEl.classList.contains('open')) {
+          setPanelVisible('left', false);
+          btnLeft.focus();
+        } else {
+          return;
+        }
+        ev.preventDefault();
+      });
+      syncPanelAccessibility();
 
       // Keep the action-bar working/spinner/disabled states in lockstep with the
       // authoritative operation lifecycle, so a working state appears the instant any
@@ -4657,7 +4728,7 @@ export function createEditorScreen({
               { label: 'Screenshot', icon: 'fa-solid fa-camera', onClick: () => btnPng.click() },
               { label: 'Export PDF', icon: 'fa-solid fa-file-pdf', onClick: () => btnPdf.click() },
             ],
-            { width: 200, align: 'left', role: 'editor-share' }
+            { width: 200, align: 'left', role: 'editor-share', menuSemantics: true }
           );
         });
       }
@@ -4816,6 +4887,7 @@ export function createEditorScreen({
     function onActivated() {
       // Entering (or re-entering) the Editor always starts with the status panel closed.
       setValidationPopoverOpen(false);
+      syncPanelAccessibility();
       if (!supportsWebGL || !viewportEl) return;
       ensureScene();
       scheduleEditorSceneLayoutSync();
@@ -4926,6 +4998,7 @@ export function createEditorScreen({
       tabBtns.forEach(btn => {
         if (!(btn instanceof HTMLElement)) return;
         btn.classList.toggle('btn-primary', btn.dataset.groupBy === caseBrowserGroupBy);
+        btn.setAttribute('aria-pressed', String(btn.dataset.groupBy === caseBrowserGroupBy));
       });
 
       const allCases = CaseLibrary.getCases();
@@ -5482,7 +5555,6 @@ export function createEditorScreen({
         caseChipsEl.style.display = showCaseFilters ? '' : 'none';
       }
       if (caseFilterToggleEl) {
-        caseFilterToggleEl.setAttribute('aria-pressed', showCaseFilters ? 'true' : 'false');
         caseFilterToggleEl.setAttribute('aria-expanded', showCaseFilters ? 'true' : 'false');
         caseFilterToggleEl.classList.toggle('btn-primary', showCaseFilters);
       }
@@ -5496,9 +5568,10 @@ export function createEditorScreen({
     }
 
     function makeBrowserChip(label, key, active, onClick, color) {
-      const el = document.createElement('div');
+      const el = document.createElement('button');
+      el.type = 'button';
       el.className = `chip ${active ? 'active' : ''}`;
-      el.tabIndex = 0;
+      el.setAttribute('aria-pressed', String(active));
       const dot = document.createElement('span');
       dot.className = 'chip-dot';
       dot.style.background = color || 'var(--border-strong)';
@@ -5507,9 +5580,6 @@ export function createEditorScreen({
       el.appendChild(dot);
       el.appendChild(text);
       el.addEventListener('click', onClick);
-      el.addEventListener('keydown', ev => {
-        if (ev.key === 'Enter') onClick();
-      });
       return el;
     }
 
@@ -5665,6 +5735,7 @@ export function createEditorScreen({
     }
 
     function renderInspector(pack) {
+      const previousFocus = captureEditorFocus(inspectorEl);
       const prefs = PreferencesManager.get();
       const sel = StateStore.get('selectedInstanceIds') || [];
       packNotesButton = null;
@@ -5689,6 +5760,47 @@ export function createEditorScreen({
           else renderSingleInspector(pack, inst, c, prefs);
         }
       }
+      if (pack && (pack.cases || []).length) {
+        const wrap = document.createElement('div');
+        wrap.className = 'field card tp3d-editor-instance-chooser';
+        const label = document.createElement('label');
+        label.className = 'label';
+        label.textContent = 'Select placed case';
+        const select = document.createElement('select');
+        select.className = 'select';
+        select.id = `tp3d-editor-field-${++editorFieldId}`;
+        select.dataset.focusKey = 'instance-chooser';
+        label.htmlFor = select.id;
+        const empty = document.createElement('option');
+        empty.value = '';
+        empty.textContent = 'No individual case selected';
+        select.appendChild(empty);
+        const occurrence = new Map();
+        const unit = getLengthUnit(prefs);
+        (pack.cases || []).forEach(inst => {
+          const caseData = CaseLibrary.getById(inst.caseId);
+          const name = caseData?.name || 'Unresolved case';
+          const number = (occurrence.get(inst.caseId) || 0) + 1;
+          occurrence.set(inst.caseId, number);
+          const position = inst.transform?.position;
+          const location = position
+            ? `, X ${Utils.inchesToUnit(Number(position.x), unit).toFixed(1)}, Y ${Utils.inchesToUnit(Number(position.y), unit).toFixed(1)}, Z ${Utils.inchesToUnit(Number(position.z), unit).toFixed(1)} ${unit}`
+            : '';
+          const option = document.createElement('option');
+          option.value = inst.id;
+          option.textContent = `${name}, instance ${number}, ${inst.hidden ? 'hidden' : (inst.placement || 'packed')}${location}`;
+          select.appendChild(option);
+        });
+        select.value = sel.length === 1 ? sel[0] : '';
+        select.addEventListener('change', () => {
+          InteractionManager.setSelection(select.value ? [select.value] : []);
+        });
+        wrap.appendChild(label);
+        wrap.appendChild(select);
+        inspectorEl.prepend(wrap);
+      }
+      restoreEditorFocus(previousFocus, inspectorEl,
+        inspectorEl.querySelector('[data-focus-key="instance-chooser"]') || btnRight);
     }
 
     function renderSpaceUtilizationSection(pack) {
@@ -5821,6 +5933,7 @@ export function createEditorScreen({
       const btn = document.createElement('button');
       btn.className = danger ? 'btn btn-danger' : 'btn';
       btn.type = 'button';
+      btn.dataset.focusKey = `action-${label}`;
       btn.innerHTML = `${iconHtml || `<i class="${iconClass}"></i>`} ${label}`;
       btn.disabled = Boolean(disabled);
       if (typeof onClick === 'function') btn.addEventListener('click', onClick);
@@ -6466,6 +6579,10 @@ export function createEditorScreen({
         const notesIndicator = document.createElement('span');
         notesIndicator.className = 'tp3d-notes-indicator-dot';
         packNotesButton.appendChild(notesIndicator);
+        const noteStatus = document.createElement('span');
+        noteStatus.className = 'visually-hidden';
+        noteStatus.textContent = ', notes present';
+        packNotesButton.appendChild(noteStatus);
       }
       truckHeader.appendChild(truckTitle);
       truckHeader.appendChild(packNotesButton);
@@ -6479,11 +6596,14 @@ export function createEditorScreen({
       presetWrap.className = 'field';
       presetWrap.classList.add('tp3d-editor-wrap-full');
 
-      const presetLabel = document.createElement('div');
+      const presetLabel = document.createElement('label');
       presetLabel.className = 'label';
       presetLabel.textContent = 'Trailer preset';
 
       const presetSelect = document.createElement('select');
+      presetSelect.id = `tp3d-editor-field-${++editorFieldId}`;
+      presetLabel.htmlFor = presetSelect.id;
+      presetSelect.dataset.focusKey = 'truck-preset';
       presetSelect.className = 'select';
       presetSelect.classList.add('tp3d-editor-select-full');
 
@@ -6542,10 +6662,13 @@ export function createEditorScreen({
       const shapeWrap = document.createElement('div');
       shapeWrap.className = 'field';
       shapeWrap.classList.add('tp3d-editor-wrap-full');
-      const shapeLabel = document.createElement('div');
+      const shapeLabel = document.createElement('label');
       shapeLabel.className = 'label';
       shapeLabel.textContent = 'Trailer Shape Mode';
       const shapeSelect = document.createElement('select');
+      shapeSelect.id = `tp3d-editor-field-${++editorFieldId}`;
+      shapeLabel.htmlFor = shapeSelect.id;
+      shapeSelect.dataset.focusKey = 'truck-shape';
       shapeSelect.className = 'select';
       shapeSelect.classList.add('tp3d-editor-select-full');
       shapeSelect.innerHTML = `
@@ -6565,9 +6688,9 @@ export function createEditorScreen({
       const dimsRow = document.createElement('div');
       dimsRow.className = 'row';
       dimsRow.classList.add('tp3d-editor-dims-row');
-      const fL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.length, lengthUnit));
-      const fW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.width, lengthUnit));
-      const fH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.height, lengthUnit));
+      const fL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.length, lengthUnit), 'truck-length');
+      const fW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.width, lengthUnit), 'truck-width');
+      const fH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(effectiveTruck.height, lengthUnit), 'truck-height');
       [fL.wrap, fW.wrap, fH.wrap].forEach(wrap => wrap.classList.add('tp3d-editor-field-wrap-full'));
       dimsRow.appendChild(fL.wrap);
       dimsRow.appendChild(fW.wrap);
@@ -6586,6 +6709,20 @@ export function createEditorScreen({
         // TruckChangeController (reconciliation + preview); dropdown changes do not.
         if (OperationLifecycle && OperationLifecycle.isBusy()) {
           UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
+          return;
+        }
+        const minDisplay = Utils.inchesToUnit(24, lengthUnit);
+        const fields = [fL, fW, fH];
+        let invalidField = null;
+        fields.forEach(field => {
+          const raw = field.input.value.trim();
+          const inches = raw ? displayLengthToInches(raw, NaN, lengthUnit) : NaN;
+          const invalid = !Number.isFinite(inches) || inches < 24;
+          setEditorFieldError(field, invalid ? `Enter at least ${Number(minDisplay.toFixed(1))} ${lengthUnit}.` : '');
+          if (invalid && !invalidField) invalidField = field.input;
+        });
+        if (invalidField) {
+          invalidField.focus();
           return;
         }
         const next = {
@@ -6722,8 +6859,8 @@ export function createEditorScreen({
 
           const cfgRow = document.createElement('div');
           cfgRow.className = 'tp3d-editor-dims-row tp3d-editor-dims-row--two';
-          const fBL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(bonusLength, lengthUnit));
-          const fBH = smallField(`Deck Height (${lengthUnit})`, Utils.inchesToUnit(bonusHeight, lengthUnit));
+          const fBL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(bonusLength, lengthUnit), 'overhang-length');
+          const fBH = smallField(`Deck Height (${lengthUnit})`, Utils.inchesToUnit(bonusHeight, lengthUnit), 'overhang-height');
           [fBL.wrap, fBH.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
           cfgRow.appendChild(fBL.wrap);
           cfgRow.appendChild(fBH.wrap);
@@ -6792,16 +6929,16 @@ export function createEditorScreen({
 
           const cfgRow1 = document.createElement('div');
           cfgRow1.className = 'tp3d-editor-dims-row';
-          const fWH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(wellHeight, lengthUnit));
-          const fWW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(wellWidth, lengthUnit));
-          const fWL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(wellLength, lengthUnit));
+          const fWH = smallField(`Height (${lengthUnit})`, Utils.inchesToUnit(wellHeight, lengthUnit), 'well-height');
+          const fWW = smallField(`Width (${lengthUnit})`, Utils.inchesToUnit(wellWidth, lengthUnit), 'well-width');
+          const fWL = smallField(`Length (${lengthUnit})`, Utils.inchesToUnit(wellLength, lengthUnit), 'well-length');
           [fWH.wrap, fWW.wrap, fWL.wrap].forEach(w => w.classList.add('tp3d-editor-field-wrap-full'));
           cfgRow1.appendChild(fWH.wrap);
           cfgRow1.appendChild(fWW.wrap);
           cfgRow1.appendChild(fWL.wrap);
           cfgCard.appendChild(cfgRow1);
 
-          const fWO = smallField(`Offset from rear (${lengthUnit})`, Utils.inchesToUnit(wellOffset, lengthUnit));
+          const fWO = smallField(`Offset from rear (${lengthUnit})`, Utils.inchesToUnit(wellOffset, lengthUnit), 'well-offset');
           fWO.wrap.classList.add('tp3d-editor-field-wrap-full');
           cfgCard.appendChild(fWO.wrap);
 
@@ -6972,6 +7109,7 @@ export function createEditorScreen({
       const title = document.createElement('div');
       title.classList.add('tp3d-editor-title-lg-semibold');
       title.textContent = caseData.name || '—';
+      title.title = caseData.name || '';
       const hasAnyNotes = Boolean(String(caseData.notes || '').trim()) || Boolean(String(inst.instanceNotes || '').trim());
       const notesButton = makeActionButton({
         label: 'Notes',
@@ -6984,6 +7122,10 @@ export function createEditorScreen({
         const notesIndicator = document.createElement('span');
         notesIndicator.className = 'tp3d-notes-indicator-dot';
         notesButton.appendChild(notesIndicator);
+        const noteStatus = document.createElement('span');
+        noteStatus.className = 'visually-hidden';
+        noteStatus.textContent = ', notes present';
+        notesButton.appendChild(noteStatus);
       }
       titleRow.appendChild(title);
       titleRow.appendChild(notesButton);
@@ -6995,6 +7137,15 @@ export function createEditorScreen({
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
       sub.textContent = `${mfg} • ${Utils.formatDims(d, lengthUnit)}`;
       card.appendChild(sub);
+      if (!inst.hidden && inst.placement !== 'staged') {
+        const bounds = CaseScene.getAabbWorld(inst.id);
+        if (bounds && !CaseScene.isInsideTruck(bounds)) {
+          const warning = document.createElement('p');
+          warning.className = 'tp3d-editor-oog-warning';
+          warning.textContent = 'Out of gauge — this case extends outside the truck.';
+          card.appendChild(warning);
+        }
+      }
       card.appendChild(makeMiniCategoryChip(caseData.category));
 
       // Handling rules: case-level policy and this-instance lock, shown separately.
@@ -7294,10 +7445,13 @@ export function createEditorScreen({
       const wrap = document.createElement('div');
       wrap.className = 'field tp3d-editor-inline-position-field';
       wrap.classList.add('tp3d-editor-minw-90');
-      const l = document.createElement('div');
+      const l = document.createElement('label');
       l.className = 'label';
       l.textContent = `${axis} (${unit || 'in'})`;
       const input = document.createElement('input');
+      input.id = `tp3d-editor-field-${++editorFieldId}`;
+      l.htmlFor = input.id;
+      input.dataset.focusKey = `position-${axis}`;
       input.className = 'input';
       input.type = 'number';
       input.step = '0.1';
@@ -7307,14 +7461,17 @@ export function createEditorScreen({
       return { wrap, input };
     }
 
-    function smallField(label, value) {
+    function smallField(label, value, focusKey = '') {
       const wrap = document.createElement('div');
       wrap.className = 'field';
       wrap.classList.add('tp3d-editor-minw-90');
-      const l = document.createElement('div');
+      const l = document.createElement('label');
       l.className = 'label';
       l.textContent = label;
       const input = document.createElement('input');
+      input.id = `tp3d-editor-field-${++editorFieldId}`;
+      l.htmlFor = input.id;
+      if (focusKey) input.dataset.focusKey = focusKey;
       input.className = 'input';
       input.type = 'number';
       input.step = '0.1';
@@ -7322,6 +7479,31 @@ export function createEditorScreen({
       wrap.appendChild(l);
       wrap.appendChild(input);
       return { wrap, input };
+    }
+
+    function setEditorFieldError(field, message) {
+      let error = field.wrap.querySelector('.tp3d-field-error');
+      if (!error) {
+        error = document.createElement('div');
+        error.className = 'tp3d-field-error';
+        error.id = `${field.input.id}-error`;
+        error.setAttribute('role', 'alert');
+        field.wrap.appendChild(error);
+        field.input.setAttribute('aria-describedby', error.id);
+        field.input.addEventListener('input', () => setEditorFieldError(field, ''));
+      }
+      error.textContent = message;
+      error.hidden = !message;
+      if (message) field.input.setAttribute('aria-invalid', 'true');
+      else field.input.removeAttribute('aria-invalid');
+    }
+
+    function syncPanelAccessibility() {
+      const mobile = window.matchMedia('(max-width: 899px)').matches;
+      btnLeft.setAttribute('aria-expanded', String(mobile
+        ? leftEl.classList.contains('open') : !shellEl.classList.contains('is-left-panel-hidden')));
+      btnRight.setAttribute('aria-expanded', String(mobile
+        ? rightEl.classList.contains('open') : !shellEl.classList.contains('is-right-panel-hidden')));
     }
 
     function setPanelVisible(side, visible) {
@@ -7336,6 +7518,11 @@ export function createEditorScreen({
       if (side === 'right') {
         if (isMobile) rightEl.classList.toggle('open', visible);
         else shellEl.classList.toggle('is-right-panel-hidden', !visible);
+      }
+      syncPanelAccessibility();
+      if (isMobile && visible) (side === 'left' ? btnLeftClose : btnRightClose).focus();
+      if (!visible && (side === 'left' ? leftEl : rightEl).contains(document.activeElement)) {
+        (side === 'left' ? btnLeft : btnRight).focus();
       }
 
       if (StateStore.get('currentScreen') === 'editor') {

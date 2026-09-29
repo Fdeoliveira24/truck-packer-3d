@@ -283,7 +283,7 @@
       <main class="main">
         <header class="topbar">
           <div class="topbar-left">
-            <button class="btn btn-ghost" id="btn-sidebar" type="button" aria-label="Menu">
+            <button class="btn btn-ghost" id="btn-sidebar" type="button" aria-label="Menu" aria-controls="sidebar" aria-expanded="false">
               <i class="fa-solid fa-bars"></i>
             </button>
             <div class="topbar-title">
@@ -753,9 +753,9 @@
           <!-- ===== SCREEN: EDITOR ===== -->
           <section class="screen" id="screen-editor">
             <div class="editor-shell">
-              <div class="panel left" id="editor-left">
+              <div class="panel left" id="editor-left" role="region" aria-labelledby="editor-left-title">
                 <div class="panel-header">
-                  <div class="panel-title">Case Browser</div>
+                  <h2 class="panel-title" id="editor-left-title">Case Browser</h2>
                   <button
                     class="btn btn-ghost"
                     id="btn-left-close"
@@ -783,6 +783,7 @@
                           class="input"
                           id="editor-case-search"
                           type="text"
+                          aria-label="Search cases"
                           placeholder="Search cases..."
                           style="padding-left: 30px"
                         />
@@ -792,7 +793,8 @@
                         id="editor-case-filters-toggle"
                         type="button"
                         aria-label="Toggle filters"
-                        aria-pressed="true"
+                        aria-controls="editor-case-chips"
+                        aria-expanded="true"
                       >
                         <i class="fa-solid fa-filter"></i>
                       </button>
@@ -805,10 +807,10 @@
                 </div>
               </div>
 
-              <div class="panel canvas-wrap">
-                <div id="viewport"></div>
-                <div class="viewport-toolbar" id="viewport-toolbar">
-                  <button class="toolbar-btn" id="btn-editor-left" type="button" data-tooltip="Toggle case browser">
+              <div class="panel canvas-wrap" role="region" aria-label="3D viewport">
+                <div id="viewport" tabindex="0" aria-label="3D cargo interaction. Focus here to use cargo shortcuts."></div>
+                <div class="viewport-toolbar" id="viewport-toolbar" role="toolbar" aria-label="Editor actions">
+                  <button class="toolbar-btn" id="btn-editor-left" type="button" data-tooltip="Toggle case browser" aria-controls="editor-left" aria-expanded="true">
                     <i class="fa-solid fa-boxes-stacked"></i>
                     Cases
                   </button>
@@ -825,7 +827,7 @@
                     Share
                     <i class="fa-solid fa-chevron-down tp3d-toolbar-caret"></i>
                   </button>
-                  <button class="toolbar-btn" id="btn-editor-right" type="button" data-tooltip="Toggle inspector">
+                  <button class="toolbar-btn" id="btn-editor-right" type="button" data-tooltip="Toggle inspector" aria-controls="editor-right" aria-expanded="true">
                     <i class="fa-solid fa-sliders"></i>
                     Inspector
                   </button>
@@ -880,9 +882,9 @@
                 </div>
               </div>
 
-              <div class="panel right" id="editor-right">
+              <div class="panel right" id="editor-right" role="region" aria-labelledby="editor-right-title">
                 <div class="panel-header">
-                  <div class="panel-title">Inspector</div>
+                  <h2 class="panel-title" id="editor-right-title">Inspector</h2>
                   <button
                     class="btn btn-ghost"
                     id="btn-right-close"

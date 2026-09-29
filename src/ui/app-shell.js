@@ -26,6 +26,12 @@ export function createAppShell({
     const navButtons = Array.from(document.querySelectorAll('[data-nav]'));
     const toastContainer = document.getElementById('toast-container');
 
+    function syncSidebarState() {
+      const mobile = window.matchMedia('(max-width: 899px)').matches;
+      const open = mobile ? sidebar.classList.contains('open') : !appRoot.classList.contains('sidebar-collapsed');
+      btnSidebar.setAttribute('aria-expanded', String(open));
+    }
+
     const screenTitles = {
       packs: { title: 'Load Plans', subtitle: 'Load plan library' },
       cases: { title: 'Cases', subtitle: 'Inventory management' },
@@ -42,10 +48,25 @@ export function createAppShell({
       } else {
         appRoot.classList.toggle('sidebar-collapsed');
       }
+      syncSidebarState();
+      if (isMobile && sidebar.classList.contains('open')) {
+        const firstNav = sidebar.querySelector('[data-nav]');
+        if (firstNav instanceof HTMLElement) firstNav.focus();
+      } else if (sidebar.contains(document.activeElement)) {
+        btnSidebar.focus();
+      }
     }
 
     function initShell() {
       btnSidebar.addEventListener('click', toggleSidebar);
+      window.addEventListener('keydown', event => {
+        if (event.key !== 'Escape' || !sidebar.classList.contains('open') ||
+            document.body.classList.contains('tp3d-shared-modal-lock')) return;
+        sidebar.classList.remove('open');
+        syncSidebarState();
+        btnSidebar.focus();
+        event.preventDefault();
+      });
       navButtons.forEach(btn => {
         btn.addEventListener('click', () => {
           const target = btn.getAttribute('data-nav');
@@ -53,6 +74,7 @@ export function createAppShell({
           if (window.matchMedia('(max-width: 899px)').matches) {
             sidebar.classList.remove('open');
           }
+          syncSidebarState();
         });
       });
 
@@ -60,8 +82,12 @@ export function createAppShell({
         if (!window.matchMedia('(max-width: 899px)').matches) {
           sidebar.classList.remove('open');
         }
+        syncSidebarState();
         placeToastContainer(StateStore.get('currentScreen'));
       });
+      window.addEventListener('tp3d-modal-ownership-change', () =>
+        placeToastContainer(StateStore.get('currentScreen')));
+      syncSidebarState();
     }
 
     function navigate(screenKey) {
@@ -85,13 +111,20 @@ export function createAppShell({
       if (!toastContainer) return;
       const canvasWrap = document.querySelector('.canvas-wrap');
       const isMobile = window.matchMedia('(max-width: 899px)').matches;
-      const targetParent = screen === 'editor' && canvasWrap && !isMobile ? canvasWrap : document.body;
+      const modalActive = document.body.classList.contains('tp3d-shared-modal-lock');
+      const targetParent = screen === 'editor' && canvasWrap && !isMobile && !modalActive
+        ? canvasWrap : document.body;
       if (toastContainer.parentElement !== targetParent) targetParent.appendChild(toastContainer);
     }
 
     function renderShell() {
       const screen = StateStore.get('currentScreen');
-      navButtons.forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-nav') === screen));
+      navButtons.forEach(btn => {
+        const active = btn.getAttribute('data-nav') === screen;
+        btn.classList.toggle('active', active);
+        if (active) btn.setAttribute('aria-current', 'page');
+        else btn.removeAttribute('aria-current');
+      });
       placeToastContainer(screen);
       document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
       const el = document.getElementById(`screen-${screen}`);
@@ -127,6 +160,7 @@ export function createAppShell({
           appRoot.classList.add('sidebar-collapsed');
           sidebar.classList.remove('open');
         }
+        syncSidebarState();
         // Ensure editor panels visible to avoid empty canvas gap
         const editorLeft = document.getElementById('editor-left');
         const editorRight = document.getElementById('editor-right');
@@ -140,6 +174,7 @@ export function createAppShell({
 
       // Restore sidebar when leaving editor (desktop)
       if (!isMobile) appRoot.classList.remove('sidebar-collapsed');
+      syncSidebarState();
 
       const meta = screenTitles[screen] || { title: 'Truck Packer 3D', subtitle: '' };
       topbarTitle.textContent = meta.title;

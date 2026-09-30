@@ -7882,6 +7882,10 @@ test('CASE and editor filter panels render as bounded vertical lists', async () 
     'Editor Case Browser filters must not wrap into clipped side-by-side columns');
   assert.match(src, /#editor-case-chips \{[\s\S]*z-index: 80;/,
     'Editor Case Browser filters must layer above the case list');
+  assert.match(src, /#editor-case-chips \{[\s\S]*?max-height: var\(--tp3d-case-chips-max-height, min\(48vh, 320px\)\);/,
+    'Editor Case Browser filters must use the measured available height, with the old cap only as fallback');
+  assert.match(src, /#editor-left \.panel-body \{\s*position: relative;\s*flex: 1 1 auto;\s*min-height: 0;/,
+    'the Case Browser body must fill its panel so a short result list cannot clip the filter popup');
   assert.doesNotMatch(indexSrc, /id="(?:cases|editor-case)-filters-toggle"[\s\S]{0,180}data-tooltip="Toggle filters"/,
     'filter toggle buttons must not render a tooltip over the open filter panel');
   assert.match(uiSrc, /const activeAnchorClass = String\(options\.activeAnchorClass \|\| ''\)\.trim\(\)/,

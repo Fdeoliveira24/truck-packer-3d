@@ -833,8 +833,12 @@ textarea:focus {
   }
 }
 
+/* Fill the Case Browser panel: a content-sized body collapsed with a short result
+   list and clipped the absolutely positioned filter popup partway down. */
 #editor-left .panel-body {
   position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-x: hidden;
   overflow-y: auto;
 }
@@ -869,7 +873,10 @@ textarea:focus {
   box-shadow: var(--shadow-lg);
   height: auto;
   min-height: 0;
-  max-height: min(48vh, 320px);
+
+  /* The Editor measures the space between the popup's top and the bottom of the
+     clipping Case Browser body while it is open; the old cap is only a fallback. */
+  max-height: var(--tp3d-case-chips-max-height, min(48vh, 320px));
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -878,6 +885,29 @@ textarea:focus {
 
 #editor-case-chips:not([hidden]) {
   display: flex;
+}
+
+/* A persistent scrollbar (instead of a hidden overlay one) shows a long list
+   continues rather than looking cut off. */
+#editor-case-chips::-webkit-scrollbar {
+  width: 8px;
+}
+
+#editor-case-chips::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+#editor-case-chips::-webkit-scrollbar-thumb {
+  border: 2px solid var(--bg-secondary);
+  border-radius: 999px;
+  background: var(--border-strong);
+}
+
+@supports not selector(::-webkit-scrollbar) {
+  #editor-case-chips {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+  }
 }
 
 .dropdown[data-role='categories'] {
@@ -925,7 +955,7 @@ textarea:focus {
     max-width: none;
     height: auto;
     min-height: 0;
-    max-height: min(50vh, 300px);
+    max-height: var(--tp3d-case-chips-max-height, min(50vh, 300px));
   }
 
   .panel.left:not(.open) #editor-case-chips {

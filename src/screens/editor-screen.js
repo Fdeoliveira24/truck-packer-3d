@@ -4651,6 +4651,7 @@ export function createEditorScreen({
           if (caseChipsEl && path.includes(caseChipsEl)) return;
           setCaseFiltersVisible(false, true);
         });
+        window.addEventListener('resize', fitCaseFilterPopup);
         // Escape closes the open filter popup first (focus back on its toggle),
         // before the global deselect shortcut or the mobile drawer close.
         leftEl.addEventListener('keydown', ev => {
@@ -5617,6 +5618,20 @@ export function createEditorScreen({
           // ignore
         }
       }
+      fitCaseFilterPopup();
+    }
+
+    // The popup is absolutely positioned inside the sticky search block but is
+    // clipped by the scrolling Case Browser body, so the height it can really use
+    // is "body bottom − popup top" — which depends on the rendered layout (panel,
+    // drawer, header heights), so CSS alone cannot express it. Measure it while
+    // open; styles/main.css keeps the old cap only as the fallback.
+    function fitCaseFilterPopup() {
+      if (!showCaseFilters || !caseChipsEl) return;
+      const scrollBody = caseChipsEl.closest('.panel-body');
+      const clipBottom = Math.min(window.innerHeight, scrollBody ? scrollBody.getBoundingClientRect().bottom : window.innerHeight);
+      const available = Math.floor(clipBottom - caseChipsEl.getBoundingClientRect().top - 12);
+      caseChipsEl.style.setProperty('--tp3d-case-chips-max-height', `${Math.max(available, 72)}px`);
     }
 
     // Presentation-only indicators for the Case Browser filters. Yellow on the

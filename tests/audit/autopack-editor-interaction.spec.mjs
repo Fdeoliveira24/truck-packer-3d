@@ -649,6 +649,90 @@ test('Editor Case Browser filters: one-popup multi-select, visible active state,
   }
 });
 
+test('Editor Case Browser filter popup fits the Case Browser: a long list scrolls to a reachable, unclipped last option', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    // Fixture-only (no history): enough categories that the popup must scroll.
+    await page.evaluate(() => {
+      const { StateStore } = window.probe;
+      const categories = Array.from({ length: 40 }, (_, i) => ({
+        key: `qa-${i}`, name: `QA Category ${String(i).padStart(2, '0')}`, color: '#6366f1',
+      }));
+      StateStore.set({
+        preferences: { ...StateStore.get('preferences'), categories: [{ key: 'default', name: 'Default', color: '#9ca3af' }, ...categories] },
+      }, { skipHistory: true });
+    });
+    const toggle = page.locator('#editor-case-filters-toggle');
+    // A chip counts as visible only if it sits inside the popup's scroll box AND
+    // inside the clipping Case Browser body, and is the element actually hit there.
+    const measure = () => page.evaluate(() => {
+      const popup = document.getElementById('editor-case-chips');
+      const rect = popup.getBoundingClientRect();
+      const body = popup.closest('.panel-body').getBoundingClientRect();
+      const panel = document.getElementById('editor-left').getBoundingClientRect();
+      const visible = el => {
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return r.top >= rect.top - 0.5 && r.bottom <= rect.bottom + 0.5 && r.bottom <= body.bottom + 0.5 && Boolean(hit && el.contains(hit));
+      };
+      const chips = [...popup.querySelectorAll('button')];
+      const focused = popup.contains(document.activeElement) ? document.activeElement : null;
+      return {
+        height: rect.height,
+        needsScroll: popup.scrollHeight > popup.clientHeight,
+        withinBody: rect.top >= body.top && rect.bottom <= body.bottom + 0.5 && rect.bottom <= innerHeight,
+        withinPanel: rect.left >= panel.left - 0.5 && rect.right <= panel.right + 0.5,
+        horizontalOverflow: popup.scrollWidth > popup.clientWidth || document.documentElement.scrollWidth > innerWidth,
+        lastKey: chips[chips.length - 1].dataset.filterKey,
+        lastVisible: visible(chips[chips.length - 1]),
+        focusKey: focused ? focused.dataset.filterKey : null,
+        focusedVisible: focused ? visible(focused) : null,
+      };
+    });
+
+    // Headless Chromium hides scrollbars (--hide-scrollbars), so assert the loaded
+    // persistent-scrollbar rule instead of a rendered width.
+    assert.equal(await page.evaluate(() => [...document.styleSheets]
+      .flatMap(sheet => { try { return [...sheet.cssRules]; } catch { return []; } })
+      .some(rule => rule.selectorText === '#editor-case-chips::-webkit-scrollbar' && rule.style.width === '8px')), true,
+    'the filter popup styles a persistent (non-overlay) scrollbar');
+
+    for (const size of [{ width: 1400, height: 900 }, { width: 1400, height: 560 }, { width: 390, height: 640 }]) {
+      const label = `${size.width}x${size.height}`;
+      await page.setViewportSize(size);
+      if (size.width < 900 && !await page.locator('#editor-left').evaluate(el => el.classList.contains('open'))) {
+        await page.locator('#btn-editor-left').click();
+      }
+      await toggle.click();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'true', `${label}: popup opens`);
+      let m = await measure();
+      assert.ok(m.height >= 72, `${label}: popup has usable height (${m.height})`);
+      assert.equal(m.needsScroll, true, `${label}: the fixture list must require scrolling`);
+      assert.equal(m.withinBody, true, `${label}: popup ends inside the clipping Case Browser body and viewport`);
+      assert.equal(m.withinPanel, true, `${label}: popup stays inside the Case Browser`);
+      assert.equal(m.horizontalOverflow, false, `${label}: no horizontal overflow`);
+
+      await page.locator('#editor-case-chips').evaluate(el => { el.scrollTop = el.scrollHeight; });
+      m = await measure();
+      assert.equal(m.lastVisible, true, `${label}: the last option is reachable and not clipped by an ancestor`);
+
+      await page.locator(`#editor-case-chips [data-filter-key="${m.lastKey}"]`).focus();
+      await page.keyboard.press('Space');
+      m = await measure();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'true', `${label}: popup stays open`);
+      assert.equal(m.focusKey, m.lastKey, `${label}: focus stays on the activated option`);
+      assert.equal(m.focusedVisible, true, `${label}: the focused option remains visible`);
+      await page.keyboard.press('Space');
+      await page.keyboard.press('Escape');
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('Editor fixture keeps rebuilt focus, rejects invalid truck input and exposes modal errors', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {

@@ -996,3 +996,235 @@ test('DOM focus uses one brand ring while selected, checked, and semantic states
     assert.equal((await style('#input')).outlineStyle, 'solid', `${theme} keyboard use restores the field ring`);
   }
 });
+
+test('Settings Resources Keyboard Shortcuts: native root card, in-pane reference, platform keys, quiet tokens', { timeout: 120000 }, async t => {
+  const css = await readFile(new URL('../../styles/main.css', import.meta.url), 'utf8');
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  page.setDefaultTimeout(3000);
+  page.setDefaultNavigationTimeout(5000);
+  await page.route('**/*', async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.startsWith('/src/') && pathname.endsWith('.js')) {
+      await route.fulfill({ contentType: 'text/javascript', body: await readFile(new URL(`../..${pathname}`, import.meta.url), 'utf8') });
+    } else if (pathname === '/styles/main.css') {
+      await route.fulfill({ contentType: 'text/css', body: css });
+    } else if (pathname === '/resources-fixture') {
+      await route.fulfill({ contentType: 'text/html', body: `
+        <link rel="stylesheet" href="/styles/main.css">
+        <style>*, *::before, *::after { transition: none !important; }</style>
+        <div id="app"><button id="before">Page before</button></div>
+        <div id="modal-root"></div><div id="toast-container"></div>` });
+    } else await route.abort();
+  });
+  const MAC = { platform: 'MacIntel', uaPlatform: 'macOS' };
+  const WINDOWS = { platform: 'Win32', uaPlatform: 'Windows' };
+  const openResources = async platform => {
+    await page.goto('http://localhost:5500/resources-fixture');
+    await page.evaluate(async ({ platform, uaPlatform }) => {
+      Object.defineProperty(navigator, 'platform', { configurable: true, get: () => platform });
+      Object.defineProperty(navigator, 'userAgentData', { configurable: true, get: () => ({ platform: uaPlatform }) });
+      const { createUIComponents } = await import('/src/ui/ui-components.js');
+      window.ui = createUIComponents();
+      const { createSettingsOverlay } = await import('/src/ui/overlays/settings-overlay.js');
+      window.settings = createSettingsOverlay({ UIComponents: ui,
+        PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' } }) }, Utils: {} });
+      document.getElementById('before').focus();
+      settings.open('resources');
+    }, platform);
+    await page.waitForSelector('.tp3d-resources-card-btn');
+  };
+  const headerTitle = () => page.locator('.tp3d-settings-right-title').textContent();
+  const describeActive = () => page.evaluate(() => {
+    const el = document.activeElement;
+    return { inDialog: Boolean(el?.closest('[role="dialog"]')), tag: el?.tagName, name: el?.getAttribute('aria-label') ||
+      el?.textContent.trim().slice(0, 40), inRightHeader: Boolean(el?.closest('.tp3d-settings-right-header')) };
+  });
+  // Open a Resources card by keyboard, record focus, go Back by keyboard, record focus.
+  const roundTrip = async title => {
+    await page.locator('.tp3d-resources-card-btn', { hasText: title }).focus();
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(value => document.querySelector('.tp3d-settings-right-title')?.textContent === value, title);
+    const opened = await describeActive();
+    const back = page.locator('.tp3d-settings-right-header button').first();
+    await back.focus();
+    await page.keyboard.press('Enter');
+    await page.waitForFunction(() => document.querySelector('.tp3d-settings-right-title')?.textContent === 'Resources');
+    return { opened, afterBack: await describeActive() };
+  };
+
+  await openResources(MAC);
+  const cards = await page.locator('.tp3d-resources-card-btn').evaluateAll(buttons => buttons.map(button => {
+    const icon = button.querySelector('.tp3d-resources-card-icon');
+    const style = el => { const c = getComputedStyle(el); return [c.backgroundColor, c.borderTopColor, c.borderTopWidth,
+      c.borderRadius, c.color, c.fontSize, c.padding].join('|'); };
+    return {
+      title: button.querySelector('.tp3d-resources-card-title').textContent,
+      sub: button.querySelector('.tp3d-resources-card-sub').textContent,
+      className: button.className, tag: button.tagName, type: button.type,
+      iconClass: icon.querySelector('i').className, inline: [button, icon, icon.querySelector('i')].some(el => el.hasAttribute('style')),
+      visual: [style(button), style(button.querySelector('.tp3d-resources-card-row')), style(icon),
+        getComputedStyle(icon).width, style(button.querySelector('.tp3d-resources-card-title')),
+        style(button.querySelector('.tp3d-resources-card-sub'))].join('#'),
+      height: Math.round(button.getBoundingClientRect().height),
+    };
+  }));
+  assert.deepEqual(cards.map(card => card.title), ['Release Notes', 'Roadmap', 'Keyboard Shortcuts',
+    'Export App Backup', 'Import App Backup', 'Import / Export Help'], 'Keyboard Shortcuts sits with the help resources');
+  const shortcutsCard = cards[2];
+  assert.equal(shortcutsCard.sub, 'View keyboard and Editor controls.');
+  assert.equal(shortcutsCard.iconClass, 'fa-solid fa-keyboard');
+  assert.deepEqual([shortcutsCard.tag, shortcutsCard.type], ['BUTTON', 'button'], 'a real accessible button');
+  assert.ok(cards.every(card => card.className === 'tp3d-resources-card-btn tp3d-settings-card--clickable'),
+    'every root card uses the existing Resources card classes and never card--interactive');
+  assert.ok(cards.every(card => !card.inline), 'no inline styles or icon sizes');
+  assert.ok(cards.every(card => card.visual === cards[0].visual && card.height === cards[0].height),
+    'the new card renders exactly like the existing Resources cards');
+  assert.match(await page.locator('.tp3d-settings-right-subtitle').textContent(), /shortcuts/);
+
+  const dialogCount = await page.getByRole('dialog').count();
+  const ownerCount = await page.evaluate(() => ui.modalOwnership.getOwners().length);
+  const roadmap = await roundTrip('Roadmap');
+  const shortcuts = await roundTrip('Keyboard Shortcuts');
+  t.diagnostic(`focus round-trip ${JSON.stringify(shortcuts)}`);
+  assert.deepEqual(shortcuts, roadmap, 'focus on open and after Back matches the existing Resources subviews');
+  assert.equal(await headerTitle(), 'Resources', 'Back returns to the Resources root');
+
+  // Open the reference and inspect it in the same Settings dialog.
+  await page.locator('.tp3d-resources-card-btn', { hasText: 'Keyboard Shortcuts' }).click();
+  assert.equal(await headerTitle(), 'Keyboard Shortcuts');
+  assert.equal(await page.locator('.tp3d-settings-right-subtitle').textContent(), 'Quick reference for keyboard and Editor controls.');
+  assert.equal(await page.getByRole('dialog').count(), dialogCount, 'no nested modal');
+  assert.equal(await page.evaluate(() => ui.modalOwnership.getOwners().length), ownerCount, 'no new modal owner');
+  assert.deepEqual(await page.locator('[data-tab-panel="resources"] .tp3d-shortcuts-view > section').evaluateAll(sections =>
+    sections.map(section => section.className)), Array(5).fill('tp3d-resources-card tp3d-shortcuts-section'),
+  'rendered in the Resources pane, one existing Resources card per section');
+
+  const readReference = () => page.locator('.tp3d-shortcuts-view').evaluate(card => {
+    const spokenText = node => [...node.childNodes].map(child => {
+      if (child.nodeType === Node.TEXT_NODE) return child.textContent;
+      if (child.nodeType !== Node.ELEMENT_NODE || child.getAttribute('aria-hidden') === 'true') return '';
+      return spokenText(child);
+    }).join('');
+    return {
+      sections: [...card.querySelectorAll('section')].map(section => ({
+        heading: section.querySelector('h3.tp3d-prefs-heading')?.textContent,
+        rows: [...section.querySelectorAll('ul > li.tp3d-shortcuts-row')].map(row => ({
+          action: row.querySelector('.tp3d-shortcuts-action').textContent,
+          keys: [...row.querySelectorAll('.tp3d-shortcuts-keys > *')].map(el => el.textContent),
+          spoken: spokenText(row),
+        })),
+      })),
+      focusable: card.querySelectorAll('button, a, input, select, textarea, [tabindex]').length,
+      kbdHidden: [...card.querySelectorAll('kbd')].every(kbd => kbd.closest('[aria-hidden="true"]') && kbd.tabIndex < 0),
+      text: card.textContent,
+    };
+  });
+  const expected = [
+    ['General editing', [['Undo', '⌘ Z'], ['Redo', '⌘ ⇧ Z'], ['Select all cargo', '⌘ A'], ['Copy selected cargo', '⌘ C'],
+      ['Paste copied cargo', '⌘ V'], ['Duplicate selected cargo', '⌘ D']]],
+    ['Editor transforms', [['Turn selected cargo', 'R'], ['Tip selected cargo', 'T'], ['Roll selected cargo', 'E'],
+      ['Flip selected cargo', 'F']]],
+    ['Positioning', [['Nudge 1 inch', 'Arrow keys'], ['Nudge 6 inches', '⇧ Arrow keys'], ['Move up one level', '⌥ ↑'],
+      ['Move down one level', '⌥ ↓'], ['Drop to nearest valid surface', '⌥ ⇧ ↓']]],
+    ['Editor actions', [['Delete selected cargo', 'Delete'], ['Place held Case', 'Return'],
+      ['Cancel move or clear selection', 'Esc']]],
+    ['View', [['Toggle grid', 'G'], ['Toggle shadows', 'S']]],
+  ];
+  const mac = await readReference();
+  assert.deepEqual(mac.sections.map(section => [section.heading, section.rows.map(row => [row.action, row.keys.join(' ')])]),
+    expected, 'macOS shows ⌘ / ⌥ / ⇧ and Return');
+  assert.equal(mac.focusable, 0, 'the reference has no interactive keycaps');
+  assert.equal(mac.kbdHidden, true, 'keycaps are presentation only');
+  assert.equal(mac.sections[0].rows[0].spoken, 'Undo, Command Z');
+  assert.equal(mac.sections[2].rows[4].spoken, 'Drop to nearest valid surface, Option Shift Down Arrow');
+  assert.doesNotMatch(mac.text, /Ctrl|Cmd|\bOpen\b|\bSave\b|Print|AutoPack|Focus|Deselect/,
+    'no Ctrl/Cmd hybrid labels and no removed shortcuts');
+
+  await openResources(WINDOWS);
+  await page.locator('.tp3d-resources-card-btn', { hasText: 'Keyboard Shortcuts' }).click();
+  const windows = await readReference();
+  const windowsRows = Object.fromEntries(windows.sections.flatMap(section => section.rows.map(row => [row.action, row])));
+  assert.equal(windowsRows.Undo.keys.join(' '), 'Ctrl Z');
+  assert.equal(windowsRows.Redo.keys.join(' '), 'Ctrl Shift Z');
+  assert.equal(windowsRows['Duplicate selected cargo'].keys.join(' '), 'Ctrl D');
+  assert.equal(windowsRows['Move up one level'].keys.join(' '), 'Alt ↑');
+  assert.equal(windowsRows['Delete selected cargo'].keys.join(' '), 'Delete or Backspace');
+  assert.equal(windowsRows['Place held Case'].keys.join(' '), 'Enter');
+  assert.equal(windowsRows.Undo.spoken, 'Undo, Control Z');
+  assert.equal(windowsRows['Delete selected cargo'].spoken, 'Delete selected cargo, Delete or Backspace');
+  assert.doesNotMatch(windows.text, /⌘|⌥|Cmd|Return/, 'Windows/Linux shows Ctrl / Alt / Shift conventions');
+
+  // Keycaps, separators and headings follow the theme tokens: neutral, never the brand fill.
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    const probe = await page.evaluate(() => {
+      const token = name => {
+        const el = document.createElement('div');
+        el.style.color = `var(${name})`;
+        document.body.appendChild(el);
+        const value = getComputedStyle(el).color;
+        el.remove();
+        return value;
+      };
+      const kbd = getComputedStyle(document.querySelector('.tp3d-kbd'));
+      const row = getComputedStyle(document.querySelector('.tp3d-shortcuts-row'));
+      const heading = getComputedStyle(document.querySelector('.tp3d-shortcuts-section h3'));
+      const section = getComputedStyle(document.querySelector('.tp3d-shortcuts-section'));
+      return {
+        section: [section.backgroundColor, section.borderTopColor, section.boxShadow],
+        sectionTokens: [token('--bg-secondary'), token('--border-subtle'), 'none'],
+        kbd: [kbd.backgroundColor, kbd.borderTopColor, kbd.color, kbd.boxShadow, kbd.backgroundImage],
+        tokens: [token('--bg-primary'), token('--border-subtle'), token('--text-primary')],
+        separator: row.borderBottomColor, heading: [heading.color, heading.textTransform, heading.fontSize],
+        headingTokens: [token('--text-primary'), token('--border-subtle')], accent: token('--accent-primary'),
+      };
+    });
+    assert.deepEqual(probe.kbd.slice(0, 3), probe.tokens, `${theme} keycaps use --bg-primary / --border-subtle / --text-primary`);
+    assert.deepEqual(probe.kbd.slice(3), ['none', 'none'], `${theme} keycaps have no shadow or gradient`);
+    assert.notEqual(probe.kbd[0], probe.accent, `${theme} keycaps are not orange`);
+    assert.equal(probe.separator, probe.headingTokens[1], `${theme} row separators use --border-subtle`);
+    assert.deepEqual(probe.heading, [probe.headingTokens[0], 'uppercase', '12px'],
+      `${theme} headings keep the Settings heading pattern in the primary text color`);
+    assert.deepEqual(probe.section, probe.sectionTokens, `${theme} section cards use the Resources card surface, no shadow`);
+    t.diagnostic(`${theme} keycap ${probe.kbd.slice(0, 3).join(' / ')}`);
+  }
+  await page.evaluate(() => document.documentElement.setAttribute('data-theme', 'light'));
+
+  // Narrow widths: rows may stack, but nothing overflows, clips or collides; the modal stays stable.
+  for (const width of [899, 500, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    const layout = await page.evaluate(async () => {
+      const frame = () => new Promise(resolve => requestAnimationFrame(resolve));
+      const modal = () => document.querySelector('.tp3d-settings-modal').getBoundingClientRect().toJSON();
+      await frame(); await frame();
+      const first = modal();
+      await frame(); await frame(); await frame();
+      const body = document.querySelector('.tp3d-settings-right-body');
+      const problems = [];
+      for (const row of document.querySelectorAll('.tp3d-shortcuts-row')) {
+        const card = row.closest('.tp3d-shortcuts-section').getBoundingClientRect();
+        const action = row.querySelector('.tp3d-shortcuts-action').getBoundingClientRect();
+        const keys = row.querySelector('.tp3d-shortcuts-keys').getBoundingClientRect();
+        const sameLine = keys.top < action.bottom - 1;
+        if (sameLine && keys.left < action.right) problems.push(`collision: ${row.textContent}`);
+        if (keys.right > card.right + 0.5 || action.right > card.right + 0.5) problems.push(`outside card: ${row.textContent}`);
+        for (const kbd of row.querySelectorAll('kbd')) {
+          const box = kbd.getBoundingClientRect();
+          if (box.right > card.right + 0.5 || box.left < card.left - 0.5 || kbd.scrollWidth > kbd.clientWidth + 1) {
+            problems.push(`clipped key: ${kbd.textContent}`);
+          }
+        }
+      }
+      return {
+        problems, stable: JSON.stringify(first) === JSON.stringify(modal()),
+        bodyOverflow: body.scrollWidth - body.clientWidth,
+        docOverflow: document.documentElement.scrollWidth - window.innerWidth,
+      };
+    });
+    assert.deepEqual(layout.problems, [], `${width}px: no clipped keycaps or text collisions`);
+    assert.ok(layout.bodyOverflow <= 0 && layout.docOverflow <= 0, `${width}px: no horizontal overflow`);
+    assert.equal(layout.stable, true, `${width}px: the Settings modal does not resize-oscillate`);
+  }
+});

@@ -158,7 +158,7 @@ window.probe = {
   canvasPointerDowns: 0,
   toasts: [],
   opLog: [],
-  StateStore, OperationLifecycle, SceneManager, CaseScene, AppShell, UIComponents,
+  StateStore, OperationLifecycle, SceneManager, CaseScene, AppShell, UIComponents, EditorUI, CaseLibrary,
   op: () => OperationLifecycle.currentOperation().kind,
   selection: () => (StateStore.get('selectedInstanceIds') || []).slice(),
   casesJson: () => JSON.stringify(livePack().cases),
@@ -353,11 +353,380 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
     await page.locator('#editor-case-filters-toggle').click();
     const filter = page.locator('#editor-case-chips button').nth(1);
     await filter.focus();
+    const filterKey = await filter.getAttribute('data-filter-key');
     await page.keyboard.press('Space');
     assert.equal(await page.locator('#editor-case-chips button').nth(1).getAttribute('aria-pressed'), 'true');
+    assert.equal(await page.locator('#editor-case-filters-toggle').getAttribute('aria-expanded'), 'true',
+      'the filter popup stays open after a keyboard selection');
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.filterKey), filterKey,
+      'focus stays on the rebuilt chip for the same filter');
+    // First Escape closes only the filter popup; the drawer closes on the next one.
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#editor-case-filters-toggle').getAttribute('aria-expanded'), 'false');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'editor-case-filters-toggle');
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'true');
     await page.keyboard.press('Escape');
     assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-editor-left');
     assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'false');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Editor Case Browser filters: one-popup multi-select, visible active state, clear/recovery, workspace reset, no data writes', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    // Fixture-only setup (no history): Manufacturer spelling variants, a blank
+    // Manufacturer and one very long Category name.
+    await page.evaluate(() => {
+      const { StateStore } = window.probe;
+      const manufacturers = { 'Line Array Case': 'Acme', 'Subwoofer Crate': ' ACME ', 'Guitar Rack': '' };
+      const longName = 'Extremely Long Category Name For Narrow Filter Popup Checks';
+      StateStore.set({
+        caseLibrary: StateStore.get('caseLibrary').map(c => ({ ...c, manufacturer: manufacturers[c.name] })),
+        preferences: {
+          ...StateStore.get('preferences'),
+          categories: [
+            { key: 'audio', name: 'Audio', color: '#f59e0b' }, { key: 'lighting', name: 'Lighting', color: '#3b82f6' },
+            { key: 'stage', name: 'Stage', color: '#10b981' }, { key: 'backline', name: 'Backline', color: '#ec4899' },
+            { key: 'default', name: 'Default', color: '#9ca3af' }, { key: 'longcat', name: longName, color: '#6366f1' },
+          ],
+        },
+      }, { skipHistory: true });
+      StateStore.resetHistory();
+      window.__filterWrites = [];
+      StateStore.subscribe(changes => window.__filterWrites.push(Object.keys(changes).sort().join(',')));
+    });
+    const baseline = await page.evaluate(() => JSON.stringify({
+      caseLibrary: window.probe.StateStore.get('caseLibrary'), preferences: window.probe.StateStore.get('preferences'),
+      cargo: window.probe.casesJson(), lastEdited: window.probe.StateStore.get('packLibrary')[0].lastEdited,
+      keys: Object.keys(window.probe.StateStore.get()).sort(),
+    }));
+
+    const toggle = page.locator('#editor-case-filters-toggle');
+    const chip = key => page.locator(`#editor-case-chips [data-filter-key="${key}"]`);
+    const search = page.locator('#editor-case-search');
+    const visibleCases = () => page.locator('#editor-case-list .tp3d-editor-case-browser-card .tp3d-editor-fw-semibold')
+      .allTextContents();
+    const state = () => page.evaluate(() => {
+      const shown = el => (el && !el.hidden ? el.textContent : '');
+      const toggleEl = document.getElementById('editor-case-filters-toggle');
+      return {
+        expanded: toggleEl.getAttribute('aria-expanded'),
+        open: toggleEl.classList.contains('btn-primary'),
+        label: toggleEl.getAttribute('aria-label'),
+        badge: shown(toggleEl.querySelector('.tp3d-filter-active-count')),
+        tabs: [...document.querySelectorAll('.tp3d-browser-tab')].map(btn => [
+          btn.dataset.groupBy, btn.getAttribute('aria-pressed'), shown(btn.querySelector('.tp3d-browser-tab-count')),
+          btn.getAttribute('aria-label'),
+        ]),
+        pressed: [...document.querySelectorAll('#editor-case-chips button[aria-pressed="true"]')]
+          .map(b => b.dataset.filterKey).sort(),
+        focusKey: document.activeElement?.dataset?.filterKey ?? null,
+        activeId: document.activeElement?.id || '',
+        chipsScrollTop: document.getElementById('editor-case-chips').scrollTop,
+      };
+    });
+    // Mouse-click a chip where it currently sits inside the (scrolled) popup, so
+    // the click itself never scrolls the popup.
+    const clickChipInPlace = async key => {
+      const point = await page.evaluate(k => {
+        const popup = document.getElementById('editor-case-chips').getBoundingClientRect();
+        const rect = document.querySelector(`#editor-case-chips [data-filter-key="${k}"]`).getBoundingClientRect();
+        return rect.top >= popup.top && rect.bottom <= popup.bottom
+          ? { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 } : null;
+      }, key);
+      assert.ok(point, `${key} chip is visible inside the popup`);
+      await page.mouse.click(point.x, point.y);
+    };
+    const waitForCases = expected => page.waitForFunction(names => JSON.stringify(
+      [...document.querySelectorAll('#editor-case-list .tp3d-editor-case-browser-card .tp3d-editor-fw-semibold')]
+        .map(el => el.textContent).sort()) === JSON.stringify(names), expected.slice().sort());
+    const emptyState = () => page.evaluate(() => {
+      const el = document.querySelector('#editor-case-list .tp3d-editor-case-empty');
+      return el && { message: el.querySelector('p').textContent, actions: [...el.querySelectorAll('button')].map(b => b.textContent) };
+    });
+
+    // MULTI-SELECT: three Category values in one popup session (mouse + Space).
+    await toggle.click();
+    await page.evaluate(() => {
+      const popup = document.getElementById('editor-case-chips');
+      popup.style.maxHeight = '120px';
+      popup.scrollTop = 20;
+    });
+    await clickChipInPlace('audio');
+    let s = await state();
+    assert.equal(s.expanded, 'true', 'a chip click inside the rebuilt popup is not an outside click');
+    assert.equal(s.focusKey, 'audio', 'focus returns to the rebuilt chip for the same filter');
+    assert.equal(s.chipsScrollTop, 20, 'popup scroll position is kept across the rebuild');
+    await clickChipInPlace('lighting');
+    await chip('stage').focus();
+    await page.keyboard.press('Space');
+    s = await state();
+    assert.equal(s.expanded, 'true', 'keyboard activation also keeps the popup open');
+    assert.equal(s.focusKey, 'stage');
+    assert.deepEqual(s.pressed, ['audio', 'lighting', 'stage']);
+    assert.deepEqual((await visibleCases()).sort(), ['Line Array Case', 'Subwoofer Crate'], 'Category values OR together');
+    assert.equal(s.badge, '3');
+    assert.equal(s.label, 'Toggle filters, 3 active');
+    assert.deepEqual(s.tabs, [['category', 'true', '3', 'Category, 3 selected'], ['manufacturer', 'false', '', null]]);
+
+    // ESCAPE closes only the popup, restores focus to the toggle, keeps the count.
+    await page.keyboard.press('Escape');
+    s = await state();
+    assert.equal(s.expanded, 'false');
+    assert.equal(s.activeId, 'editor-case-filters-toggle');
+    assert.equal(s.open, false, 'yellow still means popup open only');
+    assert.equal(s.badge, '3', 'a closed popup still shows the current-mode active count');
+
+    // OUTSIDE CLICK and TOGGLE close the popup.
+    await toggle.click();
+    await page.locator('#editor-left-title').click();
+    assert.equal((await state()).expanded, 'false', 'a real outside click closes the popup');
+    await toggle.click();
+    await toggle.click();
+    assert.equal((await state()).expanded, 'false', 'the toggle closes the popup');
+
+    // LONG LABEL keeps its count visible and exposes the full label.
+    await toggle.click();
+    const longChip = await chip('longcat').evaluate(el => {
+      const label = el.querySelector('.tp3d-browser-chip-label');
+      const count = el.querySelector('.tp3d-browser-chip-count');
+      const chipRect = el.getBoundingClientRect();
+      const countRect = count.getBoundingClientRect();
+      return {
+        truncated: label.scrollWidth > label.clientWidth,
+        countVisible: countRect.width > 0 && countRect.right <= chipRect.right + 0.5 && count.scrollWidth <= count.clientWidth + 0.5,
+        count: count.textContent, title: el.title, aria: el.getAttribute('aria-label'),
+      };
+    });
+    assert.deepEqual(longChip, {
+      truncated: true, countVisible: true, count: ': 0',
+      title: 'Extremely Long Category Name For Narrow Filter Popup Checks: 0',
+      aria: 'Extremely Long Category Name For Narrow Filter Popup Checks: 0',
+    });
+    await page.keyboard.press('Escape');
+
+    // MODE SWITCH: Category selections are retained and visible but inactive.
+    await page.locator('.tp3d-browser-tab[data-group-by="manufacturer"]').click();
+    s = await state();
+    assert.equal(s.badge, '', 'the badge follows the active mode');
+    assert.equal(s.label, 'Toggle filters');
+    assert.deepEqual(s.tabs, [['category', 'false', '3', 'Category, 3 selected'], ['manufacturer', 'true', '', null]]);
+    assert.equal((await visibleCases()).length, 3, 'inactive Category selections do not filter Manufacturer mode');
+    const manufacturerView = await page.evaluate(() => ({
+      chips: [...document.querySelectorAll('#editor-case-chips button')].map(b => [b.dataset.filterKey, b.textContent]),
+      list: [...document.querySelectorAll('#editor-case-list > *')].map(el => (el.classList.contains('tp3d-editor-mfg-group-header')
+        ? `# ${el.textContent}` : el.querySelector('.tp3d-editor-fw-semibold').textContent)),
+    }));
+    assert.deepEqual(manufacturerView.chips,
+      [['all', 'All: 3'], ['acme', 'Acme: 2'], ['__no_manufacturer__', '(No manufacturer): 1']],
+      'Acme / " ACME " share one normalized option; no-manufacturer stays last');
+    assert.deepEqual(manufacturerView.list,
+      ['# Acme', 'Line Array Case', 'Subwoofer Crate', '# (No manufacturer)', 'Guitar Rack'],
+      'the list groups by the same normalized key and label as the options');
+    await toggle.click();
+    await chip('__no_manufacturer__').click();
+    s = await state();
+    assert.equal(s.expanded, 'true');
+    assert.equal(s.badge, '1');
+    assert.deepEqual(s.tabs.map(tab => tab[2]), ['3', '1']);
+    assert.deepEqual(await visibleCases(), ['Guitar Rack']);
+
+    // Back to Category: its selections reapply; Manufacturer's stay retained.
+    await page.locator('.tp3d-browser-tab[data-group-by="category"]').click();
+    s = await state();
+    assert.equal(s.badge, '3');
+    assert.deepEqual(s.tabs.map(tab => tab[2]), ['3', '1']);
+    assert.deepEqual(await page.evaluate(() => {
+      const panel = document.getElementById('editor-left').getBoundingClientRect();
+      const plus = document.querySelector('.tp3d-editor-new-case-btn').getBoundingClientRect();
+      return {
+        countsInsideTabs: [...document.querySelectorAll('.tp3d-browser-tab')].map(btn => {
+          const count = btn.querySelector('.tp3d-browser-tab-count').getBoundingClientRect();
+          return count.width > 0 && count.right <= btn.getBoundingClientRect().right + 0.5;
+        }),
+        newCaseInsidePanel: plus.right <= panel.right,
+      };
+    }), { countsInsideTabs: [true, true], newCaseInsidePanel: true }, 'retained counts never push the tab row out of the panel');
+    assert.deepEqual((await visibleCases()).sort(), ['Line Array Case', 'Subwoofer Crate']);
+
+    // "All" clears only the current mode.
+    await toggle.click();
+    await chip('all').click();
+    s = await state();
+    assert.equal(s.expanded, 'true');
+    assert.deepEqual(s.pressed, ['all']);
+    assert.deepEqual(s.tabs.map(tab => tab[2]), ['', '1']);
+    assert.equal((await visibleCases()).length, 3);
+    await chip('audio').click();
+    await page.keyboard.press('Escape');
+
+    // ZERO RESULTS: truthful message and recovery; Clear filters clears BOTH modes.
+    await search.fill('guitar');
+    await page.waitForFunction(() => document.querySelector('#editor-case-list .tp3d-editor-case-empty'));
+    assert.deepEqual(await emptyState(), { message: 'No cases match.', actions: ['Clear search', 'Clear filters'] });
+    await page.getByRole('button', { name: 'Clear search' }).click();
+    assert.equal(await search.inputValue(), '');
+    assert.equal((await state()).activeId, 'editor-case-search');
+    assert.deepEqual((await visibleCases()).sort(), ['Line Array Case', 'Subwoofer Crate'], 'Clear search keeps the filters');
+    await search.fill('guitar');
+    await page.waitForFunction(() => document.querySelector('#editor-case-list .tp3d-editor-case-empty'));
+    await page.getByRole('button', { name: 'Clear filters' }).click();
+    s = await state();
+    assert.deepEqual(s.tabs.map(tab => tab[2]), ['', ''], 'Clear filters clears Category AND Manufacturer');
+    assert.equal(s.badge, '');
+    assert.equal(s.activeId, 'editor-case-filters-toggle');
+    assert.equal(await search.inputValue(), 'guitar', 'Clear filters keeps the search');
+    assert.deepEqual(await visibleCases(), ['Guitar Rack']);
+    await search.fill('zz-no-such-case');
+    await page.waitForFunction(() => document.querySelector('#editor-case-list .tp3d-editor-case-empty'));
+    assert.deepEqual(await emptyState(), { message: 'No cases match.', actions: ['Clear search'] });
+    await page.getByRole('button', { name: 'Clear search' }).click();
+    assert.equal((await visibleCases()).length, 3);
+
+    // DATA SAFETY: filtering wrote nothing to StateStore (no history, no data).
+    assert.deepEqual(await page.evaluate(() => window.__filterWrites), [], 'filter/search interaction never writes StateStore');
+    assert.equal(await page.evaluate(() => JSON.stringify({
+      caseLibrary: window.probe.StateStore.get('caseLibrary'), preferences: window.probe.StateStore.get('preferences'),
+      cargo: window.probe.casesJson(), lastEdited: window.probe.StateStore.get('packLibrary')[0].lastEdited,
+      keys: Object.keys(window.probe.StateStore.get()).sort(),
+    })), baseline);
+    assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'no history entry was created');
+
+    // PACK CHANGE in the same workspace keeps the filter state.
+    await toggle.click();
+    await chip('audio').click();
+    await page.keyboard.press('Escape');
+    await search.fill('line');
+    await waitForCases(['Line Array Case']);
+    await page.evaluate(() => {
+      const { StateStore } = window.probe;
+      const packId = StateStore.get('currentPackId');
+      StateStore.set({ currentPackId: null });
+      StateStore.set({ currentPackId: packId });
+    });
+    assert.equal((await state()).badge, '1');
+    assert.equal(await search.inputValue(), 'line');
+    assert.deepEqual(await visibleCases(), ['Line Array Case']);
+
+    // WORKSPACE RESET clears both modes, search, mode and popup.
+    await page.locator('.tp3d-browser-tab[data-group-by="manufacturer"]').click();
+    await toggle.click();
+    await chip('acme').click();
+    await page.evaluate(() => window.probe.EditorUI.resetWorkspaceState());
+    s = await state();
+    assert.equal(s.expanded, 'false');
+    assert.equal(s.badge, '');
+    assert.deepEqual(s.tabs, [['category', 'true', '', null], ['manufacturer', 'false', '', null]]);
+    assert.equal(await search.inputValue(), '');
+    await page.evaluate(() => window.probe.EditorUI.render());
+    assert.equal((await visibleCases()).length, 3);
+
+    // RENDER PURITY: an empty Case Library renders "No cases yet." without
+    // writing Preferences or history (the reset belongs to Case deletion).
+    const purity = await page.evaluate(() => {
+      const { StateStore, EditorUI } = window.probe;
+      const prefsBefore = JSON.stringify(StateStore.get('preferences'));
+      const writes = [];
+      const off = StateStore.subscribe(changes => writes.push(Object.keys(changes).sort().join(',')));
+      StateStore.set({ currentPackId: null, caseLibrary: [] }, { skipHistory: true });
+      StateStore.resetHistory();
+      EditorUI.render();
+      off();
+      const empty = document.querySelector('#editor-case-list .tp3d-editor-case-empty');
+      return {
+        writes, prefsSame: JSON.stringify(StateStore.get('preferences')) === prefsBefore, undo: StateStore.undo(),
+        message: empty && empty.textContent, actions: empty ? empty.querySelectorAll('button').length : -1,
+      };
+    });
+    assert.deepEqual(purity, { writes: ['caseLibrary,currentPackId'], prefsSame: true, undo: false, message: 'No cases yet.', actions: 0 });
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Editor Case Browser filter popup fits the Case Browser: a long list scrolls to a reachable, unclipped last option', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    // Fixture-only (no history): enough categories that the popup must scroll.
+    await page.evaluate(() => {
+      const { StateStore } = window.probe;
+      const categories = Array.from({ length: 40 }, (_, i) => ({
+        key: `qa-${i}`, name: `QA Category ${String(i).padStart(2, '0')}`, color: '#6366f1',
+      }));
+      StateStore.set({
+        preferences: { ...StateStore.get('preferences'), categories: [{ key: 'default', name: 'Default', color: '#9ca3af' }, ...categories] },
+      }, { skipHistory: true });
+    });
+    const toggle = page.locator('#editor-case-filters-toggle');
+    // A chip counts as visible only if it sits inside the popup's scroll box AND
+    // inside the clipping Case Browser body, and is the element actually hit there.
+    const measure = () => page.evaluate(() => {
+      const popup = document.getElementById('editor-case-chips');
+      const rect = popup.getBoundingClientRect();
+      const body = popup.closest('.panel-body').getBoundingClientRect();
+      const panel = document.getElementById('editor-left').getBoundingClientRect();
+      const visible = el => {
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return r.top >= rect.top - 0.5 && r.bottom <= rect.bottom + 0.5 && r.bottom <= body.bottom + 0.5 && Boolean(hit && el.contains(hit));
+      };
+      const chips = [...popup.querySelectorAll('button')];
+      const focused = popup.contains(document.activeElement) ? document.activeElement : null;
+      return {
+        height: rect.height,
+        needsScroll: popup.scrollHeight > popup.clientHeight,
+        withinBody: rect.top >= body.top && rect.bottom <= body.bottom + 0.5 && rect.bottom <= innerHeight,
+        withinPanel: rect.left >= panel.left - 0.5 && rect.right <= panel.right + 0.5,
+        horizontalOverflow: popup.scrollWidth > popup.clientWidth || document.documentElement.scrollWidth > innerWidth,
+        lastKey: chips[chips.length - 1].dataset.filterKey,
+        lastVisible: visible(chips[chips.length - 1]),
+        focusKey: focused ? focused.dataset.filterKey : null,
+        focusedVisible: focused ? visible(focused) : null,
+      };
+    });
+
+    // Headless Chromium hides scrollbars (--hide-scrollbars), so assert the loaded
+    // persistent-scrollbar rule instead of a rendered width.
+    assert.equal(await page.evaluate(() => [...document.styleSheets]
+      .flatMap(sheet => { try { return [...sheet.cssRules]; } catch { return []; } })
+      .some(rule => rule.selectorText === '#editor-case-chips::-webkit-scrollbar' && rule.style.width === '8px')), true,
+    'the filter popup styles a persistent (non-overlay) scrollbar');
+
+    for (const size of [{ width: 1400, height: 900 }, { width: 1400, height: 560 }, { width: 390, height: 640 }]) {
+      const label = `${size.width}x${size.height}`;
+      await page.setViewportSize(size);
+      if (size.width < 900 && !await page.locator('#editor-left').evaluate(el => el.classList.contains('open'))) {
+        await page.locator('#btn-editor-left').click();
+      }
+      await toggle.click();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'true', `${label}: popup opens`);
+      let m = await measure();
+      assert.ok(m.height >= 72, `${label}: popup has usable height (${m.height})`);
+      assert.equal(m.needsScroll, true, `${label}: the fixture list must require scrolling`);
+      assert.equal(m.withinBody, true, `${label}: popup ends inside the clipping Case Browser body and viewport`);
+      assert.equal(m.withinPanel, true, `${label}: popup stays inside the Case Browser`);
+      assert.equal(m.horizontalOverflow, false, `${label}: no horizontal overflow`);
+
+      await page.locator('#editor-case-chips').evaluate(el => { el.scrollTop = el.scrollHeight; });
+      m = await measure();
+      assert.equal(m.lastVisible, true, `${label}: the last option is reachable and not clipped by an ancestor`);
+
+      await page.locator(`#editor-case-chips [data-filter-key="${m.lastKey}"]`).focus();
+      await page.keyboard.press('Space');
+      m = await measure();
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'true', `${label}: popup stays open`);
+      assert.equal(m.focusKey, m.lastKey, `${label}: focus stays on the activated option`);
+      assert.equal(m.focusedVisible, true, `${label}: the focused option remains visible`);
+      await page.keyboard.press('Space');
+      await page.keyboard.press('Escape');
+      assert.equal(await toggle.getAttribute('aria-expanded'), 'false');
+    }
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

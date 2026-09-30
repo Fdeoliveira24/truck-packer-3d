@@ -1978,6 +1978,61 @@ test('CASE-DELETION K2: selection is left exactly as-is when it does not referen
   assert.deepEqual(StateStore.get('selectedInstanceIds'), ['s1'], 'with no open Pack there is nothing to prune against');
 });
 
+test('CASE-DELETION M: deleting the last Case resets categories to Default inside the SAME write — one Undo restores both', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const categories = [
+    { key: 'audio', name: 'Audio', color: '#f59e0b' },
+    { key: 'default', name: 'Default', color: '#9ca3af' },
+  ];
+  const pack = deletionPack('pack-1', []);
+  StateStore.init({
+    currentScreen: 'cases', currentPackId: null, selectedInstanceIds: [],
+    caseLibrary: [mkCase({ id: 'case-a', category: 'audio' })], packLibrary: [pack], folderLibrary: [],
+    preferences: { units: { length: 'in', weight: 'lb' }, categories },
+  });
+  const packsBefore = StateStore.get('packLibrary');
+  const watch = watchStateWrites(StateStore);
+
+  PackLibrary.commitCaseDeletion(['case-a']);
+  watch.off();
+
+  assert.equal(watch.writes.length, 1, 'exactly one StateStore write');
+  assert.deepEqual(watch.writes[0], ['caseLibrary', 'preferences']);
+  assert.deepEqual(StateStore.get('caseLibrary'), []);
+  assert.deepEqual(StateStore.get('preferences').categories, [{ key: 'default', name: 'Default', color: '#9ca3af' }]);
+  assert.deepEqual(StateStore.get('preferences').units, { length: 'in', weight: 'lb' }, 'other preferences are preserved');
+  assert.equal(StateStore.get('packLibrary'), packsBefore, 'no Pack touched');
+
+  assert.equal(StateStore.undo(), true);
+  assert.deepEqual(StateStore.get('caseLibrary').map(c => c.id), ['case-a']);
+  assert.deepEqual(StateStore.get('preferences').categories, categories, 'one Undo restores Cases and categories together');
+  assert.equal(StateStore.undo(), false, 'the deletion was a single history step');
+});
+
+test('CASE-DELETION M2: the empty-library reset is skipped when categories are already Default-only, and never runs while Cases remain', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const defaultOnly = [{ key: 'default', name: 'Default', color: '#9ca3af' }];
+  StateStore.init({
+    currentScreen: 'cases', currentPackId: null, selectedInstanceIds: [],
+    caseLibrary: [mkCase({ id: 'case-a' })], packLibrary: [], folderLibrary: [],
+    preferences: { categories: defaultOnly },
+  });
+  let watch = watchStateWrites(StateStore);
+  PackLibrary.commitCaseDeletion(['case-a']);
+  watch.off();
+  assert.deepEqual(watch.writes, [['caseLibrary']], 'already Default-only: no redundant preferences write');
+
+  StateStore.init({
+    currentScreen: 'cases', currentPackId: null, selectedInstanceIds: [],
+    caseLibrary: [mkCase({ id: 'case-a' }), mkCase({ id: 'case-b', category: 'audio' })], packLibrary: [], folderLibrary: [],
+    preferences: { categories: [{ key: 'audio', name: 'Audio', color: '#f59e0b' }, ...defaultOnly] },
+  });
+  watch = watchStateWrites(StateStore);
+  PackLibrary.commitCaseDeletion(['case-a']);
+  watch.off();
+  assert.deepEqual(watch.writes, [['caseLibrary']], 'Cases remain: categories are left alone');
+});
+
 test('CASE-DELETION UI: both Cases-screen delete paths delegate to the single orchestration, keep the toast, and warn about dependent cargo', () => {
   const single = casesSource.slice(casesSource.indexOf('async function deleteCase(caseId) {'), casesSource.indexOf('// Import Cases dialog extracted'));
   const bulk = casesSource.slice(casesSource.indexOf('async function bulkDeleteSelected() {'), casesSource.indexOf('function initTableHeaders() {'));

@@ -907,12 +907,9 @@ export function createCasesScreen({
 
     function renderFilters() {
       const cases = CaseLibrary.getCases();
-      if (
-        !mutationBlockedWhileBusy({ notify: false }) &&
-        CategoryService.resetToDefaultIfNoCases(cases)
-      ) {
-        activeCategories.clear();
-      }
+      // Read-only: the empty-library category reset is published by the Case
+      // deletion transition (PackLibrary.commitCaseDeletion), never by render.
+      if (!cases.length) activeCategories.clear();
       const list = CategoryService.listWithCounts(cases);
       const validKeys = new Set(list.map(cat => cat.key));
       Array.from(activeCategories).forEach(key => {

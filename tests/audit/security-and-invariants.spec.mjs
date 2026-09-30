@@ -7882,6 +7882,10 @@ test('CASE and editor filter panels render as bounded vertical lists', async () 
     'Editor Case Browser filters must not wrap into clipped side-by-side columns');
   assert.match(src, /#editor-case-chips \{[\s\S]*z-index: 80;/,
     'Editor Case Browser filters must layer above the case list');
+  assert.match(src, /#editor-case-chips \{[\s\S]*?max-height: var\(--tp3d-case-chips-max-height, min\(48vh, 320px\)\);/,
+    'Editor Case Browser filters must use the measured available height, with the old cap only as fallback');
+  assert.match(src, /#editor-left \.panel-body \{\s*position: relative;\s*flex: 1 1 auto;\s*min-height: 0;/,
+    'the Case Browser body must fill its panel so a short result list cannot clip the filter popup');
   assert.doesNotMatch(indexSrc, /id="(?:cases|editor-case)-filters-toggle"[\s\S]{0,180}data-tooltip="Toggle filters"/,
     'filter toggle buttons must not render a tooltip over the open filter panel');
   assert.match(uiSrc, /const activeAnchorClass = String\(options\.activeAnchorClass \|\| ''\)\.trim\(\)/,
@@ -7898,10 +7902,14 @@ test('CASE and editor filter panels render as bounded vertical lists', async () 
     'Packs trailer preset popup button must be yellow while its popup is open');
   assert.match(categorySrc, /export function resetToDefaultIfNoCases\(cases\)/,
     'Category service must expose an explicit empty-library reset path');
-  assert.match(casesSrc, /CategoryService\.resetToDefaultIfNoCases\(cases\)[\s\S]*activeCategories\.clear\(\)/,
+  assert.match(categorySrc, /export function calculateResetToDefaultIfNoCases\(cases\)/,
+    'Category service must expose the pure empty-library reset for atomic transitions');
+  assert.match(casesSrc, /if \(!cases\.length\) activeCategories\.clear\(\);/,
     'Cases filters must clear stale category selections when the case library is empty');
-  assert.match(editorSrc, /CategoryService\.resetToDefaultIfNoCases\(allCases\)[\s\S]*browserCats\.clear\(\);[\s\S]*browserManufacturers\.clear\(\);/,
+  assert.match(editorSrc, /if \(!allCases\.length\) \{\s*browserCats\.clear\(\);\s*browserManufacturers\.clear\(\);/,
     'Editor Case Browser filters must clear stale category and manufacturer selections when the case library is empty');
+  assert.doesNotMatch(`${casesSrc}\n${editorSrc}`, /resetToDefaultIfNoCases/,
+    'rendering the Cases screen or the Editor Case Browser never writes Preferences/history');
 });
 
 test('EDITOR and Packs filter popups include total All counts', async () => {
@@ -7911,8 +7919,10 @@ test('EDITOR and Packs filter popups include total All counts', async () => {
 
   assert.match(editorSrc, /const allFilterCount = allCases\.length/,
     'Editor Case Browser filter popup must compute the total case count');
-  assert.match(editorSrc, /`All: \$\{allFilterCount\}`/,
+  assert.match(editorSrc, /makeBrowserChip\(\s*'All',\s*allFilterCount,/,
     'Editor Case Browser All filter must display its count');
+  assert.match(editorSrc, /const fullLabel = `\$\{name\}: \$\{count\}`;/,
+    'Editor Case Browser chips must keep the "Name: count" label');
   assert.match(indexSrc, /id=["']packs-filter-chip-all["']/,
     'Packs status filter popup must include an All chip');
   assert.match(packsSrc, /function updateStatusFilterChips\(packs\)/,
@@ -7942,6 +7952,12 @@ test('EDITOR Case Browser filter popup supports manufacturer grouping', async ()
     'manufacturer mode must not disable the filter popup');
   assert.match(src, /browserManufacturers\.clear\(\)[\s\S]*caseBrowserGroupBy = 'category'/,
     'saving a new case from the editor must clear stale manufacturer filters');
+  assert.match(src, /const path = ev\.composedPath\(\);[\s\S]{0,120}path\.includes\(caseFilterToggleEl\)[\s\S]{0,80}path\.includes\(caseChipsEl\)/,
+    'a chip click that rebuilds (detaches) the chip must still count as inside the filter popup');
+  assert.doesNotMatch(src, /caseChipsEl\.contains\(ev\.target\)/,
+    'outside-click detection must not use the possibly-detached event target');
+  assert.match(src, /function resetWorkspaceState\(\) \{[\s\S]*?browserCats\.clear\(\);\s*browserManufacturers\.clear\(\);\s*if \(caseSearchEl\) caseSearchEl\.value = '';\s*caseBrowserGroupBy = 'category';\s*setCaseFiltersVisible\(false, false\);/,
+    'Case Browser search/filter/group-by state is workspace-scoped');
 });
 
 test('EDITOR multi-select summary removes shortcut helper copy', async () => {
@@ -19517,8 +19533,8 @@ test('G1.2B-CASE-BROWSER-POLISH new CSS classes use existing design tokens only'
 
   const headerMatch = css.match(/\.tp3d-editor-mfg-group-header\s*\{([^}]*)\}/);
   assert.ok(headerMatch, '.tp3d-editor-mfg-group-header must be defined in main.css');
-  assert.match(headerMatch[1], /var\(--text-secondary\)/,
-    'the manufacturer group header color must use var(--text-secondary)');
+  assert.match(headerMatch[1], /color: var\(--text-primary\);/,
+    'the manufacturer group header color must use the theme-aware var(--text-primary)');
   assert.match(headerMatch[1], /var\(--text-xs\)/,
     'the manufacturer group header font-size must use var(--text-xs)');
   assert.match(headerMatch[1], /var\(--font-semibold\)/,
@@ -25055,8 +25071,8 @@ test('APP-STABILIZATION-PHASE3 Packs and Cases re-check guarded mutation commit 
     'bulk case delete checks both before and after confirmation');
   assert.match(casesSrc, /async function deleteCase\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.commitCaseDeletion/,
     'single case delete checks both before and after confirmation');
-  assert.match(casesSrc, /!mutationBlockedWhileBusy\(\{ notify: false \}\)[\s\S]*CategoryService\.resetToDefaultIfNoCases/,
-    'render-time empty-category normalization cannot mutate while busy');
+  assert.doesNotMatch(casesSrc, /CategoryService\.resetToDefaultIfNoCases/,
+    'the Cases screen render never normalizes categories; the guarded Case deletion transition owns that write');
 });
 
 test('APP-STABILIZATION-PHASE3 dialog guards sit immediately before import, category, and case commits', async () => {

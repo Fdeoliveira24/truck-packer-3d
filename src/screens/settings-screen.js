@@ -20,16 +20,37 @@ export function createSettingsScreen({
   Storage,
 }) {
   const SettingsUI = (() => {
-    const elLength = /** @type {HTMLSelectElement} */ (document.getElementById('pref-length'));
-    const elWeight = /** @type {HTMLSelectElement} */ (document.getElementById('pref-weight'));
-    const elTheme = /** @type {HTMLSelectElement} */ (document.getElementById('pref-theme'));
+    const select = (id, label, options) => {
+      const mount = document.getElementById(id);
+      const control = UIComponents.createSelect({ id, label, options });
+      mount.replaceWith(control);
+      return control;
+    };
+    const elLength = select('pref-length', 'Length', [
+      { value: 'in', label: 'Inches' }, { value: 'ft', label: 'Feet' },
+      { value: 'cm', label: 'Centimeters' }, { value: 'm', label: 'Meters' },
+    ]);
+    const elWeight = select('pref-weight', 'Weight', [
+      { value: 'lb', label: 'Pounds' }, { value: 'kg', label: 'Kilograms' },
+    ]);
+    const elTheme = select('pref-theme', 'Theme', [
+      { value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' },
+    ]);
     const elLabel = /** @type {HTMLInputElement} */ (document.getElementById('pref-label-size'));
     const elHidden = /** @type {HTMLInputElement} */ (document.getElementById('pref-hidden-opacity'));
     const elHiddenValue = /** @type {HTMLElement} */ (document.getElementById('pref-hidden-opacity-value'));
-    const elSnap = /** @type {HTMLSelectElement} */ (document.getElementById('pref-snapping-enabled'));
+    const elSnap = select('pref-snapping-enabled', 'Snapping', [
+      { value: 'true', label: 'Enabled' }, { value: 'false', label: 'Disabled' },
+    ]);
     const elGrid = /** @type {HTMLInputElement} */ (document.getElementById('pref-grid-size'));
-    const elShot = /** @type {HTMLSelectElement} */ (document.getElementById('pref-shot-res'));
-    const elPdfStats = /** @type {HTMLSelectElement} */ (document.getElementById('pref-pdf-stats'));
+    const elShot = select('pref-shot-res', 'Screenshot resolution', [
+      { value: '1920x1080', label: '1920×1080' },
+      { value: '2560x1440', label: '2560×1440' },
+      { value: '3840x2160', label: '3840×2160' },
+    ]);
+    const elPdfStats = select('pref-pdf-stats', 'Include stats in PDF', [
+      { value: 'true', label: 'Yes' }, { value: 'false', label: 'No' },
+    ]);
     const btnSave = /** @type {HTMLButtonElement} */ (document.getElementById('btn-save-prefs'));
     const btnReset = /** @type {HTMLButtonElement} */ (document.getElementById('btn-reset-demo'));
 

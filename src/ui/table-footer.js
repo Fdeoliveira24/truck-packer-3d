@@ -11,6 +11,8 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+import { createSharedSelect } from './ui-components.js';
+
 const ROW_OPTIONS = [10, 25, 50, 100];
 const DEFAULT_ROWS_PER_PAGE = 50;
 
@@ -43,6 +45,7 @@ export function createTableFooter(options = {}) {
     onPageChange = () => {},
     onRowsPerPageChange = () => {},
     onSelectAllToggle = () => {},
+    selectFactory = createSharedSelect,
     // Callers name their own records; select-all always spans every matching
     // record across pages, so the generic fallback says "matching", not "visible".
     selectAllAriaLabel = 'Select all matching rows',
@@ -81,14 +84,9 @@ export function createTableFooter(options = {}) {
   const rowsLabel = document.createElement('span');
   rowsLabel.className = 'tf-label';
   rowsLabel.textContent = 'Rows per page';
-  const selectEl = document.createElement('select');
-  selectEl.className = 'tf-select';
-  selectEl.setAttribute('aria-label', 'Rows per page');
-  ROW_OPTIONS.forEach(value => {
-    const opt = document.createElement('option');
-    opt.value = String(value);
-    opt.textContent = String(value);
-    selectEl.appendChild(opt);
+  const selectEl = selectFactory({
+    label: 'Rows per page', className: 'tf-select',
+    options: ROW_OPTIONS.map(value => ({ value: String(value), label: String(value) })),
   });
   selectEl.value = String(DEFAULT_ROWS_PER_PAGE);
   const pageLabel = document.createElement('span');
@@ -158,8 +156,8 @@ export function createTableFooter(options = {}) {
     btnLast.disabled = disableForward;
   };
 
-  const handleSelectChange = event => {
-    const nextRows = normalizeRowsPerPage(event.target.value);
+  const handleSelectChange = () => {
+    const nextRows = normalizeRowsPerPage(selectEl.value);
     if (nextRows === state.rowsPerPage) return;
     state = { ...state, rowsPerPage: nextRows, pageIndex: 0 };
     render();

@@ -2309,11 +2309,8 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       const a = await snapshot();
       assert.ok(a.shot && a.pdf, 'fixture: committed AutoPack layout exports');
 
-      await page.evaluate(() => {
-        const select = [...document.querySelectorAll('select')].find(el => [...el.options].some(o => o.value === '53ft_dry_van_us'));
-        select.value = '53ft_dry_van_us';
-        select.dispatchEvent(new Event('change', { bubbles: true }));
-      });
+      await page.getByRole('combobox', { name: /Trailer preset/ }).click();
+      await page.getByRole('option', { name: '53 ft Dry Van (US)', exact: true }).click();
       await settleExport(page);
       const pending = await snapshot();
       assert.deepEqual(pending, a, 'a pending (uncommitted) truck choice never changes exported geometry');

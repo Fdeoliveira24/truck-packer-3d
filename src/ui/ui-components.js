@@ -13,6 +13,15 @@
 
 import { createModalFocus } from './modal-focus.js';
 
+let activeUIComponents = null;
+
+// Table footers are created by screens that do not receive the UIComponents
+// instance. The app creates that instance before it renders either table.
+export function createSharedSelect(options) {
+  if (!activeUIComponents) throw new Error('UIComponents must be initialized before a select is created');
+  return activeUIComponents.createSelect(options);
+}
+
 const AUTOPACK_LOADING_IMAGE_SRC = 'media/autopack-loading-truck-480w.gif?v=20260703';
 // One-time notice only: AutoPack status lifetime follows the engine's run
 // cleanup, so this never closes the surface or implies completion.
@@ -246,6 +255,7 @@ export function createUIComponents() {
   let dropdownHost = null;
   let dropdownActionParentId;
   let closingDropdowns = false;
+  let selectIdCounter = 0;
 
   const toastTypes = {
     success: { title: 'Success', color: 'var(--success)', icon: '✓' },
@@ -602,11 +612,12 @@ export function createUIComponents() {
     const shouldToggleClosed = options.toggle === true && Boolean(existing);
     closeAllDropdowns();
     const menuSemantics = options.menuSemantics === true;
-    const manageTriggerState = menuSemantics || options.manageTriggerState === true;
+    const selectSemantics = options.selectSemantics === true;
+    const manageTriggerState = menuSemantics || selectSemantics || options.manageTriggerState === true;
     if (shouldToggleClosed) return null;
     if (manageTriggerState && anchorEl) {
       dropdownSemanticAnchorEl = anchorEl;
-      anchorEl.setAttribute('aria-haspopup', 'menu');
+      anchorEl.setAttribute('aria-haspopup', selectSemantics ? 'listbox' : 'menu');
       anchorEl.setAttribute('aria-expanded', 'true');
     }
     const activeAnchorClass = String(options.activeAnchorClass || '').trim();
@@ -616,7 +627,13 @@ export function createUIComponents() {
       dropdownActiveAnchorClasses.forEach(className => anchorEl.classList.add(className));
     }
     const wrap = document.createElement('div');
-    wrap.className = 'dropdown-menu';
+    wrap.className = selectSemantics ? 'dropdown-menu tp3d-select-menu' : 'dropdown-menu';
+    if (selectSemantics) {
+      wrap.id = `${resolvedAnchorId}-listbox`;
+      wrap.setAttribute('role', 'listbox');
+      wrap.setAttribute('aria-label', String(options.selectLabel || 'Options'));
+      anchorEl.setAttribute('aria-controls', wrap.id);
+    }
     // The stylesheet defines `.dropdown-menu` as `position:absolute` for inline dropdowns.
     // For floating viewport-clamped dropdowns we keep it absolute but hide it while measuring.
     wrap.style.top = '0';
@@ -624,7 +641,39 @@ export function createUIComponents() {
     wrap.style.right = 'auto';
     wrap.style.visibility = 'hidden';
 
-    items.forEach(item => {
+    const selectOptions = [];
+    const activateSelectOption = item => {
+      if (item.disabled) return;
+      closeAllDropdowns();
+      if (anchorEl?.isConnected && typeof anchorEl.focus === 'function') anchorEl.focus();
+      invokeAction(item.onClick);
+    };
+    items.forEach((item, index) => {
+      if (selectSemantics) {
+        const option = document.createElement('div');
+        option.id = `${wrap.id}-option-${index}`;
+        option.className = 'tp3d-select-option';
+        option.setAttribute('role', 'option');
+        option.setAttribute('aria-selected', item.selected ? 'true' : 'false');
+        option.setAttribute('aria-disabled', item.disabled ? 'true' : 'false');
+        option.title = String(item.label || '');
+        if (item.selected) option.classList.add('is-selected');
+        const label = document.createElement('span');
+        label.className = 'tp3d-select-option__label';
+        label.textContent = String(item.label || '');
+        option.appendChild(label);
+        const check = document.createElement('i');
+        check.className = 'fa-solid fa-check tp3d-select-option__check';
+        check.setAttribute('aria-hidden', 'true');
+        option.appendChild(check);
+        option.addEventListener('click', ev => {
+          ev.stopPropagation();
+          activateSelectOption(item);
+        });
+        wrap.appendChild(option);
+        selectOptions.push({ element: option, item });
+        return;
+      }
       if (item && item.type === 'header') {
         const header = document.createElement('div');
         header.style.padding = '10px 12px';
@@ -749,7 +798,7 @@ export function createUIComponents() {
     });
 
     const dropdown = document.createElement('div');
-    dropdown.className = 'dropdown';
+    dropdown.className = selectSemantics ? 'dropdown tp3d-select-dropdown' : 'dropdown';
     if (options.dropdownClass) {
       String(options.dropdownClass)
         .split(/\s+/)
@@ -764,7 +813,9 @@ export function createUIComponents() {
     dropdown.style.zIndex = '16000';
     dropdown.style.visibility = 'hidden';
 
-    const preferredWidth = Math.max(180, Number(options.width) || 220);
+    const preferredWidth = selectSemantics
+      ? Math.max(180, anchorEl.getBoundingClientRect().width)
+      : Math.max(180, Number(options.width) || 220);
     dropdown.style.minWidth = `${preferredWidth}px`;
     dropdown.appendChild(wrap);
 
@@ -803,8 +854,8 @@ export function createUIComponents() {
 
       // Measure after maxWidth/minWidth are applied.
       const menuRect = wrap.getBoundingClientRect();
-      const menuW = Math.max(menuRect.width, wrap.scrollWidth || 0, preferredWidth);
-      const menuH = Math.max(menuRect.height, wrap.scrollHeight || 0, 0);
+      const menuW = Math.min(Math.max(menuRect.width, wrap.scrollWidth || 0, preferredWidth), Math.max(0, vw - pad * 2));
+      const menuH = Math.min(Math.max(menuRect.height, wrap.scrollHeight || 0, 0), Math.max(0, vh - pad * 2));
       dropdown.style.width = `${Math.ceil(menuW)}px`;
       dropdown.style.height = `${Math.ceil(menuH)}px`;
 
@@ -825,6 +876,15 @@ export function createUIComponents() {
     positionDropdown();
     wrap.style.visibility = 'visible';
     dropdown.style.visibility = 'visible';
+    if (selectSemantics) {
+      const active = selectOptions.find(entry => entry.item.selected && !entry.item.disabled) ||
+        selectOptions.find(entry => !entry.item.disabled);
+      if (active) {
+        active.element.classList.add('is-active');
+        anchorEl.setAttribute('aria-activedescendant', active.element.id);
+        active.element.scrollIntoView?.({ block: 'nearest' });
+      }
+    }
     if (menuSemantics) {
       const firstItem = /** @type {HTMLElement | null} */ (
         wrap.querySelector('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])')
@@ -846,6 +906,29 @@ export function createUIComponents() {
     }, 0);
 
     dropdownKeyDownListener = ev => {
+      if (selectSemantics && document.activeElement === anchorEl) {
+        const enabled = selectOptions.filter(entry => !entry.item.disabled);
+        if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key) && enabled.length) {
+          ev.preventDefault();
+          const currentIndex = enabled.findIndex(entry => entry.element.classList.contains('is-active'));
+          const nextIndex = ev.key === 'Home' ? 0 : ev.key === 'End' ? enabled.length - 1
+            : ev.key === 'ArrowDown' ? (currentIndex + 1) % enabled.length
+              : (currentIndex <= 0 ? enabled.length : currentIndex) - 1;
+          selectOptions.forEach(entry => entry.element.classList.remove('is-active'));
+          const next = enabled[nextIndex];
+          next.element.classList.add('is-active');
+          anchorEl.setAttribute('aria-activedescendant', next.element.id);
+          next.element.scrollIntoView?.({ block: 'nearest' });
+          return;
+        }
+        if (ev.key === 'Enter' || ev.key === ' ') {
+          ev.preventDefault();
+          const active = enabled.find(entry => entry.element.classList.contains('is-active'));
+          if (active) activateSelectOption(active.item);
+          return;
+        }
+        if (ev.key === 'Tab') closeAllDropdowns();
+      }
       if (menuSemantics && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) {
         const menuItems = /** @type {HTMLElement[]} */ (
           Array.from(wrap.querySelectorAll('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])'))
@@ -889,6 +972,10 @@ export function createUIComponents() {
       dropdownActiveAnchorEl = null;
       dropdownActiveAnchorClasses = [];
       if (dropdownSemanticAnchorEl) dropdownSemanticAnchorEl.setAttribute('aria-expanded', 'false');
+      if (dropdownSemanticAnchorEl) {
+        dropdownSemanticAnchorEl.removeAttribute('aria-controls');
+        dropdownSemanticAnchorEl.removeAttribute('aria-activedescendant');
+      }
       dropdownSemanticAnchorEl = null;
       if (dropdownDocClickTimer) {
         window.clearTimeout(dropdownDocClickTimer);
@@ -940,14 +1027,112 @@ export function createUIComponents() {
     return unregister;
   }
 
-  return {
+  /**
+   * Select-only combobox. Programmatic value changes stay silent, matching a
+   * native select; user selection emits one bubbling change event.
+   * @param {{label: string, options: Array<{value: string, label: string, disabled?: boolean}>,
+   *   value?: string, disabled?: boolean, className?: string, id?: string}} config
+   * @returns {HTMLDivElement & {value: string, disabled: boolean,
+   *   setOptions: (options: Array<{value: string, label: string, disabled?: boolean}>) => void}}
+   */
+  function createSelect(config) {
+    const trigger = document.createElement('div');
+    trigger.id = config.id || `tp3d-select-${++selectIdCounter}`;
+    trigger.className = `tp3d-select ${config.className || ''}`.trim();
+    trigger.setAttribute('role', 'combobox');
+    trigger.setAttribute('aria-haspopup', 'listbox');
+    trigger.setAttribute('aria-expanded', 'false');
+    let selectedValue = '';
+    let disabled = false;
+    let optionList = [];
+    const valueEl = document.createElement('span');
+    valueEl.className = 'tp3d-select__value';
+    const chevron = document.createElement('i');
+    chevron.className = 'fa-solid fa-chevron-down tp3d-select__chevron';
+    chevron.setAttribute('aria-hidden', 'true');
+    trigger.appendChild(valueEl);
+    trigger.appendChild(chevron);
+
+    const syncLabel = () => {
+      const selected = optionList.find(option => option.value === selectedValue);
+      const label = selected?.label || '';
+      valueEl.textContent = label;
+      valueEl.title = label;
+      trigger.setAttribute('aria-label', `${config.label}: ${label}`);
+    };
+    const setValue = value => {
+      const next = String(value ?? '');
+      selectedValue = optionList.some(option => option.value === next) ? next : '';
+      syncLabel();
+    };
+    const setOptions = options => {
+      optionList = (Array.isArray(options) ? options : []).map(option => ({
+        value: String(option.value), label: String(option.label), disabled: Boolean(option.disabled),
+      }));
+      if (!optionList.some(option => option.value === selectedValue)) {
+        selectedValue = optionList[0]?.value || '';
+      }
+      syncLabel();
+      if (trigger.getAttribute('aria-expanded') === 'true') closeAllDropdowns();
+    };
+    Object.defineProperties(trigger, {
+      value: { get: () => selectedValue, set: setValue },
+      disabled: {
+        get: () => disabled,
+        set: value => {
+          disabled = Boolean(value);
+          trigger.setAttribute('aria-disabled', String(disabled));
+          trigger.tabIndex = disabled ? -1 : 0;
+          if (disabled && trigger.getAttribute('aria-expanded') === 'true') closeAllDropdowns();
+        },
+      },
+    });
+    const control = /** @type {HTMLDivElement & {value: string, disabled: boolean,
+     * setOptions: (options: Array<{value: string, label: string, disabled?: boolean}>) => void}} */ (trigger);
+    control.setOptions = setOptions;
+    setOptions(config.options);
+    if (config.value !== undefined) setValue(config.value);
+    control.disabled = Boolean(config.disabled);
+
+    const open = () => {
+      if (control.disabled) return;
+      const items = optionList.map(option => ({
+        ...option,
+        selected: option.value === selectedValue,
+        onClick: () => {
+          if (option.value === selectedValue) return;
+          setValue(option.value);
+          control.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+      }));
+      openDropdown(control, items, { toggle: true, selectSemantics: true, selectLabel: config.label });
+    };
+    control.addEventListener('click', () => {
+      control.focus();
+      open();
+    });
+    control.addEventListener('keydown', ev => {
+      if (control.disabled || control.getAttribute('aria-expanded') === 'true') return;
+      if (['Enter', ' ', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        open();
+      }
+    });
+    return control;
+  }
+
+  const components = {
     modalOwnership,
     showToast,
     showModal,
     showAutoPackLoadingOverlay,
     confirm,
     openDropdown,
+    createSelect,
     closeAllDropdowns,
     registerDropdownSurface,
   };
+  activeUIComponents = components;
+  return components;
 }

@@ -4159,7 +4159,7 @@ export function createEditorScreen({
       if (!snapshot || UIComponents.modalOwnership?.getActiveOwner()) return;
       if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body &&
           document.activeElement.isConnected) return;
-      const candidates = Array.from(root?.querySelectorAll('button, input, select, textarea') || []);
+      const candidates = Array.from(root?.querySelectorAll('button, input, [role="combobox"], textarea') || []);
       const match = candidates.find(el => snapshot.key && el.dataset.focusKey === snapshot.key) ||
         candidates.find(el => el.tagName === snapshot.tag &&
           (el.getAttribute('aria-label') || el.textContent?.trim() || '') === snapshot.name);
@@ -6724,16 +6724,19 @@ export function createEditorScreen({
       presetWrap.className = 'field';
       presetWrap.classList.add('tp3d-editor-wrap-full');
 
-      const presetLabel = document.createElement('label');
+      const presetLabel = document.createElement('div');
       presetLabel.className = 'label';
       presetLabel.textContent = 'Trailer preset';
 
-      const presetSelect = document.createElement('select');
-      presetSelect.id = `tp3d-editor-field-${++editorFieldId}`;
-      presetLabel.htmlFor = presetSelect.id;
+      const presetSelect = UIComponents.createSelect({
+        id: `tp3d-editor-field-${++editorFieldId}`,
+        label: 'Trailer preset',
+        options: [{ value: 'custom', label: 'Custom' }, ...TrailerPresets.getAll().map(p => ({
+          value: String(p.id), label: String(p.label),
+        }))],
+        className: 'tp3d-editor-select-full',
+      });
       presetSelect.dataset.focusKey = 'truck-preset';
-      presetSelect.className = 'select';
-      presetSelect.classList.add('tp3d-editor-select-full');
 
       function inferPresetIdFromTruck(truck) {
         const t = truck && typeof truck === 'object' ? truck : {};
@@ -6758,10 +6761,6 @@ export function createEditorScreen({
         return 'custom';
       }
 
-      const presetOptions = TrailerPresets.getAll()
-        .map(p => `<option value="${String(p.id)}">${String(p.label)}</option>`)
-        .join('');
-      presetSelect.innerHTML = `<option value="custom">Custom</option>${presetOptions}`;
       presetSelect.value = inferPresetIdFromTruck(effectiveTruck);
 
       presetSelect.addEventListener('change', () => {
@@ -6790,20 +6789,20 @@ export function createEditorScreen({
       const shapeWrap = document.createElement('div');
       shapeWrap.className = 'field';
       shapeWrap.classList.add('tp3d-editor-wrap-full');
-      const shapeLabel = document.createElement('label');
+      const shapeLabel = document.createElement('div');
       shapeLabel.className = 'label';
       shapeLabel.textContent = 'Trailer Shape Mode';
-      const shapeSelect = document.createElement('select');
-      shapeSelect.id = `tp3d-editor-field-${++editorFieldId}`;
-      shapeLabel.htmlFor = shapeSelect.id;
+      const shapeSelect = UIComponents.createSelect({
+        id: `tp3d-editor-field-${++editorFieldId}`,
+        label: 'Trailer Shape Mode',
+        options: [
+          { value: 'rect', label: 'Standard' },
+          { value: 'wheelWells', label: 'Wheel Wells' },
+          { value: 'frontBonus', label: 'Front Overhang' },
+        ],
+        className: 'tp3d-editor-select-full',
+      });
       shapeSelect.dataset.focusKey = 'truck-shape';
-      shapeSelect.className = 'select';
-      shapeSelect.classList.add('tp3d-editor-select-full');
-      shapeSelect.innerHTML = `
-	                <option value="rect">Standard</option>
-	                <option value="wheelWells">Wheel Wells</option>
-	                <option value="frontBonus">Front Overhang</option>
-	              `;
       shapeSelect.value =
         effectiveTruck && (effectiveTruck.shapeMode === 'wheelWells' || effectiveTruck.shapeMode === 'frontBonus')
           ? effectiveTruck.shapeMode

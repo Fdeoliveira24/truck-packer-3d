@@ -80,6 +80,7 @@ function installDom(t) {
     querySelector(selector) { return this.querySelectorAll(selector)[0] || null; }
     closest(selector) { return this.matches(selector) ? this : this.parentElement?.closest(selector); }
     focus() { doc.activeElement = this; }
+    dispatchEvent(event) { this.emit(event.type, event); return true; }
   }
   doc.body = new Element('body');
   doc.activeElement = doc.body;
@@ -534,6 +535,109 @@ test('P0-SM-OF-3 page dropdowns retain body mounting and the shared Escape path'
   dispatch(key('Escape', anchor));
   assert.equal(popup.isConnected, false);
   assert.equal(UI.modalOwnership.getActiveOwner(), null);
+});
+
+test('shared select uses one popup lifecycle, preserves value semantics, and skips disabled options', async t => {
+  const { UI, doc, win, dispatch, key } = installDom(t);
+  const select = doc.body.appendChild(UI.createSelect({
+    label: 'Test choice', value: 'a',
+    options: [
+      { value: 'a', label: 'Alpha' },
+      { value: 'b', label: 'Blocked', disabled: true },
+      { value: 'c', label: 'Charlie' },
+    ],
+  }));
+  let changes = 0;
+  select.addEventListener('change', () => { changes++; });
+  assert.equal(select.value, 'a');
+  assert.equal(select.getAttribute('role'), 'combobox');
+  assert.equal(select.getAttribute('aria-expanded'), 'false');
+  assert.match(select.getAttribute('aria-label'), /Test choice: Alpha/);
+  select.value = 'c';
+  assert.equal(changes, 0, 'programmatic assignments stay silent');
+  assert.match(select.getAttribute('aria-label'), /Charlie/);
+  select.value = 'a';
+
+  select.disabled = true;
+  select.emit('click', {});
+  assert.equal(doc.querySelector('[data-dropdown="1"]'), null);
+  assert.equal(select.getAttribute('aria-disabled'), 'true');
+  select.disabled = false;
+  select.focus();
+  dispatch(key('Enter', select));
+  let popup = doc.querySelector('[data-dropdown="1"]');
+  assert.ok(popup);
+  assert.equal(select.getAttribute('aria-expanded'), 'true');
+  assert.equal(select.getAttribute('aria-haspopup'), 'listbox');
+  assert.equal(popup.children[0].getAttribute('role'), 'listbox');
+  assert.equal(select.getAttribute('aria-controls'), popup.children[0].id);
+  const options = popup.children[0].children;
+  assert.equal(options[0].getAttribute('aria-selected'), 'true');
+  assert.equal(options[1].getAttribute('aria-disabled'), 'true');
+  options[1].emit('click', { stopPropagation() {} });
+  assert.equal(select.value, 'a', 'disabled option cannot commit');
+  assert.equal(changes, 0);
+  dispatch(key('ArrowDown', select));
+  assert.equal(select.getAttribute('aria-activedescendant'), options[2].id);
+  dispatch(key('Home', select));
+  assert.equal(select.getAttribute('aria-activedescendant'), options[0].id);
+  dispatch(key('End', select));
+  assert.equal(select.getAttribute('aria-activedescendant'), options[2].id);
+  dispatch(key('ArrowUp', select));
+  assert.equal(select.getAttribute('aria-activedescendant'), options[0].id);
+  dispatch(key('ArrowDown', select));
+  dispatch(key(' ', select));
+  assert.equal(select.value, 'c');
+  assert.equal(changes, 1);
+  assert.equal(select.getAttribute('aria-expanded'), 'false');
+  assert.equal(doc.activeElement, select);
+
+  dispatch(key(' ', select));
+  popup = doc.querySelector('[data-dropdown="1"]');
+  assert.ok(popup, 'Space reopens the same primitive');
+  dispatch(key('Escape', select));
+  assert.equal(popup.isConnected, false);
+  assert.equal(doc.activeElement, select);
+  assert.equal(select.getAttribute('aria-controls'), null);
+
+  select.emit('click', {});
+  popup = doc.querySelector('[data-dropdown="1"]');
+  assert.ok(popup, 'click opens');
+  await new Promise(resolve => setTimeout(resolve, 0));
+  doc.emit('click', {}, true);
+  assert.equal(popup.isConnected, false, 'outside click closes');
+
+  select.setOptions([{ value: 'd', label: 'Delta' }]);
+  assert.equal(select.value, 'd');
+  assert.match(select.getAttribute('aria-label'), /Delta/);
+  win.innerWidth = 220;
+  select.getBoundingClientRect = () => ({ left: 175, top: 100, right: 215, bottom: 140, width: 40, height: 40 });
+  select.emit('click', {});
+  popup = doc.querySelector('[data-dropdown="1"]');
+  assert.ok(Number.parseInt(popup.style.width, 10) <= 204, 'popup width is viewport-clamped');
+  assert.ok(Number.parseInt(popup.style.left, 10) >= 8, 'popup stays in the viewport');
+  UI.closeAllDropdowns();
+});
+
+test('shared select popup belongs to its modal and closes with the parent', t => {
+  const { UI, doc, dispatch, key } = installDom(t);
+  const parent = UI.showModal({});
+  const select = parent.body.appendChild(UI.createSelect({
+    label: 'Modal choice', options: [{ value: 'a', label: 'Alpha' }],
+  }));
+  select.focus();
+  select.emit('click', {});
+  const popup = doc.querySelector('[data-dropdown="1"]');
+  assert.equal(popup.parentElement.parentElement, parent.overlay);
+  assert.equal(UI.modalOwnership.getActiveOwner().parentId, parent.owner.id);
+  dispatch(key('Escape', select));
+  assert.equal(popup.isConnected, false);
+  assert.equal(parent.overlay.isConnected, true);
+  select.emit('click', {});
+  const reopened = doc.querySelector('[data-dropdown="1"]');
+  parent.close();
+  assert.equal(reopened.isConnected, false);
+  assert.deepEqual(UI.modalOwnership.getOwners(), []);
 });
 
 test('P0-SM-OF-3 persistent surface registration and cleanup are idempotent across re-registration', t => {

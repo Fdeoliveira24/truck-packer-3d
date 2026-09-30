@@ -79,23 +79,17 @@ function itemCodeErrorMessage(result) {
   return 'Item Code is invalid.';
 }
 
-function createSelectField(doc, label, options, value, help = '') {
+function createSelectField(doc, UIComponents, label, options, value, help = '') {
   const wrap = doc.createElement('div');
   wrap.className = 'field';
-  const l = doc.createElement('label');
+  const l = doc.createElement('div');
   l.className = 'label';
   l.textContent = label;
-  const select = doc.createElement('select');
-  select.className = 'input';
-  select.id = `tp3d-case-field-${++caseFieldId}`;
-  l.htmlFor = select.id;
-  options.forEach(([val, text]) => {
-    const opt = doc.createElement('option');
-    opt.value = val;
-    opt.textContent = text;
-    select.appendChild(opt);
+  const select = UIComponents.createSelect({
+    id: `tp3d-case-field-${++caseFieldId}`,
+    label, value,
+    options: options.map(([val, text]) => ({ value: val, label: text })),
   });
-  select.value = value;
   wrap.appendChild(l);
   wrap.appendChild(select);
   if (help) {
@@ -263,10 +257,7 @@ export function openCaseModal({
   catColorInput.className = 'tp3d-cases-cat-color-input';
   catColorInput.setAttribute('aria-label', 'Category color');
   catColorSwatch.appendChild(catColorInput);
-  const catSelect = doc.createElement('select');
-  catSelect.className = 'select';
-  catSelect.classList.add('tp3d-flex-1');
-  catSelect.setAttribute('aria-label', 'Category');
+  const catSelect = UIComponents.createSelect({ label: 'Category', options: [], className: 'tp3d-flex-1' });
   let catOptions = [];
   const getCategoryOptions = () => {
     const options = CategoryService.listWithCounts(CaseLibrary.getCases());
@@ -285,13 +276,9 @@ export function openCaseModal({
   const populateCategorySelect = selectedKey => {
     const desiredKey = normalizeCategoryKey(selectedKey || initial.category || 'default') || 'default';
     catOptions = getCategoryOptions();
-    catSelect.innerHTML = '';
-    catOptions.forEach(c => {
-      const opt = doc.createElement('option');
-      opt.value = c.key;
-      opt.textContent = c.name || CategoryService.meta(c.key).name;
-      catSelect.appendChild(opt);
-    });
+    catSelect.setOptions(catOptions.map(c => ({
+      value: c.key, label: c.name || CategoryService.meta(c.key).name,
+    })));
     catSelect.value = catOptions.some(c => c.key === desiredKey) ? desiredKey : 'default';
   };
   populateCategorySelect(initial.category);
@@ -442,7 +429,7 @@ export function openCaseModal({
   handlingSummary.textContent = 'Handling Rules';
   handling.appendChild(handlingSummary);
 
-  const orient = createSelectField(doc, 'Orientation', [
+  const orient = createSelectField(doc, UIComponents, 'Orientation', [
     ['any', 'Any direction'],
     ['upright', 'Keep upright'],
     ['onSide', 'Place on side'],
@@ -493,13 +480,13 @@ export function openCaseModal({
   palletNoTopNote.textContent =
     'This pallet is marked “No top load,” so AutoPack will not place cargo on it.';
 
-  const lane = createSelectField(doc, 'Long-item lane', [
+  const lane = createSelectField(doc, UIComponents, 'Long-item lane', [
     ['auto', 'Automatic'],
     ['always', 'Always'],
     ['never', 'Never'],
   ], initial.laneItem === true ? 'always' : initial.laneItem === false ? 'never' : 'auto', 'Prefer a lengthwise lane for long items. AutoPack may still place them normally if no lane fits.');
 
-  const priority = createSelectField(doc, 'Packing priority (tie-breaker)', [
+  const priority = createSelectField(doc, UIComponents, 'Packing priority (tie-breaker)', [
     ['-1', 'Low'],
     ['0', 'Normal'],
     ['1', 'High'],

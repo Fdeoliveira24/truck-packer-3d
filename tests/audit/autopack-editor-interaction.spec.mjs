@@ -865,9 +865,11 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
     assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'true');
     await page.locator('#btn-sidebar').click();
 
-    const names = await page.locator('#editor-right select, #editor-right input[type="number"]').evaluateAll(elements =>
-      elements.slice(0, 7).map(el => ({ name: el.labels?.[0]?.textContent?.trim() || '', id: el.id })));
-    assert.ok(names.every(item => item.name && item.id), 'Inspector controls have native labels');
+    const names = await page.locator('#editor-right [role="combobox"], #editor-right input[type="number"]').evaluateAll(elements =>
+      elements.slice(0, 7).map(el => ({
+        name: el.getAttribute('aria-label') || el.labels?.[0]?.textContent?.trim() || '', id: el.id,
+      })));
+    assert.ok(names.every(item => item.name && item.id), 'Inspector controls have accessible names');
 
     // The scene settles after the drawer toggle before cargo is raycastable.
     await page.waitForFunction(() => window.probe.cargoPoint() !== null);
@@ -1308,16 +1310,18 @@ test('Editor fixture keeps rebuilt focus, rejects invalid truck input and expose
     await page.locator('[data-focus-key="truck-length"]').fill('636');
     const preset = page.locator('[data-focus-key="truck-preset"]');
     await preset.focus();
-    await preset.selectOption({ index: 1 });
+    await preset.click();
+    await page.getByRole('listbox', { name: 'Trailer preset' }).getByRole('option').nth(1).click();
     assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'truck-preset');
     const shape = page.locator('[data-focus-key="truck-shape"]');
     await shape.focus();
-    await shape.selectOption('wheelWells');
+    await shape.click();
+    await page.getByRole('listbox', { name: 'Trailer Shape Mode' }).getByRole('option', { name: 'Wheel Wells' }).click();
     assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'truck-shape');
 
     await page.locator('[data-role="editor-new-case"]').click();
     assert.equal(await page.locator('#toast-container').evaluate(el => el.parentElement === document.body), true);
-    const fields = await page.locator('.modal input[required], .modal select').evaluateAll(elements =>
+    const fields = await page.locator('.modal input[required], .modal [role="combobox"]').evaluateAll(elements =>
       elements.map(el => ({ name: el.labels?.[0]?.textContent?.trim() || el.getAttribute('aria-label'), required: el.required })));
     assert.ok(fields.some(field => field.name?.startsWith('Name') && field.required));
     assert.ok(fields.filter(field => /Length|Width|Height/.test(field.name || '')).every(field => field.required));

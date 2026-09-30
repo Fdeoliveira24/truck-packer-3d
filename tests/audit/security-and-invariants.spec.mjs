@@ -13972,12 +13972,16 @@ test('settings members confirms sensitive role changes and restores dropdown val
 
   assert.match(src, /function isSensitiveRoleChange\b[\s\S]*previous === 'owner' \|\| previous === 'admin' \|\| next === 'owner' \|\| next === 'admin'/,
     'owner/admin role changes must be classified as sensitive');
-  assert.match(src, /roleSelect\.addEventListener\('change', async ev =>[\s\S]*UIComponents\.confirm\(/,
+  assert.match(src, /roleSelect\.addEventListener\('change', async \(\) =>[\s\S]*UIComponents\.confirm\(/,
     'member role dropdown must confirm sensitive role changes before update');
+  assert.match(src, /disabled: r === 'admin' && !isOwner/,
+    'non-owners still cannot select the admin role');
   assert.match(src, /if \(!confirmed\) \{[\s\S]*roleSelect\.value = role;[\s\S]*return;/,
     'canceling role confirmation must restore the previous selected role');
   assert.match(src, /roleSelect\.value = nextRole;[\s\S]*updateMemberRole\(orgId, member, nextRole, currentUserId\)/,
     'confirmed role changes must proceed through the existing updateMemberRole path');
+  assert.match(src, /updateMemberRole\(orgId, member, nextRole, currentUserId\)\.catch\(\(\) => \{[\s\S]*roleSelect\.value = role;/,
+    'failed role updates restore the previous selected role');
 });
 
 test('settings members confirms invite revoke with the existing danger modal path', async () => {

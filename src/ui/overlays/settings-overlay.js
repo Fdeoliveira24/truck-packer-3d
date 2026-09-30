@@ -2357,28 +2357,22 @@ export function createSettingsOverlay({
     intro.textContent = 'Choose an existing workspace member to become the primary owner. You will become an Admin.';
     content.appendChild(intro);
 
-    const label = doc.createElement('label');
+    const label = doc.createElement('div');
     label.className = 'form-label';
     label.textContent = 'New owner';
     content.appendChild(label);
 
-    const select = doc.createElement('select');
-    select.className = 'select';
-    select.setAttribute('aria-label', 'New workspace owner');
-    const placeholder = doc.createElement('option');
-    placeholder.value = '';
-    placeholder.textContent = 'Select a member';
-    placeholder.disabled = true;
-    placeholder.selected = true;
-    select.appendChild(placeholder);
-    transferCandidates.forEach(member => {
-      const opt = doc.createElement('option');
-      opt.value = String(member.user_id);
+    const select = UIComponents.createSelect({
+      label: 'New workspace owner',
+      options: [{ value: '', label: 'Select a member', disabled: true }, ...transferCandidates.map(member => {
       const memberName = getMemberDisplayName(member);
       const memberEmail = getMemberEmail(member);
       const role = getRoleLabel(member.role);
-      opt.textContent = `${memberName}${memberEmail ? ` (${memberEmail})` : ''} - ${role}`;
-      select.appendChild(opt);
+        return {
+          value: String(member.user_id),
+          label: `${memberName}${memberEmail ? ` (${memberEmail})` : ''} - ${role}`,
+        };
+      })],
     });
     content.appendChild(select);
 
@@ -4853,23 +4847,20 @@ export function createSettingsOverlay({
     }
 
     if (_tabState.activeTabId === 'preferences') {
-      const length = doc.createElement('select');
-      length.className = 'select';
-      length.innerHTML = `
-        <option value="in">Inches (in)</option>
-        <option value="ft">Feet (ft)</option>
-        <option value="cm">Centimeters (cm)</option>
-        <option value="m">Meters (m)</option>
-      `;
-      length.value = prefs.units.length;
+      const length = UIComponents.createSelect({
+        label: 'Length', value: prefs.units.length,
+        options: [
+          { value: 'in', label: 'Inches (in)' }, { value: 'ft', label: 'Feet (ft)' },
+          { value: 'cm', label: 'Centimeters (cm)' }, { value: 'm', label: 'Meters (m)' },
+        ],
+      });
 
-      const weight = doc.createElement('select');
-      weight.className = 'select';
-      weight.innerHTML = `
-        <option value="lb">Pounds (lb)</option>
-        <option value="kg">Kilograms (kg)</option>
-      `;
-      weight.value = prefs.units.weight;
+      const weight = UIComponents.createSelect({
+        label: 'Weight', value: prefs.units.weight,
+        options: [
+          { value: 'lb', label: 'Pounds (lb)' }, { value: 'kg', label: 'Kilograms (kg)' },
+        ],
+      });
 
       const hiddenOpacity = doc.createElement('input');
       hiddenOpacity.className = 'tp3d-prefs-range-input';
@@ -4897,13 +4888,10 @@ export function createSettingsOverlay({
       labelSize.step = '1';
       labelSize.value = String(prefs.labelFontSize);
 
-      const theme = doc.createElement('select');
-      theme.className = 'select';
-      theme.innerHTML = `
-        <option value="light">Light</option>
-        <option value="dark">Dark</option>
-      `;
-      theme.value = prefs.theme;
+      const theme = UIComponents.createSelect({
+        label: 'Theme', value: prefs.theme,
+        options: [{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }],
+      });
 
       const prefsCard = doc.createElement('div');
       prefsCard.className = 'card tp3d-settings-card-max tp3d-prefs-card';
@@ -6700,16 +6688,14 @@ export function createSettingsOverlay({
           searchWrap.appendChild(searchInput);
           toolbar.appendChild(searchWrap);
 
-          const roleFilter = doc.createElement('select');
-          roleFilter.className = 'select tp3d-org-members-filter';
-          roleFilter.setAttribute('aria-label', 'Filter members by role');
-          roleFilter.innerHTML = `
-            <option value="all">All Roles</option>
-            <option value="owner">Owner</option>
-            <option value="admin">Admin</option>
-            <option value="member">Member</option>
-          `;
-          roleFilter.value = orgMembersRoleFilter;
+          const roleFilter = UIComponents.createSelect({
+            label: 'Filter members by role', value: orgMembersRoleFilter,
+            className: 'tp3d-org-members-filter',
+            options: [
+              { value: 'all', label: 'All Roles' }, { value: 'owner', label: 'Owner' },
+              { value: 'admin', label: 'Admin' }, { value: 'member', label: 'Member' },
+            ],
+          });
           toolbar.appendChild(roleFilter);
           searchSection.appendChild(toolbar);
           membersCard.appendChild(searchSection);
@@ -6751,20 +6737,14 @@ export function createSettingsOverlay({
             inviteEmailWrap.appendChild(inviteEmailInput);
             inviteForm.appendChild(inviteEmailWrap);
 
-            const inviteRoleSelect = doc.createElement('select');
-            inviteRoleSelect.className = 'select tp3d-org-invite-role';
-            inviteRoleSelect.setAttribute('aria-label', 'Invite role');
-            inviteRoleSelect.disabled = inviteControlsDisabled;
-            const inviteMemberOpt = doc.createElement('option');
-            inviteMemberOpt.value = 'member';
-            inviteMemberOpt.textContent = 'Member';
-            inviteRoleSelect.appendChild(inviteMemberOpt);
-
-            const inviteAdminOpt = doc.createElement('option');
-            inviteAdminOpt.value = 'admin';
-            inviteAdminOpt.textContent = 'Admin';
-            inviteAdminOpt.disabled = !isOwner;
-            inviteRoleSelect.appendChild(inviteAdminOpt);
+            const inviteRoleSelect = UIComponents.createSelect({
+              label: 'Invite role', className: 'tp3d-org-invite-role',
+              disabled: inviteControlsDisabled,
+              options: [
+                { value: 'member', label: 'Member' },
+                { value: 'admin', label: 'Admin', disabled: !isOwner },
+              ],
+            });
             inviteForm.appendChild(inviteRoleSelect);
 
             const inviteBtn = doc.createElement('button');
@@ -7059,29 +7039,22 @@ export function createSettingsOverlay({
                 ownershipHint.textContent = 'Use Transfer Ownership';
                 actions.appendChild(ownershipHint);
               } else {
-                const roleSelect = doc.createElement('select');
-                roleSelect.className = 'select tp3d-org-member-role-select';
-                roleSelect.setAttribute('aria-label', `Role for ${memberName}`);
                 const roles = ['admin', 'member'];
-                roles.forEach(r => {
-                  const opt = doc.createElement('option');
-                  opt.value = r;
-                  opt.textContent = getRoleLabel(r);
+                const roleOptions = roles.map(r => ({
+                  value: r, label: getRoleLabel(r),
                   // Admins cannot promote to or manage admin role — only owners can.
-                  if (r === 'admin' && !isOwner) opt.disabled = true;
-                  roleSelect.appendChild(opt);
-                });
+                  disabled: r === 'admin' && !isOwner,
+                }));
                 if (!roles.includes(role)) {
-                  const opt = doc.createElement('option');
-                  opt.value = role;
-                  opt.textContent = getRoleLabel(role);
-                  roleSelect.appendChild(opt);
+                  roleOptions.push({ value: role, label: getRoleLabel(role), disabled: false });
                 }
-                roleSelect.value = role;
-                roleSelect.disabled = Boolean(membersDisabledReason || !canEditRole);
-                roleSelect.addEventListener('change', async ev => {
-                  const target = ev.target instanceof HTMLSelectElement ? ev.target : null;
-                  const nextRole = target ? String(target.value) : role;
+                const roleSelect = UIComponents.createSelect({
+                  label: `Role for ${memberName}`, className: 'tp3d-org-member-role-select',
+                  options: roleOptions, value: role,
+                  disabled: Boolean(membersDisabledReason || !canEditRole),
+                });
+                roleSelect.addEventListener('change', async () => {
+                  const nextRole = String(roleSelect.value || role);
                   if (nextRole === role) return;
                   roleSelect.value = role;
                   if (nextRole === 'admin' && !isOwner) {

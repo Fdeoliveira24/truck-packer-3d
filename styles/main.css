@@ -46,7 +46,7 @@
   --accent-primary-14: rgb(255, 159, 28, 0.14);
   --accent-primary-25: rgb(255, 159, 28, 0.25);
   --accent-readable: #9a5100;
-  --focus-strong: #9a5100;
+  --focus-ring: var(--accent-primary);
   --warning-readable: #7a4500;
 
   /* Semantic */
@@ -126,7 +126,6 @@
   --text-muted: #6b6b78;
   --text-inverse: #1a1a1f;
   --accent-readable: #ffbd66;
-  --focus-strong: #ffbd66;
   --warning-readable: #ffbd66;
   --danger-text: #ff7777;
 
@@ -174,6 +173,15 @@ body {
 
 a {
   color: inherit;
+}
+
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+:root :focus-visible.tp3d-pointer-focus {
+  outline: none;
 }
 
 /* ================================
@@ -294,7 +302,7 @@ body[data-auth="signed_in"] #app {
 
 .nav-btn:focus-visible,
 #btn-sidebar:focus-visible {
-  outline: 3px solid var(--focus-strong);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -575,15 +583,6 @@ textarea {
   resize: vertical;
 }
 
-.input:focus,
-.select:focus,
-textarea:focus {
-  outline: 2px solid var(--focus-strong);
-  outline-offset: 1px;
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 3px var(--accent-primary-14);
-}
-
 /* Shared select-only combobox. Popup placement and modal ownership are handled
    by the existing dropdown coordinator. */
 .tp3d-select {
@@ -609,8 +608,8 @@ textarea:focus {
 }
 
 .tp3d-select:focus-visible {
-  outline: 2px solid var(--info);
-  outline-offset: 1px;
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .tp3d-select[aria-disabled='true'] {
@@ -701,7 +700,7 @@ textarea:focus {
 }
 
 .tp3d-search-clear:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -1482,7 +1481,7 @@ th {
 }
 
 .th-sort:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -1591,8 +1590,11 @@ tr:hover td {
   cursor: pointer;
 }
 
-.tp3d-select-option.is-active,
 .tp3d-select-option.is-selected {
+  background: var(--accent-primary-12);
+}
+
+.tp3d-select-option.is-active {
   background: var(--bg-hover);
 }
 
@@ -2029,7 +2031,7 @@ tr:hover td {
    (accent-14 bg, text-primary color, accent-25 border — same as packs/cases nav) */
 
 .tp3d-settings-nav-item:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -2290,7 +2292,7 @@ tr:hover td {
 }
 
 .tp3d-settings-advanced-toggle:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -2631,15 +2633,14 @@ tr:hover td {
   font: inherit;
 }
 
-.tp3d-pref-switch:hover,
-.tp3d-pref-switch:focus-visible {
+.tp3d-pref-switch:hover {
   border-color: var(--accent-primary);
   color: var(--text-primary);
 }
 
 .tp3d-pref-switch:focus-visible,
 .tp3d-pref-segmented__option:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -3417,8 +3418,8 @@ tr:hover td {
 }
 
 .tp3d-ic-stat--active {
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 0 2px var(--accent-primary-12);
+  border-color: var(--accent-primary-25);
+  background-image: linear-gradient(var(--accent-primary-12), var(--accent-primary-12));
 }
 
 .tp3d-ic-stat-count {
@@ -3482,11 +3483,6 @@ tr:hover td {
 
 .tp3d-ip-cases-status-card:hover {
   border-color: var(--accent-primary-25, rgb(59, 130, 246, 0.25));
-}
-
-.tp3d-ip-cases-status-card:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px var(--accent-primary-12, rgb(59, 130, 246, 0.12));
 }
 
 .tp3d-ip-cases-status-value {
@@ -4288,7 +4284,6 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-editor-validation-status__btn:hover,
-.tp3d-editor-validation-status__btn:focus-visible,
 .tp3d-editor-validation-status__btn[aria-expanded='true'] {
   border-color: var(--warning, #f59e0b);
   background: var(--bg-hover);
@@ -4297,8 +4292,9 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-editor-validation-status__btn:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
+  color: var(--warning, #f59e0b);
 }
 
 /* Short hover/focus status card above the icon, capped to the canvas width.
@@ -4386,7 +4382,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 #viewport:focus-visible:not(.tp3d-pointer-focus) {
-  outline: 2px solid var(--info);
+  outline: 2px solid var(--focus-ring);
   outline-offset: -2px;
 }
 
@@ -5243,7 +5239,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-packs-folder-btn:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -5360,7 +5356,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-validation-status:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -5555,7 +5551,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-management-notes-btn:focus-visible,
 .tp3d-management-more-btn:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -5789,7 +5785,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-handling-chip-more:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
 }
 
@@ -6916,7 +6912,7 @@ body.tp3d-shared-modal-lock #app .nav {
   color: var(--text-primary);
 }
 .tp3d-resources-card-btn:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-md);
 }
@@ -7543,7 +7539,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-billing-manage-wrap:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }
@@ -8062,7 +8058,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .auth-pw-toggle:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
 }
 
@@ -8143,7 +8139,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .auth-link:focus-visible {
-  outline: 2px solid var(--accent-primary);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-sm);
 }

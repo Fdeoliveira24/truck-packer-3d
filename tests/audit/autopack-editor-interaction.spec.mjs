@@ -1364,7 +1364,12 @@ test('Editor fixture keeps rebuilt focus, rejects invalid truck input and expose
           theme,
           primary: [primary.color, primary.backgroundColor],
           label: ratio(label.color, panel.backgroundColor),
-          focus: ratio(input.outlineColor, panel.backgroundColor),
+          focus: {
+            color: input.outlineColor,
+            width: input.outlineWidth,
+            style: input.outlineStyle,
+            contrast: ratio(input.outlineColor, panel.backgroundColor),
+          },
         };
       });
     });
@@ -1373,7 +1378,11 @@ test('Editor fixture keeps rebuilt focus, rejects invalid truck input and expose
       // contrast is a known product limitation, so it is pinned, not gated.
       assert.deepEqual(sample.primary, ['rgb(255, 255, 255)', 'rgb(255, 159, 28)'], `${sample.theme} primary pairing`);
       assert.ok(sample.label >= 4.5, `${sample.theme} dimension label contrast ${sample.label}`);
-      assert.ok(sample.focus >= 3, `${sample.theme} focus contrast ${sample.focus}`);
+      // The approved brand ring is below 3:1 on light surfaces. Keep its
+      // measured contrast visible without reviving the rejected brown/blue cue.
+      assert.deepEqual([sample.focus.color, sample.focus.width, sample.focus.style],
+        ['rgb(255, 159, 28)', '2px', 'solid'], `${sample.theme} visible brand focus`);
+      assert.ok(Number.isFinite(sample.focus.contrast), `${sample.theme} focus contrast is measured`);
     }
     assert.deepEqual(errors, []);
   } finally {

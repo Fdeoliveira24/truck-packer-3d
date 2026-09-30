@@ -2474,7 +2474,7 @@ test('MANAGEMENT-CARD-UX CSS: flexible title, fixed controls, one shared selecte
   assert.match(boundary, /background:\s*var\(--bg-hover\);/);
   assert.doesNotMatch(boundary, /width|height|padding|margin|transform|border:|border-width/,
     'hover / focus only recolour, so idle -> hover -> focus never shifts layout');
-  assert.match(cssSource, /\.tp3d-management-notes-btn:focus-visible,\s*\.tp3d-management-more-btn:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-primary\);/,
+  assert.match(cssSource, /\.tp3d-management-notes-btn:focus-visible,\s*\.tp3d-management-more-btn:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\);/,
     'keyboard focus keeps a clear ring');
 });
 
@@ -3210,7 +3210,7 @@ test('CASES-HANDLING-COMPACT CSS: the "+N" control resets native button chrome o
   );
   assert.match(
     cssSource,
-    /\.tp3d-handling-chip-more:focus-visible\s*\{\s*outline:\s*2px solid var\(--accent-primary\);/,
+    /\.tp3d-handling-chip-more:focus-visible\s*\{\s*outline:\s*2px solid var\(--focus-ring\);/,
     'keyboard focus is clearly visible, matching the existing Notes/overflow focus ring'
   );
 

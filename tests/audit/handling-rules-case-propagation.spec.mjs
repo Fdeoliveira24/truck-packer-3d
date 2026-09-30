@@ -771,10 +771,13 @@ test('VALIDATION-STATUS-UI Editor styling: black at rest, amber on hover / keybo
   assert.doesNotMatch(rest, /--warning|#f59e0b|rgb\(245/i, 'no permanent amber at rest');
   assert.match(rest, /background:\s*var\(--bg-elevated\);/, 'no heavy warning fill');
 
-  const active = mainCss.match(/\.tp3d-editor-validation-status__btn:hover,\s*\.tp3d-editor-validation-status__btn:focus-visible,\s*\.tp3d-editor-validation-status__btn\[aria-expanded='true'\]\s*\{([^}]*)\}/)?.[1] || '';
-  assert.match(active, /color:\s*var\(--warning, #f59e0b\);/, 'HOVER / FOCUS-VISIBLE / OPEN: amber via the existing warning token');
+  const active = mainCss.match(/\.tp3d-editor-validation-status__btn:hover,\s*\.tp3d-editor-validation-status__btn\[aria-expanded='true'\]\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(active, /color:\s*var\(--warning, #f59e0b\);/, 'HOVER / OPEN: amber via the existing warning token');
   assert.match(active, /border-color:\s*var\(--warning, #f59e0b\);/);
-  assert.match(mainCss, /\.tp3d-editor-validation-status__btn:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-primary\);/, 'a clear keyboard focus treatment is preserved');
+  const focus = mainCss.match(/\.tp3d-editor-validation-status__btn:focus-visible\s*\{([^}]*)\}/)?.[1] || '';
+  assert.match(focus, /outline:\s*2px solid var\(--focus-ring\);/, 'a clear keyboard focus treatment is preserved');
+  assert.match(focus, /color:\s*var\(--warning, #f59e0b\);/, 'the warning glyph keeps its meaning on focus');
+  assert.doesNotMatch(focus, /border-color|box-shadow/, 'focus does not stack a warning border or glow over the shared ring');
 
   // Hint card: hidden until hover/focus, capped to the canvas, revealed only while the panel is NOT open.
   const hintCss = mainCss.match(/\.tp3d-editor-validation-status \.tp3d-editor-validation-hint\s*\{([^}]*)\}/)?.[1] || '';
@@ -1460,7 +1463,7 @@ test('VALIDATION-STATUS-UI Scope: Load Plans icon is amber (warning color) at re
   assert.doesNotMatch(status, /\bborder\s*:|background/, 'a compact icon: no chip fill and no border');
   assert.match(mainCss, /\.tp3d-validation-status:hover,\s*\.tp3d-validation-status:focus-visible\s*\{\s*color:\s*var\(--warning, #f59e0b\);\s*\}/,
     'HOVER and FOCUS-VISIBLE: amber via the existing warning token');
-  assert.match(mainCss, /\.tp3d-validation-status:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent-primary\);/, 'a clear keyboard focus treatment is preserved');
+  assert.match(mainCss, /\.tp3d-validation-status:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--focus-ring\);/, 'a clear keyboard focus treatment is preserved');
   assert.match(mainCss, /\.tp3d-validation-status--inline\s*\{/);
 
   const surface = mainCss.match(/\.tp3d-status-card\s*\{([^}]*)\}/)?.[1] || '';

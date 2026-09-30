@@ -45,6 +45,89 @@ import {
   archiveWorkspace as archiveWorkspaceFn,
 } from '../../data/services/billing.service.js';
 
+// ============================================================================
+// SECTION: KEYBOARD SHORTCUTS REFERENCE (Resources → Keyboard Shortcuts)
+// ============================================================================
+
+// Read-only reference for the shortcut contract owned by src/ui/keyboard-manager.js
+// and the Editor InteractionManager (src/screens/editor-screen.js). Tests pin every
+// entry to those handlers, so a binding cannot be added or removed on one side only.
+// `mod` is Command on Apple platforms and Ctrl elsewhere.
+const KEYBOARD_SHORTCUT_SECTIONS = Object.freeze([
+  { title: 'General editing', rows: [
+    { action: 'Undo', combos: [['mod', 'z']] },
+    { action: 'Redo', combos: [['mod', 'shift', 'z']] },
+    { action: 'Select all cargo', combos: [['mod', 'a']] },
+    { action: 'Copy selected cargo', combos: [['mod', 'c']] },
+    { action: 'Paste copied cargo', combos: [['mod', 'v']] },
+    { action: 'Duplicate selected cargo', combos: [['mod', 'd']] },
+  ] },
+  { title: 'Editor transforms', rows: [
+    { action: 'Turn selected cargo', combos: [['r']] },
+    { action: 'Tip selected cargo', combos: [['t']] },
+    { action: 'Roll selected cargo', combos: [['e']] },
+    { action: 'Flip selected cargo', combos: [['f']] },
+  ] },
+  { title: 'Positioning', rows: [
+    { action: 'Nudge 1 inch', combos: [['arrows']] },
+    { action: 'Nudge 6 inches', combos: [['shift', 'arrows']] },
+    { action: 'Move up one level', combos: [['alt', 'up']] },
+    { action: 'Move down one level', combos: [['alt', 'down']] },
+    { action: 'Drop to nearest valid surface', combos: [['alt', 'shift', 'down']] },
+  ] },
+  { title: 'Editor actions', rows: [
+    { action: 'Delete selected cargo', combos: [['delete'], ['backspace']] },
+    { action: 'Place held Case', combos: [['enter']] },
+    { action: 'Cancel move or clear selection', combos: [['escape']] },
+  ] },
+  { title: 'View', rows: [
+    { action: 'Toggle grid', combos: [['g']] },
+    { action: 'Toggle shadows', combos: [['s']] },
+  ] },
+]);
+
+// [visible label, spoken name] per platform. The Mac delete key sends Backspace,
+// so both Delete bindings read as one "Delete" key there.
+const SHORTCUT_KEY_NAMES = Object.freeze({
+  apple: { mod: ['⌘', 'Command'], shift: ['⇧', 'Shift'], alt: ['⌥', 'Option'], enter: ['Return', 'Return'],
+    delete: ['Delete', 'Delete'], backspace: ['Delete', 'Delete'] },
+  other: { mod: ['Ctrl', 'Control'], shift: ['Shift', 'Shift'], alt: ['Alt', 'Alt'], enter: ['Enter', 'Enter'],
+    delete: ['Delete', 'Delete'], backspace: ['Backspace', 'Backspace'] },
+  shared: { escape: ['Esc', 'Escape'], arrows: ['Arrow keys', 'Arrow keys'], up: ['↑', 'Up Arrow'],
+    down: ['↓', 'Down Arrow'] },
+});
+
+/** @param {any} [nav] Navigator-like object (userAgentData is not in the DOM typings). */
+export function isApplePlatform(nav = typeof navigator === 'undefined' ? null : navigator) {
+  const platform = String((nav && ((nav.userAgentData && nav.userAgentData.platform) || nav.platform)) || '');
+  return /mac|iphone|ipad|ipod/i.test(platform);
+}
+
+/**
+ * Platform-specific presentation of the shortcut reference. Each combo keeps its
+ * platform-neutral `tokens`, visible `keys`, and one coherent spoken description.
+ * @param {{ apple?: boolean }} [options]
+ */
+export function getKeyboardShortcutReference({ apple = isApplePlatform() } = {}) {
+  const names = apple ? SHORTCUT_KEY_NAMES.apple : SHORTCUT_KEY_NAMES.other;
+  const describe = token => {
+    const [label, spoken] = names[token] || SHORTCUT_KEY_NAMES.shared[token] || [token.toUpperCase(), token.toUpperCase()];
+    return { label, spoken };
+  };
+  return KEYBOARD_SHORTCUT_SECTIONS.map(section => ({
+    title: section.title,
+    rows: section.rows.map(row => {
+      const combos = [];
+      row.combos.forEach(tokens => {
+        const keys = tokens.map(describe);
+        const spoken = keys.map(key => key.spoken).join(' ');
+        if (!combos.some(combo => combo.spoken === spoken)) combos.push({ tokens: [...tokens], keys, spoken });
+      });
+      return { action: row.action, combos, spoken: `${row.action}, ${combos.map(combo => combo.spoken).join(' or ')}` };
+    }),
+  }));
+}
+
 export function createSettingsOverlay({
   documentRef = document,
   UIComponents,
@@ -72,7 +155,7 @@ export function createSettingsOverlay({
   const _tabState = { activeTabId: 'preferences', didBind: false, lastActionId: 0, lastTabActionToken: 0 };
   let settingsInstanceId = 0;
   let settingsInstanceCounter = 0;
-  let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'export' | 'import' | 'help'
+  let resourcesSubView = 'root'; // 'root' | 'updates' | 'roadmap' | 'shortcuts' | 'export' | 'import' | 'help'
   let unmountAccountButton = null;
   let focusOwner = null;
   let warnedMissingModalRoot = false;
@@ -3060,6 +3143,69 @@ export function createSettingsOverlay({
     container.appendChild(empty);
   }
 
+  // Render the read-only Keyboard Shortcuts reference inside the modal. Keycaps are
+  // presentation only (aria-hidden, never focusable); each row carries one
+  // coherent spoken description such as "Undo, Command Z".
+  function renderKeyboardShortcutsContent(container) {
+    const wrap = doc.createElement('div');
+    wrap.className = 'tp3d-resources-view tp3d-shortcuts-view';
+
+    const note = doc.createElement('p');
+    note.className = 'tp3d-resources-help-body tp3d-shortcuts-note';
+    note.textContent = 'Shortcuts apply in the Editor. Cargo and view keys work while the 3D view is focused.';
+    wrap.appendChild(note);
+
+    // One Resources card per section.
+    getKeyboardShortcutReference().forEach(section => {
+      const sectionEl = doc.createElement('section');
+      sectionEl.className = 'tp3d-resources-card tp3d-shortcuts-section';
+      const heading = doc.createElement('h3');
+      heading.className = 'tp3d-prefs-heading';
+      heading.textContent = section.title;
+      sectionEl.appendChild(heading);
+
+      const list = doc.createElement('ul');
+      list.className = 'tp3d-shortcuts-list';
+      section.rows.forEach(row => {
+        const item = doc.createElement('li');
+        item.className = 'tp3d-shortcuts-row';
+
+        const action = doc.createElement('span');
+        action.className = 'tp3d-shortcuts-action';
+        action.textContent = row.action;
+        item.appendChild(action);
+
+        const spoken = doc.createElement('span');
+        spoken.className = 'visually-hidden';
+        spoken.textContent = `, ${row.combos.map(combo => combo.spoken).join(' or ')}`;
+        item.appendChild(spoken);
+
+        const keys = doc.createElement('span');
+        keys.className = 'tp3d-shortcuts-keys';
+        keys.setAttribute('aria-hidden', 'true');
+        row.combos.forEach((combo, comboIndex) => {
+          if (comboIndex > 0) {
+            const or = doc.createElement('span');
+            or.className = 'tp3d-shortcuts-or';
+            or.textContent = 'or';
+            keys.appendChild(or);
+          }
+          combo.keys.forEach(key => {
+            const kbd = doc.createElement('kbd');
+            kbd.className = 'tp3d-kbd';
+            kbd.textContent = key.label;
+            keys.appendChild(kbd);
+          });
+        });
+        item.appendChild(keys);
+        list.appendChild(item);
+      });
+      sectionEl.appendChild(list);
+      wrap.appendChild(sectionEl);
+    });
+    container.appendChild(wrap);
+  }
+
   function buildWorkspaceRestorePreflightContent(plan, file) {
     const content = doc.createElement('div');
     content.className = 'tp3d-resources-view';
@@ -4733,6 +4879,13 @@ export function createSettingsOverlay({
               showBack: true,
             };
           }
+          if (resourcesSubView === 'shortcuts') {
+            return {
+              title: 'Keyboard Shortcuts',
+              helper: 'Quick reference for keyboard and Editor controls.',
+              showBack: true,
+            };
+          }
           if (resourcesSubView === 'export') {
             return {
               title: 'Export App Backup',
@@ -4756,7 +4909,7 @@ export function createSettingsOverlay({
           }
           return {
             title: 'Resources',
-            helper: 'See updates, roadmap, exports, imports, and help in one place.',
+            helper: 'See updates, roadmap, shortcuts, exports, imports, and help in one place.',
           };
         case 'account':
           return {
@@ -4991,6 +5144,8 @@ export function createSettingsOverlay({
       } else if (resourcesSubView === 'roadmap') {
         // Render embedded Roadmap content
         renderRoadmapContent(body);
+      } else if (resourcesSubView === 'shortcuts') {
+        renderKeyboardShortcutsContent(body);
       } else if (resourcesSubView === 'export') {
         renderExportContent(body);
       } else if (resourcesSubView === 'import') {
@@ -5045,6 +5200,11 @@ export function createSettingsOverlay({
           'fa-solid fa-map', 'Roadmap',
           'Published product plans will appear here.',
           () => setResourcesSubView('roadmap')
+        ));
+        container.appendChild(makeResourceCard(
+          'fa-solid fa-keyboard', 'Keyboard Shortcuts',
+          'View keyboard and Editor controls.',
+          () => setResourcesSubView('shortcuts')
         ));
         container.appendChild(makeResourceCard(
           'fa-solid fa-file-export', 'Export App Backup',

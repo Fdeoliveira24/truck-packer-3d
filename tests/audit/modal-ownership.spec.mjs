@@ -6,7 +6,7 @@ import * as THREE from 'three';
 import { createUIComponents } from '../../src/ui/ui-components.js';
 import { createKeyboardManager } from '../../src/ui/keyboard-manager.js';
 import { createInteractionManager } from '../../src/screens/editor-screen.js';
-import { createSettingsOverlay } from '../../src/ui/overlays/settings-overlay.js';
+import { createSettingsOverlay, getKeyboardShortcutReference } from '../../src/ui/overlays/settings-overlay.js';
 import { createAuthOverlay } from '../../src/ui/overlays/auth-overlay.js';
 import { createSystemOverlay } from '../../src/ui/system-overlay.js';
 import { createErrorOverlay } from '../../src/ui/error-overlay.js';
@@ -611,6 +611,66 @@ test('Editor provisional pose owns R/T/E/F and arrow keys until it is placed or 
   assert.equal(editor.commits.length, 1, 'Enter still places the held case through the validated resolve');
   editor.press('r');
   assert.equal(editor.commits.length, 2, 'once placed, R turns the case normally');
+});
+
+// Settings → Resources → Keyboard Shortcuts must document exactly the runtime
+// contract. Forward: every documented combo (Command and Ctrl forms) is owned by
+// the real KeyboardManager / InteractionManager. Reverse: every key those handlers
+// bind appears in the reference, so neither side can drift silently.
+test('Resources Keyboard Shortcuts reference documents exactly the runtime shortcut contract', t => {
+  const dom = installDom(t);
+  const kb = installOwnedKeyboard(dom);
+  const editor = installProvisionalEditor(t, dom);
+  // A held Case makes Enter placeable; every other documented key is owned regardless.
+  editor.beginStroke();
+  editor.cargo.position.y = 3;
+  editor.endStroke();
+
+  const reference = getKeyboardShortcutReference({ apple: false });
+  const arrowKeys = { arrows: ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'], up: ['ArrowUp'], down: ['ArrowDown'] };
+  const namedKeys = { enter: 'Enter', escape: 'Escape', delete: 'Delete', backspace: 'Backspace' };
+  const editorViewportKeys = new Set(['r', 't', 'e', 'f', 'arrows', 'up', 'down', 'enter']);
+  const managerViewportKeys = new Set(['delete', 'backspace', 'g', 's']);
+  const documented = new Set();
+  for (const section of reference) {
+    for (const row of section.rows) {
+      for (const { tokens } of row.combos) {
+        const base = tokens.at(-1);
+        const shift = tokens.includes('shift');
+        const modifierSets = tokens.includes('mod') ? [{ metaKey: true }, { ctrlKey: true }] : [{}];
+        const keyNames = arrowKeys[base] || [namedKeys[base] || (shift ? base.toUpperCase() : base)];
+        documented.add(tokens.map(token => (token === 'up' || token === 'down' ? 'arrows' : token)).join('+'));
+        for (const modifiers of modifierSets) {
+          for (const key of keyNames) {
+            const extra = { ...modifiers, shiftKey: shift, altKey: tokens.includes('alt') };
+            const target = editorViewportKeys.has(base) ? null : managerViewportKeys.has(base) ? kb.viewport : dom.doc.body;
+            const event = target ? kb.press(key, target, extra) : editor.press(key, extra);
+            assert.equal(event.defaultPrevented, true,
+              `"${row.action}" (${JSON.stringify(extra)} ${key}) is owned by the runtime shortcut handlers`);
+          }
+        }
+      }
+    }
+  }
+
+  // Runtime keys in the reference's vocabulary: Cmd/Ctrl → mod, any arrow → arrows.
+  const normalize = key => key.toLowerCase().split('+')
+    .map(part => (part === 'meta' || part === 'ctrl' ? 'mod' : /^arrow/.test(part) ? 'arrows' : part)).join('+');
+  const managerSrc = readFileSync(new URL('../../src/ui/keyboard-manager.js', import.meta.url), 'utf8');
+  const mapBlock = managerSrc.slice(managerSrc.indexOf('\n    shortcuts = {\n'), managerSrc.indexOf('\n    };', managerSrc.indexOf('\n    shortcuts = {\n')));
+  const managerKeys = [...mapBlock.matchAll(/^\s*'?([\w+]+)'?\s*:/gm)].map(match => normalize(match[1]));
+  const editorSrc = readFileSync(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+  const keyBlock = editorSrc.slice(editorSrc.indexOf('function onKeyDown(ev)'), editorSrc.indexOf('function onMove(ev)'));
+  const editorKeys = [...keyBlock.matchAll(/case '([^']+)':/g)].map(match => normalize(match[1]));
+  assert.ok(managerKeys.length >= 10 && editorKeys.length >= 10, 'both runtime key maps were read');
+  for (const key of [...managerKeys, ...editorKeys]) {
+    assert.ok(documented.has(key), `runtime binding "${key}" appears in the Resources reference`);
+  }
+
+  // Removed and browser-owned combinations never appear in the reference.
+  for (const removed of ['mod+o', 'mod+s', 'mod+shift+a', 'mod+p', 'p', 'shift+f', 'mod+f', 'mod+r', 'mod+y']) {
+    assert.equal(documented.has(removed), false, `"${removed}" is not documented`);
+  }
 });
 
 test('Editor live drag owns R/T/E/F and arrow keys; Escape still cancels it', t => {

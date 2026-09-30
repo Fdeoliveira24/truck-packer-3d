@@ -1009,7 +1009,11 @@ test('EXPORT-C-RESOLUTION stored/imported Screenshot resolution normalizes to su
   const app = await read('src/app.js');
   assert.match(app, /const SCREENSHOT_RESOLUTIONS = Object\.freeze\(\['1920x1080', '2560x1440', '3840x2160'\]\);/);
   const html = await read('index.html');
-  for (const value of Defaults.SCREENSHOT_RESOLUTIONS) assert.ok(html.includes(`value="${value}"`), `Settings offers ${value}`);
+  const settings = await read('src/screens/settings-screen.js');
+  assert.match(html, /id="pref-shot-res"/, 'the Settings mount remains available');
+  for (const value of Defaults.SCREENSHOT_RESOLUTIONS) {
+    assert.ok(settings.includes(`value: '${value}'`), `Settings offers ${value}`);
+  }
 });
 
 // ===========================================================================

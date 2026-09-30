@@ -727,7 +727,7 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
     });
     await page.evaluate(() => {
       window.settingsOwner = ui.modalOwnership.getActiveOwner();
-      window.tabControl = settingsOwner.focusRoot.querySelector('select');
+      window.tabControl = settingsOwner.focusRoot.querySelector('[role="combobox"]');
       tabControl.focus();
       ui.confirm({ title: 'Nested confirmation' });
     });

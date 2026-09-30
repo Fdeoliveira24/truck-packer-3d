@@ -19872,7 +19872,7 @@ test('G1.2D-INSPECTOR-FINAL-POLISH visual CSS is scoped, tokenized, and keeps to
   // the values carry the visual weight instead of the unit text.
   assert.match(css, /#inspector-body \.card \.tp3d-editor-dims-row \.field \.label\s*\{[^}]*font-size:\s*11px/s,
     'Length/Width/Height unit labels must render at the smaller, subtle unit-label scale');
-  assert.match(css, /#inspector-body \.card \.input,\n#inspector-body \.card \.select\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-size:\s*var\(--text-sm\)/s,
+  assert.match(css, /#inspector-body \.card \.input,\n#inspector-body \.card \.tp3d-select\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-size:\s*var\(--text-sm\)/s,
     'Inspector inputs/selects must use the compact 14px scale and shared 6px radius under #inspector-body');
   assert.match(css, /#inspector-body \.card \.btn\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,
     'Inspector buttons must use the shared 6px radius and medium weight under #inspector-body');

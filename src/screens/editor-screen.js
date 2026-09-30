@@ -2123,6 +2123,8 @@ export function createInteractionManager({
       domEl.addEventListener('pointercancel', onCancel);
       domEl.addEventListener('lostpointercapture', onCancel);
       domEl.addEventListener('dblclick', onDblClick);
+      // Only leaving the viewport ends pointer-origin focus; shortcuts keep it,
+      // so Tab / Shift+Tab back in is what shows the keyboard cue.
       domEl.parentElement?.addEventListener('blur', () => {
         domEl.parentElement?.classList.remove('tp3d-pointer-focus');
       });
@@ -2635,9 +2637,6 @@ export function createInteractionManager({
       if (ev.defaultPrevented && !(ev.key === 'Escape' && (gizmoDragging || gizmoPending))) return;
       if (!isEditorActive()) { return; }
       if (ev.key !== 'Escape' && ev.target !== domEl?.parentElement) return;
-      if (ev.target === domEl?.parentElement) {
-        domEl.parentElement.classList.remove('tp3d-pointer-focus');
-      }
       // Don't intercept when typing in an input
       const tag = ev.target && ev.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return; }

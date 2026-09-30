@@ -412,6 +412,100 @@ test('UI hotfix separates pointer focus from keyboard focus and preserves scene 
   } finally { await browser.close(); }
 });
 
+// Viewport focus modality: pointer-origin focus stays visually clean through
+// transform shortcuts; only Tab / Shift+Tab exposes the keyboard cue.
+async function prepareModalityFixture(page) {
+  // Disposable fixture data: every case may turn, tip, roll and flip; count camera focus requests.
+  await page.evaluate(() => {
+    const { StateStore, SceneManager } = window.probe;
+    StateStore.set({ caseLibrary: StateStore.get('caseLibrary').map(c => ({ ...c, orientationLock: 'any', canFlip: true })) },
+      { skipHistory: true });
+    window.probe.focusCalls = 0;
+    const focusOnWorldPoint = SceneManager.focusOnWorldPoint;
+    SceneManager.focusOnWorldPoint = (...args) => { window.probe.focusCalls += 1; return focusOnWorldPoint(...args); };
+  });
+  const near = (a, b) => Math.abs(a - b) < 1e-6;
+  const sameAngle = (a, b) => {
+    const d = (((a - b) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    return d < 1e-6 || 2 * Math.PI - d < 1e-6;
+  };
+  const viewportState = id => page.evaluate(id => {
+    const el = document.querySelector('#viewport');
+    const css = getComputedStyle(el);
+    const inst = JSON.parse(window.probe.casesJson()).find(i => i.id === id);
+    return { owns: document.activeElement === el, outline: css.outlineStyle, outlineWidth: css.outlineWidth,
+      rotation: inst.transform.rotation, z: inst.transform.position.z };
+  }, id);
+  const pressTransforms = async (id, expectOutline) => {
+    const start = await viewportState(id);
+    const steps = [
+      ['r', v => sameAngle(v.rotation.y, start.rotation.y + Math.PI / 2)],
+      ['t', v => sameAngle(v.rotation.x, start.rotation.x + Math.PI / 2)],
+      ['e', v => sameAngle(v.rotation.z, start.rotation.z + Math.PI / 2)],
+      ['f', v => sameAngle(v.rotation.x, start.rotation.x + (3 * Math.PI) / 2)],
+      ['ArrowRight', v => near(v.z, start.z + 1)],
+      ['x', () => true],
+      ['Meta', () => true],
+    ];
+    for (const [key, applied] of steps) {
+      await page.keyboard.press(key);
+      const v = await viewportState(id);
+      assert.ok(v.owns, `${key}: the viewport keeps shortcut ownership`);
+      assert.equal(v.outline, expectOutline, `${key}: focus cue ${expectOutline === 'none' ? 'stays hidden' : 'stays visible'}`);
+      assert.ok(applied(v), `${key}: the shortcut still applies its transform`);
+    }
+  };
+  return { viewportState, pressTransforms };
+}
+
+test('UI hotfix pointer-origin viewport focus stays visually clean through transform shortcuts', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const { viewportState, pressTransforms } = await prepareModalityFixture(page);
+    // Enter keyboard modality first so the pointer's programmatic focus could inherit it.
+    await page.locator('#btn-editor-left').focus();
+    await page.keyboard.press('Shift+Tab');
+    await page.keyboard.press('Tab');
+    await page.waitForFunction(() => window.probe.cargoPoint() !== null);
+    const cargo = await page.evaluate(() => window.probe.cargoPoint());
+    await page.mouse.click(cargo.x, cargo.y);
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), [cargo.id]);
+    const clicked = await viewportState(cargo.id);
+    assert.ok(clicked.owns, 'pointer interaction gives the viewport shortcut ownership');
+    assert.equal(clicked.outline, 'none', 'pointer interaction shows no focus cue');
+    await pressTransforms(cargo.id, 'none');
+    await pressTransforms(cargo.id, 'none');
+    assert.equal(await page.evaluate(() => window.probe.focusCalls), 0, 'no shortcut focuses the camera');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('UI hotfix keyboard-origin viewport focus keeps its cue through transform shortcuts until Tab leaves', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const { viewportState, pressTransforms } = await prepareModalityFixture(page);
+    // A non-primary press on the unfocused viewport must not mark later keyboard focus as pointer-owned.
+    await page.locator('#btn-editor-left').focus();
+    const empty = await page.evaluate(() => window.probe.pointFor(null));
+    await page.mouse.click(empty.x, empty.y, { button: 'right' });
+    await page.locator('#btn-editor-left').focus();
+    await page.keyboard.press('Shift+Tab');
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-0']));
+    const reached = await viewportState('cargo-0');
+    assert.ok(reached.owns, 'Shift+Tab reaches the viewport');
+    assert.deepEqual([reached.outline, reached.outlineWidth], ['solid', '2px'], 'keyboard focus shows the restrained cue');
+    await pressTransforms('cargo-0', 'solid');
+    await page.keyboard.press('Tab');
+    const left = await viewportState('cargo-0');
+    assert.ok(!left.owns, 'Tab leaves the viewport');
+    assert.equal(left.outline, 'none', 'the cue leaves with focus');
+    assert.equal(await page.evaluate(() => window.probe.focusCalls), 0, 'no shortcut focuses the camera');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 test('UI hotfix Print and P are unhandled while viewport transform keys keep their ownership', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {

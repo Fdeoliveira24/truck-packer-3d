@@ -122,6 +122,24 @@ Rules:
 - Organized Unpack is future work.
 - If AutoPack/Unpack movement surprises users, fix the UX/copy/selection contract before changing solver behavior.
 
+## AutoPack Results Authority
+
+- Results browsing is non-authoritative. Viewing an option does not mutate the committed Pack.
+- Applied state is derived from the current Pack/layout plus current Case Library rule authority; it must not be guessed from stale UI state.
+- Ambiguous result/layout matching fails closed.
+- All Results UI mutation belonging to a run must be guarded by that run's `runId`; stale run UI must never overwrite newer Results state.
+- Apply must respect `OperationLifecycle` busy ownership.
+- Apply commits through canonical Pack mutation authority.
+- Browsing must not mutate history, `lastEdited`, export authority, or saved Pack state.
+- Future transient live 3D Results preview remains presentation-only until Apply.
+
+## Manual Vertical Placement Authority
+
+- `PackLibrary.findManualVerticalPlacement` is the authority for vertical Case moves.
+- Keyboard, gizmo, drag-release, and Inspector vertical placement paths must route through that authority.
+- Staged Cases are not eligible for vertical moves.
+- Existing support, Wheel Wells, Front Overhang, and handling-rule validation remain authoritative.
+
 ## Known Deferred / Non-Features
 
 Do not expose or claim these as completed solver behavior unless implemented and tested:
@@ -135,8 +153,7 @@ Do not expose or claim these as completed solver behavior unless implemented and
 - Front Overhang retaining-wall strategy;
 - multi-solution AutoPack strategies;
 - Web Worker / InstancedMesh performance rewrite;
-- organized Unpack;
-- manual vertical snap / snap-on-top placement.
+- organized Unpack.
 
 ## Validation Expectations
 
@@ -169,6 +186,5 @@ Before commit:
 - Wheel Wells constrained leftover pass: after floor/filler/stack, try staged leftovers into remaining legal floor/channel holes with smaller/channel-fitting cartons prioritized.
 - Front Overhang retaining-wall strategy.
 - Organized Unpack.
-- Manual vertical placement.
-- AutoPack Results / Case Browser counts.
-- Persistence Track B must stay separate from solver/editor packets.
+- AutoPack Results live preview: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
+- Keep any future persistence/Supabase/NCB migration work strictly separate from solver/editor packets.

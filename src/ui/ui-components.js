@@ -14,6 +14,45 @@
 import { createModalFocus } from './modal-focus.js';
 
 let activeUIComponents = null;
+const pointerFocusDocuments = new WeakSet();
+
+function installPointerFocusModality(doc) {
+  if (pointerFocusDocuments.has(doc)) return;
+  pointerFocusDocuments.add(doc);
+  let pointerPending = false;
+  let pointerFocused = null;
+  const clearPointerFocus = () => {
+    pointerFocused?.classList.remove('tp3d-pointer-focus');
+    pointerFocused = null;
+  };
+  const markPointerFocus = element => {
+    if (!element?.classList || element === doc.body || element === doc.documentElement) return;
+    if (pointerFocused !== element) clearPointerFocus();
+    element.classList.add('tp3d-pointer-focus');
+    pointerFocused = element;
+  };
+  doc.addEventListener('pointerdown', () => {
+    pointerPending = true;
+    markPointerFocus(doc.activeElement);
+  }, true);
+  doc.addEventListener('focusin', event => {
+    if (pointerPending) markPointerFocus(event.target);
+  }, true);
+  // The click fires after pointerup and after target handlers that may move
+  // focus into a modal. Clearing here also avoids leaving a pending timer.
+  doc.addEventListener('click', () => { pointerPending = false; });
+  doc.addEventListener('pointercancel', () => { pointerPending = false; }, true);
+  doc.addEventListener('dragend', () => { pointerPending = false; }, true);
+  doc.addEventListener('contextmenu', () => { pointerPending = false; }, true);
+  doc.addEventListener('focusout', event => {
+    if (pointerFocused === event.target) clearPointerFocus();
+  }, true);
+  doc.addEventListener('keydown', event => {
+    pointerPending = false;
+    if (['Shift', 'Control', 'Alt', 'Meta'].includes(event.key) || pointerFocused?.id === 'viewport') return;
+    clearPointerFocus();
+  }, true);
+}
 
 // Table footers are created by screens that do not receive the UIComponents
 // instance. The app creates that instance before it renders either table.
@@ -236,6 +275,7 @@ export function createModalOwnership({ windowRef = window, documentRef = documen
 }
 
 export function createUIComponents() {
+  installPointerFocusModality(document);
   const modalOwnership = createModalOwnership();
   const modalRoot = document.getElementById('modal-root');
   const toastContainer = document.getElementById('toast-container');

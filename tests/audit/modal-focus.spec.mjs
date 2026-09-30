@@ -887,3 +887,108 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
     assert.equal(await page.evaluate(() => document.getElementById('before').inert || document.body.classList.contains('modal-open')), false);
   });
 });
+
+test('DOM focus uses one brand ring while selected, checked, and semantic states stay distinct', { timeout: 120000 }, async t => {
+  const css = await readFile(new URL('../../styles/main.css', import.meta.url), 'utf8');
+  assert.match(css, /--focus-ring:\s*var\(--accent-primary\);/);
+  assert.doesNotMatch(css.match(/\[data-theme='dark'\]\s*\{([^}]*)\}/)?.[1] || '', /--focus-ring:/,
+    'dark theme shares the same brand focus token');
+  for (const [, selector, body] of css.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    if (!/:focus(?:-visible|-within)?\b/.test(selector)) continue;
+    const focusDecoration = body.match(/(?:outline(?:-color)?|border-color|box-shadow)\s*:[^;]+;/g)?.join('\n') || '';
+    assert.doesNotMatch(focusDecoration, /--focus-strong|var\(--info\)|#9a5100|#3b82f6|rgb\(59,\s*130,\s*246/i,
+      `rejected focus color in ${selector.trim()}`);
+    assert.doesNotMatch(focusDecoration, /box-shadow:\s*0 0 0 [23]px var\(--accent-primary/,
+      `focus glow stacked with the ring in ${selector.trim()}`);
+  }
+
+  const browser = await chromium.launch({ headless: true });
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  page.setDefaultTimeout(2000);
+  page.setDefaultNavigationTimeout(5000);
+  await page.route('**/*', async route => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname.startsWith('/src/') && pathname.endsWith('.js')) {
+      await route.fulfill({ contentType: 'text/javascript', body: await readFile(new URL(`../..${pathname}`, import.meta.url), 'utf8') });
+    } else if (pathname === '/styles/main.css') {
+      await route.fulfill({ contentType: 'text/css', body: css });
+    } else if (pathname === '/focus-visual-fixture') {
+      await route.fulfill({ contentType: 'text/html', body: `
+        <link rel="stylesheet" href="/styles/main.css">
+        <style>
+          *, *::before, *::after { transition: none !important; }
+          #viewport { position: static; height: 40px; inset: auto; z-index: auto; }
+        </style>
+        <button id="before">Before</button>
+        <button id="nav" class="nav-btn">Cases</button>
+        <button id="button" class="btn">Action</button>
+        <input id="input" class="input" aria-label="Name">
+        <textarea id="textarea" aria-label="Notes"></textarea>
+        <input id="check" type="checkbox" checked aria-label="Selected">
+        <input id="range" class="input" type="range" aria-label="Opacity">
+        <button id="select" class="tp3d-select" aria-label="Choice">Choice</button>
+        <button id="notes" class="btn btn-ghost tp3d-management-notes-btn">Notes</button>
+        <button id="warning" class="tp3d-editor-validation-status__btn" aria-label="Review">!</button>
+        <div id="viewport" tabindex="0">Viewport</div>
+        <div id="card" class="pack-card selected" tabindex="0">Selected card</div>
+        <div class="table-wrap"><table><tbody><tr class="selected"><td id="row">Selected row</td></tr></tbody></table></div>
+        <div id="option" class="tp3d-select-option is-selected"><span class="tp3d-select-option__check">✓</span>Selected option</div>
+        <div id="current" class="tp3d-select-option is-active">Keyboard current option</div>` });
+    } else await route.abort();
+  });
+  await page.goto('http://localhost:5500/focus-visual-fixture');
+  await page.evaluate(async () => {
+    const { createUIComponents } = await import('/src/ui/ui-components.js');
+    createUIComponents();
+  });
+  const style = selector => page.locator(selector).evaluate(el => {
+    const computed = getComputedStyle(el);
+    return {
+      outlineColor: computed.outlineColor,
+      outlineWidth: computed.outlineWidth,
+      outlineOffset: computed.outlineOffset,
+      outlineStyle: computed.outlineStyle,
+      borderColor: computed.borderColor,
+      boxShadow: computed.boxShadow,
+      backgroundColor: computed.backgroundColor,
+      backgroundImage: computed.backgroundImage,
+    };
+  });
+  for (const theme of ['light', 'dark']) {
+    await page.evaluate(value => document.documentElement.setAttribute('data-theme', value), theme);
+    await page.keyboard.press('Tab');
+    for (const selector of ['#nav', '#button', '#input', '#textarea', '#check', '#range', '#select', '#notes', '#warning', '#viewport', '#card']) {
+      await page.locator(selector).focus();
+      const focused = await style(selector);
+      assert.deepEqual([focused.outlineColor, focused.outlineWidth, focused.outlineStyle],
+        ['rgb(255, 159, 28)', '2px', 'solid'], `${theme} ${selector} uses the shared brand ring`);
+      assert.equal(focused.outlineOffset, selector === '#viewport' ? '-2px' : '2px');
+    }
+    for (const selector of ['#input', '#textarea', '#select']) {
+      const focused = await style(selector);
+      assert.equal(focused.boxShadow, 'none', `${theme} ${selector} has no focus glow`);
+      await page.locator('#before').focus();
+      const resting = await style(selector);
+      assert.equal(focused.borderColor, resting.borderColor, `${theme} ${selector} keeps its resting border`);
+      await page.locator(selector).focus();
+    }
+    await page.locator('#before').focus();
+    assert.equal((await style('#card')).outlineStyle, 'none', 'selection alone does not add an outline');
+    assert.match((await style('#card')).backgroundImage, /rgba\(255, 159, 28, 0\.12\)/);
+    assert.equal((await style('#row')).backgroundColor, 'rgba(255, 159, 28, 0.12)');
+    assert.equal((await style('#check')).backgroundColor, 'rgb(255, 159, 28)', 'checked fill is separate from focus');
+    assert.notEqual((await style('#option')).backgroundColor, (await style('#current')).backgroundColor,
+      'selected option tint differs from keyboard-current highlight');
+    await page.locator('#button').click();
+    assert.equal((await style('#button')).outlineStyle, 'none', `${theme} pointer button click has no keyboard ring`);
+    await page.locator('#select').click();
+    assert.equal((await style('#select')).outlineStyle, 'none', `${theme} pointer select click has no keyboard ring`);
+    await page.locator('#notes').click();
+    assert.equal((await style('#notes')).outlineStyle, 'none', `${theme} pointer Notes click has no keyboard ring`);
+    await page.locator('#input').click();
+    assert.equal((await style('#input')).outlineStyle, 'none', `${theme} pointer field click has no keyboard ring`);
+    await page.keyboard.press('a');
+    assert.equal((await style('#input')).outlineStyle, 'solid', `${theme} keyboard use restores the field ring`);
+  }
+});

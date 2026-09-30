@@ -11,7 +11,9 @@ workflow for `src/` work.
 Before reading large files, check the task scope:
 
 - Read only the owner file, the related test file, and any named service files.
-- Do not open full `src/app.js` unless the task is explicitly about app wiring or shortcuts.
+- Do not open full `src/app.js` unless the task is explicitly about app wiring.
+- Keyboard shortcuts live in `src/ui/keyboard-manager.js` (app-level) and the
+  `src/screens/editor-screen.js` InteractionManager (viewport cargo keys), not `src/app.js`.
 - Prefer targeted `rg` / `grep` searches over opening long files wholesale.
 - Use `git status -sb`, `git diff --name-only` first. Leave unrelated dirty files alone.
 - Do not spend context budget proving facts already shown by terminal output.
@@ -21,7 +23,8 @@ Default scope for operation lifecycle work:
 - `src/services/autopack-engine.js`
 - `src/screens/editor-screen.js`
 - `src/ui/truck-change-controller.js`
-- `src/app.js` — lifecycle wiring and keyboard shortcuts only
+- `src/app.js` — lifecycle wiring only
+- `src/ui/keyboard-manager.js` — app-level keyboard shortcut busy guards only
 - `styles/main.css` — busy/spinner styling only
 
 ---

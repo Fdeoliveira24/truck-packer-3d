@@ -1383,13 +1383,8 @@ export function createPacksScreen({
         packsListState.pageIndex = 0;
         render();
       };
+      // Native <button>: Enter and Space already activate it through click.
       el.addEventListener('click', toggle);
-      el.addEventListener(
-        'keydown',
-        /** @param {KeyboardEvent} ev */ ev => {
-          if (ev.key === 'Enter' || ev.key === ' ') toggle();
-        }
-      );
     }
 
     function getPackStatus(pack) {

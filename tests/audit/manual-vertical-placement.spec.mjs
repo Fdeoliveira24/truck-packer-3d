@@ -1058,14 +1058,36 @@ test('MANUAL-VERTICAL keyboard map routes Alt arrows to validated vertical moves
 
 test('MANUAL-VERTICAL vertical placement buttons expose keyboard shortcut hints', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
-  assert.match(src, /Move up to the next valid level \(Alt\+↑\)/,
+  assert.match(src, /Move up to the next valid level \(\$\{alt\}\+↑\)/,
     'the Up button must advertise its shortcut');
-  assert.match(src, /Move down to the next valid level \(Alt\+↓\)/,
+  assert.match(src, /Move down to the next valid level \(\$\{alt\}\+↓\)/,
     'the Down button must advertise its shortcut');
-  assert.match(src, /Drop to nearest valid surface \(Alt\+Shift\+↓\)/,
+  assert.match(src, /Drop to nearest valid surface \(\$\{alt\}\+Shift\+↓\)/,
     'the Drop button must advertise its shortcut');
+  assert.match(src, /const alt = altKeyHintLabel\(\);/, 'the hints name the platform Alt key');
+  assert.match(src, /Drop, Enter, or \$\{altKeyHintLabel\(\)\}\+Shift\+↓ places it/,
+    'the held-case hint names the platform Alt key too');
   assert.match(src, /btn\.title = hint;/,
     'shortcut hints must be native title tooltips on the vertical buttons');
+});
+
+test('MANUAL-VERTICAL shortcut hints say ⌥ Option on Apple platforms and Alt elsewhere', async t => {
+  const { altKeyHintLabel } = await loadEditorScreenModule();
+  const original = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  t.after(() => {
+    if (original) Object.defineProperty(globalThis, 'navigator', original);
+    else delete globalThis.navigator;
+  });
+  const labelFor = nav => {
+    Object.defineProperty(globalThis, 'navigator', { value: nav, configurable: true, writable: true });
+    return altKeyHintLabel();
+  };
+  assert.equal(labelFor({ platform: 'MacIntel' }), '⌥ Option');
+  assert.equal(labelFor({ platform: 'iPad' }), '⌥ Option');
+  assert.equal(labelFor({ userAgentData: { platform: 'macOS' }, platform: '' }), '⌥ Option');
+  assert.equal(labelFor({ platform: 'Win32' }), 'Alt');
+  assert.equal(labelFor({ userAgentData: { platform: 'Linux' }, platform: 'Linux x86_64' }), 'Alt');
+  assert.equal(labelFor({}), 'Alt');
 });
 
 // V2B validated drag release: a single packed case must release through the

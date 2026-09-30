@@ -51,20 +51,48 @@ Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and 
 
 ## Keyboard Shortcuts
 
-### Global
-
-- `Ctrl/Cmd + O` - Open pack dialog
+Shortcuts act only where the app owns them. Everywhere else the browser keeps its own
+behavior: text editing, Find, Reload, Bookmark, Save Page and Open File are never taken
+over. On macOS use `Cmd` for `Ctrl` and `Option` (⌥) for `Alt`.
 
 ### Editor
 
+Active on the Editor screen while focus is not in a text field, dialog or open dropdown.
+
+- `Ctrl/Cmd + Z` - Undo
+- `Ctrl/Cmd + Shift + Z` - Redo
+- `Ctrl/Cmd + A` - Select all cases in the load plan
+- `Ctrl/Cmd + C` - Copy selected cases (with cases selected; otherwise normal Copy)
+- `Ctrl/Cmd + V` - Paste copied cases (after copying cases; otherwise normal Paste)
+- `Ctrl/Cmd + D` - Duplicate selected cases
+- `Esc` - Deselect all
+
+### 3D viewport
+
+Active while the 3D viewport has focus (click it, or reach it with `Tab` / `Shift + Tab`).
+These are bare keys: with `Ctrl/Cmd` held they stay browser shortcuts (`Ctrl/Cmd + F` is Find).
+
+- `R` - Turn (rotate 90° around Y)
+- `T` - Tip (rotate 90° around X)
+- `E` - Roll (rotate 90° around Z)
+- `F` - Flip (180°)
+- `Arrow keys` - Nudge 1 inch (`Shift + Arrow`: 6 inches)
+- `Alt/Option + ↑` / `Alt/Option + ↓` - Move to the next valid level up / down
+- `Alt/Option + Shift + ↓` - Drop to the nearest valid surface
+- `Enter` - Place a held case
+- `Esc` - Cancel a held case or an active drag
 - `Delete` / `Backspace` - Delete selected cases
-- `Ctrl/Cmd + C` - Copy selected cases
-- `Ctrl/Cmd + V` - Paste copied cases
-- `Ctrl/Cmd + A` - Select all cases
 - `G` - Toggle grid visibility
 - `S` - Toggle shadows
-- `F` - Flip selected case
-- `Esc` - Deselect all / Clear search
+
+Holding an arrow key keeps nudging. Turn, Tip, Roll, Flip, Duplicate, Paste, Grid and
+Shadows act once per press.
+
+### Escape order
+
+Each `Esc` press is handled by one owner, topmost first: an open dialog, dropdown or
+filter popup; then the case selection; then an open mobile panel. In a search field,
+`Esc` clears the search.
 
 ### Navigation
 

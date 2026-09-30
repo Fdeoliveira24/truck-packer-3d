@@ -109,7 +109,9 @@ Space Utilization is **capacity analysis only**: occupied percentage, remaining 
 
 | Area | File(s) |
 |---|---|
-| App wiring / keyboard shortcuts | `src/app.js` |
+| App wiring | `src/app.js` |
+| App-level keyboard shortcuts | `src/ui/keyboard-manager.js` |
+| Viewport cargo keys (R/T/E/F, arrows, Alt vertical, Enter/Esc holds) | `src/screens/editor-screen.js` (InteractionManager) |
 | Editor UI / AutoPack/Unpack/Truck controls | `src/screens/editor-screen.js` |
 | AutoPack orchestration | `src/services/autopack-engine.js` |
 | Solver geometry | `src/services/autopack-solver.js` |

@@ -16,7 +16,6 @@ logistics. Built with Three.js for real-time 3D rendering and interactive packin
 - **Dark/Light Theme**: Modern UI with theme switching
 - **Grid & Shadows**: Toggle visual aids for better spatial awareness
 - **Keyboard Shortcuts**: Efficient workflow with comprehensive keyboard controls
-- **Dev Overlay**: Toggle FPS/memory/renderer stats in the editor (press `P`)
 - **Hardened Imports**: npm-owned Three.js/OrbitControls runtime and sanitized JSON imports
 
 ## Quick Start
@@ -173,9 +172,7 @@ truck-packer-3d/
 4. **Auto-Pack**: Try auto-pack first, then manually adjust as needed
 5. **Search**: Use search on Packs screen to quickly find projects (press Esc to clear)
 6. **Theme**: Toggle theme from sidebar bottom for comfortable viewing
-7. **Performance Debugging**: Press `P` in the editor to see FPS, frame time, memory, and renderer
-   stats; useful when testing on lower-end devices or 4K displays
-8. **Safe Imports**: Imports and backups are sanitized to drop `__proto__`/`constructor`/`prototype`
+7. **Safe Imports**: Imports and backups are sanitized to drop `__proto__`/`constructor`/`prototype`
    keys; malformed JSON shows a toast instead of breaking the app
 
 ## Browser Compatibility
@@ -201,8 +198,6 @@ Click the **Help** button in the topbar for quick reference on Export/Import fea
   `prototype`, `constructor`) to reduce prototype pollution risk.
 - **Safe Rendering**: User/imported text now uses `textContent` instead of `innerHTML` in dialogs
   and headers.
-- **Dev Overlay**: Press `P` in the editor to view FPS, frame time, memory (if available), and
-  renderer info (draw calls, tris, geometries, textures) with periodic console logs.
 
 ## License
 

@@ -13972,12 +13972,16 @@ test('settings members confirms sensitive role changes and restores dropdown val
 
   assert.match(src, /function isSensitiveRoleChange\b[\s\S]*previous === 'owner' \|\| previous === 'admin' \|\| next === 'owner' \|\| next === 'admin'/,
     'owner/admin role changes must be classified as sensitive');
-  assert.match(src, /roleSelect\.addEventListener\('change', async ev =>[\s\S]*UIComponents\.confirm\(/,
+  assert.match(src, /roleSelect\.addEventListener\('change', async \(\) =>[\s\S]*UIComponents\.confirm\(/,
     'member role dropdown must confirm sensitive role changes before update');
+  assert.match(src, /disabled: r === 'admin' && !isOwner/,
+    'non-owners still cannot select the admin role');
   assert.match(src, /if \(!confirmed\) \{[\s\S]*roleSelect\.value = role;[\s\S]*return;/,
     'canceling role confirmation must restore the previous selected role');
   assert.match(src, /roleSelect\.value = nextRole;[\s\S]*updateMemberRole\(orgId, member, nextRole, currentUserId\)/,
     'confirmed role changes must proceed through the existing updateMemberRole path');
+  assert.match(src, /updateMemberRole\(orgId, member, nextRole, currentUserId\)\.catch\(\(\) => \{[\s\S]*roleSelect\.value = role;/,
+    'failed role updates restore the previous selected role');
 });
 
 test('settings members confirms invite revoke with the existing danger modal path', async () => {
@@ -19868,7 +19872,7 @@ test('G1.2D-INSPECTOR-FINAL-POLISH visual CSS is scoped, tokenized, and keeps to
   // the values carry the visual weight instead of the unit text.
   assert.match(css, /#inspector-body \.card \.tp3d-editor-dims-row \.field \.label\s*\{[^}]*font-size:\s*11px/s,
     'Length/Width/Height unit labels must render at the smaller, subtle unit-label scale');
-  assert.match(css, /#inspector-body \.card \.input,\n#inspector-body \.card \.select\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-size:\s*var\(--text-sm\)/s,
+  assert.match(css, /#inspector-body \.card \.input,\n#inspector-body \.card \.tp3d-select\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-size:\s*var\(--text-sm\)/s,
     'Inspector inputs/selects must use the compact 14px scale and shared 6px radius under #inspector-body');
   assert.match(css, /#inspector-body \.card \.btn\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,
     'Inspector buttons must use the shared 6px radius and medium weight under #inspector-body');

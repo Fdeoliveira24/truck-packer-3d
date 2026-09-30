@@ -1419,7 +1419,7 @@ test('BUSINESS-IDENTITY-UI management view switching stays atomic and Load Plan 
 
   assert.match(casesSource, /role: 'cases-sort'[\s\S]*menuSemantics: true/);
   assert.match(packsSource, /role: 'packs-sort'[\s\S]*menuSemantics: true/);
-  assert.match(uiSource, /anchorEl\.setAttribute\('aria-haspopup', 'menu'\)/);
+  assert.match(uiSource, /anchorEl\.setAttribute\('aria-haspopup', selectSemantics \? 'listbox' : 'menu'\)/);
   assert.match(uiSource, /anchorEl\.setAttribute\('aria-expanded', 'true'\)/);
   assert.match(uiSource, /dropdown\.setAttribute\('role', 'menu'\)/);
   assert.match(uiSource, /btn\.setAttribute\('role', 'menuitem'\)/);
@@ -2366,6 +2366,7 @@ test('MANAGEMENT-CARD-UX shared footer helper applies the caller-provided select
   const realDocument = globalThis.document;
   const fakeElement = tag => {
     const attrs = {};
+    const listeners = new Map();
     const el = {
       tagName: String(tag).toUpperCase(),
       attrs,
@@ -2376,8 +2377,13 @@ test('MANAGEMENT-CARD-UX shared footer helper applies the caller-provided select
       setAttribute(name, value) { attrs[name] = String(value); },
       getAttribute(name) { return name in attrs ? attrs[name] : null; },
       appendChild(child) { el.children.push(child); return child; },
-      addEventListener() {},
-      removeEventListener() {},
+      addEventListener(type, handler) {
+        listeners.set(type, [...(listeners.get(type) || []), handler]);
+      },
+      removeEventListener(type, handler) {
+        listeners.set(type, (listeners.get(type) || []).filter(item => item !== handler));
+      },
+      emit(type) { (listeners.get(type) || []).forEach(handler => handler({ target: el })); },
       remove() {},
     };
     return el;
@@ -2387,11 +2393,29 @@ test('MANAGEMENT-CARD-UX shared footer helper applies the caller-provided select
   try {
     const { createTableFooter } = await import('../../src/ui/table-footer.js');
     const custom = fakeElement('div');
-    createTableFooter({ mountEl: custom, selectAllAriaLabel: 'Select all matching Cases' });
+    const selects = [];
+    const selectFactory = config => {
+      assert.equal(config.label, 'Rows per page');
+      assert.deepEqual(config.options.map(option => option.value), ['10', '25', '50', '100']);
+      const control = fakeElement('div');
+      selects.push(control);
+      return control;
+    };
+    let rowsChanged = null;
+    const controller = createTableFooter({
+      mountEl: custom, selectAllAriaLabel: 'Select all matching Cases', selectFactory,
+      onRowsPerPageChange: value => { rowsChanged = value; },
+    });
     assert.equal(findCheckbox(custom).getAttribute('aria-label'), 'Select all matching Cases');
+    controller.setState({ totalCount: 125, pageCount: 3, pageIndex: 2, rowsPerPage: 50 });
+    selects[0].value = '25';
+    selects[0].emit('change');
+    assert.equal(rowsChanged, 25, 'the shared select preserves the rows-per-page callback');
+    const pageLabel = custom.children[0].children[1].children[2];
+    assert.equal(pageLabel.textContent, 'Page 1 of 3', 'changing rows per page resets pagination');
 
     const fallback = fakeElement('div');
-    createTableFooter({ mountEl: fallback });
+    createTableFooter({ mountEl: fallback, selectFactory });
     assert.equal(findCheckbox(fallback).getAttribute('aria-label'), 'Select all matching rows',
       'the generic default no longer implies "visible" rows');
   } finally {
@@ -2552,7 +2576,7 @@ class CategoryUiTestElement {
     (this.listeners.get('click') || []).forEach(handler => handler(event));
   }
 
-  // Simulates committing a <select> value the way a real browser would —
+  // Simulates committing a select value the way a real browser would —
   // needed wherever a test picks a different category than the default and
   // must exercise the same catSelect 'change' -> updateSwatch() wiring a real
   // user interaction would trigger (assigning .value alone does not).
@@ -2590,6 +2614,21 @@ function makeCaseModalHarness() {
     doc: { createElement: tag => new CategoryUiTestElement(tag) },
     toasts,
     UIComponents: {
+      createSelect({ label, options, value, className = '' }) {
+        const control = new CategoryUiTestElement('div');
+        control.className = `tp3d-select ${className}`;
+        control.setAttribute('role', 'combobox');
+        control.setAttribute('aria-label', label);
+        control.setOptions = nextOptions => {
+          control.options = nextOptions;
+          if (!nextOptions.some(option => option.value === control.value)) {
+            control.value = nextOptions[0]?.value || '';
+          }
+        };
+        control.setOptions(options);
+        if (value !== undefined) control.value = value;
+        return control;
+      },
       showToast(message, tone) {
         toasts.push({ message, tone });
       },
@@ -2644,7 +2683,7 @@ test('CASES-CATEGORY-UI default modal state: the new-category creator is collaps
   const creator = categoryCreatorRow(config);
   assert.ok(creator, 'the creator row exists in the DOM');
   assert.equal(creator.hidden, true, 'the creator is collapsed by default');
-  const select = config.content.querySelectorAll('select').find(el => el.getAttribute('aria-label') === 'Category');
+  const select = config.content.querySelectorAll('.tp3d-select').find(el => el.getAttribute('aria-label') === 'Category');
   assert.ok(select, 'the existing category selector is preserved');
   assert.ok(findInputByAriaLabel(config.content, 'Category color'), 'the selected-category color swatch is preserved');
 });
@@ -2680,7 +2719,7 @@ test('CASES-CATEGORY-UI Cancel collapses the creator, restores + New, resets its
 
   const toggle = findButtonByAriaLabel(config.content, 'Add new category');
   toggle.click();
-  const select = config.content.querySelectorAll('select')[0];
+  const select = config.content.querySelectorAll('.tp3d-select')[0];
   const selectedBefore = select.value;
   findInputByAriaLabel(config.content, 'New category name').value = 'Should Not Persist';
   findInputByAriaLabel(config.content, 'New category color').value = '#123456';
@@ -2712,7 +2751,7 @@ test('CASES-CATEGORY-UI Add creates the category through CategoryService.upsert,
   assert.ok(created, 'CategoryService.upsert() remains the category creation authority');
   assert.equal(created.color, '#00ff00');
 
-  const select = config.content.querySelectorAll('select')[0];
+  const select = config.content.querySelectorAll('.tp3d-select')[0];
   assert.equal(select.value, created.key, 'the newly-created category becomes selected');
   assert.equal(findInputByAriaLabel(config.content, 'Category color').value, '#00ff00',
     'the selected-category swatch updates to the new color');
@@ -2737,7 +2776,7 @@ test('CASES-CATEGORY-UI Add with a name that already exists selects the existing
   findButtonByAriaLabel(config.content, 'Add category').click();
 
   assert.equal(CategoryService.all().length, before, 'no duplicate category is created');
-  const select = config.content.querySelectorAll('select')[0];
+  const select = config.content.querySelectorAll('.tp3d-select')[0];
   assert.equal(select.value, existing.key, 'the existing category is selected instead');
   assert.equal(findInputByAriaLabel(config.content, 'Category color').value, '#111111',
     'the swatch updates to the existing category color');
@@ -2769,7 +2808,7 @@ test('CASES-CATEGORY-UI Case Save still resolves the selected category key and c
   requiredInput('Length (in) (required)').value = '10';
   requiredInput('Width (in) (required)').value = '10';
   requiredInput('Height (in) (required)').value = '10';
-  const select = config.content.querySelectorAll('select')[0];
+  const select = config.content.querySelectorAll('.tp3d-select')[0];
   select.value = category.key;
   select.fireChange(); // commits the pick and syncs the swatch, like a real user selection
 

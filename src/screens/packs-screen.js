@@ -2104,16 +2104,12 @@ export function createPacksScreen({
       const presetLabel = document.createElement('div');
       presetLabel.className = 'label';
       presetLabel.textContent = 'Truck preset';
-      const presetSelect = document.createElement('select');
-      presetSelect.className = 'select';
       const presetOptions = hasPresets
         ? presets
         : [{ id: 'default', label: '53ft Trailer (default)', truck: fallbackTruck, tags: ['Default'] }];
-      presetOptions.forEach(preset => {
-        const opt = document.createElement('option');
-        opt.value = String(preset.id);
-        opt.textContent = preset.label;
-        presetSelect.appendChild(opt);
+      const presetSelect = UIComponents.createSelect({
+        label: 'Truck preset',
+        options: presetOptions.map(preset => ({ value: String(preset.id), label: String(preset.label) })),
       });
       presetWrap.appendChild(presetLabel);
       presetWrap.appendChild(presetSelect);
@@ -2123,14 +2119,14 @@ export function createPacksScreen({
       const modeLabel = document.createElement('div');
       modeLabel.className = 'label';
       modeLabel.textContent = 'Trailer Shape Mode';
-      const modeSelect = document.createElement('select');
-      modeSelect.className = 'select';
-      modeSelect.innerHTML = `
-	                <option value="rect">Standard</option>
-	                <option value="wheelWells">Wheel Wells</option>
-	                <option value="frontBonus">Front Overhang</option>
-	              `;
-      modeSelect.value = 'rect';
+      const modeSelect = UIComponents.createSelect({
+        label: 'Trailer Shape Mode', value: 'rect',
+        options: [
+          { value: 'rect', label: 'Standard' },
+          { value: 'wheelWells', label: 'Wheel Wells' },
+          { value: 'frontBonus', label: 'Front Overhang' },
+        ],
+      });
       modeWrap.appendChild(modeLabel);
       modeWrap.appendChild(modeSelect);
       modeWrap.classList.add('tp3d-grid-span-full');
@@ -2265,17 +2261,11 @@ export function createPacksScreen({
       const presetLabel = document.createElement('div');
       presetLabel.className = 'label';
       presetLabel.textContent = 'Truck preset';
-      const presetSelect = document.createElement('select');
-      presetSelect.className = 'select';
-      const customOpt = document.createElement('option');
-      customOpt.value = 'custom';
-      customOpt.textContent = 'Custom';
-      presetSelect.appendChild(customOpt);
-      (Array.isArray(presets) ? presets : []).forEach(preset => {
-        const opt = document.createElement('option');
-        opt.value = String(preset.id);
-        opt.textContent = preset.label;
-        presetSelect.appendChild(opt);
+      const presetSelect = UIComponents.createSelect({
+        label: 'Truck preset',
+        options: [{ value: 'custom', label: 'Custom' }, ...(Array.isArray(presets) ? presets : []).map(preset => ({
+          value: String(preset.id), label: String(preset.label),
+        }))],
       });
       presetWrap.appendChild(presetLabel);
       presetWrap.appendChild(presetSelect);
@@ -2285,13 +2275,14 @@ export function createPacksScreen({
       const modeLabel = document.createElement('div');
       modeLabel.className = 'label';
       modeLabel.textContent = 'Trailer Shape Mode';
-      const modeSelect = document.createElement('select');
-      modeSelect.className = 'select';
-      modeSelect.innerHTML = `
-                <option value="rect">Standard</option>
-                <option value="wheelWells">Wheel Wells</option>
-                <option value="frontBonus">Front Overhang</option>
-              `;
+      const modeSelect = UIComponents.createSelect({
+        label: 'Trailer Shape Mode',
+        options: [
+          { value: 'rect', label: 'Standard' },
+          { value: 'wheelWells', label: 'Wheel Wells' },
+          { value: 'frontBonus', label: 'Front Overhang' },
+        ],
+      });
       modeSelect.value =
         pack && pack.truck && (pack.truck.shapeMode === 'wheelWells' || pack.truck.shapeMode === 'frontBonus')
           ? pack.truck.shapeMode

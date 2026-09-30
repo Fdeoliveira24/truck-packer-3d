@@ -39,6 +39,9 @@
   --accent-primary: #ff9f1c;
   --accent-hover: #ffb547;
   --accent-pressed: #e88c0c;
+
+  /* Text and icons on accent fills (primary actions) in every theme. */
+  --accent-foreground: #ffffff;
   --accent-primary-12: rgb(255, 159, 28, 0.12);
   --accent-primary-14: rgb(255, 159, 28, 0.14);
   --accent-primary-25: rgb(255, 159, 28, 0.25);
@@ -460,15 +463,15 @@ body[data-auth="signed_in"] #app {
   transition: color 0.15s ease;
 }
 
-.btn:disabled i,
-.btn[disabled] i {
+.btn:disabled:not(.btn-primary) i,
+.btn[disabled]:not(.btn-primary) i {
   color: var(--text-muted);
 }
 
 .btn-primary {
-  border-color: rgb(255, 159, 28, 0.4);
+  border-color: var(--accent-primary);
   background: var(--accent-primary);
-  color: #1a1a1f;
+  color: var(--accent-foreground);
 }
 
 .btn-primary:hover {
@@ -849,6 +852,9 @@ textarea:focus {
 }
 
 #editor-right .panel-body {
+  /* Contain absolute screen-reader summaries in the Inspector scroll owner.
+     Otherwise their static position can enlarge the root document. */
+  position: relative;
   overflow-y: auto;
   overflow-x: visible;
 }
@@ -1253,6 +1259,13 @@ input[type='checkbox']::after {
 
 input[type='checkbox']:checked::after {
   opacity: 1;
+}
+
+/* One management selection contract for Grid, List and both select-all rows:
+   a stronger resting boundary on card and table surfaces that never overrides
+   the shared checked state above. */
+:where(#screen-cases, #screen-packs) input[type='checkbox']:not(:checked) {
+  border-color: var(--border-strong);
 }
 
 /* ================================
@@ -4276,9 +4289,13 @@ body.tp3d-shared-modal-lock #app .nav {
   backdrop-filter: blur(8px);
 }
 
-#viewport:focus-visible {
-  outline: 3px solid var(--focus-strong);
-  outline-offset: -4px;
+#viewport:focus {
+  outline: none;
+}
+
+#viewport:focus-visible:not(.tp3d-pointer-focus) {
+  outline: 2px solid var(--info);
+  outline-offset: -2px;
 }
 
 @supports not (backdrop-filter: blur(8px)) {
@@ -5401,12 +5418,6 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-management-card-head > input[type='checkbox'] {
   flex: 0 0 auto;
   margin: 0;
-
-  /* The shared checkbox's resting border-subtle reads too faint against a
-   * card surface (vs. a table row). Stronger boundary at rest only — checked
-   * state already switches border-color to --accent-primary above and is
-   * untouched; focus-visible keeps the browser's default outline. */
-  border-color: var(--border-strong);
 }
 
 /* Descendant (not child) selector: the Load Plan title sits inside its title wrapper.
@@ -6358,15 +6369,6 @@ body.tp3d-shared-modal-lock #app .nav {
   gap: var(--space-2);
 }
 
-.tp3d-editor-instance-chooser {
-  margin-bottom: var(--space-3);
-}
-
-.tp3d-editor-instance-chooser .select {
-  width: 100%;
-  min-width: 0;
-}
-
 .tp3d-editor-oog-warning {
   margin: 0;
   color: var(--danger-text);
@@ -6449,7 +6451,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-editor-browser-group-tabs .tp3d-browser-tab.btn-primary {
   background: var(--accent-primary);
-  color: var(--text-inverse);
+  color: var(--accent-foreground);
 }
 
 .tp3d-editor-browser-group-tabs .tp3d-browser-tab.btn-primary:hover {
@@ -6668,20 +6670,49 @@ body.tp3d-shared-modal-lock #app .nav {
   margin-left: auto;
 }
 
-/* Chip styles */
-.tp3d-editor-chip-mini {
-  cursor: default;
-  width: 100%;
-  min-height: 36px;
-  padding: 8px 12px;
-  border-radius: var(--radius-sm);
+/* Selected-case identity: the name sits under the "Cases" header, followed by
+   read-only metadata pills (dimensions, manufacturer, category) that share the
+   .badge pill with the Handling rules chips but use normal text color. */
+.tp3d-editor-case-name {
+  color: var(--text-primary);
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  line-height: var(--leading-tight);
+  overflow-wrap: anywhere;
+}
+
+.tp3d-editor-case-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  min-width: 0;
+}
+
+.tp3d-editor-meta-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  color: var(--text-primary);
+  overflow-wrap: anywhere;
+}
+
+.tp3d-editor-meta-chip .chip-dot {
+  flex: 0 0 8px;
+}
+
+/* Case-level "Handling rules" leads; the instance-level "This item" is a quieter
+   subheading so the two rule sets stay visibly separate. */
+.tp3d-editor-rules-heading {
+  color: var(--text-primary);
   font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
   line-height: var(--leading-tight);
 }
 
-.tp3d-editor-chip-mini .chip-dot {
-  flex: 0 0 8px;
-  margin-top: 1px;
+.tp3d-editor-rules-heading--item {
+  margin-top: var(--space-1);
+  font-weight: var(--font-medium);
 }
 
 /* Interaction styles */

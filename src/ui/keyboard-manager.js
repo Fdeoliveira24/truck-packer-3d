@@ -17,7 +17,6 @@ export function createKeyboardManager({
   CaseScene,
   SceneManager,
   InteractionManager,
-  AutoPackEngine,
   OperationLifecycle,
   UIComponents,
   AppShell,
@@ -42,7 +41,7 @@ export function createKeyboardManager({
       if (isTypingContext(event)) return;
       const key = buildKeyString(event);
       const interactionSurface = document.getElementById('viewport');
-      const spatialKey = ['delete', 'backspace', 'g', 's', 'p'].includes(key);
+      const spatialKey = ['delete', 'backspace', 'g', 's'].includes(key);
       if (inEditor() && spatialKey && event.target !== interactionSurface) return;
       const handler = shortcuts[key];
       if (!handler) return;
@@ -181,16 +180,6 @@ export function createKeyboardManager({
       );
     }
 
-    function focusSelected(event) {
-      if (!inEditor()) return;
-      const selected = StateStore.get('selectedInstanceIds') || [];
-      if (!selected.length) return;
-      const obj = CaseScene.getObject(selected[0]);
-      if (!obj) return;
-      if (event && typeof event.stopPropagation === 'function') event.stopPropagation();
-      SceneManager.focusOnWorldPoint(obj.position.clone(), { duration: 600 });
-    }
-
     function toggleGrid() {
       if (!inEditor()) return;
       const visible = SceneManager.toggleGrid();
@@ -272,23 +261,10 @@ export function createKeyboardManager({
       'ctrl+c': copySelected,
       'meta+v': pasteClipboard,
       'ctrl+v': pasteClipboard,
-      'meta+p': () => {
-        if (!inEditor()) return;
-        AutoPackEngine.pack().catch(err => console.error('[KeyboardShortcut] AutoPack error:', err));
-      },
-      'ctrl+p': () => {
-        if (!inEditor()) return;
-        AutoPackEngine.pack().catch(err => console.error('[KeyboardShortcut] AutoPack error:', err));
-      },
       'meta+o': openPackDialog,
       'ctrl+o': openPackDialog,
       g: toggleGrid,
       s: toggleShadows,
-      'shift+f': focusSelected,
-      p: () => {
-        if (!inEditor()) return;
-        SceneManager.toggleDevOverlay();
-      },
     };
 
     return { init: initKeyboardManager, clearClipboard };

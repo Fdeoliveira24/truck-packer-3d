@@ -2123,6 +2123,11 @@ export function createInteractionManager({
       domEl.addEventListener('pointercancel', onCancel);
       domEl.addEventListener('lostpointercapture', onCancel);
       domEl.addEventListener('dblclick', onDblClick);
+      // Only leaving the viewport ends pointer-origin focus; shortcuts keep it,
+      // so Tab / Shift+Tab back in is what shows the keyboard cue.
+      domEl.parentElement?.addEventListener('blur', () => {
+        domEl.parentElement?.classList.remove('tp3d-pointer-focus');
+      });
       window.addEventListener('keydown', onKeyDown);
       if (typeof CaseScene.setPendingPoseWatcher === 'function') {
         CaseScene.setPendingPoseWatcher(onScenePendingInvalidated);
@@ -2738,6 +2743,9 @@ export function createInteractionManager({
 
     function onDown(ev) {
       if (!isEditorActive()) return;
+      // Programmatic focus can inherit :focus-visible from a keyboard-focused
+      // control. Keep shortcut ownership while suppressing that inherited cue.
+      domEl.parentElement?.classList.add('tp3d-pointer-focus');
       if (ev.button !== 0) return;
       domEl.parentElement?.focus({ preventScroll: true });
       updatePointer(ev);
@@ -4690,7 +4698,11 @@ export function createEditorScreen({
         OperationLifecycle.subscribe(() => {
           if (StateStore.get('currentScreen') === 'editor') {
             refreshActionButtons();
-            renderSpaceUtilizationSection(PackLibrary.getById(StateStore.get('currentPackId')));
+            // Refresh Space Utilization only where the Truck Inspector already
+            // renders it; a lifecycle change must never add it to a selection state.
+            if (inspectorEl?.querySelector('[data-role="space-utilization-gauge"]')) {
+              renderSpaceUtilizationSection(PackLibrary.getById(StateStore.get('currentPackId')));
+            }
           }
           if (selectionRenderPending && !OperationLifecycle.isBusy()) render();
           if (pendingViewSave && !OperationLifecycle.isBusy()) {
@@ -5743,8 +5755,7 @@ export function createEditorScreen({
     function makeMiniCategoryChip(categoryKey) {
       const meta = CategoryService.meta(categoryKey || 'default');
       const el = document.createElement('span');
-      el.className = 'chip';
-      el.classList.add('tp3d-editor-chip-mini');
+      el.className = 'badge tp3d-editor-meta-chip';
       const dot = document.createElement('span');
       dot.className = 'chip-dot';
       dot.style.background = meta.color;
@@ -5917,47 +5928,7 @@ export function createEditorScreen({
           else renderSingleInspector(pack, inst, c, prefs);
         }
       }
-      if (pack && (pack.cases || []).length) {
-        const wrap = document.createElement('div');
-        wrap.className = 'field card tp3d-editor-instance-chooser';
-        const label = document.createElement('label');
-        label.className = 'label';
-        label.textContent = 'Select placed case';
-        const select = document.createElement('select');
-        select.className = 'select';
-        select.id = `tp3d-editor-field-${++editorFieldId}`;
-        select.dataset.focusKey = 'instance-chooser';
-        label.htmlFor = select.id;
-        const empty = document.createElement('option');
-        empty.value = '';
-        empty.textContent = 'No individual case selected';
-        select.appendChild(empty);
-        const occurrence = new Map();
-        const unit = getLengthUnit(prefs);
-        (pack.cases || []).forEach(inst => {
-          const caseData = CaseLibrary.getById(inst.caseId);
-          const name = caseData?.name || 'Unresolved case';
-          const number = (occurrence.get(inst.caseId) || 0) + 1;
-          occurrence.set(inst.caseId, number);
-          const position = inst.transform?.position;
-          const location = position
-            ? `, X ${Utils.inchesToUnit(Number(position.x), unit).toFixed(1)}, Y ${Utils.inchesToUnit(Number(position.y), unit).toFixed(1)}, Z ${Utils.inchesToUnit(Number(position.z), unit).toFixed(1)} ${unit}`
-            : '';
-          const option = document.createElement('option');
-          option.value = inst.id;
-          option.textContent = `${name}, instance ${number}, ${inst.hidden ? 'hidden' : (inst.placement || 'packed')}${location}`;
-          select.appendChild(option);
-        });
-        select.value = sel.length === 1 ? sel[0] : '';
-        select.addEventListener('change', () => {
-          InteractionManager.setSelection(select.value ? [select.value] : []);
-        });
-        wrap.appendChild(label);
-        wrap.appendChild(select);
-        inspectorEl.prepend(wrap);
-      }
-      restoreEditorFocus(previousFocus, inspectorEl,
-        inspectorEl.querySelector('[data-focus-key="instance-chooser"]') || btnRight);
+      restoreEditorFocus(previousFocus, inspectorEl, btnRight);
     }
 
     function renderSpaceUtilizationSection(pack) {
@@ -7258,15 +7229,14 @@ export function createEditorScreen({
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
-      // Header: name (+ Notes) row, then subtitle. titleRow is appended
+      // Header mirrors the Truck card: section title + Notes. titleRow is appended
       // directly to .card (not wrapped) so it picks up the existing
       // "#inspector-body .card>.row.space-between" sizing/min-width rule.
       const titleRow = document.createElement('div');
       titleRow.className = 'row space-between tp3d-editor-inspector-title-row';
       const title = document.createElement('div');
-      title.classList.add('tp3d-editor-title-lg-semibold');
-      title.textContent = caseData.name || '—';
-      title.title = caseData.name || '';
+      title.classList.add('tp3d-editor-fw-semibold');
+      title.textContent = 'Cases';
       const hasAnyNotes = Boolean(String(caseData.notes || '').trim()) || Boolean(String(inst.instanceNotes || '').trim());
       const notesButton = makeActionButton({
         label: 'Notes',
@@ -7287,13 +7257,26 @@ export function createEditorScreen({
       titleRow.appendChild(title);
       titleRow.appendChild(notesButton);
       card.appendChild(titleRow);
-      const sub = document.createElement('div');
-      sub.className = 'muted';
-      sub.classList.add('tp3d-editor-sub-sm');
-      const mfg = caseData.manufacturer ? caseData.manufacturer : '—';
+      const name = document.createElement('div');
+      name.className = 'tp3d-editor-case-name';
+      name.textContent = caseData.name || '—';
+      name.title = caseData.name || '';
+      card.appendChild(name);
+      // Read-only case metadata pills: dimensions, manufacturer (only when set), category.
+      const meta = document.createElement('div');
+      meta.className = 'tp3d-editor-case-meta';
+      const addMetaChip = text => {
+        const chip = document.createElement('span');
+        chip.className = 'badge tp3d-editor-meta-chip';
+        chip.textContent = text;
+        meta.appendChild(chip);
+      };
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
-      sub.textContent = `${mfg} • ${Utils.formatDims(d, lengthUnit)}`;
-      card.appendChild(sub);
+      addMetaChip(Utils.formatDims(d, lengthUnit));
+      const manufacturer = String(caseData.manufacturer || '').trim();
+      if (manufacturer) addMetaChip(manufacturer);
+      meta.appendChild(makeMiniCategoryChip(caseData.category));
+      card.appendChild(meta);
       if (!inst.hidden && inst.placement !== 'staged') {
         const bounds = CaseScene.getAabbWorld(inst.id);
         if (bounds && !CaseScene.isInsideTruck(bounds)) {
@@ -7303,7 +7286,6 @@ export function createEditorScreen({
           card.appendChild(warning);
         }
       }
-      card.appendChild(makeMiniCategoryChip(caseData.category));
 
       // Handling rules: case-level policy and this-instance lock, shown separately.
       const caseRules = getCaseHandlingSummary(caseData);
@@ -7324,14 +7306,14 @@ export function createEditorScreen({
         };
         if (caseRules.length) {
           const lbl = document.createElement('div');
-          lbl.className = 'muted tp3d-editor-sub-sm';
-          lbl.textContent = 'Handling rules (case)';
+          lbl.className = 'tp3d-editor-rules-heading';
+          lbl.textContent = 'Handling rules';
           rulesWrap.appendChild(lbl);
           addChips(caseRules);
         }
         if (instRules.length) {
           const lbl2 = document.createElement('div');
-          lbl2.className = 'muted tp3d-editor-sub-sm';
+          lbl2.className = 'tp3d-editor-rules-heading tp3d-editor-rules-heading--item';
           lbl2.textContent = 'This item';
           rulesWrap.appendChild(lbl2);
           addChips(instRules, 'tp3d-handling-chip-instance');

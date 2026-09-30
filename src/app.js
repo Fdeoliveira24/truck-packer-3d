@@ -2539,7 +2539,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       CaseScene,
       SceneManager,
       InteractionManager,
-      AutoPackEngine,
       OperationLifecycle,
       UIComponents,
       AppShell,

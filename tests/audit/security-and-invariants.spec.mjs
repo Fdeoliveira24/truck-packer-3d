@@ -19533,8 +19533,8 @@ test('G1.2B-CASE-BROWSER-POLISH new CSS classes use existing design tokens only'
 
   const headerMatch = css.match(/\.tp3d-editor-mfg-group-header\s*\{([^}]*)\}/);
   assert.ok(headerMatch, '.tp3d-editor-mfg-group-header must be defined in main.css');
-  assert.match(headerMatch[1], /var\(--text-secondary\)/,
-    'the manufacturer group header color must use var(--text-secondary)');
+  assert.match(headerMatch[1], /color: var\(--text-primary\);/,
+    'the manufacturer group header color must use the theme-aware var(--text-primary)');
   assert.match(headerMatch[1], /var\(--text-xs\)/,
     'the manufacturer group header font-size must use var(--text-xs)');
   assert.match(headerMatch[1], /var\(--font-semibold\)/,

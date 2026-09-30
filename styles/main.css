@@ -6048,7 +6048,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-editor-mfg-group-header {
   padding: 8px 0 4px;
-  color: var(--text-secondary);
+  color: var(--text-primary);
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   text-transform: uppercase;

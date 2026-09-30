@@ -651,6 +651,46 @@ test('UI hotfix selected-case Inspector mirrors the Truck header with compact me
   } finally { await browser.close(); }
 });
 
+test('UI hotfix Space Utilization renders only in the Truck Inspector, including lifecycle refreshes', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const before = await page.evaluate(() => window.probe.casesJson());
+    const inspector = () => page.evaluate(() => {
+      const body = document.querySelector('#inspector-body');
+      const gauges = [...body.querySelectorAll('[data-role="space-utilization-gauge"]')];
+      return { gauges: gauges.length, text: gauges.map(g => g.textContent.replace(/\s+/g, ' ').trim()).join('|'),
+        headings: [...body.querySelectorAll(':scope > .card')].map(card => card.textContent.trim().split(/\s{2,}|\n/)[0]) };
+    });
+    // A real lifecycle transition (preview capture follows edits) refreshes the gauge.
+    const lifecycleTick = () => page.evaluate(() => {
+      const { OperationLifecycle } = window.probe;
+      OperationLifecycle.finishOperation(OperationLifecycle.beginOperation('capturingPreview'));
+    });
+    const truck = await inspector();
+    assert.equal(truck.gauges, 1, 'the Truck Inspector owns Space Utilization');
+    assert.match(truck.text, /Space Utilization/);
+    await lifecycleTick();
+    assert.deepEqual(await inspector(), truck, 'a lifecycle refresh neither duplicates nor changes the Truck gauge');
+
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-7']));
+    assert.equal((await inspector()).gauges, 0, 'single selection has no Space Utilization');
+    await lifecycleTick();
+    assert.equal((await inspector()).gauges, 0, 'a lifecycle refresh never adds it to the single-selection Inspector');
+
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-1', 'cargo-2']));
+    assert.match(await page.locator('#inspector-body').textContent(), /selected/i, 'the multi-selection Inspector renders');
+    assert.equal((await inspector()).gauges, 0, 'multi-selection has no Truck Space Utilization card');
+    await lifecycleTick();
+    assert.equal((await inspector()).gauges, 0, 'a lifecycle refresh never adds it to the multi-selection Inspector');
+
+    await page.evaluate(() => window.probe.InteractionManager.setSelection([]));
+    assert.deepEqual(await inspector(), truck, 'deselecting restores the same Truck gauge through normal render');
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), before, 'Pack data is unchanged');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 test('UI hotfix F flips the selected case in either letter case and no Focus Selected shortcut remains', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {

@@ -4698,7 +4698,11 @@ export function createEditorScreen({
         OperationLifecycle.subscribe(() => {
           if (StateStore.get('currentScreen') === 'editor') {
             refreshActionButtons();
-            renderSpaceUtilizationSection(PackLibrary.getById(StateStore.get('currentPackId')));
+            // Refresh Space Utilization only where the Truck Inspector already
+            // renders it; a lifecycle change must never add it to a selection state.
+            if (inspectorEl?.querySelector('[data-role="space-utilization-gauge"]')) {
+              renderSpaceUtilizationSection(PackLibrary.getById(StateStore.get('currentPackId')));
+            }
           }
           if (selectionRenderPending && !OperationLifecycle.isBusy()) render();
           if (pendingViewSave && !OperationLifecycle.isBusy()) {

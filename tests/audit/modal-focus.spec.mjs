@@ -966,12 +966,16 @@ test('DOM focus uses one brand ring while selected, checked, and semantic states
       assert.equal(focused.outlineOffset, selector === '#viewport' ? '-2px' : '2px');
     }
     for (const selector of ['#input', '#textarea', '#select']) {
-      const focused = await style(selector);
-      assert.equal(focused.boxShadow, 'none', `${theme} ${selector} has no focus glow`);
       await page.locator('#before').focus();
       const resting = await style(selector);
-      assert.equal(focused.borderColor, resting.borderColor, `${theme} ${selector} keeps its resting border`);
       await page.locator(selector).focus();
+      assert.equal(await page.locator(selector).evaluate(el => el.matches(':focus-visible')), true,
+        `${theme} ${selector} is visibly focused`);
+      const focused = await style(selector);
+      assert.deepEqual([focused.outlineColor, focused.outlineWidth, focused.outlineStyle],
+        ['rgb(255, 159, 28)', '2px', 'solid'], `${theme} ${selector} keeps the approved focus ring`);
+      assert.equal(focused.boxShadow, 'none', `${theme} ${selector} has no focus glow`);
+      assert.equal(focused.borderColor, resting.borderColor, `${theme} ${selector} keeps its resting border`);
     }
     await page.locator('#before').focus();
     assert.equal((await style('#card')).outlineStyle, 'none', 'selection alone does not add an outline');

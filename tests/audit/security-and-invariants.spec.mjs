@@ -7664,8 +7664,8 @@ test('EDITOR inspector unit labels follow preferences and repaint on preference 
     'wheel well config fields must save active-unit values back to inches');
   assert.doesNotMatch(truckBlock, /smallField\('Length \(in\)'|smallField\('Width \(in\)'|smallField\('Height \(in\)'/,
     'truck inspector must not hardcode inch labels');
-  assert.match(singleBlock, /sub\.textContent = `\$\{mfg\} • \$\{Utils\.formatDims\(d,\s*lengthUnit\)\}`/,
-    'selected case subtitle must use the active length unit');
+  assert.match(singleBlock, /addMetaChip\(Utils\.formatDims\(d,\s*lengthUnit\)\)/,
+    'selected case dimensions pill must use the active length unit');
   assert.match(singleBlock, /inlinePositionField\('X',\s*lengthUnit,\s*Utils\.inchesToUnit\(pos\.x,\s*lengthUnit\)\)/,
     'position inputs must use compact inline fields with active-unit values');
   assert.match(prefBlock, /if \(StateStore\.get\('currentScreen'\) === 'editor'\) EditorUI\.render\(\);/,
@@ -13176,7 +13176,7 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
   const copyEnd = src.indexOf('\n    function pasteClipboard()', copyStart);
   const copyBlock = copyStart >= 0 && copyEnd > copyStart ? src.slice(copyStart, copyEnd) : '';
   const pasteStart = src.indexOf('function pasteClipboard()');
-  const pasteEnd = src.indexOf('\n    function focusSelected(', pasteStart);
+  const pasteEnd = src.indexOf('\n    function toggleGrid(', pasteStart);
   const pasteBlock = pasteStart >= 0 && pasteEnd > pasteStart ? src.slice(pasteStart, pasteEnd) : '';
   const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
   const safeStart = packLibSrc.indexOf('export function buildSafeDuplicateInstances(');
@@ -13195,7 +13195,7 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
     'shared safe duplicate helper must assign new ids after cloning metadata');
 });
 
-test('EDITOR keyboard shortcut ownership keeps bare F for Flip only', async () => {
+test('EDITOR keyboard shortcut ownership keeps F (any case) for Flip only', async () => {
   const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
 
@@ -13203,17 +13203,10 @@ test('EDITOR keyboard shortcut ownership keeps bare F for Flip only', async () =
   const shortcutsEnd = keyboardSrc.indexOf('\n    };', shortcutsStart);
   assert.ok(shortcutsStart >= 0 && shortcutsEnd > shortcutsStart, 'KeyboardManager shortcuts block must exist');
   const shortcutsBlock = keyboardSrc.slice(shortcutsStart, shortcutsEnd);
-  assert.equal(/\n\s*f:\s*focusSelected,/.test(shortcutsBlock), false,
-    'app-level KeyboardManager must not bind bare F');
-  assert.match(shortcutsBlock, /'shift\+f': focusSelected,/,
-    'app-level focus selected may use Shift+F instead of bare F');
-
-  const focusStart = keyboardSrc.indexOf('function focusSelected(');
-  const focusEnd = keyboardSrc.indexOf('\n    function toggleGrid()', focusStart);
-  assert.ok(focusStart >= 0 && focusEnd > focusStart, 'focusSelected handler must exist');
-  const focusBlock = keyboardSrc.slice(focusStart, focusEnd);
-  assert.match(focusBlock, /event && typeof event\.stopPropagation === 'function'[\s\S]*event\.stopPropagation\(\)/,
-    'Shift+F focus must stop propagation so the editor flip handler does not also run');
+  assert.doesNotMatch(shortcutsBlock, /(^|\n)\s*'?(shift\+)?f'?\s*:/,
+    'app-level KeyboardManager must not bind F or Shift+F; the viewport owns F as Flip');
+  assert.doesNotMatch(keyboardSrc, /focusSelected/,
+    'there is no Focus Selected keyboard shortcut (Tab reaches the viewport instead)');
 
   const keyStart = editorSrc.indexOf('function onKeyDown(ev)');
   const keyEnd = editorSrc.indexOf('function onMove(ev)', keyStart);
@@ -19879,8 +19872,10 @@ test('G1.2D-INSPECTOR-FINAL-POLISH visual CSS is scoped, tokenized, and keeps to
     'Inspector inputs/selects must use the compact 14px scale and shared 6px radius under #inspector-body');
   assert.match(css, /#inspector-body \.card \.btn\s*\{[^}]*min-height:\s*36px[^}]*border-radius:\s*var\(--radius-sm\)[^}]*font-weight:\s*var\(--font-medium\)/s,
     'Inspector buttons must use the shared 6px radius and medium weight under #inspector-body');
-  assert.match(css, /\.tp3d-editor-chip-mini\s*\{[^}]*width:\s*100%[^}]*border-radius:\s*var\(--radius-sm\)/s,
-    'the selected-case category chip must be full-width and use the same 6px radius');
+  // Superseded by the Editor UI regression hotfix: the selected-case category is a
+  // compact metadata pill beside the dimensions, no longer a full-width field.
+  assert.doesNotMatch(css, /\.tp3d-editor-chip-mini/,
+    'the selected-case category must not return to a full-width field');
   assert.match(css, /\.tp3d-editor-inline-position-field\s*\{[^}]*display:\s*grid/s,
     'X/Y/Z position fields must stack label over input so narrow Inspector widths do not clip values');
   assert.match(css, /\.tp3d-editor-dims-row \.tp3d-editor-minw-90\s*\{[^}]*min-width:\s*0/s,

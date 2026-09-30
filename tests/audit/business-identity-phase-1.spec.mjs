@@ -2841,15 +2841,14 @@ test('CASES-CATEGORY-UI Editor Case Browser still sources category options from 
 // validation-status icon weight (Section 10-11 of the follow-up task).
 // ---------------------------------------------------------------------------
 
-test('MANAGEMENT-CARD-UX shared card-header checkbox has a stronger rest-state border, scoped to the management card, with checked/focus semantics untouched', async () => {
+test('MANAGEMENT-CARD-UX card-header checkbox layout does not override shared management checkbox colors', async () => {
   const { cssSource } = await readManagementSources();
 
   const scoped = cssRuleBody(cssSource, ".tp3d-management-card-head > input[type='checkbox']");
-  assert.match(scoped, /border-color:\s*var\(--border-strong\);/, 'the resting boundary is strengthened for the management card checkbox only');
+  assert.doesNotMatch(scoped, /border-color:|background:|color:/, 'Grid cannot override List or checked checkbox colors');
   assert.doesNotMatch(scoped, /width:|height:|border-width:/, 'dimensions are untouched');
 
-  // The shared checkbox base (used everywhere: forms, filters, table rows) is
-  // untouched — this is a scoped override, not a global checkbox redesign.
+  // Other application forms retain their existing checkbox implementation.
   const base = cssRuleBody(cssSource, "input[type='checkbox']");
   assert.match(base, /border:\s*1px solid var\(--border-subtle\);/, 'the global checkbox rest border is unchanged everywhere else');
   const checked = cssRuleBody(cssSource, "input[type='checkbox']:checked");

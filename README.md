@@ -55,7 +55,6 @@ Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and 
 ### Global
 
 - `Ctrl/Cmd + O` - Open pack dialog
-- `Ctrl/Cmd + P` - Auto-pack cases
 
 ### Editor
 
@@ -65,8 +64,7 @@ Phase 1 introduces a session/org foundation, plan/role-aware feature flags, and 
 - `Ctrl/Cmd + A` - Select all cases
 - `G` - Toggle grid visibility
 - `S` - Toggle shadows
-- `F` - Focus on selected case
-- `P` - Toggle dev performance overlay (FPS, frame time, memory, Three.js stats)
+- `F` - Flip selected case
 - `Esc` - Deselect all / Clear search
 
 ### Navigation

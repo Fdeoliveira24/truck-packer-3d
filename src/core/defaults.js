@@ -260,7 +260,7 @@ export function seedPack(caseLibrary) {
     client: 'Example Client',
     projectName: 'Envato Preview',
     drawnBy: 'Truck Packer 3D',
-    notes: 'Tip: Use AutoPack (Ctrl/Cmd+P) to fill the truck.',
+    notes: 'Tip: Use AutoPack to fill the truck.',
     truck: { length: 636, width: 102, height: 98, shapeMode: 'rect', shapeConfig: {} },
     cases: instances.filter(i => Boolean(i.caseId)),
     groups: [],

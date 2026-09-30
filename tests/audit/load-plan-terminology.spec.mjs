@@ -390,12 +390,12 @@ test('LOAD-PLAN-TERM-6 Auto-Pack, Unpack and packing-process language are unchan
   ]);
 
   assert.match(html, /id="btn-autopack"[\s\S]{0,200}AutoPack/, 'the AutoPack toolbar button must stay AutoPack');
-  assert.match(html, /data-tooltip="AutoPack \(Ctrl\/Cmd\+P\)"/, 'the AutoPack tooltip must be unchanged');
+  assert.match(html, /data-tooltip="AutoPack"/, 'the AutoPack tooltip keeps the action name without advertising Print');
   assert.match(html, /id="btn-unpack"[\s\S]{0,200}Unpack/, 'the Unpack toolbar button must stay Unpack');
 
   assert.match(editor, /title: 'Unpack'/, 'Unpack toasts must keep the Unpack title');
   assert.match(editor, /packed case/, '"packed case" describes a placed item and must be preserved');
-  assert.match(keyboard, /AutoPackEngine\.pack\(\)/, 'the AutoPack shortcut must still call the engine');
+  assert.doesNotMatch(keyboard, /AutoPackEngine\.pack\(\)/, 'Print is no longer an AutoPack shortcut');
 
   // The renamed nouns must not have leaked into the packing action vocabulary.
   assert.doesNotMatch(html, /Auto ?Load ?Plan/i, 'AutoPack must never be renamed to an AutoLoadPlan variant');

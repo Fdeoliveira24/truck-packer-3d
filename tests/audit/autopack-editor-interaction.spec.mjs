@@ -159,6 +159,28 @@ window.probe = {
   toasts: [],
   opLog: [],
   StateStore, OperationLifecycle, SceneManager, CaseScene, AppShell, UIComponents, EditorUI, CaseLibrary,
+  InteractionManager, AutoPackEngine, Utils, CategoryService,
+  async management() {
+    const { createCasesScreen } = await import('/src/screens/cases-screen.js');
+    const { createPacksScreen } = await import('/src/screens/packs-screen.js');
+    const { createTableFooter } = await import('/src/ui/table-footer.js');
+    // The production footer is hidden for a single record; include two fixtures
+    // so Grid footer and List header/footer select-all controls are exercised.
+    const packs = StateStore.get('packLibrary');
+    StateStore.set({ packLibrary: [...packs, { ...packs[0], id: 'fixture-second', title: 'Second fixture', cases: [] }] },
+      { skipHistory: true });
+    const common = { Utils, UIComponents, PreferencesManager, PackLibrary, CaseLibrary, StateStore,
+      createTableFooter, OperationLifecycle, ImportExport: {}, CardDisplayOverlay: {} };
+    const CasesUI = createCasesScreen({ ...common, CategoryService, ImportCasesDialog: {} });
+    const PacksUI = createPacksScreen({ ...common, TrailerPresets, AppShell, ExportService,
+      TruckChangeController, ImportPackDialog: {}, featureFlags: { trailerPresetsEnabled: true },
+      persistNow() {}, toast: UIComponents.showToast, toAscii: value => value });
+    CasesUI.init();
+    PacksUI.init();
+    CasesUI.render();
+    PacksUI.render();
+    return true;
+  },
   op: () => OperationLifecycle.currentOperation().kind,
   selection: () => (StateStore.get('selectedInstanceIds') || []).slice(),
   casesJson: () => JSON.stringify(livePack().cases),
@@ -294,6 +316,407 @@ async function openEditor(browser) {
 
 const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 
+test('UI hotfix bounds document scrolling while both Editor panels and management content scroll', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const before = await page.evaluate(() => window.probe.casesJson());
+    for (const size of [{ width: 1400, height: 900 }, { width: 1280, height: 600 }, { width: 1000, height: 480 }]) {
+      await page.setViewportSize(size);
+      await page.waitForFunction(() => {
+        const canvas = document.querySelector('#viewport canvas').getBoundingClientRect();
+        const host = document.querySelector('#viewport').getBoundingClientRect();
+        return Math.abs(canvas.height - host.height) < 1 && Math.abs(canvas.width - host.width) < 1;
+      });
+      const metrics = await page.evaluate(() => {
+        window.scrollTo(0, 100000);
+        const selectors = ['html', 'body', '#app', '.main', '.content', '.content.editor-mode',
+          '#screen-editor', '.editor-shell', '#editor-left', '.canvas-wrap', '#editor-right'];
+        return selectors.map(selector => {
+          const el = document.querySelector(selector);
+          return { selector, height: el.clientHeight, scrollHeight: el.scrollHeight, scrollTop: el.scrollTop };
+        });
+      });
+      assert.equal(metrics[0].scrollTop, 0, JSON.stringify({ size, metrics }));
+      assert.equal(metrics[0].scrollHeight, size.height, 'root cannot acquire blank scrollable space');
+      assert.equal(await page.locator('.topbar').evaluate(el => el.getBoundingClientRect().top), 0);
+      assert.equal(await page.locator('#app').evaluate(el => el.getBoundingClientRect().width), size.width,
+        'no document scrollbar or white gutter');
+      if (size.height <= 600) {
+        for (const selector of ['#editor-left .panel-body', '#inspector-body']) {
+          const panel = page.locator(selector);
+          const scroll = await panel.evaluate(el => {
+            el.scrollTop = 100000;
+            return { top: el.scrollTop, max: el.scrollHeight - el.clientHeight };
+          });
+          assert.ok(scroll.top > 0 && scroll.top === scroll.max, `${selector} retains internal scrolling`);
+          assert.equal(await page.evaluate(() => document.scrollingElement.scrollTop), 0);
+          await panel.evaluate(el => { el.scrollTop = 0; });
+        }
+      }
+    }
+    await page.evaluate(async () => { await window.probe.management(); window.probe.AppShell.navigate('cases'); });
+    await page.locator('#cases-view-grid').click();
+    assert.ok(await page.locator('.content').evaluate(el => { el.scrollTop = 100000; return el.scrollTop; }) > 0,
+      'non-Editor content retains its own scrolling');
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), before);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('UI hotfix separates pointer focus from keyboard focus and preserves scene Inspector selection', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const before = await page.evaluate(() => window.probe.casesJson());
+    assert.equal(await page.getByLabel('Select placed case').count(), 0);
+    assert.match(await page.locator('#inspector-body').textContent(), /Truck.*Load Summary.*Space Utilization/s);
+    const empty = await page.evaluate(() => window.probe.pointFor(null));
+    assert.ok(empty);
+    // Focus inherited from keyboard navigation is the failing pointer path.
+    await page.locator('#btn-editor-left').focus();
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport');
+    const keyboard = await page.locator('#viewport').evaluate(el => {
+      const css = getComputedStyle(el);
+      return { style: css.outlineStyle, width: parseFloat(css.outlineWidth), rect: el.getBoundingClientRect().toJSON() };
+    });
+    assert.equal(keyboard.style, 'solid');
+    assert.ok(keyboard.width > 0 && keyboard.width <= 2, 'restrained keyboard outline');
+    await page.mouse.click(empty.x, empty.y);
+    assert.equal(await page.locator('#viewport').evaluate(el => getComputedStyle(el).outlineStyle), 'none');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport', 'pointer still owns cargo shortcuts');
+    assert.deepEqual(await page.locator('#viewport').evaluate(el => el.getBoundingClientRect().toJSON()), keyboard.rect,
+      'focus does not change layout');
+    await page.mouse.move(empty.x, empty.y);
+    await page.mouse.down();
+    await page.mouse.move(empty.x + 8, empty.y + 8);
+    await page.mouse.up();
+    assert.equal(await page.locator('#viewport').evaluate(el => getComputedStyle(el).outlineStyle), 'none');
+    await page.keyboard.press('Tab');
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await page.locator('#viewport').evaluate(el => getComputedStyle(el).outlineStyle), 'solid');
+    const cargo = await page.evaluate(() => window.probe.cargoPoint());
+    assert.ok(cargo);
+    await page.mouse.click(cargo.x, cargo.y);
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), [cargo.id]);
+    assert.equal(await page.getByRole('button', { name: /Apply position/ }).count(), 1);
+    assert.equal(await page.getByLabel('Select placed case').count(), 0);
+    await page.keyboard.press('Control+a');
+    assert.match(await page.locator('#inspector-body').textContent(), /selected/i);
+    assert.equal(await page.getByLabel('Select placed case').count(), 0);
+    await page.keyboard.press('Escape');
+    assert.match(await page.locator('#inspector-body').textContent(), /Truck.*Load Summary.*Space Utilization/s);
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), before, 'presentation interactions preserve cargo');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('UI hotfix Print and P are unhandled while viewport transform keys keep their ownership', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const result = await page.evaluate(() => {
+      let packCalls = 0, devCalls = 0;
+      window.probe.AutoPackEngine.pack = async () => { packCalls++; };
+      window.probe.SceneManager.toggleDevOverlay = () => { devCalls++; };
+      const send = (target, key, modifiers = {}) => {
+        const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...modifiers });
+        target.dispatchEvent(event);
+        return event.defaultPrevented;
+      };
+      const viewport = document.querySelector('#viewport');
+      const share = document.querySelector('#btn-share');
+      const print = [viewport, share, document.body].flatMap(target =>
+        [{ ctrlKey: true }, { metaKey: true }, {}].map(modifiers => send(target, 'p', modifiers)));
+      const spatial = ['r', 't', 'e', 'f', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'];
+      // With no selection these real listeners consume only viewport-owned keys
+      // without invoking a substantive operation or mutating any fixture cargo.
+      const ownership = spatial.map(key => ({ key, viewport: send(viewport, key), share: send(share, key),
+        input: send(document.querySelector('#editor-case-search'), key), body: send(document.body, key) }));
+      return { print, packCalls, devCalls, ownership };
+    });
+    assert.equal(result.packCalls, 0);
+    assert.equal(result.devCalls, 0);
+    assert.ok(result.print.every(prevented => !prevented), 'Print remains available to the browser');
+    for (const item of result.ownership) assert.deepEqual(item,
+      { key: item.key, viewport: true, share: false, input: false, body: false });
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('UI hotfix selected-case Inspector mirrors the Truck header with compact metadata and separate rule sets', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const truckHeading = await page.locator('#inspector-body .tp3d-editor-inspector-title-row .tp3d-editor-fw-semibold')
+      .evaluate(el => ({ text: el.textContent, font: [getComputedStyle(el).fontSize, getComputedStyle(el).fontWeight] }));
+    assert.equal(truckHeading.text, 'Truck');
+    // Disposable fixture data: case-level rules and a long name on cargo-7's case,
+    // plus an instance-level lock, so every section of the card renders.
+    const fixture = await page.evaluate(() => {
+      const { StateStore, Utils, CategoryService } = window.probe;
+      const [pack] = StateStore.get('packLibrary');
+      const caseId = pack.cases.find(i => i.id === 'cargo-7').caseId;
+      const cases = StateStore.get('caseLibrary').map(c => c.id !== caseId ? c : {
+        ...c, name: 'Extremely long fixture case name that wraps instead of colliding with Notes',
+        orientationLock: 'upright', laneItem: false, loadPriority: 1,
+      });
+      StateStore.set({
+        caseLibrary: cases,
+        packLibrary: [{ ...pack, cases: pack.cases.map(i => (i.id === 'cargo-7' ? { ...i, orientationLocked: true } : i)) }],
+      }, { skipHistory: true });
+      const caseData = cases.find(c => c.id === caseId);
+      const probe = document.createElement('span');
+      probe.style.background = CategoryService.meta(caseData.category || 'default').color;
+      document.body.appendChild(probe);
+      const categoryColor = getComputedStyle(probe).backgroundColor;
+      probe.remove();
+      return {
+        name: caseData.name, manufacturer: caseData.manufacturer,
+        dims: Utils.formatDims(caseData.dimensions, StateStore.get('preferences').units.length),
+        category: CategoryService.meta(caseData.category || 'default').name, categoryColor,
+      };
+    });
+    assert.ok(fixture.manufacturer, 'the seed case carries a manufacturer');
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-7']));
+    const card = page.locator('#inspector-body .card').first();
+    const inspect = () => card.evaluate(el => {
+      const rect = node => node.getBoundingClientRect();
+      const css = node => getComputedStyle(node);
+      const header = el.querySelector('.tp3d-editor-inspector-title-row');
+      const heading = header.querySelector('.tp3d-editor-fw-semibold');
+      const notes = [...header.querySelectorAll('button')].find(button => /Notes/.test(button.textContent));
+      const name = el.querySelector('.tp3d-editor-case-name');
+      const meta = [...el.querySelectorAll('.tp3d-editor-case-meta > *')];
+      const cardRect = rect(el);
+      return {
+        heading: heading.textContent, headingFont: [css(heading).fontSize, css(heading).fontWeight],
+        notesInHeader: Boolean(notes), headingClearsNotes: rect(heading).right <= rect(notes).left,
+        notesInside: rect(notes).right <= cardRect.right + 0.5,
+        name: name.textContent, nameTitle: name.title, nameBelowHeader: rect(name).top >= rect(header).bottom,
+        nameColor: css(name).color, nameWeight: Number(css(name).fontWeight), nameSize: parseFloat(css(name).fontSize),
+        meta: meta.map(chip => ({
+          text: chip.textContent, pill: chip.classList.contains('tp3d-editor-meta-chip'),
+          radius: parseFloat(css(chip).borderTopLeftRadius), border: css(chip).borderTopStyle,
+          color: css(chip).color, size: parseFloat(css(chip).fontSize),
+          dot: chip.querySelector('.chip-dot') ? css(chip.querySelector('.chip-dot')).backgroundColor : null,
+          width: rect(chip).width, right: rect(chip).right, top: Math.round(rect(chip).top),
+        })),
+        rules: [...el.querySelectorAll('.tp3d-editor-rules-heading')].map(h => ({
+          text: h.textContent, color: css(h).color, weight: Number(css(h).fontWeight), size: parseFloat(css(h).fontSize),
+          chips: [...h.nextElementSibling.querySelectorAll('.tp3d-handling-chip')].map(chip =>
+            ({ text: chip.textContent, instance: chip.classList.contains('tp3d-handling-chip-instance'),
+              size: parseFloat(css(chip).fontSize) })),
+        })),
+        cardWidth: cardRect.width, cardRight: cardRect.right, overflow: el.scrollWidth - el.clientWidth,
+      };
+    });
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      const view = await inspect();
+      assert.equal(view.heading, 'Cases');
+      assert.deepEqual(view.headingFont, truckHeading.font, 'Cases uses the Truck heading type');
+      assert.ok(view.notesInHeader && view.headingClearsNotes && view.notesInside, 'Notes stays in the header row');
+      assert.equal(view.name, fixture.name);
+      assert.equal(view.nameTitle, fixture.name);
+      assert.ok(view.nameBelowHeader, 'the case name sits below the Cases / Notes header');
+      assert.ok(view.nameWeight >= 600 && view.nameSize > 14, 'the name is semibold and above body size');
+      assert.deepEqual(view.meta.map(chip => chip.text), [fixture.dims, fixture.manufacturer, fixture.category],
+        'canonical formatDims, manufacturer, then category');
+      for (const chip of view.meta) {
+        assert.ok(chip.pill && chip.radius >= 8 && chip.border === 'solid', `${chip.text} is a rounded bordered pill`);
+        assert.equal(chip.color, view.nameColor, `${chip.text} uses normal text color`);
+        assert.ok(chip.size < view.nameSize, `${chip.text} is quieter than the name`);
+        assert.ok(chip.width < view.cardWidth / 2 + 40, `${chip.text} is content-sized, not a full-width field`);
+      }
+      assert.equal(view.meta[2].dot, fixture.categoryColor, 'Category keeps its color dot');
+      assert.deepEqual(view.rules.map(rule => rule.text), ['Handling rules', 'This item']);
+      const [caseRules, itemRules] = view.rules;
+      assert.equal(caseRules.color, view.nameColor, 'Handling rules heading uses primary, not muted, text');
+      assert.ok(caseRules.weight >= 600 && caseRules.chips.every(chip => chip.size < caseRules.size));
+      assert.ok(itemRules.weight < caseRules.weight, 'This item is a quieter subheading');
+      assert.deepEqual(caseRules.chips, [
+        { text: 'Upright', instance: false, size: caseRules.chips[0].size },
+        { text: 'Lane: Never', instance: false, size: caseRules.chips[0].size },
+        { text: 'Priority: High', instance: false, size: caseRules.chips[0].size },
+      ], 'case-level policy stays in its own set');
+      assert.deepEqual(itemRules.chips.map(chip => [chip.text, chip.instance]),
+        [['Orientation locked (this item)', true]], 'instance-level lock stays in its own set');
+      assert.ok(view.overflow <= 0, 'no horizontal overflow');
+    }
+    // A narrow Inspector wraps metadata and rules without colliding or overflowing.
+    await card.evaluate(el => { el.style.width = '200px'; });
+    const narrow = await inspect();
+    assert.ok(narrow.headingClearsNotes && narrow.notesInside, 'Notes remains reachable at narrow widths');
+    assert.ok(narrow.overflow <= 0 && narrow.meta.every(chip => chip.right <= narrow.cardRight + 0.5));
+    assert.ok(new Set(narrow.meta.map(chip => chip.top)).size > 1, 'metadata wraps onto another line');
+    await card.evaluate(el => { el.style.width = ''; });
+    assert.equal(await page.locator('#inspector-body').getByText('Handling rules (case)').count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('UI hotfix F flips the selected case in either letter case and no Focus Selected shortcut remains', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    // Disposable fixture data: allow cargo-0's case to flip, and count camera focus requests.
+    await page.evaluate(() => {
+      const { StateStore, SceneManager } = window.probe;
+      const caseId = StateStore.get('packLibrary')[0].cases.find(i => i.id === 'cargo-0').caseId;
+      StateStore.set({ caseLibrary: StateStore.get('caseLibrary').map(c =>
+        (c.id === caseId ? { ...c, orientationLock: 'any', canFlip: true } : c)) }, { skipHistory: true });
+      window.probe.focusCalls = 0;
+      const focusOnWorldPoint = SceneManager.focusOnWorldPoint;
+      SceneManager.focusOnWorldPoint = (...args) => { window.probe.focusCalls += 1; return focusOnWorldPoint(...args); };
+    });
+    const instance = () => page.evaluate(() => JSON.parse(window.probe.casesJson()).find(i => i.id === 'cargo-0').transform);
+    const near = (a, b) => Math.abs(a - b) < 1e-6;
+    // Tab, not a shortcut, is how keyboard users reach the viewport.
+    await page.locator('#btn-editor-left').focus();
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport');
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-0']));
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport');
+
+    await page.keyboard.press('f');
+    assert.ok(near((await instance()).rotation.x, Math.PI), 'F flips 180 degrees');
+    await page.keyboard.press('Shift+F');
+    assert.ok(near((await instance()).rotation.x, 0), 'Shift+F is still Flip, not Focus Selected');
+    assert.equal(await page.evaluate(() => window.probe.focusCalls), 0, 'F never focuses or zooms the camera');
+
+    const offViewport = await page.evaluate(() => {
+      const before = window.probe.casesJson();
+      const event = new KeyboardEvent('keydown', { key: 'F', shiftKey: true, bubbles: true, cancelable: true });
+      document.body.dispatchEvent(event);
+      return { prevented: event.defaultPrevented, unchanged: window.probe.casesJson() === before, focusCalls: window.probe.focusCalls };
+    });
+    assert.deepEqual(offViewport, { prevented: false, unchanged: true, focusCalls: 0 }, 'no app-level Shift+F shortcut remains');
+
+    await page.locator('#viewport').focus();
+    await page.keyboard.press('r');
+    assert.ok(near((await instance()).rotation.y, Math.PI / 2), 'R still turns');
+    await page.keyboard.press('t');
+    assert.ok(near((await instance()).rotation.x, Math.PI / 2), 'T still tips');
+    await page.keyboard.press('e');
+    assert.ok(near((await instance()).rotation.z, Math.PI / 2), 'E still rolls');
+    const z = (await instance()).position.z;
+    await page.keyboard.press('ArrowRight');
+    assert.ok(near((await instance()).position.z, z + 1), 'arrows still nudge');
+    assert.equal(await page.evaluate(() => window.probe.focusCalls), 0);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('UI hotfix primary actions keep the bright brand fill with white text and icons in both themes', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
+    const before = await page.evaluate(() => window.probe.casesJson());
+    const sample = async selector => page.locator(selector).evaluateAll(elements => elements.map(el => {
+      const css = getComputedStyle(el);
+      return { text: el.textContent.trim(), color: css.color, bg: css.backgroundColor,
+        icons: [...el.querySelectorAll('i')].map(i => getComputedStyle(i).color) };
+    }));
+    // Approved default brand pairing: the bright Cargo Planner accent with white
+    // labels and icons in both themes. A darker (brown) fill must not be
+    // substituted for it; the resulting contrast is a known, accepted limitation.
+    const BRAND = 'rgb(255, 159, 28)';
+    const BRAND_HOVER = 'rgb(255, 181, 71)';
+    const WHITE = 'rgb(255, 255, 255)';
+    const assertActions = (samples, fill) => {
+      assert.ok(samples.length > 0);
+      for (const s of samples) {
+        assert.equal(s.bg, fill, s.text);
+        assert.equal(s.color, WHITE, s.text);
+        assert.ok(s.icons.every(color => color === WHITE), s.text);
+      }
+    };
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      await page.mouse.move(5, 5);
+      const resting = await sample('#screen-editor .btn-primary');
+      assertActions(resting, BRAND);
+      assert.ok(resting.some(s => /Add/.test(s.text)));
+      assert.ok(resting.some(s => /Update truck/.test(s.text)));
+      assert.ok(resting.some(s => /Category/.test(s.text)));
+      assert.ok(resting.some(s => s.icons.length > 0), 'icon-bearing primary actions are covered');
+      await page.getByRole('button', { name: 'Category', exact: true }).hover();
+      assertActions(await sample('.tp3d-browser-tab.btn-primary'), BRAND_HOVER);
+      await page.getByRole('button', { name: /Update truck/ }).hover();
+      assertActions(await sample('#inspector-body .btn-primary:hover'), BRAND_HOVER);
+      await page.mouse.move(5, 5);
+      await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-7']));
+      assertActions(await sample('#inspector-body .btn-primary'), BRAND);
+      assert.match(await page.getByRole('button', { name: /Apply position/ }).textContent(), /Apply position/);
+      await page.evaluate(() => window.probe.InteractionManager.setSelection([]));
+      await page.locator('[data-role="editor-new-case"]').click();
+      assertActions(await sample('.modal-footer .btn-primary'), BRAND);
+      await page.keyboard.press('Escape');
+    }
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), before);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('UI hotfix management Grid, List and select-all checkboxes share computed visuals', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.addStyleTag({ content: '*, *::before, *::after { transition: none !important; }' });
+    await page.evaluate(() => window.probe.management());
+    const before = await page.evaluate(() => JSON.stringify([window.probe.StateStore.get('caseLibrary'),
+      window.probe.StateStore.get('packLibrary')]));
+    for (const theme of ['light', 'dark']) {
+      await page.evaluate(theme => { document.documentElement.dataset.theme = theme; }, theme);
+      const byState = new Map();
+      for (const screen of ['cases', 'packs']) {
+        await page.evaluate(screen => window.probe.AppShell.navigate(screen), screen);
+        for (const mode of ['grid', 'list']) {
+          await page.locator(`#${screen}-view-${mode}`).click();
+          for (const state of ['unchecked', 'checked', 'disabled', 'checked-disabled', 'hover', 'focus']) {
+            const inputs = page.locator(`#screen-${screen} input[type="checkbox"]:visible`);
+            assert.ok(await inputs.count() >= 2,
+              `${theme} ${screen} ${mode} ${state}: real row/card controls plus select-all are rendered`);
+            await inputs.evaluateAll((elements, state) => elements.forEach(el => {
+              el.checked = state.startsWith('checked');
+              el.disabled = state.includes('disabled');
+              el.blur();
+            }), state);
+            await page.mouse.move(5, 5);
+            const samples = [];
+            for (const el of await inputs.all()) {
+              if (state === 'hover') await el.hover();
+              if (state === 'focus') { await page.keyboard.press('Tab'); await el.focus(); }
+              samples.push(await el.evaluate(el => {
+                const c = getComputedStyle(el), glyph = getComputedStyle(el, '::after');
+                return { width: c.width, height: c.height, border: c.border, bg: c.backgroundColor,
+                  radius: c.borderRadius, opacity: c.opacity, cursor: c.cursor, outline: c.outline,
+                  offset: c.outlineOffset, glyph: [glyph.content, glyph.color, glyph.fontFamily, glyph.opacity] };
+              }));
+            }
+            const expected = byState.get(state) || samples[0];
+            byState.set(state, expected);
+            for (const sample of samples) assert.deepEqual(sample, expected, `${theme} ${screen} ${mode} ${state}`);
+            assert.equal(expected.width, '16px');
+            assert.equal(expected.height, '16px');
+            if (state.startsWith('checked')) {
+              assert.equal(expected.bg, 'rgb(255, 159, 28)');
+              assert.match(expected.border, /rgb\(255, 159, 28\)/);
+              assert.equal(expected.glyph[3], '1');
+            }
+          }
+        }
+      }
+    }
+    assert.equal(await page.evaluate(() => JSON.stringify([window.probe.StateStore.get('caseLibrary'),
+      window.probe.StateStore.get('packLibrary')])), before, 'management view/selection styles preserve records');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 test('Editor accessibility fixture keeps focusable regions, selection, Share and narrow toolbar usable', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
@@ -312,9 +735,12 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
       elements.slice(0, 7).map(el => ({ name: el.labels?.[0]?.textContent?.trim() || '', id: el.id })));
     assert.ok(names.every(item => item.name && item.id), 'Inspector controls have native labels');
 
-    await page.locator('[data-focus-key="instance-chooser"]').selectOption('cargo-7');
-    assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-7']);
-    assert.equal(await page.locator('[data-focus-key="instance-chooser"]').inputValue(), 'cargo-7');
+    // The scene settles after the drawer toggle before cargo is raycastable.
+    await page.waitForFunction(() => window.probe.cargoPoint() !== null);
+    const cargo = await page.evaluate(() => window.probe.cargoPoint());
+    await page.mouse.click(cargo.x, cargo.y);
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), [cargo.id]);
+    assert.equal(await page.getByLabel('Select placed case').count(), 0);
     const before = await page.evaluate(() => window.probe.casesJson());
     await page.locator('#btn-share').focus();
     await page.keyboard.press('r');
@@ -798,14 +1224,16 @@ test('Editor fixture keeps rebuilt focus, rejects invalid truck input and expose
         const input = getComputedStyle(document.querySelector('[data-focus-key="truck-length"]'));
         return {
           theme,
-          primary: ratio(primary.color, primary.backgroundColor),
+          primary: [primary.color, primary.backgroundColor],
           label: ratio(label.color, panel.backgroundColor),
           focus: ratio(input.outlineColor, panel.backgroundColor),
         };
       });
     });
     for (const sample of contrast) {
-      assert.ok(sample.primary >= 4.5, `${sample.theme} primary text contrast ${sample.primary}`);
+      // White on the bright brand accent is the approved primary pairing; its
+      // contrast is a known product limitation, so it is pinned, not gated.
+      assert.deepEqual(sample.primary, ['rgb(255, 255, 255)', 'rgb(255, 159, 28)'], `${sample.theme} primary pairing`);
       assert.ok(sample.label >= 4.5, `${sample.theme} dimension label contrast ${sample.label}`);
       assert.ok(sample.focus >= 3, `${sample.theme} focus contrast ${sample.focus}`);
     }

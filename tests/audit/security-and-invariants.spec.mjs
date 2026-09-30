@@ -13169,13 +13169,13 @@ test('AUTO-PACK-A0B app and pack import paths do not strip orientation locks', a
 
 test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock metadata', async () => {
   const src = await fs.readFile(keyboardManagerPath, 'utf8');
-  const duplicateStart = src.indexOf('function duplicateSelected()');
-  const duplicateEnd = src.indexOf('\n    function copySelected()', duplicateStart);
+  const duplicateStart = src.indexOf('function duplicateSelected(');
+  const duplicateEnd = src.indexOf('\n    function copySelected(', duplicateStart);
   const duplicateBlock = duplicateStart >= 0 && duplicateEnd > duplicateStart ? src.slice(duplicateStart, duplicateEnd) : '';
-  const copyStart = src.indexOf('function copySelected()');
-  const copyEnd = src.indexOf('\n    function pasteClipboard()', copyStart);
+  const copyStart = src.indexOf('function copySelected(');
+  const copyEnd = src.indexOf('\n    function pasteClipboard(', copyStart);
   const copyBlock = copyStart >= 0 && copyEnd > copyStart ? src.slice(copyStart, copyEnd) : '';
-  const pasteStart = src.indexOf('function pasteClipboard()');
+  const pasteStart = src.indexOf('function pasteClipboard(');
   const pasteEnd = src.indexOf('\n    function toggleGrid(', pasteStart);
   const pasteBlock = pasteStart >= 0 && pasteEnd > pasteStart ? src.slice(pasteStart, pasteEnd) : '';
   const packLibSrc = await fs.readFile(packLibraryPath, 'utf8');
@@ -20267,12 +20267,18 @@ test('OPERATION-LIFECYCLE-AMEND global keyboard mutations are blocked while busy
   const keyboardSrc = await fs.readFile(keyboardManagerPath, 'utf8');
   assert.match(keyboardSrc, /function mutationBlockedWhileBusy\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
     'app keyboard manager must have a busy-guard helper backed by the lifecycle');
-  for (const fn of ['function duplicateSelected()', 'function pasteClipboard()', 'function undo()', 'function redo()']) {
+  const functionBlock = fn => {
     const start = keyboardSrc.indexOf(fn);
     assert.ok(start >= 0, `${fn} must exist`);
-    const block = keyboardSrc.slice(start, start + 260);
-    assert.match(block, /if \(mutationBlockedWhileBusy\(\)\) return;/, `${fn} must be blocked while busy`);
+    const end = keyboardSrc.indexOf('\n    function ', start + fn.length);
+    return keyboardSrc.slice(start, end > start ? end : undefined);
+  };
+  for (const fn of ['function pasteClipboard(', 'function undo()', 'function redo()']) {
+    assert.match(functionBlock(fn), /if \(mutationBlockedWhileBusy\(\)\) return true;/, `${fn} must be blocked while busy`);
   }
+  // Duplicate is not owned while busy: it mutates nothing and leaves Cmd/Ctrl+D to the browser.
+  assert.match(functionBlock('function duplicateSelected('), /if \(!inEditor\(\) \|\| operationBusy\(\)\) return false;/,
+    'duplicateSelected must be blocked while busy');
   // Delete shortcut routes through InteractionManager.deleteSelection (guarded above).
   assert.match(keyboardSrc, /function deleteSelected\(\)[\s\S]*?InteractionManager\.deleteSelection\(\)/,
     'delete shortcut must route through the guarded InteractionManager.deleteSelection');
@@ -20283,8 +20289,8 @@ test('P0 EDITOR-ONLY UNDO/REDO: keyboard Undo does not reach StateStore.undo() o
   const start = keyboardSrc.indexOf('function undo()');
   assert.ok(start >= 0, 'function undo() must exist');
   const block = keyboardSrc.slice(start, start + 260);
-  const guardIdx = block.indexOf('if (!inEditor()) return;');
-  const busyGuardIdx = block.indexOf('if (mutationBlockedWhileBusy()) return;');
+  const guardIdx = block.indexOf('if (!inEditor()) return false;');
+  const busyGuardIdx = block.indexOf('if (mutationBlockedWhileBusy()) return true;');
   const storeCallIdx = block.indexOf('StateStore.undo()');
   assert.ok(guardIdx >= 0, 'undo() must check inEditor() before mutating StateStore');
   assert.ok(busyGuardIdx > guardIdx, 'undo() must still preserve the existing busy guard inside Editor');
@@ -20298,8 +20304,8 @@ test('P0 EDITOR-ONLY UNDO/REDO: keyboard Redo does not reach StateStore.redo() o
   const start = keyboardSrc.indexOf('function redo()');
   assert.ok(start >= 0, 'function redo() must exist');
   const block = keyboardSrc.slice(start, start + 260);
-  const guardIdx = block.indexOf('if (!inEditor()) return;');
-  const busyGuardIdx = block.indexOf('if (mutationBlockedWhileBusy()) return;');
+  const guardIdx = block.indexOf('if (!inEditor()) return false;');
+  const busyGuardIdx = block.indexOf('if (mutationBlockedWhileBusy()) return true;');
   const storeCallIdx = block.indexOf('StateStore.redo()');
   assert.ok(guardIdx >= 0, 'redo() must check inEditor() before mutating StateStore');
   assert.ok(busyGuardIdx > guardIdx, 'redo() must still preserve the existing busy guard inside Editor');

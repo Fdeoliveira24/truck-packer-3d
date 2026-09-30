@@ -127,11 +127,13 @@ function installDom(t) {
 }
 
 function installKeyboard(dom) {
-  const state = { currentScreen: 'editor', selectedInstanceIds: ['cargo'] };
+  const state = { currentScreen: 'editor', currentPackId: 'pack', selectedInstanceIds: ['cargo'] };
   const calls = { deselect: 0, selectAll: 0 };
+  const pack = { id: 'pack', cases: [{ id: 'cargo' }] };
   createKeyboardManager({
     UIComponents: dom.UI,
     StateStore: { get: key => state[key], set: patch => Object.assign(state, patch) },
+    PackLibrary: { getById: id => (id === pack.id ? pack : null) },
     CaseScene: { setSelected: () => { calls.deselect++; } },
     InteractionManager: { selectAllInPack: () => { calls.selectAll++; } },
   }).init();
@@ -243,6 +245,188 @@ test('P0-SM-OF-2 KeyboardManager preserves unowned shortcuts and typing, blocks 
   assert.equal(calls.selectAll, 2);
 });
 
+// The real KeyboardManager over stub collaborators: every call is recorded so a
+// test can tell an owned key (acted + prevented) from a pass-through (neither).
+function installOwnedKeyboard(dom) {
+  const viewport = dom.doc.body.appendChild(dom.doc.createElement('div'));
+  const getRoot = dom.doc.getElementById;
+  dom.doc.getElementById = id => (id === 'viewport' ? viewport : getRoot(id));
+  const pack = { id: 'pack', cases: [{ id: 'cargo', caseId: 'case' }, { id: 'other', caseId: 'case' }] };
+  const state = { currentScreen: 'editor', currentPackId: 'pack', selectedInstanceIds: ['cargo'] };
+  const calls = { undo: 0, redo: 0, selectAll: 0, delete: 0, duplicate: [], grid: 0, shadows: 0, toasts: [] };
+  let busy = false;
+  let copyIndex = 0;
+  createKeyboardManager({
+    UIComponents: { ...dom.UI, showToast: message => calls.toasts.push(message) },
+    StateStore: {
+      get: key => state[key], set: patch => Object.assign(state, patch),
+      undo: () => { calls.undo++; return true; }, redo: () => { calls.redo++; return true; },
+    },
+    PackLibrary: {
+      getById: id => (id === pack.id ? pack : null),
+      duplicateInstancesSafely: (_packId, source) => {
+        calls.duplicate.push(source.map(inst => inst.id));
+        const copies = source.map(inst => ({ ...inst, id: `copy-${++copyIndex}` }));
+        pack.cases.push(...copies);
+        return { newIds: copies.map(inst => inst.id), placement: 'packed' };
+      },
+    },
+    CaseLibrary: { getCases: () => [] },
+    CaseScene: { setSelected() {} },
+    SceneManager: { toggleGrid: () => { calls.grid++; return true; }, toggleShadows: () => { calls.shadows++; return true; } },
+    InteractionManager: {
+      selectAllInPack: () => { calls.selectAll++; }, deleteSelection: () => { calls.delete++; },
+    },
+    OperationLifecycle: { isBusy: () => busy },
+    Utils: { deepClone: value => JSON.parse(JSON.stringify(value)) },
+  }).init();
+  const cmd = { metaKey: true };
+  const ctrl = { ctrlKey: true };
+  const press = (key, target = dom.doc.body, extra = {}) => dom.dispatch(dom.key(key, target, extra));
+  return { viewport, state, calls, cmd, ctrl, press, setBusy: value => { busy = value; } };
+}
+
+test('Shortcut contract: removed Cmd/Ctrl+O, Cmd/Ctrl+S and Cmd/Ctrl+Shift+A stay with the browser', t => {
+  const dom = installDom(t);
+  const kb = installOwnedKeyboard(dom);
+  for (const screen of ['editor', 'packs']) {
+    kb.state.currentScreen = screen;
+    for (const modifier of [kb.cmd, kb.ctrl]) {
+      for (const [key, extra] of [['o', {}], ['s', {}], ['a', { shiftKey: true }], ['A', { shiftKey: true }]]) {
+        const event = kb.press(key, dom.doc.body, { ...modifier, ...extra });
+        assert.equal(event.defaultPrevented, false, `${screen} ${JSON.stringify(modifier)} ${key}: not intercepted`);
+      }
+    }
+  }
+  assert.deepEqual(kb.state.selectedInstanceIds, ['cargo'], 'Cmd/Ctrl+Shift+A no longer deselects');
+  assert.equal(dom.UI.modalOwnership.getActiveOwner(), null, 'Cmd/Ctrl+O opens no Load Plan dialog');
+  assert.deepEqual(kb.calls.toasts, [], 'Cmd/Ctrl+S shows no save feedback');
+});
+
+test('Shortcut contract: Cmd/Ctrl+D duplicates only in a valid Editor context, once per press', t => {
+  const dom = installDom(t);
+  const kb = installOwnedKeyboard(dom);
+  for (const modifier of [kb.cmd, kb.ctrl]) {
+    const owned = kb.press('d', dom.doc.body, modifier);
+    assert.equal(owned.defaultPrevented, true, 'Editor + selected cargo owns Duplicate');
+  }
+  assert.equal(kb.calls.duplicate.length, 2);
+  assert.deepEqual(kb.calls.duplicate[0], ['cargo']);
+  const held = kb.press('d', dom.doc.body, { ...kb.ctrl, repeat: true });
+  assert.equal(held.defaultPrevented, true, 'an auto-repeat stays owned so Bookmark cannot open mid-hold');
+  assert.equal(kb.calls.duplicate.length, 2, 'auto-repeat never duplicates again');
+
+  const passes = label => {
+    const before = kb.calls.duplicate.length;
+    for (const modifier of [kb.cmd, kb.ctrl]) {
+      assert.equal(kb.press('d', dom.doc.body, modifier).defaultPrevented, false, `${label}: Bookmark stays available`);
+    }
+    assert.equal(kb.calls.duplicate.length, before, `${label}: nothing is duplicated`);
+  };
+  kb.setBusy(true);
+  passes('busy operation');
+  kb.setBusy(false);
+  kb.state.selectedInstanceIds = ['missing'];
+  passes('stale selection');
+  kb.state.selectedInstanceIds = [];
+  passes('empty selection');
+  kb.state.selectedInstanceIds = ['cargo'];
+  kb.state.currentScreen = 'packs';
+  passes('Load Plans screen');
+  kb.state.currentScreen = 'editor';
+  const modal = dom.UI.showModal({});
+  passes('modal owner');
+  modal.close();
+  assert.equal(kb.press('d', dom.doc.createElement('input'), kb.cmd).defaultPrevented, false, 'text fields keep native keys');
+});
+
+test('Shortcut contract: Copy, Paste and Select All are owned only when they act', t => {
+  const dom = installDom(t);
+  const kb = installOwnedKeyboard(dom);
+  // Paste with an empty app clipboard is native Paste.
+  assert.equal(kb.press('v', dom.doc.body, kb.cmd).defaultPrevented, false);
+  assert.equal(kb.calls.duplicate.length, 0);
+  // Copy with selected cargo is the app's.
+  assert.equal(kb.press('c', dom.doc.body, kb.cmd).defaultPrevented, true);
+  assert.match(kb.calls.toasts.at(-1), /Copied 1 case/);
+  assert.equal(kb.press('c', dom.doc.body, { ...kb.ctrl, repeat: true }).defaultPrevented, true);
+  assert.equal(kb.calls.toasts.filter(message => /Copied/.test(message)).length, 1, 'held Copy does not repeat its toast');
+  // Paste with a usable app clipboard is the app's, once per press.
+  assert.equal(kb.press('v', dom.doc.body, kb.ctrl).defaultPrevented, true);
+  assert.deepEqual(kb.calls.duplicate, [['cargo']]);
+  assert.equal(kb.press('v', dom.doc.body, { ...kb.cmd, repeat: true }).defaultPrevented, true);
+  assert.equal(kb.calls.duplicate.length, 1, 'auto-repeat never pastes again');
+  // Without selected cargo, off-Editor or in a text field, Copy is native.
+  kb.state.selectedInstanceIds = [];
+  assert.equal(kb.press('c', dom.doc.body, kb.cmd).defaultPrevented, false, 'nothing selected: native text Copy');
+  kb.state.selectedInstanceIds = ['cargo'];
+  assert.equal(kb.press('c', dom.doc.createElement('textarea'), kb.cmd).defaultPrevented, false);
+  kb.state.currentScreen = 'cases';
+  for (const key of ['c', 'v', 'a']) {
+    assert.equal(kb.press(key, dom.doc.body, kb.cmd).defaultPrevented, false, `off-Editor ${key}: native behavior`);
+  }
+  // Select All is the app's only in the Editor with Pack cargo.
+  kb.state.currentScreen = 'editor';
+  assert.equal(kb.press('a', dom.doc.body, kb.ctrl).defaultPrevented, true);
+  assert.equal(kb.calls.selectAll, 1);
+  assert.equal(kb.press('a', dom.doc.body, { ...kb.cmd, repeat: true }).defaultPrevented, true);
+  assert.equal(kb.calls.selectAll, 1, 'held Select All does not repeat');
+  assert.equal(kb.press('a', dom.doc.createElement('input'), kb.cmd).defaultPrevented, false, 'text Select All stays native');
+  kb.state.currentPackId = 'none';
+  assert.equal(kb.press('a', dom.doc.body, kb.cmd).defaultPrevented, false, 'no Pack cargo: native Select All');
+  assert.equal(kb.calls.selectAll, 1);
+});
+
+test('Shortcut contract: Undo/Redo are Editor-only, text-safe, and reach checkboxes', t => {
+  const dom = installDom(t);
+  const kb = installOwnedKeyboard(dom);
+  assert.equal(kb.press('z', dom.doc.body, kb.cmd).defaultPrevented, true);
+  assert.equal(kb.press('z', dom.doc.body, { ...kb.ctrl, shiftKey: true }).defaultPrevented, true);
+  assert.deepEqual([kb.calls.undo, kb.calls.redo], [1, 1]);
+  for (const tag of ['input', 'textarea']) {
+    assert.equal(kb.press('z', dom.doc.createElement(tag), kb.cmd).defaultPrevented, false, `${tag}: native text Undo`);
+  }
+  const checkbox = Object.assign(dom.doc.createElement('input'), { type: 'checkbox' });
+  const radio = Object.assign(dom.doc.createElement('input'), { type: 'radio' });
+  assert.equal(kb.press('z', checkbox, kb.ctrl).defaultPrevented, true, 'a checkbox is not a text field');
+  assert.equal(kb.press('Escape', radio).defaultPrevented, true, 'Escape still deselects from a radio');
+  assert.deepEqual(kb.state.selectedInstanceIds, []);
+  assert.equal(kb.press(' ', checkbox).defaultPrevented, false, 'Space toggling stays native');
+  assert.deepEqual([kb.calls.undo, kb.calls.redo], [2, 1]);
+  kb.state.currentScreen = 'packs';
+  assert.equal(kb.press('z', dom.doc.body, kb.cmd).defaultPrevented, false, 'outside the Editor: browser Undo');
+  assert.equal(kb.press('z', dom.doc.body, { ...kb.cmd, shiftKey: true }).defaultPrevented, false);
+  assert.deepEqual([kb.calls.undo, kb.calls.redo], [2, 1]);
+});
+
+test('Shortcut contract: G/S and Delete are bare, viewport-owned Editor keys; Escape owns only a selection', t => {
+  const dom = installDom(t);
+  const kb = installOwnedKeyboard(dom);
+  assert.equal(kb.press('g', kb.viewport).defaultPrevented, true);
+  assert.equal(kb.press('s', kb.viewport).defaultPrevented, true);
+  assert.equal(kb.press('g', kb.viewport, { repeat: true }).defaultPrevented, true);
+  assert.deepEqual([kb.calls.grid, kb.calls.shadows], [1, 1], 'auto-repeat never toggles again');
+  for (const extra of [kb.cmd, kb.ctrl, { altKey: true }, { shiftKey: true }]) {
+    assert.equal(kb.press('g', kb.viewport, extra).defaultPrevented, false, `G with ${JSON.stringify(extra)}`);
+    assert.equal(kb.press('s', kb.viewport, extra).defaultPrevented, false, `S with ${JSON.stringify(extra)}`);
+  }
+  assert.equal(kb.press('g', dom.doc.body).defaultPrevented, false, 'G off the viewport is not a shortcut');
+  assert.equal(kb.press('Delete', dom.doc.body).defaultPrevented, false);
+  assert.equal(kb.press('Backspace', kb.viewport).defaultPrevented, true);
+  assert.equal(kb.calls.delete, 1);
+  kb.state.currentScreen = 'packs';
+  for (const key of ['g', 's', 'Delete', 'Backspace']) {
+    assert.equal(kb.press(key, kb.viewport).defaultPrevented, false, `off-Editor ${key}: not intercepted`);
+  }
+  assert.deepEqual([kb.calls.grid, kb.calls.shadows, kb.calls.delete], [1, 1, 1]);
+  assert.equal(kb.press('Escape').defaultPrevented, false, 'off-Editor Escape is free for the next owner');
+  assert.deepEqual(kb.state.selectedInstanceIds, ['cargo']);
+  kb.state.currentScreen = 'editor';
+  assert.equal(kb.press('Escape').defaultPrevented, true, 'Escape owns an Editor selection');
+  assert.deepEqual(kb.state.selectedInstanceIds, []);
+  assert.equal(kb.press('Escape').defaultPrevented, false, 'with nothing selected, Escape passes on');
+});
+
 test('P0-SM-OF-2 actual document and Editor window listeners share the entry snapshot after capture closure', t => {
   const dom = installDom(t);
   const { calls } = installKeyboard(dom);
@@ -350,6 +534,104 @@ test('Editor pointer cancellation restores gizmo pose and camera without committ
   assert.deepEqual(selection, ['cargo']);
   canvas.emit('lostpointercapture', { pointerId: 1 });
   assert.equal(cargo.position.y, 0, 'a following lost-capture event is harmless');
+});
+
+// Real InteractionManager over stub collaborators: the gizmo stroke and its
+// not-directly-valid release run the production pointer handlers, so a held
+// (scene-only) pose and a live drag are the genuine Editor states.
+function installProvisionalEditor(t, dom) {
+  const controls = { enabled: true };
+  const camera = new THREE.PerspectiveCamera(60, 1, 0.1, 100);
+  camera.position.z = 10;
+  camera.updateMatrixWorld();
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshBasicMaterial());
+  handle.userData.gizmoHandle = 'y';
+  handle.updateMatrixWorld();
+  t.after(() => { handle.geometry.dispose(); handle.material.dispose(); });
+  const cargo = new THREE.Object3D();
+  cargo.userData.halfWorld = { x: 0.5, y: 0.5, z: 0.5 };
+  const inst = { id: 'cargo', caseId: 'case', placement: 'packed',
+    transform: { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } };
+  const pack = { id: 'pack', cases: [inst] };
+  const state = { currentScreen: 'editor', currentPackId: 'pack', selectedInstanceIds: ['cargo'] };
+  const commits = [];
+  const toasts = [];
+  let placement = { ok: false, code: 'support-rules', reason: 'Needs support below.' };
+  const viewport = dom.doc.body.appendChild(dom.doc.createElement('div'));
+  const canvas = viewport.appendChild(dom.doc.createElement('canvas'));
+  canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100 });
+  canvas.setPointerCapture = () => {};
+  createInteractionManager({
+    UIComponents: { ...dom.UI, showToast: message => toasts.push(message) },
+    StateStore: { get: key => state[key], set: patch => Object.assign(state, patch) },
+    SceneManager: {
+      getCamera: () => camera, getControls: () => controls, toWorld: value => value,
+      vecWorldToInches: v => ({ x: v.x, y: v.y, z: v.z }),
+      vecInchesToWorld: p => new THREE.Vector3(p.x, p.y, p.z),
+    },
+    CaseScene: {
+      getGizmoHandleMeshes: () => [handle], getGizmoTargetId: () => 'cargo', getGizmoTargetMode: () => 'packed',
+      getObject: () => cargo, setDragging() {}, setGizmoActive() {}, updateGizmoTransform() {},
+      setCollision() {}, refreshGizmo() {}, setHover() {}, setSelected() {}, applyOOGHighlights() {}, sync() {},
+      checkCollision: () => ({ collides: false, insideTruck: true }), settleY: () => null,
+    },
+    PackLibrary: {
+      getById: () => pack,
+      isOrientationAllowedByCasePolicy: () => true,
+      findManualVerticalPlacement: (_pack, _cases, _id, options) => ({ ...placement, mode: options.mode }),
+      updateCasesWithManualRevalidation: (...args) => { commits.push(args); return { pack, stagedIds: [] }; },
+    },
+    CaseLibrary: { getById: () => ({ id: 'case', dimensions: { length: 1, width: 1, height: 1 } }), getCases: () => [] },
+    OperationLifecycle: { isBusy: () => false },
+  }).init(canvas);
+  const press = (key, extra) => dom.dispatch(dom.key(key, viewport, extra));
+  const beginStroke = () => canvas.emit('pointerdown', { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
+  const endStroke = () => dom.win.emit('pointerup', { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
+  return { cargo, controls, commits, toasts, press, beginStroke, endStroke,
+    allowPlacement: position => { placement = { ok: true, position }; } };
+}
+
+test('Editor provisional pose owns R/T/E/F and arrow keys until it is placed or cancelled', t => {
+  const dom = installDom(t);
+  const editor = installProvisionalEditor(t, dom);
+  editor.beginStroke();
+  editor.cargo.position.y = 3;
+  editor.endStroke();
+  assert.equal(editor.commits.length, 0, 'a not-directly-valid release holds a scene-only pose');
+  assert.match(editor.toasts.at(-1), /Case held above the load/);
+  for (const key of ['r', 'T', 'e', 'F', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+    const event = editor.press(key);
+    assert.equal(event.defaultPrevented, true, `${key}: the viewport still owns the key`);
+    assert.equal(editor.commits.length, 0, `${key}: a held pose never commits through a transform or nudge`);
+  }
+  assert.equal(editor.cargo.position.y, 3, 'the held scene pose is untouched');
+  assert.equal(editor.cargo.rotation.x, 0, 'no rotation was applied to the held case');
+  editor.allowPlacement({ x: 0, y: 3, z: 0 });
+  editor.press('Enter');
+  assert.equal(editor.commits.length, 1, 'Enter still places the held case through the validated resolve');
+  editor.press('r');
+  assert.equal(editor.commits.length, 2, 'once placed, R turns the case normally');
+});
+
+test('Editor live drag owns R/T/E/F and arrow keys; Escape still cancels it', t => {
+  const dom = installDom(t);
+  const editor = installProvisionalEditor(t, dom);
+  editor.beginStroke();
+  assert.equal(editor.controls.enabled, false, 'a live gizmo stroke is active');
+  editor.cargo.position.y = 2;
+  for (const key of ['R', 't', 'E', 'f', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+    editor.press(key);
+    assert.equal(editor.commits.length, 0, `${key}: a live drag never commits through a transform or nudge`);
+  }
+  for (const key of ['ArrowUp', 'ArrowDown']) {
+    editor.press(key, { altKey: true });
+    assert.equal(editor.commits.length, 0, `Alt+${key}: a live drag never commits a vertical move`);
+  }
+  assert.equal(editor.cargo.position.y, 2);
+  editor.press('Escape');
+  assert.equal(editor.controls.enabled, true, 'Escape still cancels the live stroke');
+  assert.equal(editor.cargo.position.y, 0, 'the stroke returns to its start pose');
+  assert.equal(editor.commits.length, 0);
 });
 
 test('P0-SM-OF-2 Settings reuses, closes, reopens and cleans disconnected ownership', t => {

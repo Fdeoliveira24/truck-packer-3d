@@ -59,8 +59,9 @@ export function createAppShell({
 
     function initShell() {
       btnSidebar.addEventListener('click', toggleSidebar);
+      // The sidebar closes only on an Escape nothing earlier consumed.
       window.addEventListener('keydown', event => {
-        if (event.key !== 'Escape' || !sidebar.classList.contains('open') ||
+        if (event.key !== 'Escape' || event.defaultPrevented || !sidebar.classList.contains('open') ||
             document.body.classList.contains('tp3d-shared-modal-lock')) return;
         sidebar.classList.remove('open');
         syncSidebarState();

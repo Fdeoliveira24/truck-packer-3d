@@ -400,24 +400,24 @@ Homogeneous, low-significance dependencies that share an identical profile (for 
 
 **`./editor/scene-runtime.js` → `createSceneRuntime`**
 
-- Type: Internal module. Used by: Scene startup (PREP-4 §13), Keyboard (§10, grid/shadow/focus/dev-overlay toggles).
+- Type: Internal module. Used by: Scene startup (PREP-4 §13), Keyboard (§10, grid/shadow toggles).
 - Initialized by: `SceneManager = createSceneRuntime({ Utils, UIComponents, PreferencesManager, TrailerGeometry, StateStore })` (`src/app.js:3656`), synchronously during the outer boot IIFE.
 - Lifetime: Page-lifetime singleton.
 - Direction: App.js depends on it.
 - Required or optional: Required.
-- Public API used: `.focusOnWorldPoint()`, `.toggleGrid()`, `.toggleShadows()`, `.toggleDevOverlay()` (all confirmed via `KeyboardManager`, PREP-4 §10).
+- Public API used: `.toggleGrid()`, `.toggleShadows()` (via `KeyboardManager`, PREP-4 §10). No keyboard shortcut calls `.focusOnWorldPoint()` or `.toggleDevOverlay()`.
 - Events/Storage/Cross-tab: None confirmed directly.
 - Circular dependency risk: None. Coupling level: Medium-High (reached into directly by `KeyboardManager`, bypassing `EditorUI`).
 - Notes: Receives `TrailerGeometry` (§1.9 below) as one of its constructor dependencies — this is the one place a dependency *internal to App.js* is threaded into an *imported* factory.
 
 **`./services/autopack-engine.js` → `createAutoPackEngine`**
 
-- Type: Internal module. Used by: Keyboard (§10, `meta+p`/`ctrl+p` shortcut), Editor startup (§14, AutoPack/Unpack orchestration per `CLAUDE.md` §5-6).
+- Type: Internal module. Used by: Editor startup (§14, AutoPack/Unpack orchestration per `CLAUDE.md` §5-6). No keyboard shortcut launches AutoPack.
 - Initialized by: Synchronous construction during the outer boot IIFE.
 - Lifetime: Page-lifetime singleton.
 - Direction: App.js depends on it; it depends independently on `billing.service.js` (§1.5) for its own entitlement check and on `OperationLifecycle` (§1.4) for its mutation guard, per the PREP-2 facade contract §7.2 and `CLAUDE.md` §6.
 - Required or optional: Required for the AutoPack feature.
-- Public API used: `.pack()` (confirmed at the keyboard shortcut call site).
+- Public API used: `.pack()` (Editor AutoPack action; there is no keyboard call site).
 - Events/Storage: Not individually re-traced in this pass beyond what `CLAUDE.md`/PREP-2 already document.
 - Cross-tab interaction: None known at this boundary.
 - Circular dependency risk: None confirmed.

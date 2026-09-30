@@ -10,6 +10,7 @@
 // Side-effect-free factory: all collaborators are injected; the single
 // document keydown listener is installed only when init() is called.
 
+/** @param {Record<string, any>} deps Injected collaborators; any it does not use are ignored. */
 export function createKeyboardManager({
   StateStore,
   PackLibrary,
@@ -19,8 +20,6 @@ export function createKeyboardManager({
   InteractionManager,
   OperationLifecycle,
   UIComponents,
-  AppShell,
-  Storage,
   Utils,
 }) {
   let shortcuts = {};
@@ -36,13 +35,16 @@ export function createKeyboardManager({
       document.addEventListener('keydown', handleKeyDown);
     }
 
+    // A handler returns true when the app owns the key in the current context
+    // (it acted, or deliberately consumed it) and false when it does not, leaving
+    // the browser/OS default (text Copy, Select All, Bookmark…) untouched.
     function handleKeyDown(event) {
       if (event.defaultPrevented || UIComponents.modalOwnership?.blocksKeyboardEvent(event)) return;
       if (isTypingContext(event)) return;
       const key = buildKeyString(event);
       const interactionSurface = document.getElementById('viewport');
       const spatialKey = ['delete', 'backspace', 'g', 's'].includes(key);
-      if (inEditor() && spatialKey && event.target !== interactionSurface) return;
+      if (spatialKey && (!inEditor() || event.target !== interactionSurface)) return;
       const handler = shortcuts[key];
       if (!handler) return;
       const handled = handler(event);
@@ -50,11 +52,15 @@ export function createKeyboardManager({
       event.preventDefault();
     }
 
+    // Text editing keeps its native keys. A checkbox or radio is not a text field:
+    // Escape and Undo still reach the app there (Space toggling stays native).
     function isTypingContext(event) {
       const el = event.target;
       if (!el) return false;
       if (el.isContentEditable) return true;
-      return el.matches && el.matches('input, textarea, select');
+      if (!el.matches || !el.matches('input, textarea, select')) return false;
+      const type = String(el.type || '').toLowerCase();
+      return !(el.tagName === 'INPUT' && (type === 'checkbox' || type === 'radio'));
     }
 
     function buildKeyString(event) {
@@ -71,6 +77,10 @@ export function createKeyboardManager({
       return StateStore.get('currentScreen') === 'editor';
     }
 
+    function operationBusy() {
+      return Boolean(OperationLifecycle && OperationLifecycle.isBusy());
+    }
+
     // Block pack-mutating keyboard shortcuts while a mutating editor operation
     // (AutoPack / Unpack / Truck Change / preview capture) owns the editor. Returns
     // true (and toasts) when blocked. Read-only shortcuts (copy, select, camera,
@@ -83,55 +93,68 @@ export function createKeyboardManager({
       return false;
     }
 
-    function save() {
-      Storage.saveNow();
-      UIComponents.showToast('Saved locally', 'success', { title: 'Storage' });
+    function selectedInstances(pack) {
+      const selected = StateStore.get('selectedInstanceIds') || [];
+      return selected
+        .map(id => (pack.cases || []).find(inst => inst && inst.id === id))
+        .filter(Boolean);
     }
 
     function undo() {
-      if (!inEditor()) return;
-      if (mutationBlockedWhileBusy()) return;
+      if (!inEditor()) return false;
+      if (mutationBlockedWhileBusy()) return true;
       const ok = StateStore.undo();
       UIComponents.showToast(ok ? 'Undone' : 'Nothing to undo', ok ? 'info' : 'warning', { title: 'Edit' });
+      return true;
     }
 
     function redo() {
-      if (!inEditor()) return;
-      if (mutationBlockedWhileBusy()) return;
+      if (!inEditor()) return false;
+      if (mutationBlockedWhileBusy()) return true;
       const ok = StateStore.redo();
       UIComponents.showToast(ok ? 'Redone' : 'Nothing to redo', ok ? 'info' : 'warning', { title: 'Edit' });
+      return true;
     }
 
+    // Escape clears an Editor selection; with nothing selected (or off-Editor)
+    // it stays free for the next Escape owner, such as a mobile drawer.
     function deselectAll() {
+      if (!inEditor() || !(StateStore.get('selectedInstanceIds') || []).length) return false;
       StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
       CaseScene.setSelected([]);
+      return true;
     }
 
-    function selectAll() {
-      if (!inEditor()) return;
+    function selectAll(event) {
+      if (!inEditor()) return false;
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      if (!pack || !(pack.cases || []).length) return false;
+      if (event.repeat) return true;
       InteractionManager.selectAllInPack();
+      return true;
     }
 
     function deleteSelected() {
-      if (!inEditor()) return;
+      if (!inEditor()) return false;
       InteractionManager.deleteSelection();
+      return true;
     }
 
-    function duplicateSelected() {
-      if (!inEditor()) return;
-      if (mutationBlockedWhileBusy()) return;
+    // Owned only when it can duplicate: Editor, selected cargo and no mutating
+    // operation. Anywhere else Cmd/Ctrl+D stays the browser's Bookmark.
+    function duplicateSelected(event) {
+      if (!inEditor() || operationBusy()) return false;
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
-      const selected = StateStore.get('selectedInstanceIds') || [];
-      if (!pack || !selected.length) return;
+      if (!pack) return false;
 
-      const source = selected
-        .map(id => (pack.cases || []).find(inst => inst && inst.id === id))
-        .filter(Boolean);
+      const source = selectedInstances(pack);
+      if (!source.length) return false;
+      if (event.repeat) return true;
       const result = PackLibrary.duplicateInstancesSafely(packId, source, CaseLibrary.getCases());
       if (!result || !result.newIds.length) {
         UIComponents.showToast('No collision-free duplicate position found', 'warning', { title: 'Edit' });
-        return;
+        return true;
       }
       StateStore.set({ selectedInstanceIds: result.newIds }, { skipHistory: true });
       CaseScene.setSelected(result.newIds);
@@ -142,32 +165,34 @@ export function createKeyboardManager({
         'success',
         { title: 'Edit' }
       );
+      return true;
     }
 
-    function copySelected() {
-      if (!inEditor()) return;
-      const packId = StateStore.get('currentPackId');
-      const pack = PackLibrary.getById(packId);
-      const selected = StateStore.get('selectedInstanceIds') || [];
-      if (!pack || !selected.length) return;
-      clipboard = selected
-        .map(id => (pack.cases || []).find(i => i.id === id))
-        .filter(Boolean)
-        .map(i => Utils.deepClone(i));
+    // Owned only with selected cargo; otherwise native text Copy proceeds.
+    function copySelected(event) {
+      if (!inEditor()) return false;
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      const source = pack ? selectedInstances(pack) : [];
+      if (!source.length) return false;
+      if (event.repeat) return true;
+      clipboard = source.map(i => Utils.deepClone(i));
       UIComponents.showToast(`Copied ${clipboard.length} case(s)`, 'info', { title: 'Clipboard' });
+      return true;
     }
 
-    function pasteClipboard() {
-      if (!inEditor()) return;
-      if (mutationBlockedWhileBusy()) return;
+    // Owned only with copied cargo to paste; otherwise native Paste proceeds.
+    function pasteClipboard(event) {
+      if (!inEditor()) return false;
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
-      if (!pack || !clipboard || !clipboard.length) return;
+      if (!pack || !clipboard || !clipboard.length) return false;
+      if (event.repeat) return true;
+      if (mutationBlockedWhileBusy()) return true;
 
       const result = PackLibrary.duplicateInstancesSafely(packId, clipboard, CaseLibrary.getCases());
       if (!result || !result.newIds.length) {
         UIComponents.showToast('No collision-free paste position found', 'warning', { title: 'Clipboard' });
-        return;
+        return true;
       }
       StateStore.set({ selectedInstanceIds: result.newIds }, { skipHistory: true });
       CaseScene.setSelected(result.newIds);
@@ -178,80 +203,35 @@ export function createKeyboardManager({
         'success',
         { title: 'Clipboard' }
       );
+      return true;
     }
 
-    function toggleGrid() {
-      if (!inEditor()) return;
+    function toggleGrid(event) {
+      if (!inEditor()) return false;
+      if (event.repeat) return true;
       const visible = SceneManager.toggleGrid();
       UIComponents.showToast(visible ? 'Grid shown' : 'Grid hidden', 'info', { title: 'View', duration: 1200 });
+      return true;
     }
 
-    function toggleShadows() {
-      if (!inEditor()) return;
+    function toggleShadows(event) {
+      if (!inEditor()) return false;
+      if (event.repeat) return true;
       const enabled = SceneManager.toggleShadows();
       UIComponents.showToast(enabled ? 'Shadows enabled' : 'Shadows disabled', 'info', {
         title: 'View',
         duration: 1200,
       });
-    }
-
-    function openPackDialog() {
-      const packs = PackLibrary.getPacks()
-        .slice()
-        .sort((a, b) => (b.lastEdited || 0) - (a.lastEdited || 0));
-      const content = document.createElement('div');
-      content.className = 'grid';
-      content.style.gap = '10px';
-      let modal = null;
-      if (!packs.length) {
-        const empty = document.createElement('div');
-        empty.className = 'muted';
-        empty.style.fontSize = 'var(--text-sm)';
-        empty.textContent = 'No load plans available.';
-        content.appendChild(empty);
-      } else {
-        packs.forEach(p => {
-          const row = document.createElement('button');
-          row.type = 'button';
-          row.className = 'btn';
-          row.style.justifyContent = 'space-between';
-          row.style.width = '100%';
-          const name = document.createElement('span');
-          name.style.fontWeight = 'var(--font-semibold)';
-          name.textContent = p.title || 'Untitled';
-          const meta = document.createElement('span');
-          meta.className = 'muted';
-          meta.style.fontSize = 'var(--text-xs)';
-          meta.textContent = `edited ${Utils.formatRelativeTime(p.lastEdited)}`;
-          row.appendChild(name);
-          row.appendChild(meta);
-          row.addEventListener('click', () => {
-            PackLibrary.open(p.id);
-            AppShell.navigate('editor');
-            if (modal) modal.close();
-          });
-          content.appendChild(row);
-        });
-      }
-
-      modal = UIComponents.showModal({
-        title: 'Open Load Plan',
-        content,
-        actions: [{ label: 'Close', variant: 'primary' }],
-      });
+      return true;
     }
 
     shortcuts = {
-      'meta+s': save,
-      'ctrl+s': save,
       'meta+z': undo,
       'ctrl+z': undo,
       'meta+shift+z': redo,
       'ctrl+shift+z': redo,
       'meta+a': selectAll,
       'ctrl+a': selectAll,
-      'meta+shift+a': deselectAll,
-      'ctrl+shift+a': deselectAll,
       escape: deselectAll,
       delete: deleteSelected,
       backspace: deleteSelected,
@@ -261,8 +241,6 @@ export function createKeyboardManager({
       'ctrl+c': copySelected,
       'meta+v': pasteClipboard,
       'ctrl+v': pasteClipboard,
-      'meta+o': openPackDialog,
-      'ctrl+o': openPackDialog,
       g: toggleGrid,
       s: toggleShadows,
     };

@@ -205,6 +205,14 @@ function buildNormalHandlingPack(pack, instanceIds) {
   };
 }
 
+// Shortcut hint name for the Alt key: macOS labels the same key ⌥ Option.
+// Exported for unit testing.
+export function altKeyHintLabel() {
+  const nav = typeof navigator === 'undefined' ? null : /** @type {any} */ (navigator);
+  const platform = String((nav && ((nav.userAgentData && nav.userAgentData.platform) || nav.platform)) || '');
+  return /mac|iphone|ipad|ipod/i.test(platform) ? '⌥ Option' : 'Alt';
+}
+
 /**
  * Resolve the one visual owner for a case without mutating THREE materials.
  * Selection intentionally outranks OOG to preserve the editor's existing
@@ -2397,6 +2405,16 @@ export function createInteractionManager({
       });
     }
 
+    // An unresolved held pose or a live stroke owns the case's pose until it is
+    // placed or cancelled: a transform or nudge must not commit a second
+    // authoritative pose around it.
+    function provisionalPoseOwnsSelection() {
+      if (draggingId || gizmoDragging) return true;
+      if (!gizmoPending) return false;
+      UIComponents.showToast('Place or cancel the held case first (Drop, Enter, or Esc).', 'info');
+      return true;
+    }
+
     /**
      * Rotate selected instances by delta on given axis, then apply gravity.
      */
@@ -2405,6 +2423,7 @@ export function createInteractionManager({
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
         return;
       }
+      if (provisionalPoseOwnsSelection()) return;
       const ids = getSelection();
       if (!ids.length) { return; }
       const packId = StateStore.get('currentPackId');
@@ -2497,6 +2516,7 @@ export function createInteractionManager({
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
         return;
       }
+      if (provisionalPoseOwnsSelection()) return;
       const ids = getSelection();
       if (!ids.length) { return; }
       const packId = StateStore.get('currentPackId');
@@ -2546,6 +2566,8 @@ export function createInteractionManager({
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
         return;
       }
+      // A live stroke owns the pose; the vertical move waits for its release.
+      if (draggingId || gizmoDragging) return;
       if (gizmoPending) {
         if (mode === 'drop') {
           resolvePendingPose();
@@ -2620,9 +2642,9 @@ export function createInteractionManager({
     }
 
     /**
-     * Keyboard shortcuts for selected cases.
-     * R = rotate Y 90°, T = tip X 90°, E = roll Z 90°, F = flip
-     * Arrow keys = nudge X/Z 1" (Shift = 6" coarse step)
+     * Keyboard shortcuts for selected cases (viewport focus, bare keys only).
+     * R = rotate Y 90°, T = tip X 90°, E = roll Z 90°, F = flip (no auto-repeat)
+     * Arrow keys = nudge X/Z 1" (Shift = 6" coarse step; auto-repeat allowed)
      * Alt+ArrowUp / Alt+ArrowDown = move to the next valid level up/down
      * Alt+Shift+ArrowDown = drop to the nearest valid surface
      * Enter = place a held (pending) case
@@ -2640,6 +2662,20 @@ export function createInteractionManager({
       // Don't intercept when typing in an input
       const tag = ev.target && ev.target.tagName;
       if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') { return; }
+
+      // Cargo keys are bare keys (Shift only picks the coarse step or Drop).
+      // Cmd/Ctrl combinations, and Alt on letters or Left/Right, belong to the
+      // browser/OS: no action and no preventDefault (Cmd/Ctrl+F is Find, not Flip).
+      const transformKey = /^[rtef]$/i.test(ev.key);
+      const arrowKey = /^Arrow(Left|Right|Up|Down)$/.test(ev.key);
+      if ((transformKey || arrowKey) && (ev.metaKey || ev.ctrlKey)) return;
+      if (ev.altKey && (transformKey || ev.key === 'ArrowLeft' || ev.key === 'ArrowRight')) return;
+      // Turn/Tip/Roll/Flip are discrete: auto-repeat is consumed, not applied.
+      // Arrow nudges keep repeating for continuous positioning.
+      if (transformKey && ev.repeat) {
+        ev.preventDefault();
+        return;
+      }
 
       const halfPI = Math.PI / 2;
       const nudge = ev.shiftKey ? 6 : 1; // inches per press (Shift = coarse step)
@@ -2987,7 +3023,7 @@ export function createInteractionManager({
       CaseScene.setCollision(instanceId, !resolved.ok);
       if (firstHold) {
         UIComponents.showToast(
-          'Case held above the load. Drop, Enter, or Alt+Shift+↓ places it; Esc cancels.',
+          `Case held above the load. Drop, Enter, or ${altKeyHintLabel()}+Shift+↓ places it; Esc cancels.`,
           'info'
         );
       }
@@ -4660,22 +4696,23 @@ export function createEditorScreen({
           setCaseFiltersVisible(false, true);
         });
         window.addEventListener('resize', fitCaseFilterPopup);
-        // Escape closes the open filter popup first (focus back on its toggle),
-        // before the global deselect shortcut or the mobile drawer close.
-        leftEl.addEventListener('keydown', ev => {
-          if (ev.key !== 'Escape' || !showCaseFilters) return;
-          ev.preventDefault();
-          ev.stopPropagation();
-          setCaseFiltersVisible(false, true);
-          caseFilterToggleEl.focus();
+        // The open filter popup joins the shared popup owner registry: wherever
+        // focus is, its Escape comes first (focus back on the toggle), before the
+        // deselect shortcut or the mobile drawer close, and Editor keys wait.
+        UIComponents.registerDropdownSurface?.({
+          isOpen: () => showCaseFilters,
+          close: () => setCaseFiltersVisible(false, true),
+          getAnchor: () => caseFilterToggleEl,
         });
       }
       btnLeft.addEventListener('click', () => togglePanel('left'));
       btnRight.addEventListener('click', () => togglePanel('right'));
       btnLeftClose.addEventListener('click', () => setPanelVisible('left', false));
       btnRightClose.addEventListener('click', () => setPanelVisible('right', false));
+      // A drawer closes only on an Escape nothing earlier consumed (a deselect,
+      // a Qty revert, a popup or modal owner).
       window.addEventListener('keydown', ev => {
-        if (ev.key !== 'Escape' || UIComponents.modalOwnership?.getActiveOwner() ||
+        if (ev.key !== 'Escape' || ev.defaultPrevented || UIComponents.modalOwnership?.getActiveOwner() ||
             StateStore.get('currentScreen') !== 'editor' ||
             !window.matchMedia('(max-width: 899px)').matches) return;
         if (rightEl.classList.contains('open')) {
@@ -7441,10 +7478,11 @@ export function createEditorScreen({
 
         const vertRow = document.createElement('div');
         vertRow.className = 'tp3d-editor-vert-grid';
+        const alt = altKeyHintLabel();
         [
-          { text: 'Up', icon: 'fa-arrow-up', tone: 'up', mode: 'up', hint: 'Move up to the next valid level (Alt+↑)' },
-          { text: 'Down', icon: 'fa-arrow-down', tone: 'down', mode: 'down', hint: 'Move down to the next valid level (Alt+↓)' },
-          { text: 'Drop', icon: 'fa-arrows-down-to-line', tone: 'drop', mode: 'drop', hint: 'Drop to nearest valid surface (Alt+Shift+↓)' },
+          { text: 'Up', icon: 'fa-arrow-up', tone: 'up', mode: 'up', hint: `Move up to the next valid level (${alt}+↑)` },
+          { text: 'Down', icon: 'fa-arrow-down', tone: 'down', mode: 'down', hint: `Move down to the next valid level (${alt}+↓)` },
+          { text: 'Drop', icon: 'fa-arrows-down-to-line', tone: 'drop', mode: 'drop', hint: `Drop to nearest valid surface (${alt}+Shift+↓)` },
         ].forEach(({ text, icon, tone, mode, hint }) => {
           const btn = document.createElement('button');
           btn.className = `btn tp3d-editor-rot-btn tp3d-editor-vert-btn--${tone}`;

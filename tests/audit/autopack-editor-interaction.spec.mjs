@@ -743,6 +743,218 @@ test('UI hotfix F flips the selected case in either letter case and no Focus Sel
   } finally { await browser.close(); }
 });
 
+// Shortcut contract: dispatch a keydown to the focused element and report
+// whether the app claimed it and whether any fixture cargo changed.
+function keySender(page) {
+  return (key, init = {}) => page.evaluate(({ key, init }) => {
+    const before = window.probe.casesJson();
+    const event = new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init });
+    document.activeElement.dispatchEvent(event);
+    return { prevented: event.defaultPrevented, changed: window.probe.casesJson() !== before };
+  }, { key, init });
+}
+
+test('Shortcut contract: viewport cargo keys are bare keys; browser combinations pass through untouched', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await prepareModalityFixture(page);
+    await page.locator('#btn-editor-left').focus();
+    await page.keyboard.press('Shift+Tab');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport');
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-0']));
+    const send = keySender(page);
+    const untouched = { prevented: false, changed: false };
+
+    // Cmd/Ctrl/Alt + R/T/E/F (Find, Reload, hard Reload, ...) and Cmd/Ctrl arrows are the browser's.
+    const combos = [{ metaKey: true }, { ctrlKey: true }, { altKey: true }, { ctrlKey: true, shiftKey: true },
+      { metaKey: true, shiftKey: true }, { altKey: true, shiftKey: true }];
+    for (const key of ['r', 't', 'e', 'f']) {
+      for (const init of combos) {
+        const shifted = init.shiftKey ? key.toUpperCase() : key;
+        assert.deepEqual(await send(shifted, init), untouched, `${JSON.stringify(init)} ${shifted}: never transforms`);
+      }
+    }
+    for (const key of ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown']) {
+      for (const init of [{ metaKey: true }, { ctrlKey: true }, { ctrlKey: true, shiftKey: true }]) {
+        assert.deepEqual(await send(key, init), untouched, `${JSON.stringify(init)} ${key}: never nudges`);
+      }
+    }
+    for (const key of ['ArrowLeft', 'ArrowRight']) {
+      assert.deepEqual(await send(key, { altKey: true }), untouched, `Alt+${key}: Back/Forward, never a nudge`);
+    }
+    // Removed app shortcuts are not intercepted on the viewport or the page.
+    for (const [key, init] of [['o', { metaKey: true }], ['o', { ctrlKey: true }], ['s', { metaKey: true }],
+      ['s', { ctrlKey: true }], ['A', { metaKey: true, shiftKey: true }], ['A', { ctrlKey: true, shiftKey: true }]]) {
+      assert.deepEqual(await send(key, init), untouched, `${JSON.stringify(init)} ${key}: not intercepted`);
+    }
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-0']);
+    assert.equal(await page.evaluate(() => document.querySelectorAll('.modal-overlay').length), 0, 'no Open Load Plan dialog');
+
+    // Bare and Shift+letter keep their transforms; F is Flip, never a camera focus.
+    const pose = () => page.evaluate(() => JSON.parse(window.probe.casesJson()).find(i => i.id === 'cargo-0').transform);
+    const sameAngle = (a, b) => {
+      const d = (((a - b) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+      return d < 1e-6 || 2 * Math.PI - d < 1e-6;
+    };
+    let start = await pose();
+    for (const [key, axis, turn] of [['r', 'y', Math.PI / 2], ['Shift+R', 'y', Math.PI / 2], ['t', 'x', Math.PI / 2],
+      ['Shift+E', 'z', Math.PI / 2], ['f', 'x', Math.PI], ['Shift+F', 'x', Math.PI]]) {
+      await page.keyboard.press(key);
+      const next = await pose();
+      assert.ok(sameAngle(next.rotation[axis], start.rotation[axis] + turn), `${key}: applies its transform`);
+      start = next;
+    }
+    assert.equal(await page.evaluate(() => window.probe.focusCalls), 0, 'no key focuses the camera');
+
+    // Auto-repeat: discrete transforms are consumed without acting; nudges keep repeating.
+    for (const key of ['r', 'T', 'e', 'F']) {
+      assert.deepEqual(await send(key, { repeat: true }), { prevented: true, changed: false }, `${key} auto-repeat`);
+    }
+    start = await pose();
+    await page.keyboard.press('ArrowRight');
+    assert.deepEqual(await send('ArrowRight', { repeat: true }), { prevented: true, changed: true }, 'arrow auto-repeat nudges');
+    assert.deepEqual(await send('ArrowUp', { shiftKey: true, repeat: true }), { prevented: true, changed: true });
+    let next = await pose();
+    assert.ok(Math.abs(next.position.z - (start.position.z + 2)) < 1e-6, 'bare arrows nudge 1" per press');
+    assert.ok(Math.abs(next.position.x - (start.position.x + 6)) < 1e-6, 'Shift+arrows nudge 6" per press');
+    await page.keyboard.press('Shift+ArrowLeft');
+    next = await pose();
+    assert.ok(Math.abs(next.position.z - (start.position.z - 4)) < 1e-6);
+
+    // Alt/Option Up, Down and Shift+Down still route to the validated vertical move
+    // (a staged fixture case is refused by PackLibrary.findManualVerticalPlacement).
+    const verticalRefusals = () => page.evaluate(() =>
+      window.probe.toasts.filter(text => /Staged cases cannot be moved vertically/.test(text)).length);
+    const before = await verticalRefusals();
+    for (const init of [{ altKey: true }, { altKey: true, shiftKey: true }]) {
+      assert.deepEqual(await send('ArrowUp', init), { prevented: true, changed: false });
+      assert.deepEqual(await send('ArrowDown', init), { prevented: true, changed: false });
+    }
+    assert.equal(await verticalRefusals(), before + 4, 'every Alt vertical key reached the validated vertical service');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('Shortcut contract: Load Plans filter chips toggle once per Enter or Space', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(async () => { await window.probe.management(); window.probe.AppShell.navigate('packs'); });
+    if (await page.locator('#packs-filters-toggle').getAttribute('aria-expanded') !== 'true') {
+      await page.locator('#packs-filters-toggle').click();
+    }
+    const active = id => page.locator(`#${id}`).evaluate(el => el.classList.contains('active'));
+    for (const id of ['packs-filter-chip-empty', 'packs-filter-chip-partial', 'packs-filter-chip-full']) {
+      assert.equal(await active(id), false);
+      await page.locator(`#${id}`).focus();
+      await page.keyboard.press('Enter');
+      assert.equal(await active(id), true, `${id}: Enter toggles exactly once`);
+      assert.equal(await active('packs-filter-chip-all'), false);
+      await page.keyboard.press('Space');
+      assert.equal(await active(id), false, `${id}: Space toggles exactly once`);
+      assert.equal(await active('packs-filter-chip-all'), true);
+    }
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('Shortcut contract: one owner per Escape across popup, selection, Qty field, drawer and sidebar', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const before = await page.evaluate(() => window.probe.casesJson());
+    const selection = () => page.evaluate(() => window.probe.selection());
+    const select = () => page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-0']));
+    const toggle = page.locator('#editor-case-filters-toggle');
+
+    // Desktop: the open Case Browser filter popup takes the first Escape wherever focus is,
+    // and holds Editor keys until it closes.
+    await select();
+    await toggle.click();
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'true');
+    await page.locator('#viewport').focus();
+    const send = keySender(page);
+    assert.deepEqual(await send('r'), { prevented: false, changed: false }, 'Editor keys wait while the popup is open');
+    await page.keyboard.press('Escape');
+    assert.equal(await toggle.getAttribute('aria-expanded'), 'false', 'the popup closed first');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'editor-case-filters-toggle', 'focus returns to its toggle');
+    assert.deepEqual(await selection(), ['cargo-0'], 'the same Escape did not also deselect');
+    await page.keyboard.press('Escape');
+    assert.deepEqual(await selection(), [], 'the next Escape clears the selection');
+
+    // A modal still owns Escape ahead of the Editor selection (PR #85 registry).
+    await select();
+    await page.locator('[data-role="editor-new-case"]').click();
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.querySelectorAll('.modal-overlay').length), 0);
+    assert.deepEqual(await selection(), ['cargo-0'], 'closing the modal did not deselect');
+
+    // Mobile: deselect, Qty revert, drawer and sidebar each consume their own Escape.
+    await page.setViewportSize({ width: 390, height: 640 });
+    await page.locator('#btn-editor-left').click();
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'true');
+    await page.keyboard.press('Escape');
+    assert.deepEqual(await selection(), [], 'the first Escape deselects');
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'true', 'and leaves the drawer open');
+    const qty = page.locator('.tp3d-editor-case-qty-input').first();
+    const draft = await qty.inputValue();
+    await qty.fill('7');
+    await page.keyboard.press('Escape');
+    assert.equal(await qty.inputValue(), draft, 'Escape reverts the Qty field');
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'true', 'without also closing the drawer');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'false', 'an unclaimed Escape closes the drawer');
+
+    await select();
+    await page.locator('#btn-sidebar').click();
+    assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'true');
+    await page.keyboard.press('Escape');
+    assert.deepEqual(await selection(), [], 'the selection takes this Escape');
+    assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'true', 'the sidebar stays open');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'false', 'the next Escape closes the sidebar');
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), before, 'Escape layering never changes cargo');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('Shortcut contract F-19: default-open Load Plans/Cases filter owners never outlive navigation into the Editor', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    // Production boot order on a hash-less URL: state starts on Load Plans, the
+    // management screens register their filter surfaces from the default-open
+    // preferences, and no route navigation has happened yet.
+    const boot = await page.evaluate(async () => {
+      const { StateStore, UIComponents } = window.probe;
+      StateStore.set({ currentScreen: 'packs' }, { skipHistory: true });
+      await window.probe.management();
+      const prefs = StateStore.get('preferences');
+      return {
+        prefs: [prefs.packsFiltersVisible, prefs.casesFiltersVisible],
+        activeOwners: UIComponents.modalOwnership.getOwners().filter(owner => owner.isActive()).length,
+      };
+    });
+    assert.deepEqual(boot.prefs, [true, true], 'fixture uses the default-open filter preferences');
+    assert.equal(boot.activeOwners, 2, 'reproduced: both default-open filter surfaces are active owners before any navigation');
+    const send = keySender(page);
+    // On Load Plans the key manager has nothing to own, so an active owner changes nothing.
+    for (const [key, init] of [['c', { metaKey: true }], ['a', { ctrlKey: true }], ['d', { metaKey: true }], ['z', { ctrlKey: true }]]) {
+      assert.equal((await send(key, init)).prevented, false, `Load Plans ${key}: browser behavior`);
+    }
+    // Every path into the Editor sets currentScreen, which closes every filter surface.
+    await page.evaluate(() => window.probe.AppShell.navigate('editor'));
+    assert.equal(await page.evaluate(() =>
+      window.probe.UIComponents.modalOwnership.getOwners().filter(owner => owner.isActive()).length), 0,
+    'no filter owner survives into the Editor');
+    await page.locator('#viewport').focus();
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['cargo-0']));
+    assert.deepEqual(await send('ArrowRight'), { prevented: true, changed: true }, 'Editor keys are live after boot');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 test('UI hotfix primary actions keep the bright brand fill with white text and icons in both themes', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
@@ -922,11 +1134,15 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
       'the filter popup stays open after a keyboard selection');
     assert.equal(await page.evaluate(() => document.activeElement.dataset.filterKey), filterKey,
       'focus stays on the rebuilt chip for the same filter');
-    // First Escape closes only the filter popup; the drawer closes on the next one.
+    // One owner per Escape: the filter popup first, then the selection, then the drawer.
     await page.keyboard.press('Escape');
     assert.equal(await page.locator('#editor-case-filters-toggle').getAttribute('aria-expanded'), 'false');
     assert.equal(await page.evaluate(() => document.activeElement.id), 'editor-case-filters-toggle');
     assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'true');
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), [cargo.id], 'the popup Escape keeps the selection');
+    await page.keyboard.press('Escape');
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'the next Escape clears the selection');
+    assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'true', 'and does not also close the drawer');
     await page.keyboard.press('Escape');
     assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-editor-left');
     assert.equal(await page.locator('#btn-editor-left').getAttribute('aria-expanded'), 'false');

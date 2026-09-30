@@ -223,25 +223,25 @@ Organization (canonical active-workspace identity) and workspace (switch-in-prog
 
 ## 10. Keyboard
 
-- **Responsibility:** Global keyboard-shortcut handling for editor and app-wide actions (save, undo/redo, select/deselect all, delete, duplicate, copy/paste, AutoPack, open-pack dialog, grid/shadow toggles, camera focus, dev overlay).
-- **Current owner/module:** Exclusive to `src/app.js` (`KeyboardManager`, `src/app.js:4542-4802`).
+- **Responsibility:** App-level Editor keyboard shortcuts: undo/redo, select all, Escape deselect, delete, duplicate, copy/paste, grid/shadow toggles. A handler returns `false` when the app does not own the key in the current context, so only owned keys are prevented. Save, Open Load Plan, Deselect (Cmd/Ctrl+Shift+A), AutoPack, camera focus and dev-overlay shortcuts no longer exist. Viewport cargo keys (R/T/E/F, arrows, Alt vertical moves, Enter/Escape for holds) are owned by the Editor `InteractionManager` in `src/screens/editor-screen.js`.
+- **Current owner/module:** `src/ui/keyboard-manager.js` (`createKeyboardManager`), constructed and initialized by `src/app.js`.
 - **Initialization entry point:** `KeyboardManager.init()` (`initKeyboardManager`, installs the single `document` `keydown` listener) inside the unguarded module-initializer block, `src/app.js:9058`.
 - **Public or private:** Private; not on the `TruckPackerApp` facade.
-- **Dependencies:** `StateStore`, `CaseScene`, `SceneManager`, `InteractionManager`, `PackLibrary`, `CaseLibrary`, `AutoPackEngine`, `OperationLifecycle`, `UIComponents`, `AppShell`, `Storage`.
+- **Dependencies:** `StateStore`, `CaseScene`, `SceneManager`, `InteractionManager`, `PackLibrary`, `CaseLibrary`, `OperationLifecycle`, `UIComponents`, `Utils`.
 - **Internal state owned:** `clipboard` (in-memory copy buffer), the `shortcuts` key-to-handler map.
 - **Events consumed:** `keydown` on `document`.
 - **Events emitted:** None custom; toasts via `UIComponents.showToast`.
-- **Storage touched:** `Storage.saveNow()` on the save shortcut.
+- **Storage touched:** None (the save shortcut was removed; autosave owns persistence).
 - **BroadcastChannel usage:** None.
 - **Cross-tab responsibilities:** None.
 - **Auth responsibilities:** None.
-- **Billing responsibilities:** None directly (indirectly gated by whatever `AutoPackEngine.pack()` itself enforces for entitlement, not by `KeyboardManager`).
+- **Billing responsibilities:** None (no keyboard path launches AutoPack).
 - **Workspace responsibilities:** None directly.
-- **UI responsibilities:** Full owner of shortcut-triggered UI actions (toasts, modal open for "Open Pack", grid/shadow/dev-overlay toggles).
+- **UI responsibilities:** Full owner of shortcut-triggered UI actions (toasts, grid/shadow toggles).
 - **Cleanup/teardown behavior:** `clearClipboard()` exists but is not automatically called on any lifecycle transition observed in this file; the `keydown` listener itself has no corresponding removal.
 - **Extraction difficulty:** **Medium.** Self-contained as a module (`KeyboardManager` is already a single IIFE-scoped object), but its handler bodies reach directly into editor internals (`CaseScene`, `InteractionManager`, `SceneManager`) rather than going through an editor-owned API, and it directly checks `OperationLifecycle.isBusy()` per the AutoPack/Unpack/Truck-Change mutation-guard contract in `CLAUDE.md`.
 - **Known coupling:** Tightly coupled to editor internals (`CaseScene`, `InteractionManager`, `SceneManager`) despite `EditorUI` itself being owned by `src/screens/editor-screen.js`.
-- **Known assumptions:** That `mutationBlockedWhileBusy()` correctly gates every mutating shortcut per the operation-lifecycle contract (undo, redo, duplicate, paste are gated; copy, select, deselect, camera focus, and view toggles are intentionally not, per the code comment at `src/app.js:4584-4587`).
+- **Known assumptions:** That `mutationBlockedWhileBusy()` correctly gates every mutating shortcut per the operation-lifecycle contract (undo, redo and paste are gated with a toast; duplicate is not owned while busy; copy, select, deselect and view toggles are intentionally not gated, per the `mutationBlockedWhileBusy()` comment in `src/ui/keyboard-manager.js`).
 - **Unknowns:** Whether a second `initKeyboardManager()` call (hypothetical retry) would install a duplicate `keydown` listener — not established; no explicit guard was found for this specific listener.
 
 ## 11. Navigation
@@ -298,7 +298,7 @@ Organization (canonical active-workspace identity) and workspace (switch-in-prog
 - **Public or private:** Private; neither `SceneManager` nor `CaseScene` is on the `TruckPackerApp` facade.
 - **Dependencies:** `THREE`/`OrbitControls` vendor globals (facade contract Section 8.2), `Utils`, `UIComponents`, `PreferencesManager`, `TrailerGeometry`, `StateStore`, `CaseLibrary`, `PackLibrary`.
 - **Internal state owned by app.js's usage:** None beyond holding the constructed instances; the scene's own internal state (camera position, render loop) is owned by `scene-runtime.js`/`editor-screen.js`.
-- **Events consumed:** None directly by `app.js`; `KeyboardManager` calls into `SceneManager` (grid/shadow toggle, focus, dev overlay) rather than the scene listening for events itself.
+- **Events consumed:** None directly by `app.js`; `KeyboardManager` calls into `SceneManager` (grid/shadow toggles) rather than the scene listening for events itself.
 - **Events emitted:** None directly by `app.js`.
 - **Storage touched:** None directly.
 - **BroadcastChannel usage:** None.

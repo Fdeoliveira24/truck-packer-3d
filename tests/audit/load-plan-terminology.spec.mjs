@@ -374,7 +374,9 @@ test('LOAD-PLAN-TERM-5 cross-screen references to the business object say load p
   assert.match(help, /<strong>Load Plan JSON<\/strong>/, 'the Help modal must document Load Plan JSON');
   assert.match(errorOverlay, /'Load plan not found'/, 'the 404 overlay must say Load plan not found');
   assert.match(errorOverlay, /'Back to Load Plans'/, 'the 404 overlay CTA must say Back to Load Plans');
-  assert.match(keyboard, /title:\s*'Open Load Plan',/, 'the quick-open palette must say Open Load Plan');
+  // The Cmd/Ctrl+O quick-open palette was removed; the Load Plans screen opens Load Plans.
+  assert.doesNotMatch(keyboard, /openPackDialog|'(meta|ctrl)\+o'|title:\s*'Open (Pack|Load Plan)'/,
+    'no keyboard quick-open palette remains, under either name');
   assert.match(editor, /Go to Load Plans/, 'the empty-editor CTA must say Go to Load Plans');
 });
 

@@ -44,7 +44,6 @@ If the working tree has unrelated dirty files, stop and report before editing.
 - true Wheel Wells bridge/spanning;
 - Front Overhang retaining-wall strategy;
 - organized Unpack;
-- manual vertical snap;
 - multi-solution AutoPack;
 - Web Worker / InstancedMesh rewrite;
 - CoG/axle/legal payload scoring;
@@ -56,6 +55,5 @@ If the working tree has unrelated dirty files, stop and report before editing.
 - Wheel Wells constrained leftover pass: after floor/filler/stack, try staged leftovers into remaining legal floor/channel holes with smaller/channel-fitting cartons prioritized.
 - Front Overhang retaining-wall strategy.
 - Organized Unpack.
-- Manual vertical placement.
-- AutoPack Results / Case Browser counts.
-- Persistence Track B must stay separate from solver/editor packets.
+- AutoPack Results live preview: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, lastEdited, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
+- Keep any future persistence/Supabase/NCB migration work strictly separate from solver/editor packets.

@@ -1,6 +1,6 @@
 # Truck Packer 3D — Master TODO V6
 
-**Last updated:** 2026-09-15
+**Last updated:** 2026-09-30
 **Status:** Active operational roadmap.
 
 ---
@@ -27,8 +27,8 @@
 |---|---|
 | Repository branch | `main` |
 | V6 creation baseline | `002c1f187b4a67fae6a1cbfde373c233f83d42f7` (snapshot at V6 creation; historical reference only) |
-| Current verified HEAD (2026-09-15 rebaseline) | `b5626aec0f8bc73769b2888a759069898ba4661f` — PR #38 merged; local `main` matches `origin/main` |
-| Last merge | PR #38 `chore: remove obsolete debugger and ignore local MCP config` |
+| Current verified HEAD (2026-09-30 rebaseline) | `59ed22e513a61001d1bca6a9bbecfc5a46a86246` — PR #88 merged; local `main` matches `origin/main` |
+| Last merge | PR #88 `feat(settings): add keyboard shortcuts resource` |
 | Three.js runtime | `three@0.185.1` via npm/Vite (WebGLRenderer, r185.1) |
 | Vite | `8.2.1` |
 | Node requirement | `^20.19.0` or `>=22.12.0` |
@@ -49,6 +49,7 @@
 | Import/Export/Recovery | Completed import/export and recovery flows | PR #36, `dc5ff0b` |
 | Font Awesome vendor packaging | Tracked required Font Awesome vendor CSS (fixed missing icon packaging) | PR #37, `794679d` |
 | Debugger / MCP config cleanup | Removed obsolete debugger; ignored local MCP configuration | PR #38, `b5626ae` |
+| Editor stabilization & polish sequence | Preview integrity (capture identity, freshness, image fidelity); Pack/camera view isolation; AutoPack Results synchronized with committed Pack; Export Integrity A/B/C; Editor accessibility/responsive safety; Case Browser filters; Editor regression cleanup; Professional Dropdown System; unified Focus/Selection visuals; Shortcut Contract cleanup + Keyboard Shortcuts resource | PR #74–#88, `59ed22e` |
 | Business Identity (Phases 1 + UI) | Case `itemCode`, Load Plan `loadPlanNumber` / `customerReference`, identifier UI, Card Display | PR #14, #16 |
 | Billing/Platform Foundation (Packets 1–3) | org INSERT boundary, server workspace limits, slug integrity, billing fixture harnesses, normalized entitlement | Multiple PRs through V5 |
 | AutoPack Cleanup | Legacy solver removed, strategy differentiation audit, Max Capacity Phase C profile reporting | V5 milestones |

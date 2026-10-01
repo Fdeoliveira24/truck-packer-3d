@@ -1670,7 +1670,14 @@ test('Editor fixture cancels a selected cargo-group pointer stroke without a Pac
       canvas.dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 }));
     });
     await page.mouse.up();
-    await page.waitForTimeout(350);
+    // The cancel tweens the group back over animation frames; wait for the
+    // actual poses (same 1e-6 tolerance) and re-enabled controls, not a delay.
+    await page.waitForFunction(start => {
+      const p = window.probe;
+      const poses = JSON.parse(p.poses());
+      return p.SceneManager.getControls().enabled && poses.every((pose, index) =>
+        pose.every((value, axis) => Math.abs(value - start[index][axis]) < 1e-6));
+    }, startPoses, { timeout: 10000 });
     const after = await page.evaluate(() => ({
       cases: window.probe.casesJson(), poses: window.probe.poses(),
       selection: window.probe.selection(), controlsEnabled: window.probe.SceneManager.getControls().enabled,

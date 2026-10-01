@@ -170,10 +170,19 @@ async function capturePackPreview(previewPackId) {
   }
 }
 const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn createPackPreviewScheduler;')();
+// The scheduler's own debounce timers, observed (not changed) so a test can wait
+// for preview work that is already scheduled before it measures a window.
+const previewTimers = new Set();
 const AutoPackPreviewScheduler = createPreviewScheduler({
   StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => 'fixture-workspace',
   getViewSignature: pack => editorViewSignature(normalizeEditorView(pack.editorView) ||
     SceneManager.getDefaultEditorView(pack.truck)),
+  setTimer: (fn, delay) => {
+    const timer = setTimeout(() => { previewTimers.delete(timer); fn(); }, delay);
+    previewTimers.add(timer);
+    return timer;
+  },
+  clearTimer: timer => { previewTimers.delete(timer); clearTimeout(timer); },
 });
 
 const ExportService = { captureScreenshot() {}, generatePDF() {}, capturePackPreview, clearPackPreview: () => false };
@@ -244,6 +253,8 @@ window.probe = {
   log, faults, packId, otherPackId, StateStore, OperationLifecycle, AppShell, CorePackLibrary,
   toasts: [],
   op: () => OperationLifecycle.currentOperation().kind,
+  // No preview debounce pending and no operation (a capture holds its own).
+  previewQuiet: () => previewTimers.size === 0 && OperationLifecycle.currentOperation().kind === 'idle',
   mark() { log.length = 0; this.toasts.length = 0; },
   results: () => StateStore.get('autoPackResults'),
   resultsJson: () => JSON.stringify(StateStore.get('autoPackResults')),
@@ -328,6 +339,12 @@ async function settle(page) {
   await page.waitForFunction(() => window.probe.op() === 'idle', null, { timeout: 60000 });
   await page.waitForTimeout(700);
   await page.waitForFunction(() => window.probe.op() === 'idle', null, { timeout: 10000 });
+}
+
+// Preview work already scheduled (debounce or capture) has finished, so the
+// next window measures only the writes of its own action.
+async function previewQuiet(page) {
+  await page.waitForFunction(() => window.probe.previewQuiet(), null, { timeout: 10000 });
 }
 
 // AutoPack the fixture with the real engine and wait for published Results.
@@ -614,6 +631,9 @@ test('P0-UNPACK-UX a rejected or failed Unpack keeps the Pack and its Results in
     assert.equal(stale.toasts.some(text => text.includes('to staging.')), false, 'no completion toast');
     await probe(() => window.probe.AppShell.navigate('editor'));
     await page.waitForFunction(() => window.probe.panelCount() === 1);
+    // Re-entering the Editor schedules an automatic preview write; let it land
+    // before the next window, which must see no Pack write from Unpack.
+    await previewQuiet(page);
 
     // 3. The authoritative Pack update throws.
     await probe(() => {
@@ -628,6 +648,7 @@ test('P0-UNPACK-UX a rejected or failed Unpack keeps the Pack and its Results in
     assert.ok(threw.toasts.some(text => text.includes('Unpack failed')), 'failure is reported');
 
     // 4. The authoritative Pack update refuses (no committed Pack).
+    await previewQuiet(page);
     await probe(() => {
       window.probe.mark();
       window.probe.faults.update = () => null;

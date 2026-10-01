@@ -48,6 +48,7 @@
   --accent-readable: #9a5100;
   --focus-ring: var(--accent-primary);
   --warning-readable: #7a4500;
+  --success-readable: #047857;
 
   /* Semantic */
   --success: #10b981;
@@ -127,6 +128,7 @@
   --text-inverse: #1a1a1f;
   --accent-readable: #ffbd66;
   --warning-readable: #ffbd66;
+  --success-readable: #6ee7b7;
   --danger-text: #ff7777;
 
   --border-subtle: #2a2d39;
@@ -4356,6 +4358,61 @@ body.tp3d-shared-modal-lock #app .nav {
   text-align: center;
 }
 
+/* Bottom-left utility stack: one click-through layer over the canvas holding the
+   AutoPack Results restore control and the needs-review status above. The
+   warning keeps its own corner slot; the restore control takes that slot when it
+   is alone and rises one slot above the warning when both are shown. */
+.tp3d-editor-utility-stack {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.tp3d-editor-results-reopen {
+  position: absolute;
+  bottom: 14px;
+  left: 14px;
+  z-index: 12;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border-subtle);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  pointer-events: auto;
+  box-shadow: var(--shadow-sm);
+  transition:
+    background 0.15s,
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.tp3d-editor-results-reopen[hidden] {
+  display: none;
+}
+
+.tp3d-editor-results-reopen:has(~ .tp3d-editor-validation-status:not([hidden])) {
+  bottom: calc(14px + 32px + 8px);
+}
+
+.tp3d-editor-results-reopen:hover {
+  border-color: var(--border-strong);
+  background: var(--bg-hover);
+  box-shadow: var(--shadow-md);
+}
+
+.tp3d-editor-results-reopen:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
 .viewport-toolbar {
   position: absolute;
   top: 12px;
@@ -4608,7 +4665,7 @@ body.tp3d-shared-modal-lock #app .nav {
   cursor: not-allowed;
 }
 
-/* Metrics: primary tile row + secondary chip row, tighter than section gap. */
+/* Metrics: the primary Packed/Staged/Volume tile row, tighter than section gap. */
 .tp3d-autopack-results__metrics {
   display: flex;
   flex-direction: column;
@@ -4631,42 +4688,6 @@ body.tp3d-shared-modal-lock #app .nav {
 
 [data-theme='dark'] .tp3d-autopack-results__stat {
   background: rgb(37, 37, 45, 0.72);
-}
-
-/* Secondary metrics (Floor/Stacked): compact chips, deliberately lighter than
-   the primary Packed/Staged/Volume tiles. */
-.tp3d-autopack-results__stat-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.tp3d-autopack-results__stat-chip {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 5px;
-  padding: 2px 8px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: var(--bg-elevated);
-}
-
-[data-theme='dark'] .tp3d-autopack-results__stat-chip {
-  background: rgb(37, 37, 45, 0.72);
-}
-
-.tp3d-autopack-results__stat-chip-label {
-  color: var(--text-secondary);
-  font-size: 10px;
-  font-weight: var(--font-semibold);
-  letter-spacing: 0.5px;
-  text-transform: uppercase;
-}
-
-.tp3d-autopack-results__stat-chip-value {
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 700;
 }
 
 .tp3d-autopack-results__stat-label {
@@ -4694,9 +4715,19 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-autopack-results__carousel-title-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
+  gap: 6px 8px;
   min-width: 0;
+}
+
+/* Status + Recommended + Applied stay together and wrap below the title
+   instead of truncating it on a narrow panel. */
+.tp3d-autopack-results__badges {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
 }
 
 .tp3d-autopack-results__option-title {
@@ -4712,9 +4743,14 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-autopack-results__current-pill,
+.tp3d-autopack-results__recommended-pill,
 .tp3d-autopack-results__status {
+  display: inline-flex;
   flex: 0 0 auto;
-  padding: 2px 9px;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 8px;
+  border: 1px solid transparent;
   border-radius: 999px;
   font-size: 11px;
   font-weight: var(--font-medium);
@@ -4727,10 +4763,60 @@ body.tp3d-shared-modal-lock #app .nav {
   color: var(--text-secondary);
 }
 
+/* Semantic status: soft tints with readable text, never a bright fill. */
+.tp3d-autopack-results__status--complete {
+  border-color: rgb(16, 185, 129, 0.32);
+  background: rgb(16, 185, 129, 0.12);
+  color: var(--success-readable);
+}
+
+.tp3d-autopack-results__status--partial {
+  border-color: rgb(245, 158, 11, 0.36);
+  background: rgb(245, 158, 11, 0.14);
+  color: var(--warning-readable);
+}
+
+/* Recommended: the run's selected standard plan — a quiet outline only. */
+.tp3d-autopack-results__recommended-pill {
+  border-color: var(--border-strong);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+/* Applied: the one filled pill, on the brand orange/white primary contract,
+   so it never reads like the amber Partial/Outdated tints. */
 .tp3d-autopack-results__current-pill {
-  background: var(--accent-primary-14);
-  color: var(--accent-readable);
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--accent-foreground);
   font-weight: var(--font-semibold);
+}
+
+.tp3d-autopack-results__current-pill i {
+  font-size: 9px;
+}
+
+/* Max Capacity: compact, always-visible warning text that wraps rather than
+   truncates. */
+.tp3d-autopack-results__relaxed-note {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin-top: 6px;
+  padding: 4px 8px;
+  border: 1px solid rgb(245, 158, 11, 0.36);
+  border-radius: var(--radius-sm);
+  background: rgb(245, 158, 11, 0.12);
+  color: var(--warning-readable);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  line-height: var(--leading-tight);
+  white-space: normal;
+}
+
+.tp3d-autopack-results__relaxed-note i {
+  flex: 0 0 auto;
+  font-size: 11px;
 }
 
 /* Muted one-line strategy description (under the option title in the
@@ -6092,6 +6178,49 @@ body.tp3d-shared-modal-lock #app .nav {
   font-size: var(--text-base);
   line-height: var(--leading-tight);
   text-align: right;
+}
+
+/* AutoPack owns the Editor: placement totals wait for the cargo to land. */
+.tp3d-editor-stats-updating {
+  padding: 7px 0;
+  border-top: 1px solid var(--border-subtle);
+}
+
+/* Applied Max Capacity membership from canonical Pack stats (Contract C). */
+.tp3d-editor-relaxed-profile {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  gap: 2px 12px;
+  margin-top: 4px;
+  padding: 7px 9px;
+  border: 1px solid rgb(245, 158, 11, 0.36);
+  border-radius: var(--radius-sm);
+  background: rgb(245, 158, 11, 0.12);
+  color: var(--warning-readable);
+}
+
+.tp3d-editor-relaxed-profile__label {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  line-height: var(--leading-tight);
+}
+
+.tp3d-editor-relaxed-profile__value {
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+  text-align: right;
+}
+
+.tp3d-editor-relaxed-profile__note {
+  grid-column: 1 / -1;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: var(--leading-tight);
 }
 
 .tp3d-editor-row-justify-end {

@@ -159,7 +159,7 @@ window.probe = {
   toasts: [],
   opLog: [],
   StateStore, OperationLifecycle, SceneManager, CaseScene, AppShell, UIComponents, EditorUI, CaseLibrary,
-  InteractionManager, AutoPackEngine, Utils, CategoryService,
+  InteractionManager, AutoPackEngine, Utils, CategoryService, PackLibrary,
   async management() {
     const { createCasesScreen } = await import('/src/screens/cases-screen.js');
     const { createPacksScreen } = await import('/src/screens/packs-screen.js');
@@ -1606,13 +1606,38 @@ test('Editor fixture keeps rebuilt focus, rejects invalid truck input and expose
   }
 });
 
-test('Editor fixture preserves AutoPack Results focus through controls and close', { timeout: 120000 }, async () => {
+test('Editor fixture holds Inspector totals at Updating… while AutoPack loads, then keeps Results focus through controls, close and reopen', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    const totals = () => page.evaluate(() => {
+      const body = document.querySelector('#inspector-body');
+      const summary = body.querySelector('.tp3d-editor-stats-card');
+      const gauge = body.querySelector('[data-role="space-utilization-gauge"]');
+      const clean = el => (el ? el.textContent.replace(/\s+/g, ' ').trim() : null);
+      return { op: window.probe.op(), summary: clean(summary), gaugeState: gauge?.dataset.state ?? null, gauge: clean(gauge) };
+    });
     await page.locator('#btn-autopack').click();
+    await page.waitForFunction(count => document.querySelector('.autopack-loading-message')?.textContent ===
+      'Placing cargo in the truck...' && window.probe.unplaced() < count && window.probe.unplaced() > 0, CARGO_COUNT);
+    const loading = await totals();
+    assert.equal(loading.op, 'autopacking', 'sampled while AutoPack still owns the Editor');
+    assert.equal(loading.summary, 'Load Summary Updating…',
+      'Load Summary stays present but holds the already-committed totals until the cargo lands');
+    assert.equal(loading.gaugeState, 'updating', 'Space Utilization reads Updating while cargo is visibly loading');
+    assert.doesNotMatch(loading.gauge, /%|ft³|previous/, 'no interim, fake progressive or previous utilization');
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
+    const committed = await page.evaluate(() => {
+      const p = window.probe;
+      const stats = p.PackLibrary.computeStats(p.PackLibrary.getById(p.StateStore.get('currentPackId')));
+      return { packed: stats.packedCases, staged: stats.stagedCases, percent: stats.volumePercent.toFixed(1) };
+    });
+    const done = await totals();
+    assert.match(done.summary, new RegExp(`^Load Summary In truck ?${committed.packed} Staged ?${committed.staged} Total weight ?\\d`),
+      'the canonical committed Load Summary returns when the operation ends');
+    assert.equal(done.gaugeState, 'valid');
+    assert.ok(done.gauge.includes(`${committed.percent}% Occupied`), `the canonical utilization returns (${done.gauge})`);
     await page.setViewportSize({ width: 320, height: 568 });
     const resultsFit = await page.locator('[data-role="autopack-results-panel"]').evaluate(panel => {
       const rect = panel.getBoundingClientRect();
@@ -1635,7 +1660,193 @@ test('Editor fixture preserves AutoPack Results focus through controls and close
     await page.locator('[data-focus-key="results-toggle"]').click();
     assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'results-toggle');
     await page.locator('[data-focus-key="results-close"]').click();
-    assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-autopack');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-autopack-results-reopen',
+      'closing hands focus to the restore control that reverses it');
+
+    const corner = () => page.evaluate(() => {
+      const layer = document.getElementById('editor-utility-stack').getBoundingClientRect();
+      const box = el => {
+        if (!el || el.hidden || !el.getClientRects().length) return null;
+        const r = el.getBoundingClientRect();
+        return { left: r.left - layer.left, bottom: layer.bottom - r.bottom, top: layer.bottom - r.top };
+      };
+      const reopen = document.getElementById('btn-autopack-results-reopen');
+      return {
+        reopen: box(reopen),
+        warning: document.getElementById('editor-validation-status').hidden ? null
+          : box(document.getElementById('editor-validation-status-btn')),
+        reopenName: reopen.getAttribute('aria-label'),
+        reopenFocusable: reopen.tabIndex >= 0 && !reopen.hidden,
+      };
+    });
+    const showWarning = visible => page.evaluate(on => {
+      document.getElementById('editor-validation-status').hidden = !on;
+    }, visible);
+    const resultsOnly = await corner();
+    assert.equal(resultsOnly.reopenName, 'Reopen AutoPack Results');
+    assert.equal(resultsOnly.reopenFocusable, true);
+    assert.deepEqual(resultsOnly.reopen && [resultsOnly.reopen.left, resultsOnly.reopen.bottom], [14, 14],
+      'alone, the restore control takes the normal bottom-left slot');
+    assert.equal(resultsOnly.warning, null);
+    await showWarning(true);
+    const both = await corner();
+    assert.deepEqual([both.warning.left, both.warning.bottom], [14, 14], 'the warning keeps its own corner slot');
+    assert.equal(both.reopen.left, 14);
+    assert.equal(both.reopen.bottom, both.warning.top + 8, 'the restore control sits one slot above the warning');
+    await showWarning(false);
+
+    const before = await page.evaluate(() => {
+      const p = window.probe;
+      const pack = p.PackLibrary.getById(p.StateStore.get('currentPackId'));
+      return { cases: p.casesJson(), lastEdited: pack.lastEdited, runId: p.StateStore.get('autoPackResults').runId,
+        ops: p.opLog.length };
+    });
+    await page.locator('#btn-autopack-results-reopen').click();
+    const reopened = await page.evaluate(() => {
+      const p = window.probe;
+      const results = p.StateStore.get('autoPackResults');
+      const panel = document.querySelector('[data-role="autopack-results-panel"]');
+      return {
+        cases: p.casesJson(), lastEdited: p.PackLibrary.getById(p.StateStore.get('currentPackId')).lastEdited,
+        runId: results.runId, closed: results.closed, minimized: results.minimized,
+        newOps: p.opLog.length, expanded: Boolean(panel) && !panel.classList.contains('is-minimized'),
+        focus: document.activeElement.dataset.focusKey, reopenHidden: document.getElementById('btn-autopack-results-reopen').hidden,
+      };
+    });
+    assert.equal(reopened.runId, before.runId, 'the same Results run is reopened');
+    assert.equal(reopened.closed, false);
+    assert.equal(reopened.minimized, false);
+    assert.equal(reopened.expanded, true, 'the reopened panel is expanded');
+    assert.equal(reopened.newOps, before.ops, 'no operation (AutoPack or otherwise) ran');
+    assert.equal(reopened.cases, before.cases, 'no cargo mutation');
+    assert.equal(reopened.lastEdited, before.lastEdited, 'lastEdited is untouched');
+    assert.equal(reopened.focus, 'results-toggle', 'focus moves into the reopened panel');
+    assert.equal(reopened.reopenHidden, true, 'open Results hide the restore control');
+    await showWarning(true);
+    const warningOnly = await corner();
+    assert.equal(warningOnly.reopen, null);
+    assert.deepEqual(warningOnly.warning, both.warning, 'without the restore control the warning layout is unchanged');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Results carousel leads with Max Capacity, opens on Applied, keeps Recommended and Applied independent, and derives the relaxed profile from the Pack', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.locator('#btn-autopack').click();
+    await page.waitForFunction(() => window.probe.op() === 'idle' &&
+      (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
+    const ids = await page.evaluate(() => window.probe.StateStore.get('autoPackResults').options.map(option => option.id));
+    assert.deepEqual([...ids].sort(), ['default', 'floor-first', 'max-capacity'],
+      'fixture precondition: Balanced, Floor first and Max Capacity survive dedupe');
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    const view = () => page.evaluate(() => {
+      const panel = document.querySelector('[data-role="autopack-results-panel"]');
+      const pick = selector => panel.querySelector(selector);
+      const clean = el => (el ? el.textContent.replace(/\s+/g, ' ').trim() : null);
+      const style = el => (el ? { bg: getComputedStyle(el).backgroundColor, color: getComputedStyle(el).color } : null);
+      const status = pick('.tp3d-autopack-results__status');
+      const note = pick('.tp3d-autopack-results__relaxed-note');
+      return {
+        counter: clean(pick('.tp3d-autopack-results__counter')),
+        title: clean(pick('.tp3d-autopack-results__option-title')),
+        description: clean(pick('.tp3d-autopack-results__option-desc')),
+        status: clean(status), statusClass: status?.className ?? '', statusStyle: style(status),
+        recommended: clean(pick('.tp3d-autopack-results__recommended-pill')),
+        applied: clean(pick('.tp3d-autopack-results__current-pill')), appliedStyle: style(pick('.tp3d-autopack-results__current-pill')),
+        note: clean(note), noteFits: note ? note.offsetHeight > 0 && note.scrollWidth <= note.clientWidth + 1 : null,
+        noteTitle: note?.getAttribute('title') ?? null, noteColor: style(note)?.color ?? null,
+        text: clean(panel),
+      };
+    });
+    const step = async focusKey => {
+      await page.locator(`[data-focus-key="${focusKey}"]`).click();
+      return view();
+    };
+
+    const fresh = await view();
+    assert.equal(fresh.counter, 'Option 2 of 3', 'fresh Results open on the Applied option, behind Max Capacity');
+    assert.equal(fresh.title, 'Balanced', 'the Balanced label carries no hard-coded "(recommended)"');
+    assert.equal(fresh.recommended, 'Recommended');
+    assert.equal(fresh.applied, 'Applied');
+    assert.equal(fresh.status, 'Complete');
+    assert.match(fresh.statusClass, /tp3d-autopack-results__status--complete/);
+    assert.deepEqual(fresh.appliedStyle, { bg: 'rgb(255, 159, 28)', color: 'rgb(255, 255, 255)' },
+      'Applied keeps the brand orange/white treatment');
+    assert.equal(fresh.statusStyle.color, 'rgb(4, 120, 87)', 'Complete reads in the success colour');
+    assert.doesNotMatch(fresh.text, /\bFloor\b|\bStacked\b|profile/, 'no Floor/Stacked or profile-count chips');
+
+    const max = await step('results-prev');
+    assert.equal(max.counter, 'Option 1 of 3', 'Max Capacity displays first');
+    assert.equal(max.title, 'Max Capacity');
+    assert.equal(max.description, 'Relaxed handling comparison');
+    assert.equal(max.note, 'Handling rules relaxed. Review before transport.', 'the warning is visible text');
+    assert.equal(max.noteFits, true, 'the warning is not clipped');
+    assert.equal(max.noteTitle, null, 'the warning does not rely on hover');
+    assert.equal(max.recommended, null, 'Max Capacity is never Recommended');
+    assert.equal(max.applied, null);
+    assert.doesNotMatch(max.text, /Max Capacity profile|Floor \d|Stacked/i, 'no Floor/Stacked or profile-count chips');
+    assert.notEqual(max.noteColor, fresh.statusStyle.color, 'the relaxed warning is visually distinct from Complete');
+
+    await step('results-next');
+    const floor = await step('results-next');
+    assert.equal(floor.counter, 'Option 3 of 3');
+    assert.equal(floor.status, 'Partial');
+    assert.match(floor.statusClass, /tp3d-autopack-results__status--partial/);
+    assert.notDeepEqual(floor.statusStyle, fresh.statusStyle, 'Partial and Complete look different');
+    assert.equal(floor.recommended, null);
+    assert.equal(floor.applied, null);
+
+    await page.locator('[data-focus-key="results-apply"]').click();
+    const floorApplied = await view();
+    assert.equal(floorApplied.counter, 'Option 3 of 3', 'an explicit browse stays put after Apply');
+    assert.equal(floorApplied.applied, 'Applied', 'Floor first is now Applied');
+    assert.equal(floorApplied.recommended, null, 'Applied does not make it Recommended');
+    const balanced = await step('results-prev');
+    assert.equal(balanced.recommended, 'Recommended', 'Balanced stays the run Recommended plan');
+    assert.equal(balanced.applied, null, 'without being Applied');
+
+    await step('results-prev');
+    await page.locator('[data-focus-key="results-apply"]').click();
+    const relaxed = () => page.evaluate(() => {
+      const p = window.probe;
+      const row = document.querySelector('#inspector-body [data-role="relaxed-handling-profile"]');
+      const stats = p.PackLibrary.computeStats(p.PackLibrary.getById(p.StateStore.get('currentPackId')));
+      return { text: row ? row.textContent.replace(/\s+/g, ' ').trim() : null, count: stats.maxCapacityProfileCount };
+    });
+    const afterMax = await relaxed();
+    assert.ok(afterMax.count > 0, 'applying Max Capacity marks the packed Cases');
+    assert.equal(afterMax.text,
+      `Relaxed handling profile ${afterMax.count} ${afterMax.count === 1 ? 'Case' : 'Cases'} Still part of the applied Max Capacity plan.`,
+      'the Inspector shows the canonical membership count');
+
+    await page.evaluate(() => {
+      window.probe.StateStore.set({ autoPackResults: null }, { skipHistory: true });
+      window.probe.EditorUI.render();
+    });
+    assert.equal(await page.locator('[data-role="autopack-results-panel"]').count(), 0, 'Results are gone (as after a reload)');
+    assert.deepEqual(await relaxed(), afterMax, 'the indication derives from the Pack, not from Results');
+
+    await page.evaluate(() => window.probe.StateStore.undo());
+    const undone = await relaxed();
+    assert.equal(undone.count, 0);
+    assert.equal(undone.text, null, 'the indication disappears when no packed Case carries the profile');
+
+    await page.evaluate(() => {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      window.probe.StateStore.redo();
+    });
+    const dark = await relaxed();
+    assert.equal(dark.text, afterMax.text);
+    const darkColors = await page.evaluate(() => {
+      const row = document.querySelector('#inspector-body [data-role="relaxed-handling-profile"]');
+      return { row: getComputedStyle(row).color, success: getComputedStyle(document.documentElement).getPropertyValue('--success-readable').trim() };
+    });
+    assert.equal(darkColors.row, 'rgb(255, 189, 102)', 'dark theme uses the readable warning token');
+    assert.equal(darkColors.success, '#6ee7b7', 'dark theme switches the success text token');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

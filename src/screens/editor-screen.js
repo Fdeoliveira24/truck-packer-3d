@@ -189,6 +189,19 @@ export function getAppliedAutoPackOption(pack, results, getCaseById) {
   return null;
 }
 
+// Display order only: Max Capacity leads the carousel as the relaxed handling
+// comparison, then the standard plans in their solver order. The stored
+// options keep the solver order, which the engine dedupe relies on so an
+// identical standard plan always outranks Max Capacity. Ranking, selectedId
+// and Applied matching never read this order.
+export function orderAutoPackResultOptions(options) {
+  const list = Array.isArray(options) ? options : [];
+  return [
+    ...list.filter(option => option && option.id === 'max-capacity'),
+    ...list.filter(option => !option || option.id !== 'max-capacity'),
+  ];
+}
+
 function withoutPackedProfile(inst) {
   const next = { ...inst };
   delete next.packedProfile;
@@ -3952,6 +3965,7 @@ export function createEditorScreen({
     const validationStatusBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('editor-validation-status-btn'));
     const validationPopoverEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-validation-popover'));
     const handlingRulesValidateBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('editor-handling-rules-validate-btn'));
+    const resultsReopenBtn = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-autopack-results-reopen'));
     let packNotesButton = null;
     let editorFieldId = 0;
 
@@ -4318,18 +4332,42 @@ export function createEditorScreen({
       return desc;
     }
 
-    function makeAutoPackResultChip(label, value) {
-      const chip = document.createElement('span');
-      chip.className = 'tp3d-autopack-results__stat-chip';
-      const labelEl = document.createElement('span');
-      labelEl.className = 'tp3d-autopack-results__stat-chip-label';
-      labelEl.textContent = label;
-      const valueEl = document.createElement('strong');
-      valueEl.className = 'tp3d-autopack-results__stat-chip-value';
-      valueEl.textContent = value;
-      chip.appendChild(labelEl);
-      chip.appendChild(valueEl);
-      return chip;
+    function makeAutoPackResultPill(className, text, iconClass = '') {
+      const pill = document.createElement('span');
+      pill.className = className;
+      if (iconClass) {
+        const icon = document.createElement('i');
+        icon.className = iconClass;
+        icon.setAttribute('aria-hidden', 'true');
+        pill.appendChild(icon);
+      }
+      pill.appendChild(document.createTextNode(text));
+      return pill;
+    }
+
+    // Closed Results stay in memory; the bottom-left restore control reopens
+    // that same run. It exists only for the current Pack's closed Results and
+    // carries their runId so a newer run can never be reopened by a stale click.
+    function syncAutoPackResultsReopen(pack, results, options) {
+      if (!resultsReopenBtn) return;
+      const reopenable = Boolean(pack && results && results.closed === true &&
+        results.packId === pack.id && options.length);
+      resultsReopenBtn.hidden = !reopenable;
+      if (reopenable) resultsReopenBtn.dataset.runId = String(results.runId);
+      else delete resultsReopenBtn.dataset.runId;
+    }
+
+    // Presentation only: reopens and expands the existing Results through the
+    // runId-guarded patch path. Never reruns AutoPack and never touches the Pack.
+    function reopenAutoPackResults() {
+      const runId = resultsReopenBtn ? resultsReopenBtn.dataset.runId : '';
+      const results = getAutoPackResultsState();
+      if (!runId || !results || results.runId !== runId ||
+          results.packId !== StateStore.get('currentPackId')) return;
+      patchAutoPackResultsState({ closed: false, minimized: false }, runId);
+      const panel = getAutoPackResultsHost()?.querySelector('[data-role="autopack-results-panel"]');
+      const toggle = panel?.querySelector('[data-focus-key="results-toggle"]');
+      if (toggle instanceof HTMLElement) toggle.focus({ preventScroll: true });
     }
 
     function clampAutoPackResultsPosition(host, panel, position) {
@@ -4393,9 +4431,12 @@ export function createEditorScreen({
       removeAutoPackResultsPanel();
       const host = getAutoPackResultsHost();
       const results = getAutoPackResultsState();
-      const options = Array.isArray(results && results.options) ? results.options : [];
+      const options = orderAutoPackResultOptions(results && results.options);
+      syncAutoPackResultsReopen(pack, results, options);
       if (!host || !pack || !results || results.closed || results.packId !== pack.id || !options.length) {
-        restoreEditorFocus(previousFocus, null, btnAutopack);
+        // Closing hands focus to the restore control that reverses it.
+        const closedFocus = resultsReopenBtn && !resultsReopenBtn.hidden ? resultsReopenBtn : btnAutopack;
+        restoreEditorFocus(previousFocus, null, closedFocus);
         return;
       }
 
@@ -4406,10 +4447,14 @@ export function createEditorScreen({
       // payload): collapse the panel to a small draggable chip separate from close.
       const minimized = results.minimized === true;
       // Carousel view index is UI-only view state (never persisted, never part of
-      // the result payload): default fresh results to Option 1 and clamp into range
-      // so a stale index from a larger prior result set can never point out of bounds.
+      // the result payload). Until the user browses, the view follows the Applied
+      // option (else the run's Recommended plan); once Prev/Next writes an explicit
+      // index it is kept. Always clamped so a stale index can never point out of bounds.
       const selectedIndex = Math.max(0, options.findIndex(option => option === currentOption));
-      const requestedIndex = Number.isFinite(Number(results.viewIndex)) ? Number(results.viewIndex) : 0;
+      const recommendedIndex = options.findIndex(option =>
+        option.id === results.selectedId && option.id !== 'max-capacity');
+      const defaultIndex = currentOption ? selectedIndex : Math.max(0, recommendedIndex);
+      const requestedIndex = Number.isInteger(results.viewIndex) ? results.viewIndex : defaultIndex;
       const viewIndex = hasAlternates
         ? Math.min(Math.max(0, requestedIndex), options.length - 1)
         : selectedIndex;
@@ -4556,23 +4601,6 @@ export function createEditorScreen({
       stats.appendChild(makeAutoPackResultStat('Staged', formatAutoPackResultNumber(viewedOption.stagedCount)));
       stats.appendChild(makeAutoPackResultStat('Volume', formatAutoPackResultVolume(viewedOption.volumePercent)));
       metrics.appendChild(stats);
-      // Floor/Stacked stay visible but secondary: compact chips, not full tiles.
-      const statChips = document.createElement('div');
-      statChips.className = 'tp3d-autopack-results__stat-chips';
-      statChips.appendChild(makeAutoPackResultChip('Floor', formatAutoPackResultNumber(viewedOption.floorCount)));
-      statChips.appendChild(makeAutoPackResultChip('Stacked', formatAutoPackResultNumber(viewedOption.stackedCount)));
-      // Max Capacity only: every placement in this candidate result used the
-      // relaxed handling profile uniformly, so packedCount already IS the
-      // profile-membership count for this candidate — no separate field needed.
-      if (viewedOption.id === 'max-capacity' && Number(viewedOption.packedCount) > 0) {
-        const maxCapacityChip = makeAutoPackResultChip('Max Capacity profile', formatAutoPackResultNumber(viewedOption.packedCount));
-        const maxCapacityChipHelp = 'This result used the more permissive Max Capacity handling profile. ' +
-          'Review these placements before treating the plan as transport-ready.';
-        maxCapacityChip.title = maxCapacityChipHelp;
-        maxCapacityChip.setAttribute('aria-label', `${maxCapacityChip.textContent}. ${maxCapacityChipHelp}`);
-        statChips.appendChild(maxCapacityChip);
-      }
-      metrics.appendChild(statChips);
       body.appendChild(metrics);
 
       // Single-option mode has no option title row; the strategy description
@@ -4583,9 +4611,14 @@ export function createEditorScreen({
       }
 
       // Multiple results: name the viewed option, show its status, mark the
-      // applied one, and keep Apply on the existing validated apply path.
+      // run's Recommended plan and the Applied one (independent states), and
+      // keep Apply on the existing validated apply path.
       if (hasAlternates) {
         const isViewedCurrent = viewedOption === currentOption;
+        // Recommended is the standard plan the normal solver portfolio selected
+        // for this run (results.selectedId). Max Capacity is never ranked, so it
+        // can never carry it.
+        const isViewedRecommended = viewedOption.id === results.selectedId && viewedOption.id !== 'max-capacity';
         const optionRow = document.createElement('div');
         optionRow.className = 'tp3d-autopack-results__carousel-body';
 
@@ -4595,6 +4628,8 @@ export function createEditorScreen({
         label.className = 'tp3d-autopack-results__option-title';
         label.textContent = viewedOption.label || viewedOption.strategy || 'Load option';
         labelRow.appendChild(label);
+        const badges = document.createElement('span');
+        badges.className = 'tp3d-autopack-results__badges';
         const status = document.createElement('span');
         status.className = `tp3d-autopack-results__status tp3d-autopack-results__status--${viewedOption.status === 'complete' ? 'complete' : 'partial'}`;
         status.textContent = viewedOption.statusLabel || (viewedOption.status === 'complete' ? 'Complete' : 'Partial');
@@ -4605,16 +4640,26 @@ export function createEditorScreen({
             status.setAttribute('aria-label', `Partial. ${partialReason}`);
           }
         }
-        labelRow.appendChild(status);
-        if (isViewedCurrent) {
-          const applied = document.createElement('span');
-          applied.className = 'tp3d-autopack-results__current-pill';
-          applied.textContent = 'Applied';
-          labelRow.appendChild(applied);
+        badges.appendChild(status);
+        if (isViewedRecommended) {
+          badges.appendChild(makeAutoPackResultPill('tp3d-autopack-results__recommended-pill', 'Recommended'));
         }
+        if (isViewedCurrent) {
+          badges.appendChild(makeAutoPackResultPill('tp3d-autopack-results__current-pill', 'Applied', 'fa-solid fa-check'));
+        }
+        labelRow.appendChild(badges);
         optionRow.appendChild(labelRow);
         const optionDescription = makeAutoPackResultDescription(viewedOption);
         if (optionDescription) optionRow.appendChild(optionDescription);
+        // Max Capacity relaxes handling preferences: say so in visible text,
+        // never only in a tooltip or accessible label.
+        if (viewedOption.id === 'max-capacity') {
+          optionRow.appendChild(makeAutoPackResultPill(
+            'tp3d-autopack-results__relaxed-note',
+            'Handling rules relaxed. Review before transport.',
+            'fa-solid fa-triangle-exclamation'
+          ));
+        }
 
         const actions = document.createElement('div');
         actions.className = 'tp3d-autopack-results__carousel-actions';
@@ -4732,21 +4777,33 @@ export function createEditorScreen({
       // authoritative operation lifecycle, so a working state appears the instant any
       // operation (AutoPack/Unpack/Truck Change/preview capture) begins or ends.
       if (OperationLifecycle && typeof OperationLifecycle.subscribe === 'function') {
-        OperationLifecycle.subscribe(() => {
+        let autoPackLoadingShown = false;
+        OperationLifecycle.subscribe(operation => {
+          const autoPackLoading = Boolean(operation && operation.kind === 'autopacking');
+          const autoPackLoadingChanged = autoPackLoading !== autoPackLoadingShown;
+          autoPackLoadingShown = autoPackLoading;
+          const fullRenderDue = selectionRenderPending && !OperationLifecycle.isBusy();
           if (StateStore.get('currentScreen') === 'editor') {
             refreshActionButtons();
-            // Refresh Space Utilization only where the Truck Inspector already
-            // renders it; a lifecycle change must never add it to a selection state.
-            if (inspectorEl?.querySelector('[data-role="space-utilization-gauge"]')) {
-              renderSpaceUtilizationSection(PackLibrary.getById(StateStore.get('currentPackId')));
+            const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+            if (autoPackLoadingChanged && pack && !fullRenderDue) {
+              // AutoPack starting or finishing flips Load Summary and Space
+              // Utilization between "Updating…" and the committed Pack values.
+              renderInspector(pack);
+            } else if (inspectorEl?.querySelector('[data-role="space-utilization-gauge"]')) {
+              // Refresh Space Utilization only where the Truck Inspector already
+              // renders it; a lifecycle change must never add it to a selection state.
+              renderSpaceUtilizationSection(pack);
             }
           }
-          if (selectionRenderPending && !OperationLifecycle.isBusy()) render();
+          if (fullRenderDue) render();
           if (pendingViewSave && !OperationLifecycle.isBusy()) {
             queueMicrotask(() => persistSettledView());
           }
         });
       }
+
+      resultsReopenBtn?.addEventListener('click', reopenAutoPackResults);
 
       btnAutopack.addEventListener('click', async () => {
         // Cross-operation guard: the engine also rejects, but this avoids even
@@ -5968,12 +6025,22 @@ export function createEditorScreen({
       restoreEditorFocus(previousFocus, inspectorEl, btnRight);
     }
 
+    // AutoPack commits its Pack before the cargo animation finishes. While it
+    // owns the Editor, placement-derived Inspector totals read "Updating…" and
+    // the committed values return when the operation ends (no interim values).
+    function isAutoPackLoadingCargo() {
+      return Boolean(OperationLifecycle && typeof OperationLifecycle.currentOperation === 'function' &&
+        OperationLifecycle.currentOperation().kind === 'autopacking');
+    }
+
     function renderSpaceUtilizationSection(pack) {
       const existing = inspectorEl.querySelector('[data-role="space-utilization-gauge"]');
       if (existing) existing.remove();
       if (!pack) return;
       const prefs = PreferencesManager.get();
-      const result = buildSpaceUtilizationResult(pack, PackLibrary);
+      const result = isAutoPackLoadingCargo()
+        ? { state: 'updating' }
+        : buildSpaceUtilizationResult(pack, PackLibrary);
       const gauge = createSpaceUtilizationGauge({
         result,
         detail: 'standard',
@@ -6980,12 +7047,28 @@ export function createEditorScreen({
       const statsEl = document.createElement('div');
       statsEl.className = 'card';
       statsEl.classList.add('tp3d-editor-stats-card');
-      const utilization = buildSpaceUtilizationResult(pack, PackLibrary);
-      statsEl.innerHTML = `
+      const autoPackLoading = isAutoPackLoadingCargo();
+      const utilization = autoPackLoading ? null : buildSpaceUtilizationResult(pack, PackLibrary);
+      // Contract C: packed Cases that still carry the applied Max Capacity
+      // profile, from canonical Pack stats. Membership only — not violations,
+      // and not a claim that each Case needed a relaxed rule.
+      const relaxedProfileCount = Number(stats.maxCapacityProfileCount) || 0;
+      const relaxedProfileRow = relaxedProfileCount > 0
+        ? `<div class="tp3d-editor-relaxed-profile" data-role="relaxed-handling-profile">
+                <span class="tp3d-editor-relaxed-profile__label"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>Relaxed handling profile</span>
+                <b class="tp3d-editor-relaxed-profile__value">${relaxedProfileCount} ${relaxedProfileCount === 1 ? 'Case' : 'Cases'}</b>
+                <span class="tp3d-editor-relaxed-profile__note">Still part of the applied Max Capacity plan.</span>
+              </div>`
+        : '';
+      statsEl.innerHTML = autoPackLoading ? `
+              <div class="tp3d-editor-fw-semibold">Load Summary</div>
+              <div class="muted tp3d-editor-fs-sm tp3d-editor-stats-updating" data-role="load-summary-updating">Updating…</div>
+            ` : `
               <div class="tp3d-editor-fw-semibold">Load Summary</div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">In truck</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${utilization.loadedCount || 0}</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Staged</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${utilization.stagedCount || 0}</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Total weight</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
+              ${relaxedProfileRow}
             `;
 
       card.appendChild(shapeRow);

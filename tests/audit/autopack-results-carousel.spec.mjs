@@ -152,13 +152,13 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
   assert.equal(apply.includes('render();'), false, 'the Pack update already drives Editor render');
 });
 
-test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results start at Option 1', async () => {
+test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results open on the Applied option', async () => {
   const { render } = await renderBlock();
 
   assert.match(render, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option === currentOption\)\);/,
     'the applied option index must remain available independently from the visual page');
-  assert.match(render, /Number\.isFinite\(Number\(results\.viewIndex\)\) \? Number\(results\.viewIndex\) : 0/,
-    'a missing/invalid view index must fall back to index 0 so fresh results open at Option 1');
+  assert.match(render, /const requestedIndex = Number\.isInteger\(results\.viewIndex\) \? results\.viewIndex : defaultIndex;/,
+    'only an explicit browsed index overrides the Applied-first default view');
   assert.match(render, /Math\.min\(Math\.max\(0, requestedIndex\), options\.length - 1\)/,
     'the view index must be clamped into range every render');
 
@@ -169,8 +169,8 @@ test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results start at O
   assert.match(engineSrc, /minimized: true/, 'result payload must set minimized:true so the panel starts collapsed on every new run');
 });
 
-test('AUTOPACK-CAROUSEL fresh view starts on Balanced when a non-first option is selected', async () => {
-  const { render } = await renderBlock();
+test('AUTOPACK-CAROUSEL fresh view opens on Applied, keeps an explicit browse, and Max Capacity leads the display', async () => {
+  const [{ render }, EditorScreen] = await Promise.all([renderBlock(), import(editorScreenPath.href)]);
   const viewBlock = sliceFn(
     render,
     'const selectedIndex = Math.max(0, options.findIndex(option => option === currentOption));',
@@ -183,24 +183,40 @@ test('AUTOPACK-CAROUSEL fresh view starts on Balanced when a non-first option is
     'currentOption',
     `${viewBlock}\nreturn { selectedIndex, requestedIndex, viewIndex, viewedOption };`
   );
-  const options = [
-    { id: 'default', label: 'Balanced (recommended)' },
+  const raw = [
+    { id: 'default', label: 'Balanced' },
     { id: 'compact-fill', label: 'Compact fill' },
     { id: 'stack-priority', label: 'Stack priority' },
+    { id: 'max-capacity', label: 'Max Capacity' },
   ];
-  const view = resolveView(
-    { selectedId: 'stack-priority', options },
-    options,
-    true,
-    options[2]
-  );
+  const options = EditorScreen.orderAutoPackResultOptions(raw);
+  assert.deepEqual(options.map(option => option.id), ['max-capacity', 'default', 'compact-fill', 'stack-priority'],
+    'Max Capacity is displayed first, standard plans keep their solver order');
+  assert.deepEqual(raw.map(option => option.id), ['default', 'compact-fill', 'stack-priority', 'max-capacity'],
+    'display ordering never reorders the stored Results options');
+  const balanced = options[1];
+  const compact = options[2];
+  const view = (results, currentOption) => resolveView({ selectedId: 'default', ...results }, options, true, currentOption);
 
-  assert.equal(view.selectedIndex, 2, 'the internally selected/applied option remains non-first');
-  assert.equal(view.viewIndex, 0, 'a fresh missing viewIndex starts the visual carousel at Option 1');
-  assert.equal(view.viewedOption.id, 'default', 'Option 1 is Balanced while the live applied option remains unchanged');
+  assert.equal(view({}, balanced).viewedOption, balanced,
+    'fresh Results open on the Applied option, not on Max Capacity at Option 1');
+  assert.equal(view({}, balanced).viewIndex, 1);
+  assert.equal(view({}, compact).viewedOption, compact,
+    'when another standard plan is Applied, the fresh view follows Applied rather than Recommended');
+  assert.equal(view({ viewIndex: 0 }, balanced).viewedOption.id, 'max-capacity',
+    'an explicit browse to Max Capacity is kept even though Balanced is Applied');
+  assert.equal(view({ viewIndex: 3 }, compact).viewIndex, 3,
+    'an explicit browse is not forced back to Applied when Applied changes');
+  assert.equal(view({}, null).viewedOption, balanced,
+    'with nothing Applied (Outdated), the fresh view falls back to the Recommended plan');
+  assert.equal(view({ selectedId: 'missing' }, null).viewIndex, 0,
+    'with neither Applied nor Recommended available the view starts at Option 1');
+  assert.equal(view({ viewIndex: 99 }, balanced).viewIndex, options.length - 1, 'explicit indices are clamped');
+  assert.equal(view({ selectedId: 'max-capacity' }, null).viewIndex, 0,
+    'Max Capacity is never a Recommended fallback target');
 });
 
-test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, neutral status badge', async () => {
+test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, semantic status badges', async () => {
   const css = await fs.readFile(stylesPath, 'utf8');
 
   assert.match(css, /\.tp3d-autopack-results__carousel-arrow \{[^}]*border: 1px solid var\(--border-subtle\);/,
@@ -211,8 +227,24 @@ test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, neutra
     'metric labels must be uppercase like the reference');
   assert.match(css, /\.tp3d-autopack-results__stat-label \{[^}]*font-size: 10px;/,
     'metric labels must be small');
-  assert.match(css, /\.tp3d-autopack-results__status \{\s*background: var\(--bg-hover\);/,
-    'the status badge must be a neutral pill');
+  assert.match(css, /\.tp3d-autopack-results__status--complete \{[^}]*background: rgb\(16, 185, 129, 0\.12\);[^}]*color: var\(--success-readable\);/,
+    'Complete uses a soft success tint with readable success text');
+  assert.match(css, /\.tp3d-autopack-results__status--partial \{[^}]*background: rgb\(245, 158, 11, 0\.14\);[^}]*color: var\(--warning-readable\);/,
+    'Partial uses a soft amber tint with readable warning text');
+  assert.match(css, /\.tp3d-autopack-results__current-pill \{[^}]*background: var\(--accent-primary\);[^}]*color: var\(--accent-foreground\);/,
+    'Applied keeps the brand orange fill on the white/orange primary contract');
+  assert.match(css, /\.tp3d-autopack-results__recommended-pill \{[^}]*border-color: var\(--border-strong\);[^}]*background: transparent;/,
+    'Recommended is a restrained neutral outline');
+  assert.match(css, /\.tp3d-autopack-results__relaxed-note \{[^}]*color: var\(--warning-readable\);[^}]*white-space: normal;/,
+    'the Max Capacity warning uses the warning tokens and wraps instead of truncating');
+  assert.match(css, /:root \{[\s\S]*?--success-readable: #047857;/, 'light theme defines readable success text');
+  assert.match(css, /\[data-theme='dark'\] \{[\s\S]*?--success-readable: #6ee7b7;/, 'dark theme defines readable success text');
+  const resultsCss = sliceFn(css, '.tp3d-autopack-results {', '/* Muted one-line strategy description');
+  assert.doesNotMatch(resultsCss, /gradient\(|--info|text-shadow/, 'no gradients, blue status palette or glows');
+
+  const { render } = await renderBlock();
+  assert.match(render, /tp3d-autopack-results__status--\$\{viewedOption\.status === 'complete' \? 'complete' : 'partial'\}/,
+    'Complete and Partial carry distinct semantic classes');
 });
 
 // Portfolio dedupe: two solutions that place the same physical cargo — just with
@@ -780,7 +812,7 @@ test('AUTOPACK-MAX-A selected normal option owns its dedupe group without changi
 
   const balanced = makeSolution(makeOption(
     'default',
-    'Balanced (recommended)',
+    'Balanced',
     'layout-balanced',
     'strict-balanced'
   ));
@@ -1000,16 +1032,63 @@ test('AUTOPACK-MAX-A raw Results order puts Max Capacity fifth and keeps Wheel W
     'Floor first must continue to disable the stack phase');
 });
 
+test('AUTOPACK-RESULTS Max Capacity displays first while ranking, selection and the raw order stay standard-only', async () => {
+  const [Solution, EditorScreen] = await Promise.all([import(solutionPath.href), import(editorScreenPath.href)]);
+  const fixtures = [
+    { truck: { length: 240, width: 96, height: 96, shapeMode: 'rect' },
+      display: ['max-capacity', 'default', 'compact-fill', 'floor-first', 'stack-priority'] },
+    { truck: { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' },
+      display: ['max-capacity', 'default', 'compact-fill', 'floor-first', 'stack-priority', 'constrained-first'] },
+  ];
+  for (const { truck, display } of fixtures) {
+    const { result } = runAdaptiveAudit(Solution, truck, {
+      packedCounts: { default: 2, 'compact-fill': 2, 'floor-first': 1, 'stack-priority': 3, 'max-capacity': 99 },
+    });
+    const rawIds = result.solutions.map(solution => solution.id);
+    assert.deepEqual(EditorScreen.orderAutoPackResultOptions(result.solutions).map(solution => solution.id), display,
+      `${truck.shapeMode}: Max Capacity leads the carousel, then the standard plans in solver order`);
+    assert.deepEqual(result.solutions.map(solution => solution.id), rawIds, 'display ordering does not mutate the solution list');
+    assert.equal(rawIds.indexOf('max-capacity'), 4, 'the raw solver order (dedupe input) still lists Max Capacity after the standard portfolio');
+    assert.equal(result.selected, 'stack-priority', 'Max Capacity packing far more is still never auto-selected');
+    assert.equal(result.selectedSolution.id, 'stack-priority', 'AutoPack still commits the best standard plan');
+  }
+  assert.deepEqual(EditorScreen.orderAutoPackResultOptions([{ id: 'default' }, { id: 'compact-fill' }]).map(option => option.id),
+    ['default', 'compact-fill'], 'without Max Capacity the solver order is unchanged');
+  assert.deepEqual(EditorScreen.orderAutoPackResultOptions(undefined), []);
+});
+
+test('AUTOPACK-RESULTS Recommended follows the run selectedId, stays independent of Applied, and Max Capacity warns in visible text', async () => {
+  const { render } = await renderBlock();
+  const optionBlock = sliceFn(render, 'const isViewedCurrent = viewedOption === currentOption;', 'panel.appendChild(body);');
+  assert.match(optionBlock,
+    /const isViewedRecommended = viewedOption\.id === results\.selectedId && viewedOption\.id !== 'max-capacity';/,
+    'Recommended is the run winner (selectedId) and can never be Max Capacity');
+  assert.match(optionBlock,
+    /if \(isViewedRecommended\) \{\s*badges\.appendChild\(makeAutoPackResultPill\('tp3d-autopack-results__recommended-pill', 'Recommended'\)\);\s*\}/,
+    'Recommended renders as its own text badge');
+  assert.match(optionBlock,
+    /if \(isViewedCurrent\) \{\s*badges\.appendChild\(makeAutoPackResultPill\('tp3d-autopack-results__current-pill', 'Applied', 'fa-solid fa-check'\)\);\s*\}/,
+    'Applied renders independently, so Recommended and Applied may sit on different plans or together');
+  const relaxed = sliceFn(optionBlock, "if (viewedOption.id === 'max-capacity') {", 'const actions = document.createElement');
+  assert.match(relaxed, /'Handling rules relaxed\. Review before transport\.'/, 'the relaxed-handling warning is visible text');
+  assert.doesNotMatch(relaxed, /\.title =|aria-label/, 'the warning meaning does not live only in a tooltip or label');
+  assert.doesNotMatch(render, /Max Capacity profile|maxCapacityChip/, 'the redundant Max Capacity profile count chip is gone');
+  assert.doesNotMatch(render, /normal transport recommendation/i);
+});
+
 test('AUTOPACK-MAX-A preset metadata is exact and flows through the existing Results description path', async () => {
   const Solution = await import(solutionPath.href);
   const maxCapacity = Solution.getPackingStrategy('max-capacity');
 
   assert.ok(maxCapacity, 'Max Capacity must be a registered packing strategy');
   assert.equal(maxCapacity.label, 'Max Capacity');
-  assert.equal(
-    maxCapacity.description,
-    'Physical-fit estimate; handling rules may be relaxed. Not a transport recommendation.'
-  );
+  assert.equal(maxCapacity.description, 'Relaxed handling comparison');
+  assert.equal(Solution.getPackingStrategy('default').label, 'Balanced',
+    'Recommended is a per-run badge, never hard-coded into the Balanced label');
+  for (const preset of Solution.PACKING_STRATEGIES) {
+    assert.doesNotMatch(`${preset.label} ${preset.description}`, /recommend/i,
+      `${preset.id} copy makes no recommendation or transport claim`);
+  }
   assert.deepEqual(maxCapacity.options, { maxCapacityMode: true },
     'the preset must activate only the solver-local Max Capacity mode');
 
@@ -1104,7 +1183,7 @@ test('AUTOPACK-CAROUSEL option descriptions come from the strategy presets and r
     'the compact description must be scoped to the single-option mode');
 });
 
-test('AUTOPACK-CAROUSEL Floor/Stacked stats derive from phaseStats and the Partial pill explains itself', async () => {
+test('AUTOPACK-CAROUSEL Floor/Stacked stay solver diagnostics off the Results card and the Partial pill explains itself', async () => {
   const engineSrc = await fs.readFile(enginePath, 'utf8');
   const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
   assert.match(optionBlock,
@@ -1122,10 +1201,8 @@ test('AUTOPACK-CAROUSEL Floor/Stacked stats derive from phaseStats and the Parti
     'Packed must stay a primary metric tile');
   assert.match(render, /makeAutoPackResultStat\('Staged', formatAutoPackResultNumber\(viewedOption\.stagedCount\)\)/,
     'Staged must stay a primary metric tile');
-  assert.match(render, /makeAutoPackResultChip\('Floor', formatAutoPackResultNumber\(viewedOption\.floorCount\)\)/,
-    'Floor must render as a secondary compact chip');
-  assert.match(render, /makeAutoPackResultChip\('Stacked', formatAutoPackResultNumber\(viewedOption\.stackedCount\)\)/,
-    'Stacked must render as a secondary compact chip');
+  assert.doesNotMatch(render, /'Floor'|'Stacked'|floorCount|stackedCount|makeAutoPackResultChip|stat-chip/,
+    'frozen solver-provenance Floor/Stacked values are not presented on the Results card');
   assert.match(render, /const partialReason = formatAutoPackPartialReason\(viewedOption\);/,
     'a partial option must derive a readable reason');
   assert.match(render, /status\.title = partialReason;/,
@@ -1144,7 +1221,7 @@ test('AUTOPACK-CAROUSEL dedupe-collapsed results explain that other strategies p
   const css = await fs.readFile(stylesPath, 'utf8');
   assert.match(css, /\.tp3d-autopack-results__dedupe-note \{/, 'the dedupe note must have panel styling');
   assert.match(css, /\.tp3d-autopack-results__option-desc \{/, 'the description line must have panel styling');
-  assert.match(css, /\.tp3d-autopack-results__stat-chip \{/, 'the secondary metric chips must have panel styling');
+  assert.equal(css.includes('tp3d-autopack-results__stat-chip'), false, 'the removed metric chips leave no styling behind');
 });
 
 test('AUTOPACK-CAROUSEL normal options keep packed-count ranking while Phase A Max Capacity never auto-selects', async () => {
@@ -1422,5 +1499,88 @@ test('AUTOPACK-RESULTS Max Capacity profiles, ambiguity, and old-run actions fai
     f.apply('same-strict', 'run-A');
     assert.equal(f.writes.length, beforeAmbiguousApply,
       'Apply refuses a strict-collision option that staged-pose preservation cannot distinguish');
+  } finally { f.unsubscribe(); }
+});
+
+function reopenControl(f, source) {
+  const syncSource = sliceFn(source, 'function syncAutoPackResultsReopen(pack, results, options)', 'function reopenAutoPackResults()');
+  const reopenSource = sliceFn(source, 'function reopenAutoPackResults()', 'function clampAutoPackResultsPosition(');
+  const button = { hidden: true, dataset: {} };
+  const focused = [];
+  const deps = ['resultsReopenBtn', 'getAutoPackResultsState', 'StateStore', 'patchAutoPackResultsState',
+    'getAutoPackResultsHost', 'HTMLElement'];
+  class FakeElement { focus() { focused.push('results-toggle'); } }
+  const toggle = new FakeElement();
+  const host = { querySelector: () => ({ querySelector: () => toggle }) };
+  const make = body => new Function(...deps, body)(
+    button, () => f.StateStore.get('autoPackResults'), f.StateStore, f.patchResults, () => host, FakeElement);
+  return {
+    button, focused, reopenSource,
+    sync: make(`${syncSource}\nreturn syncAutoPackResultsReopen;`),
+    reopen: make(`${reopenSource}\nreturn reopenAutoPackResults;`),
+  };
+}
+
+test('AUTOPACK-RESULTS closed Results reopen the same run without rerunning AutoPack or touching the Pack', async () => {
+  const f = await resultsSyncFixture();
+  try {
+    const source = await fs.readFile(editorScreenPath, 'utf8');
+    const control = reopenControl(f, source);
+    assert.doesNotMatch(control.reopenSource, /AutoPackEngine|PackLibrary|applyAutoPackResultOption|\.pack\(/,
+      'reopening never reruns AutoPack, applies an option, or writes the Pack');
+    const pack = f.PackLibrary.getById(f.winner.id);
+    const open = f.StateStore.get('autoPackResults');
+    control.sync(pack, open, open.options);
+    assert.equal(control.button.hidden, true, 'open Results need no restore control');
+
+    f.patchResults({ closed: true, minimized: true, position: { x: 30, y: 40 }, viewIndex: 1 }, 'run-A');
+    const closed = f.StateStore.get('autoPackResults');
+    control.sync(pack, closed, closed.options);
+    assert.equal(control.button.hidden, false, 'closed Results for the current Pack show the restore control');
+    assert.equal(control.button.dataset.runId, 'run-A', 'the control is bound to the closed run');
+
+    const packBefore = f.StateStore.get('packLibrary');
+    const packJson = JSON.stringify(packBefore);
+    const seen = f.notifications.length;
+    control.reopen();
+    const reopened = f.StateStore.get('autoPackResults');
+    assert.equal(reopened.closed, false, 'reopen clears closed');
+    assert.equal(reopened.minimized, false, 'reopen expands the panel');
+    assert.deepEqual(reopened.position, { x: 30, y: 40 }, 'the saved panel position is kept');
+    assert.equal(reopened.viewIndex, 1, 'the browsed option is kept');
+    assert.equal(reopened.runId, 'run-A', 'the same run is reopened');
+    assert.equal(reopened.options, closed.options, 'the existing options are reused, not rebuilt');
+    assert.equal(reopened.selectedId, closed.selectedId);
+    assert.deepEqual(f.notifications.slice(seen).map(event => event.keys), [['autoPackResults']],
+      'only the transient Results state changes: no Pack, autosave-relevant or history write');
+    assert.equal(f.StateStore.get('packLibrary'), packBefore, 'the Pack library is the same object');
+    assert.equal(JSON.stringify(f.StateStore.get('packLibrary')), packJson, 'no Pack field (including lastEdited) changed');
+    assert.equal(f.writes.length, 0, 'no PackLibrary update ran');
+    assert.equal(f.applied(), f.options[0], 'Applied derivation is unchanged');
+    assert.deepEqual(control.focused, ['results-toggle'], 'focus moves into the reopened panel');
+    assert.equal(f.StateStore.undo(), true);
+    assert.equal(f.PackLibrary.getById(f.winner.id).cases[0].placement, 'staged',
+      'Undo still steps back over the AutoPack commit: reopening added no history entry');
+    f.StateStore.redo();
+
+    f.patchResults({ closed: true }, 'run-A');
+    f.StateStore.set({ autoPackResults: { ...f.StateStore.get('autoPackResults'), runId: 'run-B' } }, { skipHistory: true });
+    control.reopen();
+    assert.equal(f.StateStore.get('autoPackResults').closed, true, 'a control bound to an older run cannot reopen a newer one');
+    const runB = f.StateStore.get('autoPackResults');
+    control.sync(pack, runB, runB.options);
+    f.StateStore.set({ currentPackId: 'another-pack' }, { skipHistory: true });
+    control.reopen();
+    assert.equal(f.StateStore.get('autoPackResults').closed, true, 'Results never reopen over another Pack');
+
+    control.sync({ ...pack, id: 'another-pack' }, runB, runB.options);
+    assert.equal(control.button.hidden, true, 'Results for another Pack show no restore control');
+    control.sync(pack, runB, []);
+    assert.equal(control.button.hidden, true, 'empty Results show no restore control');
+    control.sync(null, runB, runB.options);
+    assert.equal(control.button.hidden, true, 'no Pack, no restore control');
+    control.sync(pack, null, []);
+    assert.equal(control.button.hidden, true);
+    assert.equal(control.button.dataset.runId, undefined, 'a hidden control carries no run');
   } finally { f.unsubscribe(); }
 });

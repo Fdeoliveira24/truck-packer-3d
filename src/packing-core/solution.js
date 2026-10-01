@@ -38,7 +38,7 @@ export const PACKING_STRATEGIES = Object.freeze([
   Object.freeze({
     id: 'default',
     strategy: 'front-first-balanced',
-    label: 'Balanced (recommended)',
+    label: 'Balanced',
     description: 'Best overall load quality; tidy rows, wheel-well aware.',
     options: Object.freeze({}),
   }),
@@ -67,7 +67,7 @@ export const PACKING_STRATEGIES = Object.freeze([
     id: 'max-capacity',
     strategy: 'max-capacity',
     label: 'Max Capacity',
-    description: 'Physical-fit estimate; handling rules may be relaxed. Not a transport recommendation.',
+    description: 'Relaxed handling comparison',
     options: Object.freeze({ maxCapacityMode: true }),
   }),
   Object.freeze({

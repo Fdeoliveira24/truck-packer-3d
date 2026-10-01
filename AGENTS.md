@@ -128,7 +128,8 @@ Prefer the owner layer for bugs. Do not broaden scope beyond the owning file(s) 
 
 - Report: files changed, why, risk level, lint/test results, manual checklist.
 - Commands: `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`.
-- Documentation-only changes: skip full test suite.
+- Required PR quality gate: `.github/workflows/quality-gate.yml` runs lint, typecheck, normal tests, build, and `npm audit --omit=dev`, plus `git diff --check` on the PR patch. `npm run quality:ci` is its local mirror — keep the two in sync.
+- Documentation-only changes: skip full test suite locally; GitHub CI is authoritative when it runs.
 - Billing/workspace changes: full checklist — owner 1 workspace, owner multiple, non-owner member, same-tab switch, cross-tab switch, AutoPack gate, PDF gate, Settings Billing, Settings Members (if org scope touched).
 - AutoPack lifecycle changes: verify all mutating paths blocked while busy, camera still usable, Truck Change preview only on explicit click, Cancel restores scene.
 

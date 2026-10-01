@@ -224,7 +224,7 @@ test('all pre-existing package scripts remain unchanged', () => {
     'format:check': 'prettier --check "**/*.{html,css,js,json,md}"',
     validate: 'npm run lint && npm run format:check',
     quality: "npm run lint:fix && npm run format && echo '✅ Code quality checks passed!'",
-    'quality:ci': 'npm run validate > cleanup/reports/quality-report.txt 2>&1 || true',
+    'quality:ci': 'npm run lint && npm run -s typecheck && npm test && npm run build && npm audit --omit=dev',
     'lint:report': 'node cleanup/scripts/eslint-report.mjs',
   };
   Object.entries(expectedScripts).forEach(([name, command]) => assert.equal(packageJson.scripts[name], command));

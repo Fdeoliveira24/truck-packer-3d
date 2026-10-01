@@ -1243,7 +1243,11 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
     await t.test('real drag departure skips provisional pixels and recovers after off-screen release', async () => {
       await page.evaluate(() => window.probe.reset());
       await openPack(page, B);
-      await page.waitForTimeout(100);
+      // B's meshes are pickable once the render loop has drawn them (world
+      // matrices update on render); wait for a frame after opening, not a delay.
+      const opened = await page.evaluate(() => window.probe.SceneManager.getRenderer().info.render.frame);
+      await page.waitForFunction(frame => window.probe.SceneManager.getRenderer().info.render.frame > frame,
+        opened, { timeout: 10000 });
       const point = await page.evaluate(() => {
         const q = window.probe;
         const camera = q.SceneManager.getCamera();
@@ -2283,7 +2287,12 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       assert.equal(tween.provisional, true, 'the return tween is provisional');
       assert.deepEqual(tween.mismatches, ['b-cargo'], 'fixture: the mesh is away from its committed pose');
       expectRejected(tween.attempt, STILL_CHANGING, 'rejected-drop return tween');
-      await page.waitForTimeout(450);
+      // The return tween advances on render frames; wait for the committed pose
+      // and the released provisional hold, not a delay.
+      await page.waitForFunction(() => {
+        const q = window.probe;
+        return !q.InteractionManager.hasProvisionalPose() && q.sceneMismatches().length === 0;
+      }, null, { timeout: 10000 });
       const settled = await page.evaluate(() => {
         const q = window.probe;
         return { provisional: q.InteractionManager.hasProvisionalPose(), mismatches: q.sceneMismatches(), attempt: q.attemptExports() };

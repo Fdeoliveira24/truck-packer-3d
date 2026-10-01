@@ -194,6 +194,7 @@ test('all pre-existing package scripts remain unchanged', () => {
   const expectedScripts = {
     lint: 'npm run lint:js && npm run lint:css && npm run lint:html',
     test: 'node --test tests/audit/*.spec.mjs',
+    'test:ci': 'node --test --test-concurrency=1 tests/audit/*.spec.mjs',
     'test:stress':
       'TP3D_STRESS=1 node --test --test-name-pattern "PHASE-E1|PHASE-E2A|PHASE-E2B|AUTO-PACK-A1-PERF-1" tests/audit/security-and-invariants.spec.mjs',
     'test:all': 'TP3D_STRESS=1 node --test tests/audit/*.spec.mjs',
@@ -224,7 +225,7 @@ test('all pre-existing package scripts remain unchanged', () => {
     'format:check': 'prettier --check "**/*.{html,css,js,json,md}"',
     validate: 'npm run lint && npm run format:check',
     quality: "npm run lint:fix && npm run format && echo '✅ Code quality checks passed!'",
-    'quality:ci': 'npm run lint && npm run -s typecheck && npm test && npm run build && npm audit --omit=dev',
+    'quality:ci': 'npm run lint && npm run -s typecheck && npm run test:ci && npm run build && npm audit --omit=dev',
     'lint:report': 'node cleanup/scripts/eslint-report.mjs',
   };
   Object.entries(expectedScripts).forEach(([name, command]) => assert.equal(packageJson.scripts[name], command));

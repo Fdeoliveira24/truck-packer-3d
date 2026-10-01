@@ -48,7 +48,7 @@ jobs:
         run: npm run -s typecheck
 
       - name: Tests
-        run: npm test
+        run: npm run test:ci
 
       - name: Build
         run: npm run build

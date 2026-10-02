@@ -147,21 +147,15 @@ function sliceFn(src, startNeedle, endNeedle) {
   return src.slice(start, end);
 }
 
-test('PHASE-C-RPT-7 Inspector Load Summary shows the applied relaxed handling profile only from canonical stats', async () => {
+test('PHASE-C-RPT-7 Inspector Load Summary repeats no relaxed-profile notice; the Results card is the only warning surface', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderTruckInspector(pack, prefs)', 'function renderMultiInspector(pack, selected)');
-  assert.match(block, /const stats = PackLibrary\.computeStats\(pack\);/, 'must read from the canonical computeStats() call already in this function, not a separate derivation');
-  assert.match(block, /const relaxedProfileCount = Number\(stats\.maxCapacityProfileCount\) \|\| 0;/,
-    'the count is the canonical Contract C membership count, so it survives Results being closed, cleared or reloaded');
-  assert.match(block, /const relaxedProfileRow = relaxedProfileCount > 0\s*\?/, 'the indication disappears at zero');
-  const row = sliceFn(block, 'const relaxedProfileRow = relaxedProfileCount > 0', "statsEl.innerHTML = autoPackLoading");
-  assert.match(row, />Relaxed handling profile</);
-  assert.match(row, /\$\{relaxedProfileCount\} \$\{relaxedProfileCount === 1 \? 'Case' : 'Cases'\}/);
-  assert.match(row, /Still part of the applied Max Capacity plan\./, 'membership wording, not a per-case claim');
-  for (const forbidden of ['Rules violated', 'Unsafe', 'violation', 'Relaxed cases', 'requiring relaxation', 'required relaxed']) {
-    assert.equal(row.includes(forbidden), false, `no "${forbidden}" wording`);
-  }
-  assert.equal(block.includes('autoPackResults'), false, 'the Inspector indication never reads transient Results');
+  assert.match(block, /const stats = PackLibrary\.computeStats\(pack\);/, 'Load Summary still reads canonical stats (Total weight)');
+  assert.doesNotMatch(block, /maxCapacityProfileCount|relaxed-handling-profile|Relaxed handling profile|Still part of the applied Max Capacity plan/,
+    'the Inspector does not duplicate the Results-card Max Capacity warning');
+  assert.equal(block.includes('autoPackResults'), false, 'the Inspector never reads transient Results');
+  // The canonical membership count itself stays (PHASE-C-RPT tests above);
+  // only its Inspector presentation is removed.
 });
 
 // ── AutoPack Results panel (source-contract) ─────────────────────────────────

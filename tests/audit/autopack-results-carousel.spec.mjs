@@ -28,10 +28,10 @@ async function renderBlock() {
 }
 
 test('AUTOPACK-CAROUSEL multi-result panel shows a compact Option X of Y carousel', async () => {
-  const { render } = await renderBlock();
+  const { src, render } = await renderBlock();
 
-  assert.match(render, /const hasAlternates = options\.length > 1;/,
-    'multiple-option detection must stay based on options.length');
+  assert.match(sliceFn(src, 'function resolveAutoPackResultsView(pack) {', '// Transient live preview'),
+    /const hasAlternates = options\.length > 1;/, 'multiple-option detection must stay based on options.length');
   assert.equal(render.includes('View options'), false, 'no compact "View options" step should remain');
   assert.equal(render.includes('results.expanded'), false, 'the panel must not depend on an expanded toggle');
 
@@ -152,14 +152,17 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
   assert.equal(apply.includes('render();'), false, 'the Pack update already drives Editor render');
 });
 
-test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results open on the Applied option', async () => {
-  const { render } = await renderBlock();
+test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results open on the starting view', async () => {
+  const { src, render } = await renderBlock();
+  const resolver = sliceFn(src, 'function resolveAutoPackResultsView(pack) {', '// Transient live preview');
 
-  assert.match(render, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option === currentOption\)\);/,
+  assert.match(render, /const view = resolveAutoPackResultsView\(pack\);/,
+    'the card reads the one shared viewed-option resolution');
+  assert.match(resolver, /const selectedIndex = Math\.max\(0, options\.findIndex\(option => option === currentOption\)\);/,
     'the applied option index must remain available independently from the visual page');
-  assert.match(render, /const requestedIndex = Number\.isInteger\(results\.viewIndex\) \? results\.viewIndex : defaultIndex;/,
-    'only an explicit browsed index overrides the Applied-first default view');
-  assert.match(render, /Math\.min\(Math\.max\(0, requestedIndex\), options\.length - 1\)/,
+  assert.match(resolver, /const requestedIndex = Number\.isInteger\(results\.viewIndex\) \? results\.viewIndex : startIndex;/,
+    'only an explicit browsed index overrides the run starting view');
+  assert.match(resolver, /Math\.min\(Math\.max\(0, requestedIndex\), options\.length - 1\)/,
     'the view index must be clamped into range every render');
 
   const engineSrc = await fs.readFile(enginePath, 'utf8');
@@ -169,20 +172,33 @@ test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results open on th
   assert.match(engineSrc, /minimized: true/, 'result payload must set minimized:true so the panel starts collapsed on every new run');
 });
 
-test('AUTOPACK-CAROUSEL fresh view opens on Applied, keeps an explicit browse, and Max Capacity leads the display', async () => {
-  const [{ render }, EditorScreen] = await Promise.all([renderBlock(), import(editorScreenPath.href)]);
-  const viewBlock = sliceFn(
-    render,
-    'const selectedIndex = Math.max(0, options.findIndex(option => option === currentOption));',
-    '\n\n      // Position + drag'
-  );
-  const resolveView = new Function(
-    'results',
-    'options',
-    'hasAlternates',
-    'currentOption',
-    `${viewBlock}\nreturn { selectedIndex, requestedIndex, viewIndex, viewedOption };`
-  );
+// The production viewed-option resolver (shared by the Results card, the 3D
+// scene and the Inspector) plus the production once-per-run starting view
+// getter, over given display-ordered options and Applied option, driven by a
+// mutable stand-in for the saved preference.
+async function startViewHarness(initialStartView) {
+  const [{ src }, EditorScreen] = await Promise.all([renderBlock(), import(editorScreenPath.href)]);
+  const getterSource = sliceFn(src, 'let autoPackResultsStart = null;', '// The single viewed-option resolution');
+  const resolverSource = sliceFn(src, 'function resolveAutoPackResultsView(pack) {', '// Transient live preview');
+  const prefs = { autoPackResultsStartView: initialStartView };
+  const reads = [];
+  const PreferencesManager = { get: () => { reads.push(prefs.autoPackResultsStartView); return { ...prefs }; } };
+  const getAutoPackResultsStartIndex = new Function('PreferencesManager', 'resolveAutoPackResultsStartIndex',
+    `${getterSource}\nreturn getAutoPackResultsStartIndex;`)(PreferencesManager, EditorScreen.resolveAutoPackResultsStartIndex);
+  const resolveView = (results, currentOption) => new Function('getAutoPackResultsState', 'orderAutoPackResultOptions',
+    'getAppliedAutoPackOption', 'CaseLibrary', 'getAutoPackResultsStartIndex',
+    `${resolverSource}\nreturn resolveAutoPackResultsView;`)(
+    () => results, list => list, () => currentOption, {}, getAutoPackResultsStartIndex);
+  return {
+    EditorScreen, prefs, reads, getAutoPackResultsStartIndex,
+    view: (results, options, currentOption) =>
+      resolveView({ ...results, options, packId: 'pack', closed: false }, currentOption)({ id: 'pack' }),
+  };
+}
+
+test('AUTOPACK-CAROUSEL fresh view follows the starting view, keeps an explicit browse; Balanced leads and Max Capacity follows', async () => {
+  const harness = await startViewHarness('first');
+  const { EditorScreen } = harness;
   const raw = [
     { id: 'default', label: 'Balanced' },
     { id: 'compact-fill', label: 'Compact fill' },
@@ -190,30 +206,92 @@ test('AUTOPACK-CAROUSEL fresh view opens on Applied, keeps an explicit browse, a
     { id: 'max-capacity', label: 'Max Capacity' },
   ];
   const options = EditorScreen.orderAutoPackResultOptions(raw);
-  assert.deepEqual(options.map(option => option.id), ['max-capacity', 'default', 'compact-fill', 'stack-priority'],
-    'Max Capacity is displayed first, standard plans keep their solver order');
+  assert.deepEqual(options.map(option => option.id), ['default', 'max-capacity', 'compact-fill', 'stack-priority'],
+    'Balanced leads, Max Capacity follows, the other standard plans keep their solver order');
   assert.deepEqual(raw.map(option => option.id), ['default', 'compact-fill', 'stack-priority', 'max-capacity'],
     'display ordering never reorders the stored Results options');
-  const balanced = options[1];
-  const compact = options[2];
-  const view = (results, currentOption) => resolveView({ selectedId: 'default', ...results }, options, true, currentOption);
+  const [balanced, maxCapacity, compact, stack] = options;
+  let runs = 0;
+  // Each call is a NEW Results run (fresh runId) opened under the given preference.
+  const freshRun = (startView, currentOption, results = {}) => {
+    harness.prefs.autoPackResultsStartView = startView;
+    return harness.view({ runId: `run-${++runs}`, selectedId: 'default', ...results }, options, currentOption);
+  };
 
-  assert.equal(view({}, balanced).viewedOption, balanced,
-    'fresh Results open on the Applied option, not on Max Capacity at Option 1');
-  assert.equal(view({}, balanced).viewIndex, 1);
-  assert.equal(view({}, compact).viewedOption, compact,
-    'when another standard plan is Applied, the fresh view follows Applied rather than Recommended');
-  assert.equal(view({ viewIndex: 0 }, balanced).viewedOption.id, 'max-capacity',
-    'an explicit browse to Max Capacity is kept even though Balanced is Applied');
-  assert.equal(view({ viewIndex: 3 }, compact).viewIndex, 3,
-    'an explicit browse is not forced back to Applied when Applied changes');
-  assert.equal(view({}, null).viewedOption, balanced,
-    'with nothing Applied (Outdated), the fresh view falls back to the Recommended plan');
-  assert.equal(view({ selectedId: 'missing' }, null).viewIndex, 0,
-    'with neither Applied nor Recommended available the view starts at Option 1');
-  assert.equal(view({ viewIndex: 99 }, balanced).viewIndex, options.length - 1, 'explicit indices are clamped');
-  assert.equal(view({ selectedId: 'max-capacity' }, null).viewIndex, 0,
-    'Max Capacity is never a Recommended fallback target');
+  assert.equal(freshRun('first', compact).viewedOption, balanced,
+    'First option: a fresh run opens on display index 0 (Balanced) even though Compact fill is Applied');
+  assert.equal(freshRun('first', compact).viewIndex, 0);
+  assert.equal(freshRun('applied', compact).viewedOption, compact,
+    'Applied option: a fresh run opens on the unique Applied plan');
+  assert.equal(freshRun('applied', maxCapacity).viewIndex, 1, 'Applied may be Max Capacity after the user applied it');
+  assert.equal(freshRun('recommended', compact).viewedOption, balanced,
+    'Recommended option: a fresh run opens on results.selectedId, independent of Applied');
+  assert.equal(freshRun('recommended', balanced, { selectedId: 'stack-priority' }).viewedOption, stack,
+    'Recommended follows the run selectedId; Balanced is not permanently Recommended');
+  assert.equal(freshRun('applied', null).viewIndex, 0,
+    'with no unique Applied option (Outdated or ambiguous), Applied falls back to the first option');
+  assert.equal(freshRun('recommended', balanced, { selectedId: 'missing' }).viewIndex, 0,
+    'an unresolved Recommended plan falls back to the first option');
+  assert.equal(freshRun('recommended', compact, { selectedId: 'max-capacity' }).viewedOption, balanced,
+    'a Max Capacity selectedId is never treated as Recommended; the view falls back to the first option');
+  assert.equal(freshRun('bogus', compact).viewIndex, 0, 'an unknown stored value behaves as First option');
+
+  assert.equal(freshRun('applied', compact, { viewIndex: 1 }).viewedOption, maxCapacity,
+    'an explicit browse to Max Capacity is kept even though the preference points at Applied');
+  assert.equal(freshRun('first', compact, { viewIndex: 3 }).viewIndex, 3,
+    'an explicit browse is never forced back to the starting view');
+  assert.equal(freshRun('first', balanced, { viewIndex: 99 }).viewIndex, options.length - 1, 'explicit indices are clamped');
+
+  // The pure resolver over the raw solver order: Recommended can never land on
+  // Max Capacity, and nothing it reads is changed.
+  const frozenRaw = Object.freeze(raw.map(option => Object.freeze({ ...option })));
+  const frozenResults = Object.freeze({ selectedId: 'max-capacity' });
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, frozenResults, null, 'recommended'), 0);
+  assert.notEqual(frozenRaw[0].id, 'max-capacity', 'that fallback is the first raw option, not Max Capacity');
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, { selectedId: 'compact-fill' }, null, 'recommended'), 1);
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, null, frozenRaw[3], 'applied'), 3,
+    'Applied may legitimately be Max Capacity after the user applied it');
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, null, { id: 'default' }, 'applied'), 0,
+    'Applied matches the option object itself, never a look-alike id');
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex([], null, null, 'first'), 0);
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(undefined, undefined, undefined, undefined), 0);
+});
+
+test('AUTOPACK-RESULTS-START preference defaults to First option and the starting view is resolved once per run', async () => {
+  const [harness, Normalizer, Defaults] = await Promise.all([
+    startViewHarness('applied'),
+    import(new URL('../../src/core/normalizer.js', import.meta.url).href),
+    import(new URL('../../src/core/defaults.js', import.meta.url).href),
+  ]);
+  assert.equal(Defaults.defaultPreferences.autoPackResultsStartView, 'first');
+  assert.deepEqual([...Defaults.AUTOPACK_RESULTS_START_VIEWS], ['first', 'applied', 'recommended']);
+  const legacy = Normalizer.normalizePreferences({ theme: 'dark', units: { length: 'ft', weight: 'lb' } });
+  assert.equal(legacy.autoPackResultsStartView, 'first', 'a legacy record missing the field normalizes to First option');
+  assert.equal(legacy.showAutoPackLoadingOverlay, true, 'a legacy record keeps the AutoPack loading screen ON');
+  for (const value of ['first', 'applied', 'recommended']) {
+    assert.equal(Normalizer.normalizePreferences({ autoPackResultsStartView: value }).autoPackResultsStartView, value);
+  }
+  for (const value of [0, 1, 2, '1', 'Applied', null, {}, 'max-capacity']) {
+    assert.equal(Normalizer.normalizePreferences({ autoPackResultsStartView: value }).autoPackResultsStartView, 'first',
+      `${JSON.stringify(value)} is not a named starting view and never persists as an option index`);
+  }
+
+  const options = harness.EditorScreen.orderAutoPackResultOptions([
+    { id: 'default' }, { id: 'compact-fill' }, { id: 'max-capacity' },
+  ]);
+  const [balanced, maxCapacity, compact] = options;
+  const runA = { runId: 'run-A', selectedId: 'default' };
+  assert.equal(harness.view(runA, options, compact).viewedOption, compact, 'run A opens on its Applied plan');
+  harness.prefs.autoPackResultsStartView = 'first';
+  assert.equal(harness.view(runA, options, compact).viewedOption, compact,
+    'changing the preference never moves an already open run');
+  assert.equal(harness.view(runA, options, balanced).viewedOption, compact,
+    'a later Apply, Undo or Redo does not move an unbrowsed run');
+  assert.equal(harness.view(runA, options, null).viewedOption, compact, 'nor does the run going Outdated');
+  assert.equal(harness.view({ ...runA, viewIndex: 1 }, options, null).viewedOption, maxCapacity, 'an explicit browse still wins');
+  assert.equal(harness.view({ runId: 'run-B', selectedId: 'default' }, options, compact).viewedOption, balanced,
+    'the next NEW run uses the current preference');
+  assert.deepEqual(harness.reads, ['applied', 'first'], 'the preference is read exactly once per run');
 });
 
 test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, semantic status badges', async () => {
@@ -229,14 +307,17 @@ test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, semant
     'metric labels must be small');
   assert.match(css, /\.tp3d-autopack-results__status--complete \{[^}]*background: rgb\(16, 185, 129, 0\.12\);[^}]*color: var\(--success-readable\);/,
     'Complete uses a soft success tint with readable success text');
-  assert.match(css, /\.tp3d-autopack-results__status--partial \{[^}]*background: rgb\(245, 158, 11, 0\.14\);[^}]*color: var\(--warning-readable\);/,
-    'Partial uses a soft amber tint with readable warning text');
+  assert.match(css, /\.tp3d-autopack-results__status--partial \{[^}]*border-color: rgb\(245, 158, 11, 0\.36\);[^}]*background: rgb\(245, 158, 11, 0\.14\);[^}]*color: var\(--text-primary\);/,
+    'Partial uses a soft amber border and tint with neutral, readable copy');
   assert.match(css, /\.tp3d-autopack-results__current-pill \{[^}]*background: var\(--accent-primary\);[^}]*color: var\(--accent-foreground\);/,
     'Applied keeps the brand orange fill on the white/orange primary contract');
   assert.match(css, /\.tp3d-autopack-results__recommended-pill \{[^}]*border-color: var\(--border-strong\);[^}]*background: transparent;/,
     'Recommended is a restrained neutral outline');
-  assert.match(css, /\.tp3d-autopack-results__relaxed-note \{[^}]*color: var\(--warning-readable\);[^}]*white-space: normal;/,
-    'the Max Capacity warning uses the warning tokens and wraps instead of truncating');
+  assert.match(css, /\.tp3d-autopack-results__relaxed-note \{[^}]*border: 1px solid rgb\(245, 158, 11, 0\.36\);[^}]*color: var\(--text-primary\);[^}]*white-space: normal;/,
+    'the Max Capacity warning keeps an amber border, neutral copy, and wraps instead of truncating');
+  assert.match(css, /\.tp3d-autopack-results__relaxed-note i \{[^}]*color: var\(--warning-readable\);/,
+    'the Max Capacity warning icon carries the orange warning token');
+  assert.match(css, /--warning-readable: #e87500;/, 'the light warning token is the corrected orange');
   assert.match(css, /:root \{[\s\S]*?--success-readable: #047857;/, 'light theme defines readable success text');
   assert.match(css, /\[data-theme='dark'\] \{[\s\S]*?--success-readable: #6ee7b7;/, 'dark theme defines readable success text');
   const resultsCss = sliceFn(css, '.tp3d-autopack-results {', '/* Muted one-line strategy description');
@@ -1032,13 +1113,13 @@ test('AUTOPACK-MAX-A raw Results order puts Max Capacity fifth and keeps Wheel W
     'Floor first must continue to disable the stack phase');
 });
 
-test('AUTOPACK-RESULTS Max Capacity displays first while ranking, selection and the raw order stay standard-only', async () => {
+test('AUTOPACK-RESULTS Balanced leads and Max Capacity displays second while ranking, selection and the raw order stay standard-only', async () => {
   const [Solution, EditorScreen] = await Promise.all([import(solutionPath.href), import(editorScreenPath.href)]);
   const fixtures = [
     { truck: { length: 240, width: 96, height: 96, shapeMode: 'rect' },
-      display: ['max-capacity', 'default', 'compact-fill', 'floor-first', 'stack-priority'] },
+      display: ['default', 'max-capacity', 'compact-fill', 'floor-first', 'stack-priority'] },
     { truck: { length: 240, width: 96, height: 96, shapeMode: 'wheelWells' },
-      display: ['max-capacity', 'default', 'compact-fill', 'floor-first', 'stack-priority', 'constrained-first'] },
+      display: ['default', 'max-capacity', 'compact-fill', 'floor-first', 'stack-priority', 'constrained-first'] },
   ];
   for (const { truck, display } of fixtures) {
     const { result } = runAdaptiveAudit(Solution, truck, {
@@ -1046,7 +1127,7 @@ test('AUTOPACK-RESULTS Max Capacity displays first while ranking, selection and 
     });
     const rawIds = result.solutions.map(solution => solution.id);
     assert.deepEqual(EditorScreen.orderAutoPackResultOptions(result.solutions).map(solution => solution.id), display,
-      `${truck.shapeMode}: Max Capacity leads the carousel, then the standard plans in solver order`);
+      `${truck.shapeMode}: Balanced, Max Capacity, then the other standard plans in solver order`);
     assert.deepEqual(result.solutions.map(solution => solution.id), rawIds, 'display ordering does not mutate the solution list');
     assert.equal(rawIds.indexOf('max-capacity'), 4, 'the raw solver order (dedupe input) still lists Max Capacity after the standard portfolio');
     assert.equal(result.selected, 'stack-priority', 'Max Capacity packing far more is still never auto-selected');
@@ -1054,6 +1135,10 @@ test('AUTOPACK-RESULTS Max Capacity displays first while ranking, selection and 
   }
   assert.deepEqual(EditorScreen.orderAutoPackResultOptions([{ id: 'default' }, { id: 'compact-fill' }]).map(option => option.id),
     ['default', 'compact-fill'], 'without Max Capacity the solver order is unchanged');
+  assert.deepEqual(EditorScreen.orderAutoPackResultOptions([{ id: 'compact-fill' }, { id: 'floor-first' }, { id: 'max-capacity' }])
+    .map(option => option.id), ['compact-fill', 'max-capacity', 'floor-first'],
+  'when Balanced was deduped away, the first standard plan in solver order leads');
+  assert.deepEqual(EditorScreen.orderAutoPackResultOptions([{ id: 'max-capacity' }]).map(option => option.id), ['max-capacity']);
   assert.deepEqual(EditorScreen.orderAutoPackResultOptions(undefined), []);
 });
 
@@ -1583,4 +1668,173 @@ test('AUTOPACK-RESULTS closed Results reopen the same run without rerunning Auto
     assert.equal(control.button.hidden, true);
     assert.equal(control.button.dataset.runId, undefined, 'a hidden control carries no run');
   } finally { f.unsubscribe(); }
+});
+
+test('AUTOPACK-RESULTS-START starting view never changes selectedId, the Pack, Applied or ranking, and reopen keeps the viewed option', async () => {
+  const f = await resultsSyncFixture({ maxCapacity: true });
+  try {
+    const [source, engineSrc, solutionSrc, harness] = await Promise.all([
+      fs.readFile(editorScreenPath, 'utf8'), fs.readFile(enginePath, 'utf8'), fs.readFile(solutionPath, 'utf8'),
+      startViewHarness('first'),
+    ]);
+    assert.doesNotMatch(`${engineSrc}\n${solutionSrc}`, /autoPackResultsStartView/,
+      'the solver and Results builder never read the starting view');
+    const current = () => f.StateStore.get('autoPackResults');
+    const display = () => f.EditorScreen.orderAutoPackResultOptions(current().options);
+    const viewed = () => harness.view(current(), display(), f.applied()).viewedOption.id;
+    const pack = () => f.PackLibrary.getById(f.winner.id);
+    assert.deepEqual(display().map(option => option.id), ['default', 'max-capacity'], 'Balanced leads, Max Capacity follows');
+    // Apply Max Capacity first so Applied, Recommended and First differ.
+    f.apply('max-capacity', 'run-A');
+    assert.equal(f.applied().id, 'max-capacity');
+    const writesBefore = f.writes.length;
+    const packBefore = f.StateStore.get('packLibrary');
+    const packJson = JSON.stringify(packBefore);
+    const results = current();
+    const resultsJson = JSON.stringify(results);
+    const seen = f.notifications.length;
+
+    const expected = { first: 'default', applied: 'max-capacity', recommended: 'default' };
+    for (const [index, startView] of ['first', 'applied', 'recommended'].entries()) {
+      harness.prefs.autoPackResultsStartView = startView;
+      const run = { ...results, runId: `start-${index}`, viewIndex: undefined };
+      assert.equal(harness.view(run, display(), f.applied()).viewedOption.id, expected[startView], startView);
+    }
+    assert.equal(current(), results, 'resolving the starting view writes no Results state');
+    assert.equal(JSON.stringify(results), resultsJson, 'selectedId, options and their stored order are untouched');
+    assert.equal(results.selectedId, 'default', 'the solver selectedId stays the standard plan');
+    assert.deepEqual(results.options.map(option => option.id), ['default', 'max-capacity'],
+      'the stored solver order keeps Max Capacity behind the standard plan (dedupe and ranking unchanged)');
+    assert.equal(f.StateStore.get('packLibrary'), packBefore, 'the Pack library is the same object');
+    assert.equal(JSON.stringify(f.StateStore.get('packLibrary')), packJson, 'committed Pack cargo is unchanged');
+    assert.equal(f.writes.length, writesBefore, 'no PackLibrary update ran');
+    assert.equal(f.notifications.length, seen, 'no state notification at all');
+    assert.equal(f.applied().id, 'max-capacity', 'Applied matching is unchanged');
+
+    // Browsed run: close and reopen keep the browsed option, not the preference.
+    const control = reopenControl(f, source);
+    harness.prefs.autoPackResultsStartView = 'first';
+    f.patchResults({ viewIndex: undefined }, 'run-A');
+    assert.equal(viewed(), 'default', 'run A opens on the First option');
+    f.patchResults({ viewIndex: 1 }, 'run-A');
+    assert.equal(viewed(), 'max-capacity');
+    f.patchResults({ closed: true }, 'run-A');
+    control.sync(pack(), current(), current().options);
+    control.reopen();
+    assert.equal(current().closed, false);
+    assert.equal(current().viewIndex, 1, 'reopen keeps the browsed index');
+    assert.equal(viewed(), 'max-capacity', 'reopen shows the browsed option instead of re-applying First option');
+
+    // Unbrowsed run: reopened after the preference changes, it keeps its start.
+    f.StateStore.set({ autoPackResults: { ...current(), runId: 'run-B', viewIndex: undefined } }, { skipHistory: true });
+    harness.prefs.autoPackResultsStartView = 'applied';
+    assert.equal(viewed(), 'max-capacity', 'run B opens on its Applied plan');
+    f.patchResults({ closed: true }, 'run-B');
+    harness.prefs.autoPackResultsStartView = 'first';
+    control.sync(pack(), current(), current().options);
+    control.reopen();
+    assert.equal(current().closed, false);
+    assert.equal(current().viewIndex, undefined, 'reopening writes no view index');
+    assert.equal(viewed(), 'max-capacity', 'reopening an unbrowsed run keeps its starting option');
+    assert.equal(f.writes.length, writesBefore, 'close and reopen never touched the Pack');
+  } finally { f.unsubscribe(); }
+});
+
+// The production preview projection (with the shared resolver and start getter)
+// over the real Results fixture, with a controllable operation.
+function previewProjector(f, source, getOperation) {
+  const deps = {
+    getAutoPackResultsState: () => f.StateStore.get('autoPackResults'),
+    orderAutoPackResultOptions: f.EditorScreen.orderAutoPackResultOptions,
+    getAppliedAutoPackOption: f.EditorScreen.getAppliedAutoPackOption,
+    CaseLibrary: { getById: f.getCaseById },
+    PreferencesManager: { get: () => ({ autoPackResultsStartView: 'first' }) },
+    resolveAutoPackResultsStartIndex: f.EditorScreen.resolveAutoPackResultsStartIndex,
+    OperationLifecycle: { currentOperation: getOperation },
+    StateStore: f.StateStore,
+    buildAppliedAutoPackCases: f.EditorScreen.buildAppliedAutoPackCases,
+    cloneAutoPackCases: structuredClone,
+  };
+  const body = [
+    sliceFn(source, 'let autoPackResultsStart = null;', '// The single viewed-option resolution'),
+    sliceFn(source, 'function resolveAutoPackResultsView(pack) {', '// Transient live preview'),
+    sliceFn(source, 'let autoPackResultsPreview = null;', 'function isAutoPackResultsStale('),
+  ].join('\n');
+  return new Function(...Object.keys(deps), `${body}\nreturn getAutoPackResultsPreviewPack;`)(...Object.values(deps));
+}
+
+test('AUTOPACK-RESULTS-PREVIEW the scene follows the viewed option and restores the committed Pack', async () => {
+  const f = await resultsSyncFixture({ maxCapacity: true });
+  try {
+    const source = await fs.readFile(editorScreenPath, 'utf8');
+    let operation = { busy: false, kind: 'idle' };
+    const preview = previewProjector(f, source, () => operation);
+    const pack = () => f.PackLibrary.getById(f.winner.id);
+    const maxOption = f.options[1];
+    const packBefore = f.StateStore.get('packLibrary');
+    const packJson = JSON.stringify(packBefore);
+
+    f.patchResults({ viewIndex: 0 }, 'run-A');
+    assert.equal(preview(pack()), null, 'viewing the Applied option (Balanced) shows the committed Pack');
+    f.patchResults({ viewIndex: 1 }, 'run-A');
+    const projected = preview(pack());
+    assert.ok(projected, 'viewing another option previews it');
+    assert.notEqual(projected, pack(), 'the preview is a separate object, never the Pack');
+    assert.equal(projected.id, pack().id);
+    assert.deepEqual(projected.cases, f.EditorScreen.buildAppliedAutoPackCases(maxOption, structuredClone, pack().cases),
+      'the preview is exactly the layout Apply would commit');
+    assert.equal(preview(pack()), projected, 'unchanged inputs reuse the same projection');
+
+    for (const [label, patch] of [['minimized', { minimized: true }], ['closed', { closed: true }]]) {
+      f.patchResults(patch, 'run-A');
+      assert.equal(preview(pack()), null, `${label} Results restore the committed Pack`);
+      f.patchResults({ minimized: false, closed: false }, 'run-A');
+      assert.ok(preview(pack()), `${label}: restored Results resume the same viewed option`);
+    }
+    for (const kind of ['autopacking', 'unpacking', 'changingTruck', 'previewingTruckChange']) {
+      operation = { busy: true, kind };
+      assert.equal(preview(pack()), null, `${kind} owns the scene: the committed Pack shows`);
+    }
+    operation = { busy: true, kind: 'capturingPreview' };
+    assert.ok(preview(pack()), 'a thumbnail capture does not drop the preview (capture is refused instead)');
+    operation = { busy: false, kind: 'idle' };
+    assert.equal(preview({ ...pack(), id: 'another-pack' }), null, 'another Pack shows its own committed layout');
+    assert.equal(f.StateStore.get('packLibrary'), packBefore, 'browsing never replaces the Pack library');
+    assert.equal(JSON.stringify(f.StateStore.get('packLibrary')), packJson, 'browsing never writes the Pack');
+    assert.equal(f.writes.length, 0);
+
+    const moved = structuredClone(pack());
+    moved.cases[0].transform.position.x += 7;
+    f.StateStore.set({ packLibrary: [moved] });
+    assert.equal(preview(pack()), null, 'Outdated Results restore the committed Pack');
+    assert.equal(f.StateStore.undo(), true);
+    assert.ok(preview(pack()), 'back to a current run, the viewed option previews again');
+
+    f.apply(maxOption.id, 'run-A');
+    assert.equal(f.writes.length, 1, 'only Apply writes the Pack');
+    assert.equal(preview(pack()), null, 'after Apply the viewed option is the committed Pack');
+    f.patchResults({ viewIndex: 0 }, 'run-A');
+    assert.ok(preview(pack()), 'Balanced is now the non-Applied option and previews');
+
+    f.StateStore.set({ autoPackResults: null }, { skipHistory: true });
+    assert.equal(preview(pack()), null, 'a newer AutoPack run (Results cleared) restores the committed Pack');
+  } finally { f.unsubscribe(); }
+});
+
+test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspector; scene authority stays Pack-only', async () => {
+  const { src, render } = await renderBlock();
+  const editorRender = sliceFn(src, '    function render() {\n      const previousPreviewScene', 'function renderSelection()');
+  assert.match(editorRender, /const resultsPreviewPack = getAutoPackResultsPreviewPack\(pack\);\n\s*CaseScene\.sync\(resultsPreviewPack \|\| pack, \{ transientPreview: Boolean\(resultsPreviewPack\) \}\);/,
+    'the scene syncs the preview of the card\'s viewed option, else the Pack');
+  assert.match(editorRender, /if \(initialized && CaseScene\.getSyncedPack\(\) === pack\) \{/,
+    'preview/export scene authority is still published only for the committed Pack');
+  assert.match(editorRender, /if \(CaseScene\.isTransientPreview\(\)\) CaseScene\.sync\(PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)\);/,
+    'leaving the Editor restores the committed Pack');
+  assert.match(render, /const view = resolveAutoPackResultsView\(pack\);/, 'the card reads the same view resolution');
+  const preview = sliceFn(src, 'function getAutoPackResultsPreviewPack(pack) {', 'function isAutoPackResultsStale(');
+  assert.match(preview, /const view = resolveAutoPackResultsView\(pack\);/, 'the scene reads the same view resolution');
+  assert.equal((src.match(/buildSpaceUtilizationResult\(getAutoPackResultsPreviewPack\(pack\) \|\| pack, PackLibrary\)/g) || []).length, 2,
+    'Load Summary and Space Utilization read the layout the scene shows');
+  assert.doesNotMatch(src, /relaxed-handling-profile|Relaxed handling profile/,
+    'the Inspector repeats no relaxed-profile notice; the Results card carries the Max Capacity warning');
 });

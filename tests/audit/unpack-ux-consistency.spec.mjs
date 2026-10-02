@@ -223,9 +223,9 @@ SceneManager.setTruck = (...args) => {
   return realSetTruck(...args);
 };
 const realSync = CaseScene.sync;
-CaseScene.sync = pack => {
+CaseScene.sync = (...args) => {
   log.push({ type: 'sync', at: now() });
-  return realSync(pack);
+  return realSync(...args);
 };
 const createAppSubscriber = new Function('deps', \`
   const { Storage, StateStore, PreferencesManager, SceneManager, SettingsUI, EditorUI, AutoPackPreviewScheduler,

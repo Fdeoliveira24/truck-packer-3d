@@ -391,6 +391,16 @@ test('an update with no measured analysis reads Updating… with no interim perc
   });
   assert.equal(gauge.dataset.state, 'updating');
   assert.match(textTree(gauge), /Space Utilization.*Updating…/);
+  assert.equal(byClass(gauge, 'tp3d-util-gauge__headline').classList.contains('tp3d-util-gauge__headline--status'), true,
+    'Updating… is marked as a left-aligned status line');
+  const updatingWithPrevious = createSpaceUtilizationGauge({
+    documentRef: testDocument,
+    result: { state: 'updating', previousResult: { state: 'valid', percentage: 42 } },
+    detail: 'standard',
+    lengthUnit: 'in',
+  });
+  assert.equal(byClass(updatingWithPrevious, 'tp3d-util-gauge__headline--status'), null,
+    'a measured readout under the bar keeps its centred layout');
   assert.equal(byClass(gauge, 'tp3d-util-gauge__spatial'), null, 'no bar while the cargo is still landing');
   assert.equal(byClass(gauge, 'tp3d-util-gauge__stats'), null, 'no placeholder 0 ft³ volume rows');
   assert.doesNotMatch(textTree(gauge), /%|ft³|previous analysis/);

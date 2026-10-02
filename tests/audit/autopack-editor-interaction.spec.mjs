@@ -265,9 +265,9 @@ window.probe = {
     return null;
   },
 };
-CaseScene.sync = pack => {
+CaseScene.sync = (...args) => {
   window.probe.syncCalls += 1;
-  return realSync(pack);
+  return realSync(...args);
 };
 CaseScene.setSelected = ids => {
   window.probe.setSelectedCalls += 1;
@@ -1615,7 +1615,17 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
       const summary = body.querySelector('.tp3d-editor-stats-card');
       const gauge = body.querySelector('[data-role="space-utilization-gauge"]');
       const clean = el => (el ? el.textContent.replace(/\s+/g, ' ').trim() : null);
-      return { op: window.probe.op(), summary: clean(summary), gaugeState: gauge?.dataset.state ?? null, gauge: clean(gauge) };
+      const title = gauge?.querySelector('.tp3d-util-gauge__title');
+      const headline = gauge?.querySelector('.tp3d-util-gauge__headline');
+      const headlineIndent = title && headline
+        ? Math.round(headline.getBoundingClientRect().left - title.getBoundingClientRect().left) : null;
+      const font = el => {
+        if (!el) return null;
+        const style = getComputedStyle(el);
+        return { size: style.fontSize, weight: style.fontWeight, color: style.color, family: style.fontFamily };
+      };
+      return { op: window.probe.op(), summary: clean(summary), gaugeState: gauge?.dataset.state ?? null, gauge: clean(gauge),
+        headlineIndent, gaugeFont: font(headline), summaryFont: font(summary?.querySelector('[data-role="load-summary-updating"]')) };
     });
     await page.locator('#btn-autopack').click();
     await page.waitForFunction(count => document.querySelector('.autopack-loading-message')?.textContent ===
@@ -1625,6 +1635,10 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
     assert.equal(loading.summary, 'Load Summary Updating…',
       'Load Summary stays present but holds the already-committed totals until the cargo lands');
     assert.equal(loading.gaugeState, 'updating', 'Space Utilization reads Updating while cargo is visibly loading');
+    assert.equal(loading.headlineIndent, 0, 'Updating… is left-aligned with the Space Utilization title');
+    assert.ok(loading.summaryFont, 'Load Summary shows its Updating… line');
+    assert.deepEqual(loading.gaugeFont, loading.summaryFont,
+      'Space Utilization Updating… uses the same font size, weight, colour and family as Load Summary Updating…');
     assert.doesNotMatch(loading.gauge, /%|ft³|previous/, 'no interim, fake progressive or previous utilization');
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
@@ -1732,7 +1746,7 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
   }
 });
 
-test('Results carousel leads with Max Capacity, opens on Applied, keeps Recommended and Applied independent, and derives the relaxed profile from the Pack', { timeout: 120000 }, async () => {
+test('Results carousel: Balanced leads, arrows live-preview the 3D load and Inspector without touching the Pack, Apply commits', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
@@ -1742,6 +1756,14 @@ test('Results carousel leads with Max Capacity, opens on Applied, keeps Recommen
     const ids = await page.evaluate(() => window.probe.StateStore.get('autoPackResults').options.map(option => option.id));
     assert.deepEqual([...ids].sort(), ['default', 'floor-first', 'max-capacity'],
       'fixture precondition: Balanced, Floor first and Max Capacity survive dedupe');
+    // Every StateStore change from here on: browsing may only touch Results.
+    await page.evaluate(() => {
+      const p = window.probe;
+      p.changeLog = [];
+      p.StateStore.subscribe(changes => { p.changeLog.push(Object.keys(changes).sort().join(',')); });
+    });
+    const changesSince = start => page.evaluate(from => window.probe.changeLog.slice(from), start);
+    const changeCount = () => page.evaluate(() => window.probe.changeLog.length);
     await page.locator('[data-focus-key="results-toggle"]').click();
     const view = () => page.evaluate(() => {
       const panel = document.querySelector('[data-role="autopack-results-panel"]');
@@ -1759,6 +1781,7 @@ test('Results carousel leads with Max Capacity, opens on Applied, keeps Recommen
         applied: clean(pick('.tp3d-autopack-results__current-pill')), appliedStyle: style(pick('.tp3d-autopack-results__current-pill')),
         note: clean(note), noteFits: note ? note.offsetHeight > 0 && note.scrollWidth <= note.clientWidth + 1 : null,
         noteTitle: note?.getAttribute('title') ?? null, noteColor: style(note)?.color ?? null,
+        noteIconColor: note ? getComputedStyle(note.querySelector('i')).color : null,
         text: clean(panel),
       };
     });
@@ -1766,87 +1789,291 @@ test('Results carousel leads with Max Capacity, opens on Applied, keeps Recommen
       await page.locator(`[data-focus-key="${focusKey}"]`).click();
       return view();
     };
+    // What the 3D scene and the Truck Inspector show, against an option's
+    // layout (the projection Apply commits) and against the committed Pack.
+    const sceneState = optionId => page.evaluate(async id => {
+      const p = window.probe;
+      const EditorScreen = await import('/src/screens/editor-screen.js');
+      const Gauge = await import('/src/ui/space-utilization-gauge.js');
+      const pack = p.PackLibrary.getById(p.StateStore.get('currentPackId'));
+      const option = p.StateStore.get('autoPackResults').options.find(item => item.id === id);
+      const cases = EditorScreen.buildAppliedAutoPackCases(option, value => structuredClone(value), pack.cases);
+      const atPose = list => list.every(inst => p.CaseScene.getObject(inst.id).position
+        .distanceTo(p.SceneManager.vecInchesToWorld(inst.transform.position)) <= 0.05);
+      const expected = Gauge.buildSpaceUtilizationResult({ ...pack, cases }, p.PackLibrary);
+      const body = document.querySelector('#inspector-body');
+      const clean = el => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
+      return {
+        showsOption: atPose(cases),
+        showsPack: atPose(pack.cases),
+        transient: p.CaseScene.isTransientPreview(),
+        summary: clean(body.querySelector('.tp3d-editor-stats-card')),
+        gauge: clean(body.querySelector('[data-role="space-utilization-gauge"]')),
+        expectedInTruck: expected.loadedCount,
+        expectedStaged: expected.stagedCount,
+        expectedPercent: expected.percentage.toFixed(1),
+      };
+    }, optionId);
+    const showsInspector = (scene, label) => {
+      assert.match(scene.summary, new RegExp(`In truck ?${scene.expectedInTruck} Staged ?${scene.expectedStaged}\\b`),
+        `${label}: Load Summary matches the layout in the scene`);
+      assert.ok(scene.gauge.includes(`${scene.expectedPercent}% Occupied`),
+        `${label}: Space Utilization matches the layout in the scene (${scene.gauge})`);
+    };
+    const packJson = () => page.evaluate(() => window.probe.casesJson());
+    const balancedPack = await packJson();
 
-    const fresh = await view();
-    assert.equal(fresh.counter, 'Option 2 of 3', 'fresh Results open on the Applied option, behind Max Capacity');
-    assert.equal(fresh.title, 'Balanced', 'the Balanced label carries no hard-coded "(recommended)"');
-    assert.equal(fresh.recommended, 'Recommended');
-    assert.equal(fresh.applied, 'Applied');
-    assert.equal(fresh.status, 'Complete');
-    assert.match(fresh.statusClass, /tp3d-autopack-results__status--complete/);
-    assert.deepEqual(fresh.appliedStyle, { bg: 'rgb(255, 159, 28)', color: 'rgb(255, 255, 255)' },
+    // A + C: the default starting view (First option) opens on Balanced, Option 1.
+    const balanced = await view();
+    assert.equal(balanced.counter, 'Option 1 of 3', 'A: Balanced is Option 1');
+    assert.equal(balanced.title, 'Balanced', 'C: the fresh default view shows Balanced, with no hard-coded "(recommended)"');
+    assert.equal(balanced.recommended, 'Recommended');
+    assert.equal(balanced.applied, 'Applied');
+    assert.equal(balanced.status, 'Complete');
+    assert.match(balanced.statusClass, /tp3d-autopack-results__status--complete/);
+    assert.deepEqual(balanced.appliedStyle, { bg: 'rgb(255, 159, 28)', color: 'rgb(255, 255, 255)' },
       'Applied keeps the brand orange/white treatment');
-    assert.equal(fresh.statusStyle.color, 'rgb(4, 120, 87)', 'Complete reads in the success colour');
-    assert.doesNotMatch(fresh.text, /\bFloor\b|\bStacked\b|profile/, 'no Floor/Stacked or profile-count chips');
+    assert.equal(balanced.statusStyle.color, 'rgb(4, 120, 87)', 'Complete reads in the success colour');
+    assert.doesNotMatch(balanced.text, /\bFloor\b|\bStacked\b|profile/, 'no Floor/Stacked or profile-count chips');
+    const balancedScene = await sceneState('default');
+    assert.equal(balancedScene.showsPack, true, 'viewing the Applied option shows the committed Pack');
+    assert.equal(balancedScene.transient, false);
+    showsInspector(balancedScene, 'Balanced');
 
-    const max = await step('results-prev');
-    assert.equal(max.counter, 'Option 1 of 3', 'Max Capacity displays first');
-    assert.equal(max.title, 'Max Capacity');
+    // B + D + E + F: the right arrow shows the Max Capacity card AND its 3D load.
+    const browseStart = await changeCount();
+    const max = await step('results-next');
+    assert.equal(max.counter, 'Option 2 of 3', 'B: Max Capacity is Option 2');
+    assert.equal(max.title, 'Max Capacity', 'D: the right arrow shows the Max Capacity card');
     assert.equal(max.description, 'Relaxed handling comparison');
     assert.equal(max.note, 'Handling rules relaxed. Review before transport.', 'the warning is visible text');
     assert.equal(max.noteFits, true, 'the warning is not clipped');
     assert.equal(max.noteTitle, null, 'the warning does not rely on hover');
+    assert.equal(max.noteIconColor, 'rgb(232, 117, 0)', 'the warning icon carries the orange warning token');
+    assert.equal(max.noteColor, 'rgb(26, 26, 31)', 'the warning copy stays neutral, readable text');
     assert.equal(max.recommended, null, 'Max Capacity is never Recommended');
     assert.equal(max.applied, null);
     assert.doesNotMatch(max.text, /Max Capacity profile|Floor \d|Stacked/i, 'no Floor/Stacked or profile-count chips');
-    assert.notEqual(max.noteColor, fresh.statusStyle.color, 'the relaxed warning is visually distinct from Complete');
+    const maxScene = await sceneState('max-capacity');
+    assert.equal(maxScene.showsOption, true, 'E: the 3D scene shows the Max Capacity layout');
+    assert.equal(maxScene.showsPack, false, 'E: the scene no longer shows the committed Balanced layout');
+    assert.equal(maxScene.transient, true, 'E: the scene is marked as a transient preview');
+    showsInspector(maxScene, 'Max Capacity preview');
+    assert.equal(await packJson(), balancedPack, 'F: Pack.cases is unchanged while browsing');
+    assert.deepEqual(await changesSince(browseStart), ['autoPackResults'],
+      'F: browsing writes only transient Results state (no Pack, history, autosave or lastEdited write)');
+
+    // Minimize, close and reopen restore and resume the preview from the same viewed option.
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    assert.equal((await sceneState('max-capacity')).showsPack, true, 'minimized Results restore the committed scene');
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    assert.equal((await sceneState('max-capacity')).showsOption, true, 'expanding resumes the viewed option');
+    await page.locator('[data-focus-key="results-close"]').click();
+    const closedScene = await sceneState('max-capacity');
+    assert.equal(closedScene.showsPack, true, 'closed Results restore the committed scene');
+    assert.equal(closedScene.summary, balancedScene.summary, 'closed Results restore canonical Load Summary');
+    assert.equal(closedScene.gauge, balancedScene.gauge, 'closed Results restore canonical Space Utilization');
+    await page.locator('#btn-autopack-results-reopen').click();
+    assert.equal((await view()).counter, 'Option 2 of 3', 'reopening keeps the viewed option');
+    assert.equal((await sceneState('max-capacity')).showsOption, true, 'and its live preview');
+
+    // G: the left arrow restores Balanced, the committed scene and canonical Inspector values.
+    const back = await step('results-prev');
+    assert.equal(back.counter, 'Option 1 of 3', 'G: the left arrow returns to Balanced');
+    assert.equal(back.applied, 'Applied');
+    const backScene = await sceneState('default');
+    assert.equal(backScene.showsPack, true, 'G: the committed Balanced scene is restored');
+    assert.equal(backScene.transient, false);
+    assert.equal(backScene.summary, balancedScene.summary, 'G: canonical Load Summary returns');
+    assert.equal(backScene.gauge, balancedScene.gauge, 'G: canonical Space Utilization returns');
+    assert.equal(await packJson(), balancedPack, 'G: still no Pack change');
+    assert.deepEqual([...new Set(await changesSince(browseStart))], ['autoPackResults'],
+      'minimize, close, reopen and browsing only ever wrote Results state');
 
     await step('results-next');
     const floor = await step('results-next');
     assert.equal(floor.counter, 'Option 3 of 3');
     assert.equal(floor.status, 'Partial');
     assert.match(floor.statusClass, /tp3d-autopack-results__status--partial/);
-    assert.notDeepEqual(floor.statusStyle, fresh.statusStyle, 'Partial and Complete look different');
+    assert.notDeepEqual(floor.statusStyle, balanced.statusStyle, 'Partial and Complete look different');
     assert.equal(floor.recommended, null);
     assert.equal(floor.applied, null);
+    assert.equal((await sceneState('floor-first')).showsOption, true, 'every browsed option previews its own layout');
 
     await page.locator('[data-focus-key="results-apply"]').click();
     const floorApplied = await view();
     assert.equal(floorApplied.counter, 'Option 3 of 3', 'an explicit browse stays put after Apply');
     assert.equal(floorApplied.applied, 'Applied', 'Floor first is now Applied');
     assert.equal(floorApplied.recommended, null, 'Applied does not make it Recommended');
-    const balanced = await step('results-prev');
-    assert.equal(balanced.recommended, 'Recommended', 'Balanced stays the run Recommended plan');
-    assert.equal(balanced.applied, null, 'without being Applied');
+    const floorScene = await sceneState('floor-first');
+    assert.equal(floorScene.showsPack && floorScene.showsOption && !floorScene.transient, true,
+      'after Apply the scene is the committed Pack again');
 
-    await step('results-prev');
-    await page.locator('[data-focus-key="results-apply"]').click();
-    const relaxed = () => page.evaluate(() => {
+    // Undo/Redo during a preview step only the committed Pack, end the preview
+    // on the new Applied option, and leave the restored scene capturable.
+    const floorPackJson = await packJson();
+    await page.evaluate(() => {
       const p = window.probe;
-      const row = document.querySelector('#inspector-body [data-role="relaxed-handling-profile"]');
-      const stats = p.PackLibrary.computeStats(p.PackLibrary.getById(p.StateStore.get('currentPackId')));
-      return { text: row ? row.textContent.replace(/\s+/g, ' ').trim() : null, count: stats.maxCapacityProfileCount };
+      p.settledCalls = 0;
+      p.EditorUI.setPreviewViewSettledCallback(() => { p.settledCalls += 1; });
     });
-    const afterMax = await relaxed();
-    assert.ok(afterMax.count > 0, 'applying Max Capacity marks the packed Cases');
-    assert.equal(afterMax.text,
-      `Relaxed handling profile ${afterMax.count} ${afterMax.count === 1 ? 'Case' : 'Cases'} Still part of the applied Max Capacity plan.`,
-      'the Inspector shows the canonical membership count');
+    const historyStep = name => page.evaluate(async action => {
+      const p = window.probe;
+      const before = p.settledCalls;
+      p.StateStore[action]();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      return { capturable: Boolean(p.EditorUI.getPreviewScene()), settled: p.settledCalls - before };
+    }, name);
+    assert.equal((await step('results-prev')).title, 'Max Capacity');
+    assert.equal((await sceneState('max-capacity')).transient, true, 'Max Capacity previews over the applied Floor first');
+    const undo = await historyStep('undo');
+    const afterUndo = await view();
+    assert.equal(afterUndo.counter, 'Option 1 of 3', 'Undo lands the view on the new Applied option (Balanced)');
+    assert.equal(afterUndo.applied, 'Applied');
+    const undoScene = await sceneState('default');
+    assert.equal(undoScene.showsPack && !undoScene.transient, true, 'the canonical scene is restored after Undo');
+    assert.equal(await packJson(), balancedPack, 'Undo stepped only the committed Pack (back to Balanced)');
+    assert.equal(undo.capturable, true, 'the restored scene is capture authority again (no refused thumbnail)');
+    assert.ok(undo.settled > 0, 'ending the preview re-requests the thumbnail freshness check');
+    await step('results-next');
+    assert.equal((await sceneState('max-capacity')).transient, true, 'Max Capacity previews over Balanced');
+    const redo = await historyStep('redo');
+    const afterRedo = await view();
+    assert.equal(afterRedo.counter, 'Option 3 of 3', 'Redo lands the view on the new Applied option (Floor first)');
+    assert.equal(afterRedo.applied, 'Applied');
+    const redoScene = await sceneState('floor-first');
+    assert.equal(redoScene.showsPack && !redoScene.transient, true, 'the canonical scene is restored after Redo');
+    assert.equal(await packJson(), floorPackJson, 'Redo stepped only the committed Pack (back to Floor first)');
+    assert.equal(redo.capturable, true);
+    assert.ok(redo.settled > 0);
+    await page.evaluate(() => window.probe.EditorUI.setPreviewViewSettledCallback(null));
+
+    const maxBetween = await step('results-prev');
+    assert.equal(maxBetween.counter, 'Option 2 of 3');
+    await step('results-prev');
+    const recommendedOnly = await view();
+    assert.equal(recommendedOnly.recommended, 'Recommended', 'Balanced stays the run Recommended plan');
+    assert.equal(recommendedOnly.applied, null, 'without being Applied');
+
+    // Starting view preference over the real render: each simulated NEW run
+    // (fresh runId, nothing browsed) opens per the saved preference.
+    const startState = () => page.evaluate(() => {
+      const r = window.probe.StateStore.get('autoPackResults');
+      return { cases: window.probe.casesJson(), selectedId: r.selectedId, ids: r.options.map(option => option.id) };
+    });
+    const beforeStart = await startState();
+    const setStartView = startView => page.evaluate(value => {
+      const p = window.probe;
+      p.StateStore.set({ preferences: { ...p.StateStore.get('preferences'), autoPackResultsStartView: value } },
+        { skipHistory: true });
+    }, startView);
+    const newRun = async startView => {
+      await setStartView(startView);
+      await page.evaluate(value => {
+        const p = window.probe;
+        const r = p.StateStore.get('autoPackResults');
+        p.StateStore.set({ autoPackResults: { ...r, runId: `start-${value}`, viewIndex: undefined } }, { skipHistory: true });
+      }, startView);
+      return view();
+    };
+    const startFirst = await newRun('first');
+    assert.equal(startFirst.counter, 'Option 1 of 3', 'First option opens on Balanced');
+    assert.equal(startFirst.title, 'Balanced');
+    const startApplied = await newRun('applied');
+    assert.equal(startApplied.counter, 'Option 3 of 3', 'Applied option opens on the committed Floor first plan');
+    assert.equal(startApplied.applied, 'Applied');
+    const startRecommended = await newRun('recommended');
+    assert.equal(startRecommended.counter, 'Option 1 of 3', 'Recommended option opens on the run selectedId');
+    assert.equal(startRecommended.recommended, 'Recommended');
+    assert.equal(startRecommended.applied, null, 'the Recommended plan is not Applied');
+    await setStartView('applied');
+    assert.equal((await view()).counter, 'Option 1 of 3', 'a preference change never moves an open run');
+    assert.deepEqual(await startState(), beforeStart,
+      'starting views change no Pack cargo, selectedId or stored option order');
+
+    // H: Max Capacity commits only when Apply is clicked.
+    const floorPack = await packJson();
+    const maxAgain = await step('results-next');
+    assert.equal(maxAgain.title, 'Max Capacity');
+    assert.equal((await sceneState('max-capacity')).showsOption, true);
+    assert.equal(await packJson(), floorPack, 'H: viewing Max Capacity commits nothing');
+    // The previewed scene is not the Pack: scene edits are refused, selection still works.
+    const refused = await page.evaluate(async () => {
+      const p = window.probe;
+      const id = p.PackLibrary.getById(p.StateStore.get('currentPackId')).cases[0].id;
+      p.InteractionManager.setSelection([id]);
+      const before = p.casesJson();
+      const toastsBefore = p.toasts.length;
+      p.InteractionManager.rotateSelection('y', Math.PI / 2);
+      p.InteractionManager.deleteSelection();
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const result = { unchanged: p.casesJson() === before, selected: p.selection(), toasts: p.toasts.slice(toastsBefore) };
+      p.InteractionManager.setSelection([]);
+      return { ...result, stillPreview: p.CaseScene.isTransientPreview() };
+    });
+    assert.equal(refused.unchanged, true, 'rotate and delete never commit from a previewed scene');
+    assert.equal(refused.selected.length, 1, 'selection still works during a preview');
+    assert.ok(refused.toasts.some(text => /Previewing an AutoPack option\. Apply it or return to the Applied option to edit cargo\./.test(text)),
+      `the refusal explains itself (${JSON.stringify(refused.toasts)})`);
+    assert.equal(refused.stillPreview, true, 'selecting keeps the preview');
+    const applyStart = await changeCount();
+    await page.locator('[data-focus-key="results-apply"]').click();
+    const maxApplied = await view();
+    assert.equal(maxApplied.applied, 'Applied', 'H: Apply commits Max Capacity');
+    assert.notEqual(await packJson(), floorPack, 'H: the Pack now holds the Max Capacity layout');
+    assert.equal((await changesSince(applyStart)).filter(keys => keys.split(',').includes('packLibrary')).length, 1,
+      'H: Apply is one canonical Pack write');
+    const maxCommitted = await sceneState('max-capacity');
+    assert.equal(maxCommitted.showsPack && maxCommitted.showsOption && !maxCommitted.transient, true,
+      'H: the committed scene now is the Max Capacity layout');
+
+    assert.equal(maxApplied.note, 'Handling rules relaxed. Review before transport.',
+      'the applied Max Capacity still warns on the Results card');
+    const profile = () => page.evaluate(() => {
+      const p = window.probe;
+      const body = document.querySelector('#inspector-body');
+      const stats = p.PackLibrary.computeStats(p.PackLibrary.getById(p.StateStore.get('currentPackId')));
+      return {
+        notice: Boolean(body.querySelector('[data-role="relaxed-handling-profile"]')) ||
+          /Relaxed handling profile|Still part of the applied Max Capacity plan/.test(body.textContent),
+        summary: (body.querySelector('.tp3d-editor-stats-card')?.textContent || '').replace(/\s+/g, ' ').trim(),
+        count: stats.maxCapacityProfileCount,
+      };
+    });
+    const afterMax = await profile();
+    assert.ok(afterMax.count > 0, 'applying Max Capacity still marks the packed Cases in canonical stats');
+    assert.equal(afterMax.notice, false, 'the Inspector repeats no relaxed-profile notice');
+    assert.match(afterMax.summary, /^Load Summary In truck ?\d+ Staged ?\d+ Total weight ?[\d.,]+ ?(lb|kg)$/,
+      'Load Summary shows only In truck, Staged and Total weight');
+
+    const darkNote = await page.evaluate(() => {
+      document.documentElement.setAttribute('data-theme', 'dark');
+      const note = document.querySelector('[data-role="autopack-results-panel"] .tp3d-autopack-results__relaxed-note');
+      const colors = {
+        icon: getComputedStyle(note.querySelector('i')).color,
+        text: getComputedStyle(note).color,
+        success: getComputedStyle(document.documentElement).getPropertyValue('--success-readable').trim(),
+      };
+      document.documentElement.setAttribute('data-theme', 'light');
+      return colors;
+    });
+    assert.equal(darkNote.icon, 'rgb(255, 189, 102)', 'dark theme warning icon uses the readable warning token');
+    assert.equal(darkNote.text, 'rgb(255, 255, 255)', 'dark theme warning copy stays neutral text');
+    assert.equal(darkNote.success, '#6ee7b7', 'dark theme switches the success text token');
 
     await page.evaluate(() => {
       window.probe.StateStore.set({ autoPackResults: null }, { skipHistory: true });
       window.probe.EditorUI.render();
     });
     assert.equal(await page.locator('[data-role="autopack-results-panel"]').count(), 0, 'Results are gone (as after a reload)');
-    assert.deepEqual(await relaxed(), afterMax, 'the indication derives from the Pack, not from Results');
+    assert.deepEqual(await profile(), afterMax, 'the membership count derives from the Pack, not from Results');
 
     await page.evaluate(() => window.probe.StateStore.undo());
-    const undone = await relaxed();
-    assert.equal(undone.count, 0);
-    assert.equal(undone.text, null, 'the indication disappears when no packed Case carries the profile');
-
-    await page.evaluate(() => {
-      document.documentElement.setAttribute('data-theme', 'dark');
-      window.probe.StateStore.redo();
-    });
-    const dark = await relaxed();
-    assert.equal(dark.text, afterMax.text);
-    const darkColors = await page.evaluate(() => {
-      const row = document.querySelector('#inspector-body [data-role="relaxed-handling-profile"]');
-      return { row: getComputedStyle(row).color, success: getComputedStyle(document.documentElement).getPropertyValue('--success-readable').trim() };
-    });
-    assert.equal(darkColors.row, 'rgb(255, 189, 102)', 'dark theme uses the readable warning token');
-    assert.equal(darkColors.success, '#6ee7b7', 'dark theme switches the success text token');
+    const undone = await profile();
+    assert.equal(undone.count, 0, 'Undo returns the count to zero');
+    assert.equal(undone.notice, false);
+    await page.evaluate(() => window.probe.StateStore.redo());
+    assert.equal((await profile()).count, afterMax.count, 'Redo restores the canonical count');
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

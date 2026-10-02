@@ -118,6 +118,7 @@ async function withFixture(options, run) {
   const packs = new Map([['a', packA], ['b', packB]]);
   const caseData = { id: 'c', name: 'Box', dimensions: { length: 10, width: 10, height: 10 }, weight: 10, volume: 1000, shape: 'box', orientationLock: 'upright', canFlip: false };
   const state = { currentPackId: 'a', currentScreen: 'editor', autoPackResults: { previous: true } };
+  if (options.preferences !== undefined) state.preferences = options.preferences;
   const listeners = new Set();
   const stateWrites = [];
   const StateStore = {
@@ -627,6 +628,42 @@ test('10B: the status is the only running-progress channel; outcome, warning, an
         assert.ok(shown.some(([message, type]) => message === toast[0] && type === toast[1]), `${name}: keeps ${toast[0]}`);
       }
     });
+  }
+});
+
+test('Loading screen OFF suppresses only the status card; run, animation, lifecycle, commit, Results and toasts remain', async () => {
+  const engineSrc = await fs.readFile(engineUrl, 'utf8');
+  assert.equal(engineSrc.split('showAutoPackLoadingOverlay === false').length - 1, 1,
+    'one decision point reads the preference');
+  assert.equal(engineSrc.split("StateStore.get('preferences')").length - 1, 1, 'and nothing else in the engine reads preferences');
+  for (const [label, preferences, cards] of [
+    ['no saved preferences', undefined, 1],
+    ['legacy record without the field', { theme: 'light' }, 1],
+    ['ON', { showAutoPackLoadingOverlay: true }, 1],
+    ['OFF', { showAutoPackLoadingOverlay: false }, 0],
+  ]) {
+    for (const count of [4, 301]) {
+      await withFixture({ caseCount: count, tween: 'none', preferences }, async f => {
+        const promise = f.engine.pack();
+        assert.equal(f.lifecycle.isBusy(), true, `${label}/${count}: AutoPack still owns the operation lifecycle`);
+        await f.initialFrames();
+        await f.finish(promise);
+        assert.equal(f.overlays.length, cards, `${label}/${count}: loading status cards created`);
+        const metrics = f.diagnostics.at(-1)?.animation;
+        assert.equal(metrics?.skipped, count === 301, `${label}/${count}: cargo placement animation is unchanged`);
+        assert.equal(metrics?.strategy, count === 301 ? 'instant' : 'batched');
+        assert.equal(f.packs.get('a').cases.filter(item => item.placement === 'packed').length, count,
+          `${label}/${count}: the final Pack commit still happens`);
+        assert.equal(f.packWrites.length, 1, `${label}/${count}: exactly one Pack commit`);
+        assert.equal(f.objects.get('i0').position.x, 5000, `${label}/${count}: the scene reaches the committed pose`);
+        assert.equal(f.state.autoPackResults?.packId, 'a', `${label}/${count}: AutoPack Results are published`);
+        assert.equal(f.lifecycle.isBusy(), false, `${label}/${count}: the operation is released`);
+        assert.ok(f.toasts.some(([message, type]) =>
+          message === `Packed ${count} of ${count} cases (25.0% volume).` && type === 'success'),
+        `${label}/${count}: the outcome toast remains`);
+        assert.equal(f.clock.jobs.size, 0, `${label}/${count}: nothing is left scheduled`);
+      });
+    }
   }
 });
 

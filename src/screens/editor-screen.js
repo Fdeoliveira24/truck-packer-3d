@@ -189,17 +189,37 @@ export function getAppliedAutoPackOption(pack, results, getCaseById) {
   return null;
 }
 
-// Display order only: Max Capacity leads the carousel as the relaxed handling
-// comparison, then the standard plans in their solver order. The stored
-// options keep the solver order, which the engine dedupe relies on so an
-// identical standard plan always outranks Max Capacity. Ranking, selectedId
-// and Applied matching never read this order.
+// Display order only: Balanced (the first standard plan in solver order) leads,
+// Max Capacity follows as the relaxed handling comparison, then the remaining
+// standard plans in their solver order. The stored options keep the solver
+// order, which the engine dedupe relies on so an identical standard plan always
+// outranks Max Capacity. Ranking, selectedId and Applied matching never read
+// this order.
 export function orderAutoPackResultOptions(options) {
   const list = Array.isArray(options) ? options : [];
+  const standard = list.filter(option => !option || option.id !== 'max-capacity');
   return [
+    ...standard.slice(0, 1),
     ...list.filter(option => option && option.id === 'max-capacity'),
-    ...list.filter(option => !option || option.id !== 'max-capacity'),
+    ...standard.slice(1),
   ];
+}
+
+// Initial presentation only: the display index a Results run first opens on,
+// from the user's starting-view preference over the display-ordered options.
+// 'applied' needs a uniquely resolved Applied option; 'recommended' follows the
+// run's selectedId and never lands on Max Capacity. Anything unresolved falls
+// back to the first option. Ranking, selectedId, Applied matching and the Pack
+// are only read, never changed.
+export function resolveAutoPackResultsStartIndex(options, results, appliedOption, startView) {
+  const list = Array.isArray(options) ? options : [];
+  let index = -1;
+  if (startView === 'applied' && appliedOption) {
+    index = list.indexOf(appliedOption);
+  } else if (startView === 'recommended' && results) {
+    index = list.findIndex(option => option && option.id === results.selectedId && option.id !== 'max-capacity');
+  }
+  return Math.max(0, index);
 }
 
 function withoutPackedProfile(inst) {
@@ -955,6 +975,7 @@ export function createCaseScene({
     }
 
     let syncedPack = null;
+    let syncedTransientPreview = false;
 
     function clear() {
       syncedPack = null;
@@ -971,8 +992,11 @@ export function createCaseScene({
       oogSet.clear();
     }
 
-    function sync(pack) {
+    // transientPreview marks a presentation-only layout (a browsed AutoPack
+    // Results option) that is not the committed Pack. Every ordinary sync clears it.
+    function sync(pack, { transientPreview = false } = {}) {
       syncedPack = null;
+      syncedTransientPreview = false;
       const scene = SceneManager.getScene();
       if (!scene) return;
       if (!pack) {
@@ -1016,6 +1040,7 @@ export function createCaseScene({
       refreshGizmo();
       if (pendingPoseWatcher) pendingPoseWatcher();
       syncedPack = pack;
+      syncedTransientPreview = Boolean(transientPreview);
     }
 
     function buildSignature(inst, caseData) {
@@ -1964,7 +1989,11 @@ export function createCaseScene({
     function applyOOGHighlights() {
       oogSet.clear();
       const packId = StateStore.get('currentPackId');
-      const pack = packId ? PackLibrary.getById(packId) : null;
+      // Staged state comes from the layout the scene shows (a transient Results
+      // preview included), so a case staged only in that layout is not flagged.
+      const pack = syncedPack && syncedPack.id === packId
+        ? syncedPack
+        : (packId ? PackLibrary.getById(packId) : null);
       const instanceById = new Map(
         pack && Array.isArray(pack.cases)
           ? pack.cases.filter(inst => inst && inst.id).map(inst => [inst.id, inst])
@@ -2052,6 +2081,7 @@ export function createCaseScene({
       clear,
       sync,
       getSyncedPack: () => syncedPack,
+      isTransientPreview: () => syncedTransientPreview,
       matchesCommittedPoses,
       beginExportCapture,
       getVisualSignature,
@@ -2096,11 +2126,21 @@ export function createInteractionManager({
 }) {
   const InteractionManager = (() => {
     // True while a mutating editor operation (AutoPack / Unpack / Truck Change /
-    // preview capture) owns the editor. Direct scene mutations must not run then —
-    // but camera orbit/pan/zoom (OrbitControls, separate from these handlers) and
+    // preview capture) owns the editor, or while the scene shows a transient
+    // AutoPack Results preview (not the committed Pack, so no scene move may
+    // commit from it). Direct scene mutations must not run then — but camera
+    // orbit/pan/zoom (OrbitControls, separate from these handlers) and
     // hover/selection stay available.
+    function scenePreviewOnly() {
+      return Boolean(CaseScene.isTransientPreview && CaseScene.isTransientPreview());
+    }
     function operationsBusy() {
-      return Boolean(OperationLifecycle && OperationLifecycle.isBusy());
+      return Boolean(OperationLifecycle && OperationLifecycle.isBusy()) || scenePreviewOnly();
+    }
+    function showOperationsBusyToast() {
+      UIComponents.showToast(scenePreviewOnly()
+        ? 'Previewing an AutoPack option. Apply it or return to the Applied option to edit cargo.'
+        : 'Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
     }
     const raycaster = new THREE.Raycaster();
     const pointer = new THREE.Vector2();
@@ -2433,7 +2473,7 @@ export function createInteractionManager({
      */
     function rotateSelection(axis, delta) {
       if (operationsBusy()) {
-        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        showOperationsBusyToast();
         return;
       }
       if (provisionalPoseOwnsSelection()) return;
@@ -2526,7 +2566,7 @@ export function createInteractionManager({
      */
     function nudgeSelection(axis, deltaInches) {
       if (operationsBusy()) {
-        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        showOperationsBusyToast();
         return;
       }
       if (provisionalPoseOwnsSelection()) return;
@@ -2576,7 +2616,7 @@ export function createInteractionManager({
      */
     function moveSelectionVertical(mode) {
       if (operationsBusy()) {
-        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        showOperationsBusyToast();
         return;
       }
       // A live stroke owns the pose; the vertical move waits for its release.
@@ -3758,7 +3798,7 @@ export function createInteractionManager({
 
     function deleteSelection() {
       if (operationsBusy()) {
-        UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
+        showOperationsBusyToast();
         return;
       }
       const ids = getSelection();
@@ -3917,7 +3957,22 @@ export function createEditorScreen({
           CaseScene.rebindPreviewPack(notification.previousPack, notification.pack)) {
         previewScene = { ...previewScene, pack: notification.pack };
       }
+      // Undo/Redo step only the committed Pack. Once that notification settles,
+      // a Results view left previewing a non-Applied option lands on the (new)
+      // Applied option, so the canonical scene shows and can be captured.
+      if (changes._undo || changes._redo) queueMicrotask(landAutoPackResultsViewOnApplied);
     });
+
+    // Ends a transient Results preview by moving the view to the Applied option
+    // (runId-guarded, Results state only — no Pack, history or lastEdited write).
+    // Shared by Undo/Redo and visual export.
+    function landAutoPackResultsViewOnApplied() {
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      if (!getAutoPackResultsPreviewPack(pack)) return;
+      const view = resolveAutoPackResultsView(pack);
+      const appliedIndex = view.options.indexOf(view.currentOption);
+      if (appliedIndex >= 0) patchAutoPackResultsState({ viewIndex: appliedIndex }, view.results.runId);
+    }
 
     function getPreviewScene() {
       if (!previewScene || !CoreStorage.isScopeContextCurrent(previewScene.scope) ||
@@ -3939,6 +3994,10 @@ export function createEditorScreen({
     // focus/orbit in motion: camera movement never changes cargo authority.
     function getExportScene() {
       if (OperationLifecycle && OperationLifecycle.isBusy()) return null;
+      // Visual exports always show the committed Pack: a transient Results
+      // preview ends first (the view lands on the Applied option, re-rendering
+      // the committed scene), then authority resolves exactly as before.
+      if (CaseScene.isTransientPreview()) landAutoPackResultsViewOnApplied();
       const scene = getPreviewScene();
       if (!scene || !isViewOwnerCurrent() || !CaseScene.matchesCommittedPoses(scene.pack)) return null;
       return scene;
@@ -4226,6 +4285,69 @@ export function createEditorScreen({
       StateStore.set({ autoPackResults: { ...current, ...patch } }, { skipHistory: true });
     }
 
+    // The starting view is resolved once per run, the first time that run is
+    // shown, so a later preference change, Apply, Undo or close/reopen never
+    // moves an unbrowsed carousel. UI-only: never persisted or written to Results.
+    let autoPackResultsStart = null;
+
+    function getAutoPackResultsStartIndex(results, options, appliedOption) {
+      if (autoPackResultsStart && autoPackResultsStart.runId === results.runId) return autoPackResultsStart.index;
+      const index = resolveAutoPackResultsStartIndex(options, results, appliedOption,
+        PreferencesManager.get().autoPackResultsStartView);
+      autoPackResultsStart = { runId: results.runId, index };
+      return index;
+    }
+
+    // The single viewed-option resolution shared by the Results card, the 3D
+    // scene and the Inspector, so they can never show different options.
+    function resolveAutoPackResultsView(pack) {
+      const results = getAutoPackResultsState();
+      const options = orderAutoPackResultOptions(results && results.options);
+      if (!pack || !results || results.closed || results.packId !== pack.id || !options.length) {
+        return { results, options, open: false };
+      }
+      const currentOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
+      const hasAlternates = options.length > 1;
+      // Carousel view index is UI-only view state (never persisted, never part of
+      // the result payload). Until the user browses, the view stays on the run's
+      // starting option (the AutoPack Results starting view preference); once
+      // Prev/Next writes an explicit index it is kept. Always clamped so a stale
+      // index can never point out of bounds.
+      const selectedIndex = Math.max(0, options.findIndex(option => option === currentOption));
+      const startIndex = getAutoPackResultsStartIndex(results, options, currentOption);
+      const requestedIndex = Number.isInteger(results.viewIndex) ? results.viewIndex : startIndex;
+      const viewIndex = hasAlternates
+        ? Math.min(Math.max(0, requestedIndex), options.length - 1)
+        : selectedIndex;
+      const viewedOption = hasAlternates ? (options[viewIndex] || options[0]) : (currentOption || options[0]);
+      return { results, options, open: true, currentOption, hasAlternates, viewIndex, viewedOption };
+    }
+
+    // Transient live preview: while the open, expanded Results card views a
+    // non-Applied option of a current (not Outdated) run, the scene and the
+    // Inspector totals show that option through the same projection Apply
+    // commits. Presentation only — the Pack, history, autosave, thumbnail and
+    // export never see it (scene authority is published only for the committed
+    // Pack). Anything else, or an operation owning the scene, shows the Pack.
+    let autoPackResultsPreview = null;
+
+    function getAutoPackResultsPreviewPack(pack) {
+      const operation = OperationLifecycle && OperationLifecycle.currentOperation();
+      if (!pack || (operation && operation.busy && operation.kind !== 'capturingPreview')) return null;
+      const results = getAutoPackResultsState();
+      const caseLibrary = StateStore.get('caseLibrary');
+      const memo = autoPackResultsPreview;
+      if (memo && memo.pack === pack && memo.results === results && memo.caseLibrary === caseLibrary) {
+        return memo.previewPack;
+      }
+      const view = resolveAutoPackResultsView(pack);
+      const option = view.open && view.results.minimized !== true && view.currentOption &&
+        view.viewedOption !== view.currentOption ? view.viewedOption : null;
+      const cases = option ? buildAppliedAutoPackCases(option, cloneAutoPackCases, pack.cases) : null;
+      autoPackResultsPreview = { pack, results, caseLibrary, previewPack: cases ? { ...pack, cases } : null };
+      return autoPackResultsPreview.previewPack;
+    }
+
     function isAutoPackResultsStale(pack, results) {
       return !getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
     }
@@ -4430,35 +4552,21 @@ export function createEditorScreen({
       const previousFocus = captureEditorFocus(getAutoPackResultsHost()?.querySelector('[data-role="autopack-results-panel"]'));
       removeAutoPackResultsPanel();
       const host = getAutoPackResultsHost();
-      const results = getAutoPackResultsState();
-      const options = orderAutoPackResultOptions(results && results.options);
+      const view = resolveAutoPackResultsView(pack);
+      const { results, options } = view;
       syncAutoPackResultsReopen(pack, results, options);
-      if (!host || !pack || !results || results.closed || results.packId !== pack.id || !options.length) {
+      if (!host || !view.open) {
         // Closing hands focus to the restore control that reverses it.
         const closedFocus = resultsReopenBtn && !resultsReopenBtn.hidden ? resultsReopenBtn : btnAutopack;
         restoreEditorFocus(previousFocus, null, closedFocus);
         return;
       }
 
-      const currentOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
+      const { currentOption, hasAlternates, viewIndex, viewedOption } = view;
       const stale = !currentOption;
-      const hasAlternates = options.length > 1;
       // minimized is UI-only panel state (never persisted, never in the result
       // payload): collapse the panel to a small draggable chip separate from close.
       const minimized = results.minimized === true;
-      // Carousel view index is UI-only view state (never persisted, never part of
-      // the result payload). Until the user browses, the view follows the Applied
-      // option (else the run's Recommended plan); once Prev/Next writes an explicit
-      // index it is kept. Always clamped so a stale index can never point out of bounds.
-      const selectedIndex = Math.max(0, options.findIndex(option => option === currentOption));
-      const recommendedIndex = options.findIndex(option =>
-        option.id === results.selectedId && option.id !== 'max-capacity');
-      const defaultIndex = currentOption ? selectedIndex : Math.max(0, recommendedIndex);
-      const requestedIndex = Number.isInteger(results.viewIndex) ? results.viewIndex : defaultIndex;
-      const viewIndex = hasAlternates
-        ? Math.min(Math.max(0, requestedIndex), options.length - 1)
-        : selectedIndex;
-      const viewedOption = hasAlternates ? (options[viewIndex] || options[0]) : (currentOption || options[0]);
 
       // Position + drag are shared by the full panel and the minimized chip, so
       // both reuse the one existing drag/position system (no second drag system).
@@ -4925,6 +5033,8 @@ export function createEditorScreen({
       selectionRenderPending = false;
       if (StateStore.get('currentScreen') !== 'editor') {
         setValidationPopoverOpen(false);
+        // Leaving the Editor ends a transient Results preview: back to the Pack.
+        if (CaseScene.isTransientPreview()) CaseScene.sync(PackLibrary.getById(StateStore.get('currentPackId')));
         return;
       }
       ensureScene();
@@ -4949,7 +5059,11 @@ export function createEditorScreen({
       }
 
       SceneManager.setTruck(pack.truck);
-      CaseScene.sync(pack);
+      // The scene follows the Results card's viewed option (transient preview),
+      // else the committed Pack. Scene authority below stays Pack-only.
+      const wasResultsPreview = CaseScene.isTransientPreview();
+      const resultsPreviewPack = getAutoPackResultsPreviewPack(pack);
+      CaseScene.sync(resultsPreviewPack || pack, { transientPreview: Boolean(resultsPreviewPack) });
       if (!isViewOwnerCurrent()) {
         invalidateViewOwner();
         const requestedView = normalizeEditorView(pack.editorView) ||
@@ -4977,6 +5091,9 @@ export function createEditorScreen({
           ? previousPreviewScene
           : { pack, visualSignature, scope: CoreStorage.captureScopeContext(), scene: SceneManager.getScene() };
       }
+      // A preview refuses thumbnail capture; when it ends on the committed Pack,
+      // re-request the freshness check so that Pack's thumbnail never stays stale.
+      if (wasResultsPreview && previewScene && onPreviewViewSettled) queueMicrotask(() => onPreviewViewSettled());
       if (pendingViewSave) queueMicrotask(() => persistSettledView());
     }
 
@@ -6038,9 +6155,10 @@ export function createEditorScreen({
       if (existing) existing.remove();
       if (!pack) return;
       const prefs = PreferencesManager.get();
+      // Follows the layout the scene shows, a transient Results preview included.
       const result = isAutoPackLoadingCargo()
         ? { state: 'updating' }
-        : buildSpaceUtilizationResult(pack, PackLibrary);
+        : buildSpaceUtilizationResult(getAutoPackResultsPreviewPack(pack) || pack, PackLibrary);
       const gauge = createSpaceUtilizationGauge({
         result,
         detail: 'standard',
@@ -7048,18 +7166,11 @@ export function createEditorScreen({
       statsEl.className = 'card';
       statsEl.classList.add('tp3d-editor-stats-card');
       const autoPackLoading = isAutoPackLoadingCargo();
-      const utilization = autoPackLoading ? null : buildSpaceUtilizationResult(pack, PackLibrary);
-      // Contract C: packed Cases that still carry the applied Max Capacity
-      // profile, from canonical Pack stats. Membership only — not violations,
-      // and not a claim that each Case needed a relaxed rule.
-      const relaxedProfileCount = Number(stats.maxCapacityProfileCount) || 0;
-      const relaxedProfileRow = relaxedProfileCount > 0
-        ? `<div class="tp3d-editor-relaxed-profile" data-role="relaxed-handling-profile">
-                <span class="tp3d-editor-relaxed-profile__label"><i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>Relaxed handling profile</span>
-                <b class="tp3d-editor-relaxed-profile__value">${relaxedProfileCount} ${relaxedProfileCount === 1 ? 'Case' : 'Cases'}</b>
-                <span class="tp3d-editor-relaxed-profile__note">Still part of the applied Max Capacity plan.</span>
-              </div>`
-        : '';
+      // In/Staged follow the layout the scene shows (a transient Results preview
+      // included). The Max Capacity handling warning lives only on the Results
+      // card; Load Summary carries no relaxed-profile notice.
+      const utilization = autoPackLoading ? null
+        : buildSpaceUtilizationResult(getAutoPackResultsPreviewPack(pack) || pack, PackLibrary);
       statsEl.innerHTML = autoPackLoading ? `
               <div class="tp3d-editor-fw-semibold">Load Summary</div>
               <div class="muted tp3d-editor-fs-sm tp3d-editor-stats-updating" data-role="load-summary-updating">Updating…</div>
@@ -7068,7 +7179,6 @@ export function createEditorScreen({
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">In truck</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${utilization.loadedCount || 0}</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Staged</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${utilization.stagedCount || 0}</b></div>
               <div class="row space-between"><span class="muted tp3d-editor-fs-sm">Total weight</span><b class="tp3d-text-primary tp3d-editor-fs-sm">${Utils.formatWeight(stats.totalWeight, prefs.units.weight)}</b></div>
-              ${relaxedProfileRow}
             `;
 
       card.appendChild(shapeRow);

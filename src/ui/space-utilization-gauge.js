@@ -389,6 +389,10 @@ function appendHeadline(documentRef, parent, presentation) {
     appendTextElement(documentRef, headline, 'span', 'tp3d-util-gauge__occupied-label', 'Occupied');
   } else {
     headline.textContent = presentation.headline;
+    // With no measured analysis "Updating…" is a status line, not a readout.
+    if (presentation.state === 'updating' && presentation.chartPercentage === null) {
+      headline.classList.add('tp3d-util-gauge__headline--status');
+    }
   }
   parent.appendChild(headline);
   return headline;

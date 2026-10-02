@@ -3092,7 +3092,9 @@ export function createSettingsOverlay({
     render({ source: 'setResourcesSubView' });
   }
 
-  function savePrefsFromForm({ length, weight, theme, labelSize, hiddenOpacity }) {
+  function savePrefsFromForm({
+    length, weight, theme, labelSize, hiddenOpacity, showAutoPackLoadingOverlay, autoPackResultsStartView,
+  }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
     next.units.length = length;
@@ -3100,6 +3102,8 @@ export function createSettingsOverlay({
     next.theme = theme;
     next.labelFontSize = Utils.clamp(Number(labelSize) || 12, 8, 24);
     next.hiddenCaseOpacity = Utils.clamp(Number(hiddenOpacity) || 0.3, 0, 1);
+    next.showAutoPackLoadingOverlay = showAutoPackLoadingOverlay !== false;
+    next.autoPackResultsStartView = autoPackResultsStartView;
     PreferencesManager.set(next);
     PreferencesManager.applyTheme(next.theme);
     UIComponents.showToast('Preferences saved', 'success');
@@ -5066,6 +5070,59 @@ export function createSettingsOverlay({
       labelSize.classList.add('tp3d-prefs-number-input');
       prefsCard.appendChild(row('Label Font Size', labelSize));
 
+      const autoPackHeading = doc.createElement('div');
+      autoPackHeading.className = 'tp3d-prefs-heading';
+      autoPackHeading.textContent = 'AutoPack';
+      prefsCard.appendChild(autoPackHeading);
+
+      const autoPackLoading = doc.createElement('button');
+      autoPackLoading.type = 'button';
+      autoPackLoading.className = 'tp3d-pref-switch';
+      autoPackLoading.dataset.role = 'autopack-loading-visibility';
+      autoPackLoading.setAttribute('role', 'switch');
+      autoPackLoading.setAttribute('aria-label', 'Show AutoPack loading screen');
+      const autoPackLoadingTrack = doc.createElement('span');
+      autoPackLoadingTrack.className = 'tp3d-pref-switch__track';
+      autoPackLoadingTrack.setAttribute('aria-hidden', 'true');
+      const autoPackLoadingThumb = doc.createElement('span');
+      autoPackLoadingThumb.className = 'tp3d-pref-switch__thumb';
+      autoPackLoadingTrack.appendChild(autoPackLoadingThumb);
+      const autoPackLoadingValue = doc.createElement('span');
+      autoPackLoadingValue.className = 'tp3d-pref-switch__value';
+      autoPackLoading.appendChild(autoPackLoadingTrack);
+      autoPackLoading.appendChild(autoPackLoadingValue);
+      const setAutoPackLoading = enabled => {
+        autoPackLoading.dataset.value = enabled ? 'on' : 'off';
+        autoPackLoading.setAttribute('aria-checked', enabled ? 'true' : 'false');
+        autoPackLoading.classList.toggle('is-on', enabled);
+        autoPackLoadingValue.textContent = enabled ? 'On' : 'Off';
+      };
+      setAutoPackLoading(prefs.showAutoPackLoadingOverlay !== false);
+      autoPackLoading.addEventListener('click', () => {
+        setAutoPackLoading(autoPackLoading.dataset.value !== 'on');
+      });
+      const autoPackLoadingHelper = doc.createElement('div');
+      autoPackLoadingHelper.id = 'tp3d-prefs-autopack-loading-help';
+      autoPackLoadingHelper.className = 'tp3d-prefs-helper';
+      autoPackLoadingHelper.textContent = 'Show the loading card while AutoPack is working.';
+      autoPackLoading.setAttribute('aria-describedby', autoPackLoadingHelper.id);
+      const autoPackLoadingControl = doc.createElement('div');
+      autoPackLoadingControl.className = 'tp3d-prefs-control-stack';
+      autoPackLoadingControl.appendChild(autoPackLoading);
+      autoPackLoadingControl.appendChild(autoPackLoadingHelper);
+      prefsCard.appendChild(row('Show AutoPack loading screen', autoPackLoadingControl));
+
+      const autoPackResultsStartView = UIComponents.createSelect({
+        label: 'AutoPack Results starting view', value: prefs.autoPackResultsStartView,
+        options: [
+          { value: 'first', label: 'First option' },
+          { value: 'applied', label: 'Applied option' },
+          { value: 'recommended', label: 'Recommended option' },
+        ],
+      });
+      autoPackResultsStartView.dataset.role = 'autopack-results-start-view';
+      prefsCard.appendChild(row('AutoPack Results starting view', autoPackResultsStartView));
+
 
       const appearanceHeading = doc.createElement('div');
       appearanceHeading.className = 'tp3d-prefs-heading';
@@ -5131,6 +5188,8 @@ export function createSettingsOverlay({
           theme: theme.value,
           labelSize: labelSize.value,
           hiddenOpacity: hiddenOpacity.value,
+          showAutoPackLoadingOverlay: autoPackLoading.dataset.value === 'on',
+          autoPackResultsStartView: autoPackResultsStartView.value,
         })
       );
       actions.appendChild(saveBtn);

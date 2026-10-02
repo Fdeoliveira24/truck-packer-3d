@@ -47,7 +47,7 @@
   --accent-primary-25: rgb(255, 159, 28, 0.25);
   --accent-readable: #9a5100;
   --focus-ring: var(--accent-primary);
-  --warning-readable: #7a4500;
+  --warning-readable: #e87500;
   --success-readable: #047857;
 
   /* Semantic */
@@ -2560,6 +2560,10 @@ tr:hover td {
   gap: var(--space-2);
 }
 
+.tp3d-prefs-control-stack > .tp3d-pref-switch {
+  justify-self: start;
+}
+
 .tp3d-prefs-helper {
   color: var(--text-secondary);
   font-size: var(--text-xs);
@@ -4564,9 +4568,10 @@ body.tp3d-shared-modal-lock #app .nav {
   display: inline-block;
   margin-top: 3px;
   padding: 1px 8px;
+  border: 1px solid rgb(245, 158, 11, 0.36);
   border-radius: 999px;
   background: rgb(245, 158, 11, 0.16);
-  color: var(--warning-readable);
+  color: var(--text-primary);
   font-size: 10px;
   font-weight: var(--font-semibold);
   letter-spacing: 0.2px;
@@ -4773,7 +4778,7 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-autopack-results__status--partial {
   border-color: rgb(245, 158, 11, 0.36);
   background: rgb(245, 158, 11, 0.14);
-  color: var(--warning-readable);
+  color: var(--text-primary);
 }
 
 /* Recommended: the run's selected standard plan — a quiet outline only. */
@@ -4807,7 +4812,7 @@ body.tp3d-shared-modal-lock #app .nav {
   border: 1px solid rgb(245, 158, 11, 0.36);
   border-radius: var(--radius-sm);
   background: rgb(245, 158, 11, 0.12);
-  color: var(--warning-readable);
+  color: var(--text-primary);
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
   line-height: var(--leading-tight);
@@ -4816,6 +4821,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-autopack-results__relaxed-note i {
   flex: 0 0 auto;
+  color: var(--warning-readable);
   font-size: 11px;
 }
 
@@ -4942,6 +4948,17 @@ body.tp3d-shared-modal-lock #app .nav {
   font-size: 18px;
   font-weight: var(--font-semibold);
   font-variant-numeric: tabular-nums;
+}
+
+/* "Updating…" with no measured analysis reads like Load Summary's "Updating…"
+   (left-aligned, small, regular, secondary) instead of as a centred readout. */
+.tp3d-util-gauge__headline--status {
+  justify-self: start;
+  justify-content: flex-start;
+  color: var(--text-secondary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-normal);
+  text-align: left;
 }
 
 .tp3d-util-gauge__percent {
@@ -6184,43 +6201,6 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-editor-stats-updating {
   padding: 7px 0;
   border-top: 1px solid var(--border-subtle);
-}
-
-/* Applied Max Capacity membership from canonical Pack stats (Contract C). */
-.tp3d-editor-relaxed-profile {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: baseline;
-  gap: 2px 12px;
-  margin-top: 4px;
-  padding: 7px 9px;
-  border: 1px solid rgb(245, 158, 11, 0.36);
-  border-radius: var(--radius-sm);
-  background: rgb(245, 158, 11, 0.12);
-  color: var(--warning-readable);
-}
-
-.tp3d-editor-relaxed-profile__label {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  font-size: var(--text-sm);
-  font-weight: var(--font-medium);
-  line-height: var(--leading-tight);
-}
-
-.tp3d-editor-relaxed-profile__value {
-  font-size: var(--text-sm);
-  line-height: var(--leading-tight);
-  text-align: right;
-}
-
-.tp3d-editor-relaxed-profile__note {
-  grid-column: 1 / -1;
-  color: var(--text-secondary);
-  font-size: var(--text-xs);
-  line-height: var(--leading-tight);
 }
 
 .tp3d-editor-row-justify-end {

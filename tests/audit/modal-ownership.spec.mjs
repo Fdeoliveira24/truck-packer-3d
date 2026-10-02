@@ -1058,3 +1058,64 @@ test('P0-SM-OF-2 pre-boot error renderer publishes presence only when shown', t 
   error.hide({ includeTerminal: true });
   assert.equal(dom.UI.modalOwnership.getActiveOwner(), null);
 });
+
+test('Settings Preferences saves the AutoPack loading screen and Results starting view as named preferences', async t => {
+  const dom = installDom(t);
+  const { normalizePreferences } = await import('../../src/core/normalizer.js');
+  let prefs = normalizePreferences({ theme: 'light', units: { length: 'ft', weight: 'kg' } }); // legacy record
+  const saved = [];
+  const toasts = [];
+  // The saved toast would outlive this fake DOM; record it instead.
+  const settings = createSettingsOverlay({
+    UIComponents: { ...dom.UI, showToast: (...args) => toasts.push(args) }, documentRef: dom.doc,
+    PreferencesManager: {
+      get: () => prefs,
+      set: next => { prefs = normalizePreferences(next); saved.push(prefs); },
+      applyTheme() {},
+    },
+    Utils: { deepClone: value => structuredClone(value), clamp: (value, min, max) => Math.min(max, Math.max(min, value)) },
+  });
+  settings.open('preferences');
+  const walk = el => [el, ...el.children.flatMap(walk)];
+  const find = predicate => walk(dom.doc.body).find(predicate);
+  const rowFor = label => find(el => el.className.split(' ').includes('tp3d-settings-row') &&
+    el.children[0]?.textContent === label);
+
+  assert.ok(find(el => el.className === 'tp3d-prefs-heading' && el.textContent === 'AutoPack'), 'AutoPack section heading');
+  const loadingRow = rowFor('Show AutoPack loading screen');
+  const startRow = rowFor('AutoPack Results starting view');
+  assert.ok(loadingRow && startRow, 'both AutoPack controls render as Preferences rows');
+  const loading = walk(loadingRow).find(el => el.dataset.role === 'autopack-loading-visibility');
+  const helper = walk(loadingRow).find(el => el.className === 'tp3d-prefs-helper');
+  const startView = walk(startRow).find(el => el.dataset.role === 'autopack-results-start-view');
+  assert.equal(helper.textContent, 'Show the loading card while AutoPack is working.');
+  assert.equal(loading.getAttribute('role'), 'switch');
+  assert.equal(loading.getAttribute('aria-describedby'), helper.id);
+  assert.equal(loading.getAttribute('aria-checked'), 'true', 'a legacy user sees the loading screen ON');
+  assert.equal(startView.getAttribute('role'), 'combobox', 'the starting view uses the shared Professional Dropdown');
+  assert.equal(startView.value, 'first', 'a legacy user starts on First option');
+  assert.equal(startView.getAttribute('aria-label'), 'AutoPack Results starting view: First option');
+  for (const [value, label] of [['applied', 'Applied option'], ['recommended', 'Recommended option'], ['first', 'First option']]) {
+    startView.value = value;
+    assert.equal(startView.value, value);
+    assert.equal(startView.getAttribute('aria-label'), `AutoPack Results starting view: ${label}`);
+  }
+  startView.value = '1';
+  assert.equal(startView.value, '', 'a raw option index is not a choice');
+
+  loading.dispatchEvent({ type: 'click' });
+  assert.equal(loading.getAttribute('aria-checked'), 'false');
+  startView.value = 'recommended';
+  assert.equal(saved.length, 0, 'controls do not save until Save changes');
+  find(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').dispatchEvent({ type: 'click' });
+  assert.equal(saved.length, 1);
+  assert.deepEqual(toasts, [['Preferences saved', 'success']]);
+  assert.equal(saved[0].showAutoPackLoadingOverlay, false);
+  assert.equal(saved[0].autoPackResultsStartView, 'recommended', 'the named value is stored, never an index');
+  assert.deepEqual(saved[0].units, { length: 'ft', weight: 'kg' }, 'unrelated preferences are preserved');
+
+  settings.open('preferences');
+  const reopened = walk(dom.doc.body).filter(el => el.dataset.role === 'autopack-results-start-view').at(-1);
+  assert.equal(reopened.value, 'recommended', 'the saved starting view is shown again');
+  settings.close();
+});

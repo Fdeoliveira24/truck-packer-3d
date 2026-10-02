@@ -872,7 +872,13 @@ export function createAutoPackEngine({
         // frame yield ahead of the synchronous solve, so it opens on that stage;
         // animated loads switch to "Placing cargo in the truck..." when their
         // animation begins. No per-phase solver progress is claimed.
-        if (UIComponents && typeof UIComponents.showAutoPackLoadingOverlay === 'function') {
+        // The single decision point for the visual status card: with the
+        // preference off no card is created, so every later stage update and
+        // the cleanup close are no-ops. The run itself (animation, lifecycle,
+        // commit, Results, toasts) never reads this preference.
+        const preferences = StateStore.get('preferences');
+        const showLoadingOverlay = !(preferences && preferences.showAutoPackLoadingOverlay === false);
+        if (showLoadingOverlay && UIComponents && typeof UIComponents.showAutoPackLoadingOverlay === 'function') {
           loadingOverlay = UIComponents.showAutoPackLoadingOverlay({
             initialMessage: 'Checking fit, stacking, and safety rules...',
           });

@@ -212,7 +212,7 @@ test('EDITOR-VISUAL scene lifecycle recomputes instead of conditionally restorin
 
   assert.match(sceneBlock, /const collisionIds = new Set\(\);[\s\S]*const oogSet = new Set\(\);/,
     'collision and OOG ownership must be explicit scene state');
-  assert.match(sceneBlock, /function sync\(pack\)[\s\S]*collisionIds\.clear\(\);[\s\S]*recomputeVisualStates\(\);/,
+  assert.match(sceneBlock, /function sync\(pack[^)]*\)[\s\S]*collisionIds\.clear\(\);[\s\S]*recomputeVisualStates\(\);/,
     'committed sync and dependent repair renders must clear preview collision ownership and recompute all cases');
   assert.match(sceneBlock, /function applySelection\(ids\)[\s\S]*selectedIds = new Set\(ids \|\| \[\]\);[\s\S]*recomputeVisualStates\(\);/,
     'selection visuals must exactly follow the supplied selectedInstanceIds');

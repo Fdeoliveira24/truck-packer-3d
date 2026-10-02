@@ -106,20 +106,44 @@ export function createTruckChangeController({
     intro.textContent = heading;
     content.appendChild(intro);
 
+    // One bordered summary group: a scannable count, then its meaning. Zero rows
+    // stay visible but subdued; a non-zero "no longer fit" row is the decision row.
     const list = documentRef.createElement('ul');
-    list.className = 'tp3d-editor-card-grid-gap-12';
+    list.className = 'tp3d-truck-change-summary';
     const rows = [
-      `${recon.summary.kept} kept in place`,
-      `${recon.summary.adjusted} safely adjusted`,
-      `${recon.summary.invalid} no longer fit (shown in staging preview)`,
-      `${recon.summary.stagedUnchanged} existing staged items unchanged`,
+      { count: recon.summary.kept, label: 'kept in place' },
+      { count: recon.summary.adjusted, label: 'safely adjusted' },
+      { count: recon.summary.invalid, label: 'no longer fit', note: '(shown in staging preview)', decision: true },
+      { count: recon.summary.stagedUnchanged, label: 'existing staged items unchanged' },
     ];
-    if (recon.summary.stagedAdjusted) rows.push(`${recon.summary.stagedAdjusted} unsafe staged items corrected`);
-    if (recon.summary.unresolved) rows.push(`${recon.summary.unresolved} unresolved items require attention`);
-    if (recon.summary.malformed) rows.push(`${recon.summary.malformed} malformed items require attention`);
-    rows.forEach(text => {
+    if (recon.summary.stagedAdjusted) rows.push({ count: recon.summary.stagedAdjusted, label: 'unsafe staged items corrected' });
+    if (recon.summary.unresolved) rows.push({ count: recon.summary.unresolved, label: 'unresolved items require attention' });
+    if (recon.summary.malformed) rows.push({ count: recon.summary.malformed, label: 'malformed items require attention' });
+    rows.forEach(row => {
       const li = documentRef.createElement('li');
-      li.textContent = text;
+      li.className = [
+        'tp3d-truck-change-summary__row',
+        row.count ? '' : 'is-zero',
+        row.decision && row.count ? 'is-no-longer-fit' : '',
+      ].filter(Boolean).join(' ');
+      // Word spaces live in the text so the row reads "N label" as one phrase;
+      // the count cell's trailing space collapses visually.
+      const count = documentRef.createElement('span');
+      count.className = 'tp3d-truck-change-summary__count';
+      count.textContent = `${row.count} `;
+      li.appendChild(count);
+      const label = documentRef.createElement('span');
+      label.className = 'tp3d-truck-change-summary__label';
+      const text = documentRef.createElement(row.decision && row.count ? 'strong' : 'span');
+      text.textContent = row.label;
+      label.appendChild(text);
+      if (row.note) {
+        const note = documentRef.createElement('span');
+        note.className = 'tp3d-truck-change-summary__note';
+        note.textContent = ` ${row.note}`;
+        label.appendChild(note);
+      }
+      li.appendChild(label);
       list.appendChild(li);
     });
     content.appendChild(list);
@@ -271,7 +295,8 @@ export function createTruckChangeController({
   function showPreview(ctx) {
     const recon = ctx.reconciliation;
     const blocked = recon.unresolved.length > 0 || recon.malformed.length > 0;
-    const actions = [{ label: 'Cancel' }];
+    // DOM order is the reading and Tab order: decisions first, Cancel last.
+    const actions = [];
     const excludedIds = [
       ...recon.unresolved.map(entry => entry.id),
       ...recon.malformed.map(entry => entry.id),
@@ -306,15 +331,6 @@ export function createTruckChangeController({
       });
     } else if (!blocked) {
       actions.push({
-        label: 'Move to staging',
-        onClick: guarded(ctx, () => {
-          if (preview.failedIds.length) {
-            throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
-          }
-          return commit(ctx, preview.pack, `Truck updated. ${recon.invalid.length} item(s) moved to staging.`);
-        }),
-      });
-      actions.push({
         label: 'Repack invalid',
         variant: 'primary',
         onClick: guarded(ctx, () => {
@@ -332,13 +348,24 @@ export function createTruckChangeController({
           return true;
         }),
       });
+      actions.push({
+        label: 'Move to staging',
+        onClick: guarded(ctx, () => {
+          if (preview.failedIds.length) {
+            throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
+          }
+          return commit(ctx, preview.pack, `Truck updated. ${recon.invalid.length} item(s) moved to staging.`);
+        }),
+      });
     }
+    actions.push({ label: 'Cancel' });
 
-    showManagedModal(ctx, {
+    const modalRef = showManagedModal(ctx, {
       title: 'Truck change',
       content: makeSummaryContent(recon, 'Changing the truck affects placed cases:'),
       actions,
     });
+    modalRef.modal?.classList?.add('tp3d-truck-change-modal');
   }
 
   function request(options = {}) {

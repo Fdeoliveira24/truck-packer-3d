@@ -9361,11 +9361,14 @@ test('RECON every production truck writer routes through the shared controller',
 function makeTruckChangeHarness() {
   const listeners = new Set();
   const documentRef = {
+    // textContent mirrors the DOM: explicit text, else the children's text.
     createElement: tagName => ({
       tagName,
       children: [],
       className: '',
-      textContent: '',
+      ownText: '',
+      get textContent() { return this.ownText || this.children.map(child => child.textContent).join(''); },
+      set textContent(value) { this.ownText = String(value); },
       classList: { add() {} },
       appendChild(child) { this.children.push(child); return child; },
     }),

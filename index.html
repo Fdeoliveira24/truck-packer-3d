@@ -840,44 +840,58 @@
                     PDF
                   </button>
                 </div>
-                <div class="tp3d-editor-validation-status" id="editor-validation-status" hidden>
+                <!-- Bottom-left utility stack: AutoPack Results restore (top) above the
+                     Load Plan Needs Review warning (bottom). Each control is hidden when unused. -->
+                <div class="tp3d-editor-utility-stack" id="editor-utility-stack">
                   <button
-                    class="tp3d-editor-validation-status__btn"
-                    id="editor-validation-status-btn"
+                    class="tp3d-editor-results-reopen"
+                    id="btn-autopack-results-reopen"
                     type="button"
-                    aria-label="Load plan needs review"
-                    aria-expanded="false"
-                    aria-controls="editor-validation-popover"
-                    aria-describedby="editor-validation-hint-body"
-                  >
-                    <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
-                  </button>
-                  <div class="tp3d-status-card tp3d-editor-validation-hint" id="editor-validation-hint" role="tooltip">
-                    <span class="tp3d-status-card__title">Load plan needs review</span>
-                    <span class="tp3d-status-card__body" id="editor-validation-hint-body">Loading rules have changed.</span>
-                  </div>
-                  <div
-                    class="tp3d-editor-validation-popover"
-                    id="editor-validation-popover"
-                    role="dialog"
-                    aria-modal="false"
-                    aria-labelledby="editor-validation-popover-title"
+                    aria-label="Reopen AutoPack Results"
+                    title="Reopen AutoPack Results"
                     hidden
                   >
-                    <div class="tp3d-editor-validation-popover__title" id="editor-validation-popover-title">
-                      Load plan needs review
-                    </div>
-                    <p class="tp3d-editor-validation-popover__body">
-                      A case’s loading rules changed after this plan was last checked. Review the plan to make sure the
-                      cargo still follows the latest rules.
-                    </p>
+                    <i class="fa-solid fa-list-check" aria-hidden="true"></i>
+                  </button>
+                  <div class="tp3d-editor-validation-status" id="editor-validation-status" hidden>
                     <button
-                      class="btn btn-primary tp3d-editor-validation-popover__action"
-                      id="editor-handling-rules-validate-btn"
+                      class="tp3d-editor-validation-status__btn"
+                      id="editor-validation-status-btn"
                       type="button"
+                      aria-label="Load plan needs review"
+                      aria-expanded="false"
+                      aria-controls="editor-validation-popover"
+                      aria-describedby="editor-validation-hint-body"
                     >
-                      Check Load Plan
+                      <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
                     </button>
+                    <div class="tp3d-status-card tp3d-editor-validation-hint" id="editor-validation-hint" role="tooltip">
+                      <span class="tp3d-status-card__title">Load plan needs review</span>
+                      <span class="tp3d-status-card__body" id="editor-validation-hint-body">Loading rules have changed.</span>
+                    </div>
+                    <div
+                      class="tp3d-editor-validation-popover"
+                      id="editor-validation-popover"
+                      role="dialog"
+                      aria-modal="false"
+                      aria-labelledby="editor-validation-popover-title"
+                      hidden
+                    >
+                      <div class="tp3d-editor-validation-popover__title" id="editor-validation-popover-title">
+                        Load plan needs review
+                      </div>
+                      <p class="tp3d-editor-validation-popover__body">
+                        A case’s loading rules changed after this plan was last checked. Review the plan to make sure the
+                        cargo still follows the latest rules.
+                      </p>
+                      <button
+                        class="btn btn-primary tp3d-editor-validation-popover__action"
+                        id="editor-handling-rules-validate-btn"
+                        type="button"
+                      >
+                        Check Load Plan
+                      </button>
+                    </div>
                   </div>
                 </div>
               </div>

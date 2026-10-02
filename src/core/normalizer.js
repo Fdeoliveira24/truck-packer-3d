@@ -238,6 +238,10 @@ export function normalizePreferences(prefs) {
   next.showBevels = next.showBevels !== false;
   next.labelFontSize = CoreUtils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
   next.hiddenCaseOpacity = CoreUtils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
+  next.showAutoPackLoadingOverlay = next.showAutoPackLoadingOverlay !== false;
+  next.autoPackResultsStartView = CoreDefaults.AUTOPACK_RESULTS_START_VIEWS.includes(next.autoPackResultsStartView)
+    ? next.autoPackResultsStartView
+    : base.autoPackResultsStartView;
   const incomingSpaceUtilization = next.spaceUtilization && typeof next.spaceUtilization === 'object'
     ? next.spaceUtilization
     : {};

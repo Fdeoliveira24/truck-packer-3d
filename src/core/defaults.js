@@ -56,6 +56,8 @@ export const defaultPreferences = {
   showBevels: true,
   labelFontSize: 12,
   hiddenCaseOpacity: 0.3,
+  showAutoPackLoadingOverlay: true,
+  autoPackResultsStartView: 'first',
   spaceUtilization: {
     showGauge: false,
     style: 'spatial',
@@ -71,6 +73,11 @@ export const defaultPreferences = {
 // Settings > Screenshot resolution choices. Any other stored or imported value
 // normalizes to defaultPreferences.export.screenshotResolution.
 export const SCREENSHOT_RESOLUTIONS = Object.freeze(['1920x1080', '2560x1440', '3840x2160']);
+
+// Settings > AutoPack Results starting view. Stored as a named choice, never a
+// raw option index, because the number and order of Results options vary by
+// run. Any other stored or imported value normalizes to 'first'.
+export const AUTOPACK_RESULTS_START_VIEWS = Object.freeze(['first', 'applied', 'recommended']);
 
 export const categories = [
   { key: 'all', name: 'All', color: '#9b9ba8' },

@@ -375,6 +375,37 @@ test('all measured states use capacity language', () => {
   assert.equal(updating.chartPercentage, 42);
 });
 
+test('an update with no measured analysis reads Updating… with no interim percentage or volumes', () => {
+  assert.deepEqual(buildSpaceUtilizationPresentation({ state: 'updating' }), {
+    state: 'updating',
+    headline: 'Updating…',
+    subline: '',
+    statusLine: '',
+    chartPercentage: null,
+  });
+  const gauge = createSpaceUtilizationGauge({
+    documentRef: testDocument,
+    result: { state: 'updating' },
+    detail: 'standard',
+    lengthUnit: 'in',
+  });
+  assert.equal(gauge.dataset.state, 'updating');
+  assert.match(textTree(gauge), /Space Utilization.*Updating…/);
+  assert.equal(byClass(gauge, 'tp3d-util-gauge__headline').classList.contains('tp3d-util-gauge__headline--status'), true,
+    'Updating… is marked as a left-aligned status line');
+  const updatingWithPrevious = createSpaceUtilizationGauge({
+    documentRef: testDocument,
+    result: { state: 'updating', previousResult: { state: 'valid', percentage: 42 } },
+    detail: 'standard',
+    lengthUnit: 'in',
+  });
+  assert.equal(byClass(updatingWithPrevious, 'tp3d-util-gauge__headline--status'), null,
+    'a measured readout under the bar keeps its centred layout');
+  assert.equal(byClass(gauge, 'tp3d-util-gauge__spatial'), null, 'no bar while the cargo is still landing');
+  assert.equal(byClass(gauge, 'tp3d-util-gauge__stats'), null, 'no placeholder 0 ft³ volume rows');
+  assert.doesNotMatch(textTree(gauge), /%|ft³|previous analysis/);
+});
+
 test('volume formatting uses readable cubic feet or cubic metres without losing base precision', () => {
   assert.equal(formatSpaceUtilizationVolume(7135920, 'in'), '4,129.6 ft³');
   assert.equal(formatSpaceUtilizationVolume(1728, 'ft'), '1 ft³');

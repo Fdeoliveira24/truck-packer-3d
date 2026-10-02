@@ -147,37 +147,37 @@ function sliceFn(src, startNeedle, endNeedle) {
   return src.slice(start, end);
 }
 
-test('PHASE-C-RPT-7 Inspector Load Summary omits the secondary Max Capacity profile row', async () => {
+test('PHASE-C-RPT-7 Inspector Load Summary repeats no relaxed-profile notice; the Results card is the only warning surface', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderTruckInspector(pack, prefs)', 'function renderMultiInspector(pack, selected)');
-  assert.match(block, /const stats = PackLibrary\.computeStats\(pack\);/, 'must read from the canonical computeStats() call already in this function, not a separate derivation');
-  assert.doesNotMatch(block, /maxCapacityProfileCount|Max Capacity profile/);
-  assert.equal(block.includes('Rules violated'), false);
-  assert.equal(block.includes('Unsafe cases'), false);
-  assert.equal(block.includes('Relaxed cases'), false);
-  assert.equal(block.includes('requiring relaxation'), false);
+  assert.match(block, /const stats = PackLibrary\.computeStats\(pack\);/, 'Load Summary still reads canonical stats (Total weight)');
+  assert.doesNotMatch(block, /maxCapacityProfileCount|relaxed-handling-profile|Relaxed handling profile|Still part of the applied Max Capacity plan/,
+    'the Inspector does not duplicate the Results-card Max Capacity warning');
+  assert.equal(block.includes('autoPackResults'), false, 'the Inspector never reads transient Results');
+  // The canonical membership count itself stays (PHASE-C-RPT tests above);
+  // only its Inspector presentation is removed.
 });
 
-// ── AutoPack Results panel pre-Apply indicator (source-contract) ────────────
+// ── AutoPack Results panel (source-contract) ─────────────────────────────────
 
-test('PHASE-C-RPT-8 the Max Capacity Results chip is gated on viewedOption.id === "max-capacity" plus a positive count, and reuses packedCount', async () => {
+test('PHASE-C-RPT-8 the Results card drops the redundant Max Capacity profile count and warns in visible text instead', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderAutoPackResultsPanel(pack)', 'function initEditorUI()');
-  assert.match(block, /if \(viewedOption\.id === 'max-capacity' && Number\(viewedOption\.packedCount\) > 0\) \{/,
-    'the chip must be gated to the Max Capacity option AND a positive candidate count (matches the zero-state convention used elsewhere)');
-  const gated = sliceFn(block, "if (viewedOption.id === 'max-capacity' && Number(viewedOption.packedCount) > 0) {", 'metrics.appendChild(statChips);');
-  assert.match(gated, /makeAutoPackResultChip\('Max Capacity profile', formatAutoPackResultNumber\(viewedOption\.packedCount\)\)/,
-    'must reuse the existing chip helper and the candidate\'s own packedCount - no new engine field, no duplicated counting logic');
+  assert.doesNotMatch(block, /Max Capacity profile|maxCapacityChip|makeAutoPackResultChip/,
+    'a candidate packedCount repeated as a profile count adds nothing to Packed and is not shown');
+  assert.match(block, /if \(viewedOption\.id === 'max-capacity'\) \{/, 'the warning is gated to the Max Capacity option');
+  const gated = sliceFn(block, "if (viewedOption.id === 'max-capacity') {", 'const actions = document.createElement');
+  assert.match(gated, /'Handling rules relaxed\. Review before transport\.'/);
 });
 
-test('PHASE-C-RPT-9 standard strategies never render the Max Capacity indicator', async () => {
+test('PHASE-C-RPT-9 standard strategies never render the Max Capacity warning', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderAutoPackResultsPanel(pack)', 'function initEditorUI()');
-  // Only one call site appends the Max Capacity chip, and it is inside the
-  // id === 'max-capacity' guard - so no other strategy (Compact Fill, Stack
-  // Priority, Floor First, Constrained Space First, etc.) can ever render it.
-  const chipCallSites = block.match(/makeAutoPackResultChip\('Max Capacity profile'/g) || [];
-  assert.equal(chipCallSites.length, 1, 'exactly one call site for the Max Capacity chip, and it is the gated one asserted in PHASE-C-RPT-8');
+  // The one warning call site sits inside the id === 'max-capacity' guard, so
+  // Balanced, Compact fill, Floor first, Stack priority and Constrained space
+  // first can never render it.
+  const callSites = block.match(/Handling rules relaxed\./g) || [];
+  assert.equal(callSites.length, 1, 'exactly one call site, the gated one asserted in PHASE-C-RPT-8');
 });
 
 // ── PDF/report summary (source-contract) ─────────────────────────────────────

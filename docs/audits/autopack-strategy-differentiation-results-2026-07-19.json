@@ -12,7 +12,7 @@
     {
       "id": "default",
       "strategy": "front-first-balanced",
-      "label": "Balanced (recommended)",
+      "label": "Balanced",
       "description": "Best overall load quality; tidy rows, wheel-well aware.",
       "options": {}
     },
@@ -47,7 +47,7 @@
       "id": "max-capacity",
       "strategy": "max-capacity",
       "label": "Max Capacity",
-      "description": "Physical-fit estimate; handling rules may be relaxed. Not a transport recommendation.",
+      "description": "Relaxed handling comparison",
       "options": {
         "maxCapacityMode": true
       }
@@ -99,7 +99,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 1,
           "solverPlacementCount": 1,
           "packedCount": 1,
@@ -817,7 +817,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 10,
           "solverPlacementCount": 10,
           "packedCount": 10,
@@ -1535,7 +1535,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 7,
           "solverPlacementCount": 7,
           "packedCount": 7,
@@ -2279,7 +2279,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 80,
           "solverPlacementCount": 60,
           "packedCount": 60,
@@ -3244,7 +3244,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 56,
           "solverPlacementCount": 14,
           "packedCount": 14,
@@ -4247,7 +4247,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 38,
           "solverPlacementCount": 38,
           "packedCount": 38,
@@ -4994,7 +4994,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 54,
           "solverPlacementCount": 36,
           "packedCount": 36,
@@ -5882,7 +5882,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 32,
           "solverPlacementCount": 8,
           "packedCount": 8,
@@ -6758,7 +6758,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 12,
           "solverPlacementCount": 0,
           "packedCount": 0,
@@ -7510,7 +7510,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 36,
           "solverPlacementCount": 24,
           "packedCount": 24,
@@ -8372,7 +8372,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 36,
           "solverPlacementCount": 33,
           "packedCount": 33,
@@ -9183,7 +9183,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 40,
           "solverPlacementCount": 24,
           "packedCount": 24,
@@ -10064,7 +10064,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 68,
           "solverPlacementCount": 40,
           "packedCount": 40,
@@ -11036,7 +11036,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 56,
           "solverPlacementCount": 56,
           "packedCount": 56,
@@ -11840,7 +11840,7 @@
         {
           "strategyId": "default",
           "strategy": "front-first-balanced",
-          "label": "Balanced (recommended)",
+          "label": "Balanced",
           "requestedCount": 3,
           "solverPlacementCount": 0,
           "packedCount": 0,

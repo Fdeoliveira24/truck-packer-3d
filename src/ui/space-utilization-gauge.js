@@ -293,12 +293,14 @@ export function buildSpaceUtilizationPresentation(result) {
     };
   }
   if (state === 'updating') {
+    // No measured analysis to show (e.g. AutoPack is still loading cargo):
+    // say so plainly instead of showing a placeholder or interim percentage.
     return {
       state,
-      headline: 'Updating utilization…',
-      subline: 'Showing previous analysis',
+      headline: 'Updating…',
+      subline: '',
       statusLine: '',
-      chartPercentage: percentage,
+      chartPercentage: null,
     };
   }
   return {
@@ -387,6 +389,10 @@ function appendHeadline(documentRef, parent, presentation) {
     appendTextElement(documentRef, headline, 'span', 'tp3d-util-gauge__occupied-label', 'Occupied');
   } else {
     headline.textContent = presentation.headline;
+    // With no measured analysis "Updating…" is a status line, not a readout.
+    if (presentation.state === 'updating' && presentation.chartPercentage === null) {
+      headline.classList.add('tp3d-util-gauge__headline--status');
+    }
   }
   parent.appendChild(headline);
   return headline;
@@ -492,7 +498,8 @@ export function createSpaceUtilizationGauge({
   if (presentation.subline) {
     appendTextElement(documentRef, body, 'div', 'tp3d-util-gauge__subline', presentation.subline);
   }
-  if (presentation.state !== 'unavailable') {
+  // Volume rows need a measured analysis; an update with no previous result has none.
+  if (presentation.state !== 'unavailable' && (presentation.state !== 'updating' || presentation.chartPercentage !== null)) {
     appendStandardStats(documentRef, body, measuredResult(result), lengthUnit);
   }
   gauge.appendChild(body);

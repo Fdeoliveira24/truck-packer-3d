@@ -260,9 +260,9 @@ UIComponents.showToast = (...args) => {
   return realToast(...args);
 };
 const realSync = CaseScene.sync;
-CaseScene.sync = pack => {
+CaseScene.sync = (...args) => {
   log.push({ type: 'sync', at: now() });
-  return realSync(pack);
+  return realSync(...args);
 };
 const createAppSubscriber = new Function('deps', \`
   const { Storage, StateStore, PreferencesManager, SceneManager, SettingsUI, EditorUI, AutoPackPreviewScheduler,
@@ -2334,8 +2334,17 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       });
       await page.click(`[aria-label="${arrow}"]`);
       await settleExport(page);
+      const lastEdited = () => page.evaluate(() => window.probe.PackLibrary.getById(window.probe.StateStore.get('currentPackId')).lastEdited);
+      const editedBeforeExport = await lastEdited();
+      assert.equal(await page.getByRole('button', { name: 'Apply this option' }).count(), 1,
+        'fixture: a non-applied option is being previewed');
       assert.deepEqual(await snapshot(), a, 'browsing a non-applied option never changes exported geometry');
+      assert.equal(await page.getByRole('button', { name: 'Apply this option' }).count(), 0,
+        'export ended the preview: the Results view returned to the Applied option');
+      assert.equal(await lastEdited(), editedBeforeExport, 'export wrote no Pack lastEdited');
 
+      await page.click(`[aria-label="${arrow}"]`);
+      await settleExport(page);
       const apply = page.getByRole('button', { name: 'Apply this option' });
       assert.equal(await apply.isEnabled(), true, 'fixture: the browsed option is applicable');
       await apply.click();

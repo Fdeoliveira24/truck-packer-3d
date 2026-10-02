@@ -1960,6 +1960,11 @@ tr:hover td {
   text-align: right;
 }
 
+.tp3d-truck-change-summary__label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .tp3d-truck-change-summary__note {
   color: var(--text-secondary);
 }

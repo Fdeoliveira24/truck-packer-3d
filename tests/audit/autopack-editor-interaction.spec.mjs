@@ -2261,6 +2261,82 @@ test('Results preview ends before Unpack and Truck Change claim the Editor; ever
       'Escape leaves no focus inside a closed modal');
     await page.locator('[data-focus-key="truck-length"]').fill('636');
 
+    // H: the follow-up "Some items still do not fit" modal shares the Truck change design.
+    await page.locator('[data-focus-key="truck-length"]').fill('150');
+    await updateTruck();
+    await truckModal.waitFor();
+    await truckModal.getByRole('button', { name: 'Repack invalid', exact: true }).click();
+    const followUp = page.locator('.modal').filter({ has: page.locator('.modal-title', { hasText: 'Some items still do not fit' }) });
+    await followUp.waitFor();
+    const followUpView = () => followUp.evaluate(modal => {
+      const clean = el => el.textContent.replace(/\s+/g, ' ').trim();
+      const css = el => getComputedStyle(el);
+      const rows = [...modal.querySelectorAll('.tp3d-truck-change-summary__row')];
+      const buttons = [...modal.querySelectorAll('.modal-footer .btn')];
+      const footer = modal.querySelector('.modal-footer').getBoundingClientRect();
+      return {
+        title: clean(modal.querySelector('.modal-title')),
+        hasModalClass: modal.classList.contains('tp3d-truck-change-modal'),
+        listStyle: css(modal.querySelector('.tp3d-truck-change-summary')).listStyleType,
+        listBorder: css(modal.querySelector('.tp3d-truck-change-summary')).borderTopWidth,
+        bullets: modal.querySelectorAll('.modal-body li:not(.tp3d-truck-change-summary__row)').length,
+        classicList: modal.querySelectorAll('.tp3d-editor-card-grid-gap-12').length,
+        rows: rows.map(row => ({
+          count: clean(row.querySelector('.tp3d-truck-change-summary__count')),
+          label: clean(row.querySelector('.tp3d-truck-change-summary__label')),
+          countWeight: css(row.querySelector('.tp3d-truck-change-summary__count')).fontWeight,
+          color: css(row).color, bg: css(row).backgroundColor,
+        })),
+        body: clean(modal.querySelector('.modal-body')),
+        buttons: buttons.map(btn => {
+          const rect = btn.getBoundingClientRect();
+          return { label: clean(btn), primary: btn.classList.contains('btn-primary'), bg: css(btn).backgroundColor,
+            x: rect.left, y: rect.top, right: rect.right, width: rect.width };
+        }),
+        footer: { left: footer.left, right: footer.right, width: footer.width },
+        overflow: modal.scrollWidth > modal.clientWidth + 1 || document.documentElement.scrollWidth > window.innerWidth + 1,
+      };
+    });
+    const followDesktop = await followUpView();
+    assert.equal(followDesktop.title, 'Some items still do not fit');
+    assert.equal(followDesktop.hasModalClass, true, 'H: the follow-up uses the Truck change modal pattern');
+    assert.equal(followDesktop.listStyle, 'none', 'H: failed Cases are not a bulleted list');
+    assert.equal(followDesktop.bullets, 0);
+    assert.equal(followDesktop.classicList, 0);
+    assert.notEqual(followDesktop.listBorder, '0px', 'H: the bordered summary group is used');
+    assert.ok(followDesktop.rows.length > 0, 'H: failed Cases are listed');
+    for (const row of followDesktop.rows) {
+      assert.match(row.count, /^\d+$/, 'H: the count column holds only the number');
+      assert.ok(row.label.length > 0 && !/^\d+\s*×/.test(row.label), 'H: the Case name is its own label');
+      assert.equal(row.countWeight, '600', 'H: counts are bold');
+      assert.equal(row.color, 'rgb(26, 26, 31)', 'H: neutral text, no brown');
+      assert.equal(row.bg, 'rgba(0, 0, 0, 0)', 'H: no row tint');
+    }
+    assert.match(followDesktop.body, /\d+ items? repacked\. Could not be repacked: \d+ items?\./);
+    assert.match(followDesktop.body, /Items that could not be repacked are shown in the staging preview\. No truck or cargo changes have been saved yet\./);
+    assert.deepEqual(followDesktop.buttons.map(btn => [btn.label, btn.primary]),
+      [['Keep current truck and cancel', false], ['Move remaining items to staging', true]]);
+    assert.equal(followDesktop.buttons[1].bg, 'rgb(255, 159, 28)', 'H: primary is brand orange');
+    assert.equal(followDesktop.buttons[0].bg, 'rgb(255, 255, 255)', 'H: Keep is the shared neutral secondary');
+    assert.ok(Math.abs(followDesktop.buttons[0].y - followDesktop.buttons[1].y) < 2, 'H: one desktop footer row');
+    assert.equal(followDesktop.overflow, false);
+    assert.equal((await state()).packWrites, 0, 'H: opening the follow-up writes no Pack');
+    await page.setViewportSize({ width: 390, height: 844 });
+    const followNarrow = await followUpView();
+    assert.ok(followNarrow.buttons[0].y < followNarrow.buttons[1].y, 'H narrow: buttons stack');
+    assert.ok(followNarrow.buttons.every(btn => btn.width > followNarrow.footer.width * 0.8), 'H narrow: full-width buttons');
+    assert.equal(followNarrow.overflow, false, 'H narrow: no horizontal overflow');
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await followUp.getByRole('button', { name: 'Keep current truck and cancel', exact: true }).click();
+    await followUp.waitFor({ state: 'detached' });
+    await page.waitForFunction(() => window.probe.op() === 'idle');
+    const followCancelled = await state();
+    committedScene(followCancelled, 'H (Cancel)');
+    assert.equal(followCancelled.truck, base.truck, 'H: Cancel restores the original truck');
+    assert.equal(followCancelled.cases, base.cases, 'H: Cancel restores the original cargo');
+    assert.equal(followCancelled.packWrites, 0, 'H: no Pack write from the follow-up');
+    await page.locator('[data-focus-key="truck-length"]').fill('636');
+
     // B: refused Unpack.
     await preview('B');
     await page.evaluate(() => { window.probe.refuseKind = 'unpacking'; });

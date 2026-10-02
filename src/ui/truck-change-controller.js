@@ -57,12 +57,20 @@ export function createTruckChangeController({
     }
     if (!counts.size) return;
     const list = documentRef.createElement('ul');
-    list.className = 'tp3d-editor-card-grid-gap-12';
+    list.className = 'tp3d-truck-change-summary';
     [...counts.entries()]
       .sort((a, b) => a[0].localeCompare(b[0]))
       .forEach(([label, count]) => {
         const item = documentRef.createElement('li');
-        item.textContent = `${count} × ${label}`;
+        item.className = 'tp3d-truck-change-summary__row';
+        const countEl = documentRef.createElement('span');
+        countEl.className = 'tp3d-truck-change-summary__count';
+        countEl.textContent = `${count} `;
+        item.appendChild(countEl);
+        const labelEl = documentRef.createElement('span');
+        labelEl.className = 'tp3d-truck-change-summary__label';
+        labelEl.textContent = label;
+        item.appendChild(labelEl);
         list.appendChild(item);
       });
     content.appendChild(list);
@@ -269,7 +277,7 @@ export function createTruckChangeController({
     note.textContent = 'Items that could not be repacked are shown in the staging preview. No truck or cargo changes have been saved yet.';
     content.appendChild(note);
 
-    showManagedModal(ctx, {
+    const followUpModal = showManagedModal(ctx, {
       title: 'Some items still do not fit',
       content,
       actions: [
@@ -290,6 +298,7 @@ export function createTruckChangeController({
         },
       ],
     });
+    followUpModal.modal?.classList?.add('tp3d-truck-change-modal');
   }
 
   function showPreview(ctx) {

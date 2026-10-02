@@ -10581,7 +10581,7 @@ test('RECON repack reports partial failure and requires a second explicit stagin
     'remaining repack failure loses its packed profile when staged');
   const secondContent = harness.modals[1].config.content;
   assert.match(secondContent.children[0].textContent, /Could not be repacked: 1 item\./);
-  assert.equal(secondContent.children[1].children[0].textContent, '1 × Cube',
+  assert.equal(secondContent.children[1].children[0].textContent, '1 Cube',
     'failed items are grouped by human-readable case name');
   assert.doesNotMatch(secondContent.children.map(child => child.textContent).join(' '), new RegExp(failedId),
     'raw UUID is omitted from primary user-facing copy');

@@ -1927,6 +1927,80 @@ tr:hover td {
   }
 }
 
+/* Truck change: one bordered summary group of scannable counts. Zero rows are
+   subdued; the "no longer fit" decision row gets a faint brand tint only. */
+.tp3d-truck-change-summary {
+  margin: var(--space-3) 0;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  list-style: none;
+}
+
+.tp3d-truck-change-summary__row {
+  display: grid;
+  grid-template-columns: 3rem minmax(0, 1fr);
+  align-items: baseline;
+  gap: var(--space-3);
+  padding: 9px 14px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+
+.tp3d-truck-change-summary__row + .tp3d-truck-change-summary__row {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-truck-change-summary__count {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.tp3d-truck-change-summary__note {
+  color: var(--text-secondary);
+}
+
+.tp3d-truck-change-summary__row.is-zero {
+  color: var(--text-secondary);
+}
+
+.tp3d-truck-change-summary__row.is-zero .tp3d-truck-change-summary__count {
+  font-weight: var(--font-normal);
+}
+
+.tp3d-truck-change-summary__row.is-no-longer-fit {
+  background: var(--accent-primary-12);
+}
+
+.tp3d-truck-change-summary__row.is-no-longer-fit .tp3d-truck-change-summary__count,
+.tp3d-truck-change-summary__row.is-no-longer-fit strong {
+  font-weight: var(--font-bold);
+}
+
+/* Decisions sit left in reading/Tab order; Cancel stays right on desktop and
+   last when the footer stacks. */
+.tp3d-truck-change-modal .modal-footer {
+  justify-content: flex-start;
+}
+
+.tp3d-truck-change-modal .modal-footer .btn:last-child {
+  margin-left: auto;
+}
+
+@media (max-width: 768px) {
+  .tp3d-truck-change-modal .modal-footer {
+    flex-direction: column;
+  }
+
+  .tp3d-truck-change-modal .modal-footer .btn:last-child {
+    margin-left: 0;
+  }
+}
+
 /* ================================
   TP3D Settings Overlay
 ================================== */

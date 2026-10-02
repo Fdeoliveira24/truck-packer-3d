@@ -534,7 +534,7 @@ for (const name of ['seedIfEmpty', 'loadScopedStateOrSeed']) {
 async function runProductionUnpack(StateStore, PackLibrary, CaseLibrary) {
   const fn = sourceFunction(editorSource, 'async function unpackAll()', 'function renderInspectorNoPack()');
   const unpack = runInNewContext(`(${fn})`, { StateStore, PackLibrary, CaseLibrary, buildOrganizedUnpackStagingCases,
-    clearPendingTruck() {}, OperationLifecycle: null, UIComponents: { showToast() {} },
+    clearPendingTruck() {}, endAutoPackResultsPreview() {}, OperationLifecycle: null, UIComponents: { showToast() {} },
     requestAnimationFrame: fn => fn(), render() {} });
   await unpack();
 }

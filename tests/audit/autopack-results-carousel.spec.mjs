@@ -1828,8 +1828,20 @@ test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspecto
     'the scene syncs the preview of the card\'s viewed option, else the Pack');
   assert.match(editorRender, /if \(initialized && CaseScene\.getSyncedPack\(\) === pack\) \{/,
     'preview/export scene authority is still published only for the committed Pack');
-  assert.match(editorRender, /if \(CaseScene\.isTransientPreview\(\)\) CaseScene\.sync\(PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)\);/,
+  assert.match(src, /if \(StateStore\.get\('currentScreen'\) !== 'editor' && CaseScene\.isTransientPreview\(\)\) \{\n\s*CaseScene\.sync\(PackLibrary\.getById\(StateStore\.get\('currentPackId'\)\)\);/,
     'leaving the Editor restores the committed Pack');
+  const unpack = sliceFn(src, 'async function unpackAll() {', 'function renderInspectorNoPack()');
+  assert.ok(unpack.indexOf('endAutoPackResultsPreview();') >= 0 &&
+    unpack.indexOf('endAutoPackResultsPreview();') < unpack.indexOf("beginOperation('unpacking'"),
+  'Unpack ends a Results preview before it claims the lifecycle slot');
+  const truck = sliceFn(src, 'function applyTruckGeometryChange(pack, nextTruck, successMsg) {', 'function renderTruckInspector(');
+  assert.ok(truck.indexOf('endAutoPackResultsPreview();') >= 0 &&
+    truck.indexOf('endAutoPackResultsPreview();') < truck.indexOf('OperationLifecycle.isBusy()') &&
+    truck.indexOf('endAutoPackResultsPreview();') < truck.indexOf("beginOperation('changingTruck'"),
+  'Truck Change ends a Results preview before its busy check and lifecycle slot');
+  const exportScene = sliceFn(src, 'function getExportScene() {', 'const shellEl');
+  assert.match(exportScene, /endAutoPackResultsPreview\(\);\n\s*const scene = getPreviewScene\(\);/,
+    'visual export ends a Results preview before resolving authority');
   assert.match(render, /const view = resolveAutoPackResultsView\(pack\);/, 'the card reads the same view resolution');
   const preview = sliceFn(src, 'function getAutoPackResultsPreviewPack(pack) {', 'function isAutoPackResultsStale(');
   assert.match(preview, /const view = resolveAutoPackResultsView\(pack\);/, 'the scene reads the same view resolution');

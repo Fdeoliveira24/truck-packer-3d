@@ -2080,6 +2080,220 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
   }
 });
 
+test('Results preview ends before Unpack and Truck Change claim the Editor; every outcome and the Truck change modal stay on the committed scene', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.locator('#btn-autopack').click();
+    await page.waitForFunction(() => window.probe.op() === 'idle' &&
+      (window.probe.StateStore.get('autoPackResults')?.options || []).length > 1, null, { timeout: 90000 });
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    // Record what the scene shows at the instant an operation claims the Editor,
+    // and every StateStore change (to prove restoration writes nothing durable).
+    await page.evaluate(() => {
+      const p = window.probe;
+      p.sceneAtPack = () => {
+        const pack = p.PackLibrary.getById(p.StateStore.get('currentPackId'));
+        return pack.cases.every(inst => p.CaseScene.getObject(inst.id).position
+          .distanceTo(p.SceneManager.vecInchesToWorld(inst.transform.position)) <= 0.05);
+      };
+      p.changeLog = [];
+      p.StateStore.subscribe(changes => { p.changeLog.push(Object.keys(changes).sort().join(',')); });
+      p.opClaims = [];
+      p.refuseKind = null;
+      const begin = p.OperationLifecycle.beginOperation;
+      p.OperationLifecycle.beginOperation = (kind, meta) => {
+        p.opClaims.push({ kind, transient: p.CaseScene.isTransientPreview(), atPack: p.sceneAtPack(),
+          packWrites: p.changeLog.filter(keys => keys.split(',').includes('packLibrary')).length });
+        return p.refuseKind === kind ? null : begin(kind, meta);
+      };
+    });
+    const state = () => page.evaluate(() => {
+      const p = window.probe;
+      const pack = p.PackLibrary.getById(p.StateStore.get('currentPackId'));
+      const panel = document.querySelector('[data-role="autopack-results-panel"]');
+      return {
+        transient: p.CaseScene.isTransientPreview(), atPack: p.sceneAtPack(), op: p.op(),
+        appliedShown: Boolean(panel?.querySelector('.tp3d-autopack-results__current-pill')),
+        cases: p.casesJson(), truck: JSON.stringify(pack.truck), lastEdited: pack.lastEdited,
+        packWrites: p.changeLog.filter(keys => keys.split(',').includes('packLibrary')).length,
+      };
+    });
+    const lastClaim = () => page.evaluate(() => window.probe.opClaims.at(-1) || null);
+    const claimCount = () => page.evaluate(() => window.probe.opClaims.length);
+    const preview = async label => {
+      await page.locator('[data-focus-key="results-next"]').click();
+      const s = await state();
+      assert.equal(s.transient && !s.atPack, true, `${label}: a non-Applied option is previewed`);
+    };
+    const committedScene = (s, label) => {
+      assert.equal(s.transient, false, `${label}: no transient preview remains`);
+      assert.equal(s.atPack, true, `${label}: the scene shows the committed Pack`);
+      assert.equal(s.appliedShown, true, `${label}: Results show the Applied option`);
+    };
+    const updateTruck = () => page.locator('#inspector-body button').filter({ hasText: 'Update truck' }).click();
+    const truckModal = page.locator('.modal').filter({ has: page.locator('.modal-title', { hasText: 'Truck change' }) });
+    const base = await state();
+    assert.equal(base.transient, false);
+
+    // E: early validation failure.
+    await preview('E');
+    let claims = await claimCount();
+    await page.locator('[data-focus-key="truck-length"]').fill('');
+    await updateTruck();
+    const invalid = page.locator('[data-focus-key="truck-length"]');
+    assert.equal(await invalid.getAttribute('aria-invalid'), 'true', 'E: the error shows on the live, rebuilt field');
+    assert.match(await invalid.locator('..').textContent(), /Enter at least/);
+    committedScene(await state(), 'E');
+    assert.equal(await claimCount(), claims, 'E: validation failure claims no operation');
+    await page.locator('[data-focus-key="truck-length"]').fill('636');
+
+    // D: unchanged truck.
+    await preview('D');
+    claims = await claimCount();
+    await updateTruck();
+    await page.waitForFunction(() => window.probe.op() === 'idle');
+    assert.equal(await claimCount(), claims + 1, 'D: Truck Change claimed the Editor once');
+    const unchangedClaim = await lastClaim();
+    assert.deepEqual(unchangedClaim, { kind: 'changingTruck', transient: false, atPack: true, packWrites: 0 },
+      'D: the committed scene was restored before Truck Change claimed the Editor');
+    committedScene(await state(), 'D');
+
+    // C + F: a real proposal, the refined Truck change modal, then Cancel.
+    await preview('C');
+    await page.locator('[data-focus-key="truck-length"]').fill('150');
+    await updateTruck();
+    await truckModal.waitFor();
+    assert.deepEqual(await lastClaim(), { kind: 'changingTruck', transient: false, atPack: true, packWrites: 0 },
+      'C: the committed scene was restored before the Truck Change proposal');
+    const modalView = () => truckModal.evaluate(modal => {
+      const clean = el => el.textContent.replace(/\s+/g, ' ').trim();
+      const css = el => getComputedStyle(el);
+      const rows = [...modal.querySelectorAll('.tp3d-truck-change-summary__row')];
+      const buttons = [...modal.querySelectorAll('.modal-footer .btn')];
+      const footer = modal.querySelector('.modal-footer').getBoundingClientRect();
+      return {
+        title: clean(modal.querySelector('.modal-title')),
+        listTag: modal.querySelector('.tp3d-truck-change-summary')?.tagName,
+        listStyle: css(modal.querySelector('.tp3d-truck-change-summary')).listStyleType,
+        bullets: modal.querySelectorAll('.modal-body li:not(.tp3d-truck-change-summary__row)').length,
+        rows: rows.map(row => ({
+          text: clean(row), className: row.className, bg: css(row).backgroundColor, color: css(row).color,
+          countWeight: css(row.querySelector('.tp3d-truck-change-summary__count')).fontWeight,
+          strong: row.querySelector('strong') ? clean(row.querySelector('strong')) : null,
+          noteColor: row.querySelector('.tp3d-truck-change-summary__note')
+            ? css(row.querySelector('.tp3d-truck-change-summary__note')).color : null,
+          borderTop: css(row).borderTopColor + ' ' + css(row).borderTopWidth,
+        })),
+        body: clean(modal.querySelector('.modal-body')),
+        buttons: buttons.map(btn => {
+          const rect = btn.getBoundingClientRect();
+          return { label: clean(btn), primary: btn.classList.contains('btn-primary'), x: rect.left, y: rect.top,
+            right: rect.right, width: rect.width };
+        }),
+        footer: { left: footer.left, right: footer.right, width: footer.width },
+        overflow: modal.scrollWidth > modal.clientWidth + 1 || document.documentElement.scrollWidth > window.innerWidth + 1,
+        focusInside: modal.contains(document.activeElement),
+        secondary: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim(),
+      };
+    });
+    const desktop = await modalView();
+    assert.equal(desktop.title, 'Truck change');
+    assert.equal(desktop.listTag, 'UL');
+    assert.equal(desktop.listStyle, 'none', 'the summary is one group, not a bulleted list');
+    assert.equal(desktop.bullets, 0);
+    assert.deepEqual(desktop.rows.slice(0, 4).map(row => row.text.replace(/^\d+ /, 'N ')), [
+      'N kept in place', 'N safely adjusted', 'N no longer fit (shown in staging preview)', 'N existing staged items unchanged',
+    ]);
+    const decision = desktop.rows[2];
+    assert.match(decision.className, /\bis-no-longer-fit\b/, 'items no longer fit at 150 in');
+    assert.equal(decision.bg, 'rgba(255, 159, 28, 0.12)', 'the decision row has the faint brand tint');
+    assert.equal(decision.color, 'rgb(26, 26, 31)', 'decision-row text stays neutral (no brown, no dark warning text)');
+    assert.equal(decision.countWeight, '700');
+    assert.equal(decision.strong, 'no longer fit');
+    assert.notEqual(decision.noteColor, decision.color, 'the parenthetical is secondary gray');
+    assert.equal(decision.borderTop, desktop.rows[1].borderTop, 'same subtle divider as the other rows');
+    for (const row of desktop.rows) {
+      const zero = row.text.startsWith('0 ');
+      assert.equal(/\bis-zero\b/.test(row.className), zero, `${row.text}: zero rows are subdued, others are not`);
+      if (zero) assert.notEqual(row.color, 'rgb(26, 26, 31)', `${row.text}: zero row uses muted text`);
+      if (zero) assert.equal(row.bg, 'rgba(0, 0, 0, 0)', `${row.text}: zero row has no tint`);
+    }
+    assert.match(desktop.body, /The scene shows the proposed truck\. Items that no longer fit are shown in staging\. No changes are saved until you confirm\./);
+    assert.deepEqual(desktop.buttons.map(btn => [btn.label, btn.primary]),
+      [['Repack invalid', true], ['Move to staging', false], ['Cancel', false]], 'DOM and Tab order: decisions, then Cancel');
+    const [repack, move, cancel] = desktop.buttons;
+    assert.ok(repack.x < move.x && move.right < cancel.x, 'desktop: Repack invalid and Move to staging left, Cancel right');
+    assert.ok(Math.abs(repack.y - cancel.y) < 2, 'desktop: one footer row');
+    assert.ok(repack.x - desktop.footer.left < 40 && desktop.footer.right - cancel.right < 40, 'desktop: groups sit at the footer edges');
+    assert.equal(desktop.overflow, false);
+    assert.equal(desktop.focusInside, true, 'focus moves into the Truck change modal');
+    await truckModal.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await truckModal.waitFor({ state: 'detached' });
+    await page.waitForFunction(() => window.probe.op() === 'idle');
+    const cancelled = await state();
+    committedScene(cancelled, 'F (Cancel)');
+    assert.equal(cancelled.truck, base.truck, 'F: Cancel commits no truck');
+    assert.equal(cancelled.cases, base.cases, 'F: Cancel commits no cargo');
+
+    // Narrow layout and Escape on the same modal.
+    // (The narrow Editor hides the Inspector in a drawer: open at desktop width, then narrow.)
+    await preview('Escape');
+    await page.locator('[data-focus-key="truck-length"]').fill('150');
+    await updateTruck();
+    await truckModal.waitFor();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const narrow = await modalView();
+    const [nRepack, nMove, nCancel] = narrow.buttons;
+    assert.deepEqual(narrow.buttons.map(btn => btn.label), ['Repack invalid', 'Move to staging', 'Cancel']);
+    assert.ok(nRepack.y < nMove.y && nMove.y < nCancel.y, 'narrow: stacked Repack invalid, Move to staging, Cancel');
+    assert.ok(narrow.buttons.every(btn => Math.abs(btn.width - nRepack.width) < 1 && btn.width > narrow.footer.width * 0.8),
+      'narrow: full-width buttons');
+    assert.equal(narrow.overflow, false, 'narrow: no horizontal overflow');
+    await page.keyboard.press('Escape');
+    await truckModal.waitFor({ state: 'detached' });
+    await page.waitForFunction(() => window.probe.op() === 'idle');
+    await page.setViewportSize({ width: 1400, height: 900 });
+    const escaped = await state();
+    committedScene(escaped, 'Escape');
+    assert.equal(escaped.truck, base.truck, 'Escape commits no truck');
+    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest('.modal'))), false,
+      'Escape leaves no focus inside a closed modal');
+    await page.locator('[data-focus-key="truck-length"]').fill('636');
+
+    // B: refused Unpack.
+    await preview('B');
+    await page.evaluate(() => { window.probe.refuseKind = 'unpacking'; });
+    await page.locator('#btn-unpack').click();
+    await page.waitForFunction(() => window.probe.opClaims.at(-1)?.kind === 'unpacking');
+    await page.evaluate(() => { window.probe.refuseKind = null; });
+    assert.deepEqual(await lastClaim(), { kind: 'unpacking', transient: false, atPack: true, packWrites: 0 },
+      'B: the committed scene was restored before Unpack tried to claim the Editor');
+    const refused = await state();
+    committedScene(refused, 'B');
+    assert.equal(refused.cases, base.cases, 'B: a refused Unpack changes no cargo');
+
+    // G: every restoration so far wrote no Pack, history or lastEdited.
+    assert.equal(refused.packWrites, 0, 'G: restoration never wrote the Pack (no history or autosave input)');
+    assert.equal(refused.lastEdited, base.lastEdited, 'G: lastEdited unchanged');
+
+    // A: Unpack from a preview.
+    await preview('A');
+    await page.locator('#btn-unpack').click();
+    await page.waitForFunction(() => window.probe.opClaims.at(-1)?.kind === 'unpacking' && window.probe.op() === 'idle');
+    assert.deepEqual(await lastClaim(), { kind: 'unpacking', transient: false, atPack: true, packWrites: 0 },
+      'A: the committed scene was restored before Unpack claimed the Editor');
+    const unpacked = await state();
+    assert.equal(unpacked.packWrites, 1, 'A: only the Unpack itself wrote the Pack');
+    assert.notEqual(unpacked.cases, base.cases);
+    assert.equal(unpacked.transient, false);
+    assert.equal(unpacked.atPack, true, 'A: the scene shows the staged Pack');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('Editor fixture cancels a selected cargo-group pointer stroke without a Pack commit', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {

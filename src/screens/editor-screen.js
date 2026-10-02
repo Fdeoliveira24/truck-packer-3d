@@ -3946,6 +3946,10 @@ export function createEditorScreen({
           (previewScene && StateStore.get('currentPackId') !== previewScene.pack.id)) {
         previewScene = null;
       }
+      // Leaving the Editor ends a transient Results preview: back to the Pack.
+      if (StateStore.get('currentScreen') !== 'editor' && CaseScene.isTransientPreview()) {
+        CaseScene.sync(PackLibrary.getById(StateStore.get('currentPackId')));
+      }
       // Only the whitelisted derived-metadata boundary can rebind authority.
       // An ordinary Pack replacement still requires a full committed render.
       if ((notification?.type === 'pack-preview' || notification?.type === 'pack-view') && previewScene &&
@@ -3974,6 +3978,17 @@ export function createEditorScreen({
       if (appliedIndex >= 0) patchAutoPackResultsState({ viewIndex: appliedIndex }, view.results.runId);
     }
 
+    // Visual export and whole-Pack operations (Unpack, Truck Change) start from
+    // the committed scene: a transient Results preview ends first through the
+    // landing above, and the committed Pack is rendered synchronously, before
+    // any operation claims the lifecycle slot. Returns true when it ended one.
+    function endAutoPackResultsPreview() {
+      if (!CaseScene.isTransientPreview()) return false;
+      landAutoPackResultsViewOnApplied();
+      if (CaseScene.isTransientPreview()) render();
+      return !CaseScene.isTransientPreview();
+    }
+
     function getPreviewScene() {
       if (!previewScene || !CoreStorage.isScopeContextCurrent(previewScene.scope) ||
           StateStore.get('currentScreen') !== 'editor' ||
@@ -3997,7 +4012,7 @@ export function createEditorScreen({
       // Visual exports always show the committed Pack: a transient Results
       // preview ends first (the view lands on the Applied option, re-rendering
       // the committed scene), then authority resolves exactly as before.
-      if (CaseScene.isTransientPreview()) landAutoPackResultsViewOnApplied();
+      endAutoPackResultsPreview();
       const scene = getPreviewScene();
       if (!scene || !isViewOwnerCurrent() || !CaseScene.matchesCommittedPoses(scene.pack)) return null;
       return scene;
@@ -5033,8 +5048,6 @@ export function createEditorScreen({
       selectionRenderPending = false;
       if (StateStore.get('currentScreen') !== 'editor') {
         setValidationPopoverOpen(false);
-        // Leaving the Editor ends a transient Results preview: back to the Pack.
-        if (CaseScene.isTransientPreview()) CaseScene.sync(PackLibrary.getById(StateStore.get('currentPackId')));
         return;
       }
       ensureScene();
@@ -6034,6 +6047,9 @@ export function createEditorScreen({
         UIComponents.showToast('Nothing to unpack', 'info');
         return;
       }
+      // Unpack stages the committed cargo: the committed scene shows before the
+      // slot is claimed, so the frame yield below never displays a candidate.
+      endAutoPackResultsPreview();
       clearPendingTruck();
       // Claim the single mutating-operation slot so AutoPack / Truck Change cannot
       // run concurrently with the (synchronous, O(n^2)) staging computation below.
@@ -6855,6 +6871,9 @@ export function createEditorScreen({
       // config-card save buttons). Block while another operation owns the editor,
       // and hold the lifecycle slot for the duration of the preview modal so AutoPack/
       // Unpack cannot mutate the pack underneath an open Truck Change.
+      // Truck Change starts from the committed scene, so every outcome (proposal,
+      // unchanged, invalid, failed, Cancel) ends on it rather than a Results preview.
+      endAutoPackResultsPreview();
       if (OperationLifecycle && OperationLifecycle.isBusy()) {
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
         return { status: 'busy' };
@@ -7053,7 +7072,23 @@ export function createEditorScreen({
         : '<i class="fa-solid fa-floppy-disk"></i> Update truck';
       btnSave.classList.add('tp3d-editor-btn-full');
       if (truckDirty) btnSave.classList.add('tp3d-editor-btn-attention');
+      btnSave.dataset.role = 'truck-update';
       btnSave.addEventListener('click', () => {
+        // Truck Change starts from the committed scene. Ending a transient
+        // Results preview rebuilds this form, so the typed dimensions carry over
+        // and the same Update (validation included) runs on the rebuilt form.
+        if (CaseScene.isTransientPreview()) {
+          const typed = [fL, fW, fH].map(field => [field.input.dataset.focusKey, field.input.value]);
+          if (endAutoPackResultsPreview()) {
+            typed.forEach(([key, value]) => {
+              const input = inspectorEl.querySelector(`[data-focus-key="${key}"]`);
+              if (input instanceof HTMLInputElement) input.value = value;
+            });
+            const rebuilt = inspectorEl.querySelector('[data-role="truck-update"]');
+            if (rebuilt instanceof HTMLButtonElement) rebuilt.click();
+            return;
+          }
+        }
         // Commit the pending/edited geometry. This is the ONLY path that calls the
         // TruckChangeController (reconciliation + preview); dropdown changes do not.
         if (OperationLifecycle && OperationLifecycle.isBusy()) {

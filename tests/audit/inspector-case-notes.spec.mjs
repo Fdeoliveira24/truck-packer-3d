@@ -21,7 +21,6 @@ import { createModalOwnership } from '../../src/ui/ui-components.js';
 // executing the UI.
 
 const cargoCanonicalUrl = new URL('../../src/core/cargo-canonical.js', import.meta.url);
-const caseModelUrl = new URL('../../src/data/models/case.model.js', import.meta.url);
 const normalizerUrl = new URL('../../src/core/normalizer.js', import.meta.url);
 const stateStoreUrl = new URL('../../src/core/state-store.js', import.meta.url);
 const caseLibraryUrl = new URL('../../src/services/case-library.js', import.meta.url);
@@ -64,25 +63,17 @@ test('parseCargoNotes normalizes empty, whitespace-only, and non-string input to
 });
 
 // ---------------------------------------------------------------------------
-// Model-level normalization (both normalizeCase implementations route through
-// the same canonicalCargoForStorage(), so a raw case object gets the same
-// notes value everywhere it is normalized).
+// Normalizer-level normalization (core/normalizer.js routes through
+// canonicalCargoForStorage(), so a raw case object gets the same notes value
+// everywhere it is normalized).
 // ---------------------------------------------------------------------------
 
-test('data/models/case.model.js normalizeCase stores notes as string-or-null', async () => {
-  const { normalizeCase } = await import(caseModelUrl.href);
-  assert.equal(normalizeCase(baseCase({ notes: '  Ships upright only  ' })).notes, 'Ships upright only');
-  assert.equal(normalizeCase(baseCase({ notes: '   ' })).notes, null);
-  assert.equal(normalizeCase(baseCase({ notes: '' })).notes, null);
-  assert.equal(normalizeCase(baseCase({})).notes, null);
-  assert.equal(normalizeCase(baseCase({ notes: 7 })).notes, null);
-});
-
-test('core/normalizer.js normalizeCase stores notes as string-or-null (parity with the model normalizer)', async () => {
+test('core/normalizer.js normalizeCase stores notes as string-or-null', async () => {
   const Normalizer = await import(normalizerUrl.href);
   const now = Date.now();
   assert.equal(Normalizer.normalizeCase(baseCase({ notes: '  Ships upright only  ' }), now).notes, 'Ships upright only');
   assert.equal(Normalizer.normalizeCase(baseCase({ notes: '   ' }), now).notes, null);
+  assert.equal(Normalizer.normalizeCase(baseCase({ notes: '' }), now).notes, null);
   assert.equal(Normalizer.normalizeCase(baseCase({}), now).notes, null);
   assert.equal(Normalizer.normalizeCase(baseCase({ notes: 7 }), now).notes, null);
 });
@@ -90,7 +81,7 @@ test('core/normalizer.js normalizeCase stores notes as string-or-null (parity wi
 // ---------------------------------------------------------------------------
 // CaseLibrary.upsert is the canonical update path the Inspector Notes modal's
 // Save button calls (mirroring the existing Set Category action's use of the
-// same path). It must normalize exactly like the model normalizers.
+// same path). It must normalize exactly like the core normalizer.
 // ---------------------------------------------------------------------------
 
 test('CaseLibrary.upsert normalizes notes: trims real text, clears whitespace-only to null', async () => {
@@ -329,9 +320,9 @@ test('a note saved via the Cases-screen case-modal.js payload shape is visible t
     'a Cases-screen edit must be readable as the Inspector reads it: CaseLibrary.getById(caseId).notes');
 });
 
-test('data/models/case.model.js normalizeCase keeps notes and hazmatClass on the same string-or-null convention (no divergent representation introduced)', async () => {
-  const { normalizeCase } = await import(caseModelUrl.href);
-  const withBoth = normalizeCase(baseCase({ notes: '', hazmatClass: '' }));
+test('core/normalizer.js normalizeCase keeps notes and hazmatClass on the same string-or-null convention (no divergent representation introduced)', async () => {
+  const Normalizer = await import(normalizerUrl.href);
+  const withBoth = Normalizer.normalizeCase(baseCase({ notes: '', hazmatClass: '' }), Date.now());
   assert.equal(withBoth.notes, null);
   assert.equal(withBoth.hazmatClass, null,
     'hazmatClass already used null-for-empty before this feature; notes now matches its existing sibling, not a newly invented rule');

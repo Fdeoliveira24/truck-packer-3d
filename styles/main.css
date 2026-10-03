@@ -7001,49 +7001,6 @@ body.tp3d-shared-modal-lock #app .nav {
   color: var(--text-primary);
 }
 
-/* ================================
-   TP3D Cases Screen (Phase 1.1)
-   Category Manager modal
-================================== */
-
-.tp3d-cases-catmgr-content {
-  display: grid;
-  gap: 14px;
-  min-width: 480px;
-}
-
-.tp3d-cases-catmgr-list {
-  display: grid;
-  gap: 8px;
-}
-
-.tp3d-cases-catmgr-row {
-  display: grid;
-  width: 40px;
-  height: 40px;
-  padding: 0;
-  cursor: pointer;
-  border: 2px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-}
-
-.tp3d-cases-catmgr-actions {
-  display: flex;
-  gap: 6px;
-}
-
-.tp3d-cases-catmgr-btn-pad {
-  padding: 6px 10px;
-}
-
-.tp3d-cases-catmgr-del-color {
-  color: var(--error);
-}
-
-.tp3d-cases-catmgr-add-full {
-  width: 100%;
-}
-
 .tp3d-chip-readonly {
   cursor: default;
 }

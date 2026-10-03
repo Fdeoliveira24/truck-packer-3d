@@ -22,8 +22,6 @@ const editorPath = new globalThis.URL('../../src/screens/editor-screen.js', impo
 const sceneRuntimePath = new globalThis.URL('../../src/editor/scene-runtime.js', import.meta.url);
 const settingsPath = new globalThis.URL('../../src/ui/overlays/settings-overlay.js', import.meta.url);
 const importExportPath = new globalThis.URL('../../src/services/import-export.js', import.meta.url);
-const packModelPath = new globalThis.URL('../../src/data/models/pack.model.js', import.meta.url);
-const caseModelPath = new globalThis.URL('../../src/data/models/case.model.js', import.meta.url);
 
 class TestElement {
   constructor(tagName) {
@@ -478,13 +476,11 @@ test('Editor panel and navigation layout changes resize the measured scene host 
 });
 
 test('integration stays Inspector-only and does not introduce persistence, database, or sample-data wiring', async () => {
-  const [gaugeSource, editorSource, settingsSource, importExportSource, packModelSource, caseModelSource] = await Promise.all([
+  const [gaugeSource, editorSource, settingsSource, importExportSource] = await Promise.all([
     fs.readFile(gaugePath, 'utf8'),
     fs.readFile(editorPath, 'utf8'),
     fs.readFile(settingsPath, 'utf8'),
     fs.readFile(importExportPath, 'utf8'),
-    fs.readFile(packModelPath, 'utf8'),
-    fs.readFile(caseModelPath, 'utf8'),
   ]);
   assert.doesNotMatch(gaugeSource, /supabase|migration|database/i);
   assert.match(editorSource, /function renderSpaceUtilizationSection\(pack\)/);
@@ -496,5 +492,5 @@ test('integration stays Inspector-only and does not introduce persistence, datab
   assert.doesNotMatch(editorSource, /space-utilization-visibility-toggle|Space Utilization Analysis|setSpaceUtilizationCollapsed/);
   assert.doesNotMatch(settingsSource, /Show gauge|Gauge detail|Current gauge position|tp3d-prefs-reset-position/);
   assert.doesNotMatch(gaugeSource, /Geometric Preview|Not Validated|require attention|space-utilization-analysis-action/);
-  assert.doesNotMatch(`${importExportSource}\n${packModelSource}\n${caseModelSource}`, /spaceUtilization/i);
+  assert.doesNotMatch(importExportSource, /spaceUtilization/i);
 });

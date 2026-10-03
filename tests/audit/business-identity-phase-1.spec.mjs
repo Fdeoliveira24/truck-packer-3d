@@ -2859,7 +2859,7 @@ test('CASES-CATEGORY-UI category-management popover is untouched by this change 
   const createAndEdit = sliceBetween(casesSource, 'function createCategoryAndEdit() {', 'function openEditCategoryModal(');
   assert.match(createAndEdit, /CategoryService\.upsert\(/, 'creation still goes through the shared CategoryService authority');
 
-  const editModal = sliceBetween(casesSource, 'function openEditCategoryModal(cat) {', 'function _openCategoryManager(');
+  const editModal = sliceBetween(casesSource, 'function openEditCategoryModal(cat) {', 'async function deleteCase(');
   assert.match(editModal, /CategoryService\.rename\(/);
   assert.match(editModal, /CategoryService\.remove\(/);
 });

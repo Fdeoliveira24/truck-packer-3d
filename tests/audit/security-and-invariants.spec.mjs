@@ -96,7 +96,6 @@ const operationLifecyclePath = new URL('../../src/core/operation-lifecycle.js', 
 const beamCsvFixturePath = new URL('../../docs/tp3d-pack-and-cases-upload-tests/cargo_cases_valid.csv', import.meta.url);
 const beamXlsxFixturePath = new URL('../../docs/tp3d-pack-and-cases-upload-tests/cargo_cases_valid.xlsx', import.meta.url);
 const vendorThreePath = new URL('../../vendor/three.module.js', import.meta.url);
-const caseModelPath = new URL('../../src/data/models/case.model.js', import.meta.url);
 const coreUtilsPath = new URL('../../src/core/utils.js', import.meta.url);
 const coreUtilsIndexPath = new URL('../../src/core/utils/index.js', import.meta.url);
 const corsSharedPath = new URL('../../supabase/functions/_shared/cors.ts', import.meta.url);
@@ -1761,32 +1760,29 @@ test('CARGO-RULE-V3 comparison identity excludes manufacturer/category, includes
 test('CARGO-RULE-V3 data-sanity: an absurd dimension never yields infinite volume after normalization', async () => {
   const stamp = `?t=${Date.now()}-${Math.random()}`;
   const Normalizer = await import(`${normalizerPath.href}${stamp}`);
-  const CaseModel = await import(`${caseModelPath.href}${stamp}`);
-  for (const norm of [c => Normalizer.normalizeCase(c, Date.now()), c => CaseModel.normalizeCase(c)]) {
-    const out = norm({ id: 'z', name: 'Z', dimensions: { length: 1e300, width: 1e300, height: 1e300 }, weight: 1e300 });
-    assert.ok(Number.isFinite(out.volume), 'volume is finite, not Infinity');
-    assert.ok(Number.isFinite(out.weight), 'weight is finite');
-    assert.ok(out.dimensions.length <= 100000 && out.dimensions.length > 0, 'dimension clamped to sane bound');
-  }
+  const out = Normalizer.normalizeCase(
+    { id: 'z', name: 'Z', dimensions: { length: 1e300, width: 1e300, height: 1e300 }, weight: 1e300 },
+    Date.now()
+  );
+  assert.ok(Number.isFinite(out.volume), 'volume is finite, not Infinity');
+  assert.ok(Number.isFinite(out.weight), 'weight is finite');
+  assert.ok(out.dimensions.length <= 100000 && out.dimensions.length > 0, 'dimension clamped to sane bound');
 });
 
 test('CARGO-RULE-V3 extensions: safe unknown metadata survives normalize; unsafe values dropped', async () => {
   const stamp = `?t=${Date.now()}-${Math.random()}`;
   const Normalizer = await import(`${normalizerPath.href}${stamp}`);
-  const CaseModel = await import(`${caseModelPath.href}${stamp}`);
   const raw = {
     id: 'e', name: 'E', dimensions: { length: 10, width: 10, height: 10 },
     customTag: 'keep-me', nested: { ok: 1, fn: () => 1 }, badNum: Infinity,
     evil: () => 'x',
   };
-  for (const norm of [c => Normalizer.normalizeCase(c, Date.now()), c => CaseModel.normalizeCase(c)]) {
-    const out = norm(raw);
-    assert.equal(out.customTag, 'keep-me', 'safe scalar extension preserved');
-    assert.deepEqual(out.nested, { ok: 1 }, 'nested object kept; function child dropped');
-    assert.equal('badNum' in out, false, 'non-finite extension dropped');
-    assert.equal('evil' in out, false, 'function extension dropped');
-    assert.equal(typeof out.name, 'string', 'known fields still normalized');
-  }
+  const out = Normalizer.normalizeCase(raw, Date.now());
+  assert.equal(out.customTag, 'keep-me', 'safe scalar extension preserved');
+  assert.deepEqual(out.nested, { ok: 1 }, 'nested object kept; function child dropped');
+  assert.equal('badNum' in out, false, 'non-finite extension dropped');
+  assert.equal('evil' in out, false, 'function extension dropped');
+  assert.equal(typeof out.name, 'string', 'known fields still normalized');
 });
 
 test('CARGO-RULE-V3 extensions survive App Backup and Workspace normalization round-trips', async () => {
@@ -2682,8 +2678,6 @@ test('PLACEMENT-STATE-S2 unpackAll records "staged" placement for every case', a
 
 test('UNPACK-CATEGORY-GROUPING staging order keeps case types contiguous and stable', async () => {
   const EditorScreen = await import(`${editorScreenPath.href}?t=${Date.now()}-${Math.random()}`);
-  assert.equal(typeof EditorScreen.sortInstancesForUnpackStaging, 'function',
-    'editor-screen must export sortInstancesForUnpackStaging for deterministic unpack grouping');
   assert.equal(typeof EditorScreen.groupInstancesForUnpackStaging, 'function',
     'editor-screen must expose case-type groups so Unpack can stage each case type in its own band');
 
@@ -2700,13 +2694,6 @@ test('UNPACK-CATEGORY-GROUPING staging order keeps case types contiguous and sta
     { id: 'b-2', caseId: 'beta-case' },
     { id: 'missing-1', caseId: 'missing-case' },
   ];
-
-  const sorted = EditorScreen
-    .sortInstancesForUnpackStaging(instances, caseId => casesById.get(caseId))
-    .map(inst => inst.id);
-
-  assert.deepEqual(sorted, ['a-1', 'a-2', 'b-1', 'b-2', 'd-1', 'missing-1'],
-    'unpack staging must group by first-seen case type while preserving order within each type');
 
   const groups = EditorScreen
     .groupInstancesForUnpackStaging(instances, caseId => casesById.get(caseId))
@@ -5655,10 +5642,8 @@ test('CARGO-RULE-V1 CaseLibrary.upsert canonicalizes cargo fields and preserves 
 
 test('CARGO-RULE-V1 normalizers floor decimal maxStackCount', async () => {
   const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);
   const base = { id: 'm', name: 'M', dimensions: { length: 10, width: 10, height: 10 } };
   assert.equal(Normalizer.normalizeCase({ ...base, maxStackCount: 3.9 }, Date.now()).maxStackCount, 3, 'core normalizer floors maxStackCount');
-  assert.equal(CaseModel.normalizeCase({ ...base, maxStackCount: 3.9 }).maxStackCount, 3, 'case model floors maxStackCount');
 });
 
 test('CARGO-RULE-V1 spreadsheet invalid boolean and lane cells produce warnings (CSV/XLSX identical path)', async () => {
@@ -6104,15 +6089,13 @@ test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instan
     'manual policy: any allows tipped — matches AutoPack canFlip behavior');
 });
 
-test('CARGO-RULE-V1 canFlip defaults to false across model/normalizer/import; explicit values preserved', async () => {
+test('CARGO-RULE-V1 canFlip defaults to false across normalizer/import; explicit values preserved', async () => {
   const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);
   const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
   const baseCase = { id: 'cf-1', name: 'Flip Default', dimensions: { length: 48, width: 24, height: 24 } };
 
-  // Missing canFlip → false in both normalizers
+  // Missing canFlip → false
   assert.equal(Normalizer.normalizeCase({ ...baseCase }, Date.now()).canFlip, false, 'core normalizer: missing canFlip must default to false');
-  assert.equal(CaseModel.normalizeCase({ ...baseCase }).canFlip, false, 'case model: missing canFlip must default to false');
   // Explicit values preserved
   assert.equal(Normalizer.normalizeCase({ ...baseCase, canFlip: true }, Date.now()).canFlip, true, 'explicit canFlip:true preserved');
   assert.equal(Normalizer.normalizeCase({ ...baseCase, canFlip: false }, Date.now()).canFlip, false, 'explicit canFlip:false preserved');
@@ -6137,7 +6120,6 @@ test('CARGO-RULE-V1 new-case modal initial defaults canFlip to false', async () 
 
 test('AUTO-PACK-A1-R1 normalizers add logistics defaults and preserve explicit values', async () => {
   const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const CaseModel = await import(`${caseModelPath.href}?t=${Date.now()}-${Math.random()}`);
   const now = Date.now();
 
   const coreDefault = Normalizer.normalizeCase({
@@ -6151,18 +6133,6 @@ test('AUTO-PACK-A1-R1 normalizers add logistics defaults and preserve explicit v
   assert.equal(coreDefault.mustUnloadFirst, false);
   assert.equal(coreDefault.stopGroup, '');
   assert.equal(coreDefault.keepTogetherGroup, '');
-
-  const modelDefault = CaseModel.normalizeCase({
-    id: 'case-model-defaults',
-    name: 'Model Defaults',
-    dimensions: { length: 48, width: 24, height: 24 },
-  });
-  assert.equal(modelDefault.laneItem, null);
-  assert.equal(modelDefault.loadPriority, 0);
-  assert.equal(modelDefault.mustLoadLast, false);
-  assert.equal(modelDefault.mustUnloadFirst, false);
-  assert.equal(modelDefault.stopGroup, '');
-  assert.equal(modelDefault.keepTogetherGroup, '');
 
   const normalized = Normalizer.normalizeAppData({
     caseLibrary: [
@@ -7796,16 +7766,10 @@ test('EDITOR Case Browser New Case shortcut uses shared modal without adding to 
     'Cases screen category editing must share an explicit duplicate-category guard');
   assert.match(casesSrc, /colorWrap\.classList\.add\('tp3d-cases-cat-swatch'\)[\s\S]*color\.className = 'tp3d-cases-cat-color-input'/,
     'category edit modal must reuse the standard category swatch style');
-  assert.match(casesSrc, /colorWrap\.classList\.add\('tp3d-cases-cat-swatch', 'tp3d-cases-catmgr-color-wrap'\)[\s\S]*color\.className = 'tp3d-cases-cat-color-input'/,
-    'category manager color pickers must reuse the standard category swatch style');
   assert.match(editorSrc, /colorWrap\.classList\.add\('tp3d-cases-cat-swatch'\)[\s\S]*colorInput\.className = 'tp3d-cases-cat-color-input'/,
     'editor Set Category color picker must reuse the standard category swatch style');
   assert.match(casesSrc, /findDuplicateCategoryName\(nextName, initial\.key\)[\s\S]*Category "\$\{duplicate\.name\}" already exists/,
     'category edit modal must block duplicate renames with a warning');
-  assert.match(casesSrc, /findDuplicateCategoryName\(name\.value, cat\.key\)[\s\S]*Category "\$\{duplicate\.name\}" already exists/,
-    'category manager rows must block duplicate renames with a warning');
-  assert.match(casesSrc, /CategoryService\.listWithCounts\(CaseLibrary\.getCases\(\)\)\.forEach\(cat => \{/,
-    'category manager must include imported/project categories, not only preference defaults');
 });
 
 test('CASE filters normalize imported category keys before matching cases', async () => {

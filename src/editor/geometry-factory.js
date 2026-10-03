@@ -35,24 +35,3 @@ export function createCaseGeometry(caseData, toWorld) {
     // Default: box geometry
     return new THREE.BoxGeometry(lW, hW, wW);
 }
-
-/**
- * Calculate volume in cubic inches, accounting for shape.
- * @param {CaseDims} dims - Dimensions {length, width, height} in inches
- * @param {string} shape - Shape type ('box', 'cylinder', 'drum')
- * @returns {number} Volume in cubic inches
- */
-export function volumeForShape(dims, shape = 'box') {
-    const { length, width, height } = dims;
-    const l = Number(length) || 0;
-    const w = Number(width) || 0;
-    const h = Number(height) || 0;
-
-    if (shape === 'cylinder' || shape === 'drum') {
-        // Cylinder: circular cross-section uses smaller of width/height as diameter
-        const radius = Math.min(w, h) / 2;
-        return Math.PI * radius * radius * l;
-    }
-
-    return Math.max(0, l * w * h);
-}

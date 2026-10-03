@@ -11,63 +11,6 @@
  */
 
 /**
- * Computes OOG warnings for cases that exceed truck dimensions.
- * @param {OOGPack} pack - Pack object with truck and cases
- * @param {Record<string, any>[]} caseLibrary - Array of case definitions
- * @returns {object[]} Array of warning objects
- */
-export function computeOOGWarnings(pack, caseLibrary) {
-    if (!pack || !pack.cases || !pack.truck) return [];
-
-    const warnings = [];
-    const truck = pack.truck;
-    const truckL = Number(truck.length) || 0;
-    const truckW = Number(truck.width) || 0;
-    const truckH = Number(truck.height) || 0;
-    const halfW = truckW / 2;
-
-    const caseMap = new Map(caseLibrary.map(c => [c.id, c]));
-
-    pack.cases.forEach(inst => {
-        if (inst.hidden) return;
-        const caseData = caseMap.get(inst.caseId);
-        if (!caseData) return;
-
-        const dims = caseData.dimensions || { length: 0, width: 0, height: 0 };
-        const pos = inst.transform?.position || { x: 0, y: 0, z: 0 };
-
-        const halfL = dims.length / 2;
-        const halfH = dims.height / 2;
-        const halfCW = dims.width / 2;
-
-        const issues = [];
-
-        // Check X bounds (length)
-        if (pos.x - halfL < 0) issues.push('protrudesRear');
-        if (pos.x + halfL > truckL) issues.push('protrudesFront');
-
-        // Check Y bounds (height)
-        if (pos.y - halfH < 0) issues.push('belowFloor');
-        if (pos.y + halfH > truckH) issues.push('exceedsHeight');
-
-        // Check Z bounds (width, centered at 0)
-        if (pos.z - halfCW < -halfW) issues.push('protrudesLeft');
-        if (pos.z + halfCW > halfW) issues.push('protrudesRight');
-
-        if (issues.length > 0) {
-            warnings.push({
-                instanceId: inst.id,
-                caseId: inst.caseId,
-                caseName: caseData.name || 'Unknown',
-                issues,
-            });
-        }
-    });
-
-    return warnings;
-}
-
-/**
  * Computes pallet weight constraint warnings.
  * @param {OOGPack} pack - Pack object
  * @param {Record<string, any>[]} caseLibrary - Case definitions

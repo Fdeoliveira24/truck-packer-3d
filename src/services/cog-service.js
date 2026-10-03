@@ -67,21 +67,3 @@ export function computeCoG(pack, caseLibrary) {
         status,
     };
 }
-
-/**
- * Gets CoG status color for visualization.
- * @param {string} status - 'ok', 'warning', or 'critical'
- * @returns {number} THREE.js color hex value
- */
-export function getCoGStatusColor(status) {
-    switch (status) {
-        case 'ok':
-            return 0x00ff00; // green
-        case 'warning':
-            return 0xffaa00; // yellow/orange
-        case 'critical':
-            return 0xff0000; // red
-        default:
-            return 0x888888; // gray
-    }
-}

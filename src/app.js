@@ -65,7 +65,6 @@ import { createTrailerGeometry } from './editor/trailer-geometry.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from './screens/editor-screen.js';
 import { createPacksScreen } from './screens/packs-screen.js';
 import { createCasesScreen } from './screens/cases-screen.js';
-import { createSettingsScreen } from './screens/settings-screen.js';
 import { createUpdatesScreen } from './screens/updates-screen.js';
 import { createRoadmapScreen } from './screens/roadmap-screen.js';
 import * as CoreUtils from './core/utils/index.js';
@@ -1504,6 +1503,32 @@ const TP3D_BUILD_STAMP = Object.freeze({
       beforeNavigate: (from, to) => ExportService?.flushPackPreviewBeforeNavigation(from, to),
     });
 
+    // '#/settings' is a compatibility entry: the legacy Settings screen is retired,
+    // so the hash settles on a stable screen and opens the Settings overlay on
+    // Preferences. replaceScreen() uses replaceState, so there is no hashchange
+    // loop and Back does not return to '#/settings'. At boot the open waits for the
+    // auth gate so it cannot compete with the Auth overlay.
+    let settingsRouteOpenPending = false;
+
+    function openSettingsFromRoute() {
+      const current = StateStore.get('currentScreen');
+      const stable = ['packs', 'cases', 'editor', 'updates', 'roadmap'].includes(current) ? current : 'packs';
+      Router.replaceScreen(stable);
+      AppShell.navigate(stable);
+      if (!BootState.appReady) {
+        settingsRouteOpenPending = true;
+        return;
+      }
+      openSettingsOverlay('preferences');
+    }
+
+    function flushPendingSettingsRoute() {
+      if (!settingsRouteOpenPending) return;
+      settingsRouteOpenPending = false;
+      if (document.body.classList.contains('tp3d-shared-modal-lock')) return;
+      openSettingsOverlay('preferences');
+    }
+
     // ============================================================================
     // SECTION: 3D ENGINE (SCENE)
     // ============================================================================
@@ -2505,16 +2530,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
     });
 
     // ============================================================================
-    // SECTION: SCREEN UI (SETTINGS)
-    // ============================================================================
-    const SettingsUI = createSettingsScreen({
-      Utils,
-      UIComponents,
-      PreferencesManager,
-      Storage,
-    });
-
-    // ============================================================================
     // SECTION: GLOBAL INPUT (KEYBOARD)
     // ============================================================================
     const KeyboardManager = createKeyboardManager({
@@ -2702,7 +2717,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     function captureLiveWorkspaceUiState() {
       const currentScreen = StateStore.get('currentScreen');
-      if (!['editor', 'cases', 'updates', 'roadmap', 'settings'].includes(currentScreen)) return null;
+      if (!['editor', 'cases', 'updates', 'roadmap'].includes(currentScreen)) return null;
       return {
         currentScreen,
         currentPackId: StateStore.get('currentPackId') || null,
@@ -3020,7 +3035,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       EditorUI.render();
       UpdatesUI.render();
       RoadmapUI.render();
-      SettingsUI.loadForm();
       RecoverableErrorOverlay.syncRecoverableErrorOverlay();
     }
 
@@ -6171,7 +6185,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       EditorUI.init();
       UpdatesUI.init();
       RoadmapUI.init();
-      SettingsUI.init();
       AccountSwitcher.init();
       wireGlobalButtons();
       KeyboardManager.init();
@@ -7228,7 +7241,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
           const prefs = StateStore.get('preferences');
           if (prefs && prefs.theme) PreferencesManager.applyTheme(prefs.theme);
           SceneManager.refreshTheme();
-          SettingsUI.loadForm();
           if (StateStore.get('currentScreen') === 'editor') EditorUI.render();
         }
 
@@ -7277,7 +7289,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
           onScreen: screen => {
             routeNotFoundActive = false;
             ErrorOverlay.hide();
-            AppShell.navigate(screen);
+            if (screen === 'settings') openSettingsFromRoute();
+            else AppShell.navigate(screen);
             RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
           onNotFound: () => {
@@ -7300,6 +7313,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       }
       await bootstrapAuthGate();
       markAppReady();
+      flushPendingSettingsRoute();
       })().finally(() => {
         initInFlightPromise = null;
         initCompleted = true;

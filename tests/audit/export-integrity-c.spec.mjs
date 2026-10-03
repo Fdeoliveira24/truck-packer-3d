@@ -1008,9 +1008,8 @@ test('EXPORT-C-RESOLUTION stored/imported Screenshot resolution normalizes to su
   // A's capture-time guard remains defense in depth over the same product list.
   const app = await read('src/app.js');
   assert.match(app, /const SCREENSHOT_RESOLUTIONS = Object\.freeze\(\['1920x1080', '2560x1440', '3840x2160'\]\);/);
-  const html = await read('index.html');
-  const settings = await read('src/screens/settings-screen.js');
-  assert.match(html, /id="pref-shot-res"/, 'the Settings mount remains available');
+  const settings = await read('src/ui/overlays/settings-overlay.js');
+  assert.match(settings, /row\('Screenshot Resolution', screenshotResolution\)/, 'the Settings overlay Preferences owns the resolution control');
   for (const value of Defaults.SCREENSHOT_RESOLUTIONS) {
     assert.ok(settings.includes(`value: '${value}'`), `Settings offers ${value}`);
   }

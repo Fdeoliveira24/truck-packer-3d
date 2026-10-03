@@ -133,14 +133,14 @@ AppShell.init();
 EditorUI.init();
 KeyboardManager.init();
 const createAppSubscriber = new Function('deps', \`
-  const { Storage, StateStore, PreferencesManager, SceneManager, SettingsUI, EditorUI, AutoPackPreviewScheduler,
+  const { Storage, StateStore, PreferencesManager, SceneManager, EditorUI, AutoPackPreviewScheduler,
     PackLibrary, ExportService, AppShell, PacksUI, CasesUI, RecoverableErrorOverlay } = deps;
   const suspendAutoSave = false;
   let prevScreen = StateStore.get('currentScreen');
   return (\${APP_SUBSCRIBER});
 \`);
 StateStore.subscribe(createAppSubscriber({
-  Storage, StateStore, PreferencesManager, SceneManager, SettingsUI: { loadForm() {} }, EditorUI,
+  Storage, StateStore, PreferencesManager, SceneManager, EditorUI,
   AutoPackPreviewScheduler: { schedule() {} }, PackLibrary, ExportService, AppShell,
   PacksUI: { render() {} }, CasesUI: { render() {} }, RecoverableErrorOverlay: { syncRecoverableErrorOverlay() {} },
 }));

@@ -85,7 +85,6 @@ const debuggerPath = new URL('../../src/debugger.js', import.meta.url);
 const truckChangeControllerPath = new URL('../../src/ui/truck-change-controller.js', import.meta.url);
 const sceneRuntimePath = new URL('../../src/editor/scene-runtime.js', import.meta.url);
 const casesScreenPath = new URL('../../src/screens/cases-screen.js', import.meta.url);
-const settingsScreenPath = new URL('../../src/screens/settings-screen.js', import.meta.url);
 const categoryServicePath = new URL('../../src/services/category-service.js', import.meta.url);
 const stylesMainPath = new URL('../../styles/main.css', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
@@ -7643,10 +7642,8 @@ test('EDITOR inspector unit labels follow preferences and repaint on preference 
 });
 
 test('PREFERENCES remove millimeter selection and use hidden-opacity slider', async () => {
-  const [settingsSrc, indexSrc, settingsScreenSrc, utilsSrc, utilsIndexSrc] = await Promise.all([
+  const [settingsSrc, utilsSrc, utilsIndexSrc] = await Promise.all([
     fs.readFile(settingsOverlayPath, 'utf8'),
-    fs.readFile(indexHtmlPath, 'utf8'),
-    fs.readFile(settingsScreenPath, 'utf8'),
     fs.readFile(coreUtilsPath, 'utf8'),
     fs.readFile(coreUtilsIndexPath, 'utf8'),
   ]);
@@ -7657,8 +7654,6 @@ test('PREFERENCES remove millimeter selection and use hidden-opacity slider', as
 
   assert.doesNotMatch(settingsSrc, /Millimeters|value="mm"|value='mm'/,
     'active settings overlay must not offer millimeters as a length preference');
-  assert.doesNotMatch(indexSrc, /Millimeters|value="mm"|value='mm'/,
-    'legacy settings markup must not expose a stale millimeter option');
   assert.match(utilsSrc, /export const lengthUnits = \['in', 'ft', 'cm', 'm'\]/,
     'primary utility length units must exclude mm from selectable preferences');
   assert.match(utilsIndexSrc, /export const lengthUnits = \['in', 'ft', 'cm', 'm'\]/,
@@ -7671,16 +7666,8 @@ test('PREFERENCES remove millimeter selection and use hidden-opacity slider', as
     'active settings overlay must render hidden opacity as a 0-1 range slider');
   assert.match(settingsSrc, /hiddenOpacityValue\.textContent = Number\(hiddenOpacity\.value\)\.toFixed\(2\)/,
     'hidden opacity slider must show its current numeric value');
-  assert.match(indexSrc, /id="pref-hidden-opacity" type="range" min="0" max="1" step="0\.05"/,
-    'legacy settings markup must also use a range slider for hidden opacity');
-  assert.match(indexSrc, /id="pref-hidden-opacity-value"[\s\S]*0\.30/,
-    'legacy settings markup must show the hidden opacity value beside the slider');
-  assert.match(settingsScreenSrc, /const elHiddenValue[\s\S]*document\.getElementById\('pref-hidden-opacity-value'\)/,
-    'legacy settings controller must bind the hidden opacity value readout');
-  assert.match(settingsScreenSrc, /elHidden\.addEventListener\('input', syncHiddenOpacityValue\)/,
+  assert.match(settingsSrc, /hiddenOpacity\.addEventListener\('input', \(\) => \{\s*hiddenOpacityValue\.textContent = Number\(hiddenOpacity\.value\)\.toFixed\(2\)/,
     'hidden opacity readout must update while the slider moves');
-  assert.match(settingsScreenSrc, /elHiddenValue\.textContent = Number\(elHidden\.value\)\.toFixed\(2\)/,
-    'legacy settings controller must format the hidden opacity readout consistently');
 });
 
 test('EDITOR Case Browser New Case shortcut uses shared modal without adding to pack', async () => {

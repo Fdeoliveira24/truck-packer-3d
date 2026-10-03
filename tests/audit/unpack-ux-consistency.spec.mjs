@@ -228,7 +228,7 @@ CaseScene.sync = (...args) => {
   return realSync(...args);
 };
 const createAppSubscriber = new Function('deps', \`
-  const { Storage, StateStore, PreferencesManager, SceneManager, SettingsUI, EditorUI, AutoPackPreviewScheduler,
+  const { Storage, StateStore, PreferencesManager, SceneManager, EditorUI, AutoPackPreviewScheduler,
     PackLibrary, ExportService, AppShell, PacksUI, CasesUI, RecoverableErrorOverlay } = deps;
   const suspendAutoSave = false;
   let prevScreen = StateStore.get('currentScreen');
@@ -236,7 +236,7 @@ const createAppSubscriber = new Function('deps', \`
 \`);
 StateStore.subscribe(changes => log.push({ type: 'notify', at: now(), keys: Object.keys(changes).sort().join(',') }));
 StateStore.subscribe(createAppSubscriber({
-  Storage, StateStore, PreferencesManager, SceneManager, SettingsUI: { loadForm() {} },
+  Storage, StateStore, PreferencesManager, SceneManager,
   EditorUI: { ...EditorUI, render: () => { log.push({ type: 'subscriberRender', at: now() }); EditorUI.render(); } },
   AutoPackPreviewScheduler: {
     schedule: () => { log.push({ type: 'previewSchedule', at: now() }); return AutoPackPreviewScheduler.schedule(); },

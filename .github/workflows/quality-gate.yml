@@ -37,9 +37,6 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
-
       # Required checks: keep in sync with the `quality:ci` script in package.json.
       - name: Lint
         run: npm run lint
@@ -47,8 +44,14 @@ jobs:
       - name: Typecheck
         run: npm run -s typecheck
 
-      - name: Tests
-        run: npm run test:ci
+      - name: Tests — Node
+        run: npm run test:ci:node
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Tests — Browser
+        run: npm run test:ci:browser
 
       - name: Build
         run: npm run build

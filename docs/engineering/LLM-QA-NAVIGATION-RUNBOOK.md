@@ -1,7 +1,12 @@
 # Cargo Planner 3D — LLM QA and Repository Navigation Runbook
 
-**Last verified:** 2026-08-04 · Code baseline: `main` at `7409b12` **Repository:** Truck Packer 3D
-(`Fdeoliveira24/truck-packer-3d`)
+**Navigation baseline:** 2026-08-04 · `main` at `7409b12`
+
+**Test commands and validation policy verified:** 2026-10-03 · P2.5 branch based on `fe4bfe3`
+**Repository:** Truck Packer 3D (`Fdeoliveira24/truck-packer-3d`)
+
+Navigation details outside the test and CI sections retain the older baseline; verify them against
+current source before using them.
 
 ---
 
@@ -20,7 +25,7 @@ that are already known and verified.
 
 This document is **not**:
 
-- the active operational TODO (that is `docs/product/TP3D-MASTER-TODO-V5.md`)
+- the active operational TODO (that is `docs/product/TP3D-MASTER-TODO-V6.md`)
 - a product roadmap
 - an architecture contract
 - a replacement for domain-specific test evidence
@@ -36,7 +41,7 @@ hand.
 | Priority | Document                           | Location                                                                                                                                         | Scope                                                                        |
 | -------- | ---------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
 | 1        | Active agent instructions          | `AGENTS.md`, `CLAUDE.md`, `src/CLAUDE.md`                                                                                                        | How agents work: editing style, risk classification, safe change boundaries  |
-| 2        | Operational source of truth        | `docs/product/TP3D-MASTER-TODO-V5.md`                                                                                                            | Active task, approved branch, blockers, execution status                     |
+| 2        | Operational source of truth        | `docs/product/TP3D-MASTER-TODO-V6.md`                                                                                                            | Active task, approved branch, blockers, execution status                     |
 | 3        | Domain contracts                   | `docs/engineering/autopack-engine-contract.md`, `docs/product/BILLING_ENTITLEMENT_RULES.md`, `docs/engineering/business-identity-contract-v1.md` | Permanent behavioral rules within each contract's stated scope               |
 | 4        | Current source and tests           | `src/`, `tests/`, `supabase/`                                                                                                                    | Actual runtime behavior                                                      |
 | 5        | Dedicated audit/evidence documents | `docs/audits/`, `docs/billing/`, `docs/dev/`                                                                                                     | Evidence supporting conclusions — do not derive active work items from these |
@@ -45,7 +50,7 @@ hand.
 **Scope guidance:**
 
 - **Agent instructions** govern how agents work: what to edit, risk levels, change style.
-- **V5** governs the active task, approved branch, blockers, and execution status.
+- **V6** governs the active task, approved branch, blockers, and execution status.
 - **Domain contracts** govern behavior inside their defined scope. The AutoPack contract rules
   AutoPack geometry; the billing entitlement rules rule billing semantics.
 - **Current source and tests** describe actual runtime behavior. When behavior is ambiguous, source
@@ -54,8 +59,8 @@ hand.
 - **Archived documents** are historical only. Never treat an archived TODO as a description of
   current behavior.
 
-When a domain contract and V5 appear to conflict, the domain contract governs behavior within its
-stated scope; V5 governs whether that work is active or deferred.
+When a domain contract and V6 appear to conflict, the domain contract governs behavior within its
+stated scope; V6 governs whether that work is active or deferred.
 
 ---
 
@@ -71,13 +76,13 @@ stated scope; V5 governs whether that work is active or deferred.
 | `src/ui/`                           | App shell, overlays, error overlays, system overlay, keyboard manager, truck-change controller, UI components                                     | Overlay and modal QA, error display bugs                   | Many overlays are lazily initialized                     |
 | `src/ui/overlays/`                  | Auth, account, settings, case modal, notes, card display, help, import dialogs                                                                    | Auth flow, settings rendering, modal QA                    | `settings-overlay.js` is large and org-scoped            |
 | `src/editor/`                       | Scene runtime, geometry factory, trailer geometry, space model, wheel-well model, validation, repair, orientation                                 | Editor/3D scene QA, geometry bugs                          | This is separate from `src/packing-core/`                |
-| `src/packing-core/`                 | AutoPack budget, domain, explain, orientation, repair, retention-model, solution, space-model, validation, wheel-well-model                       | AutoPack correctness QA                                    | Do not modify solver geometry without explicit V5 scope  |
+| `src/packing-core/`                 | AutoPack budget, domain, explain, orientation, repair, retention-model, solution, space-model, validation, wheel-well-model                       | AutoPack correctness QA                                    | Do not modify solver geometry without explicit V6 scope  |
 | `src/features/editor/`              | Editor feature modules                                                                                                                            | Editor feature flags                                       | May be lightly populated                                 |
 | `src/auth/`                         | Auth permissions and session helpers                                                                                                              | Auth debugging                                             | Session lifecycle is also in `src/core/session.js`       |
 | `src/config/`                       | Feature flags (`features.js`), plan config (`plans.js`), role config (`roles.js`)                                                                 | Gating behavior, plan limit checks                         | Config is not the billing entitlement truth — backend is |
 | `src/router.js`                     | Client-side routing, hash-based navigation between screens                                                                                        | Navigation bugs                                            | Routing is hash-based; no server-side routing            |
 | `styles/main.css`                   | All app CSS                                                                                                                                       | Visual/layout QA, dark-mode bugs                           | CSS is not modularized per component                     |
-| `tests/audit/`                      | Node-based behavioral and invariant tests (no browser required)                                                                                   | Running `npm test`, checking a test after a fix            | These tests do not exercise the browser DOM              |
+| `tests/audit/`                      | Node-run audit tests, including seven Chromium specs                                                                                              | Running focused specs or the required CI lanes             | Some specs launch a browser                              |
 | `tests/behavioral/`                 | Behavioral test artifacts                                                                                                                         | Behavioral regression checks                               | Inspect for current coverage                             |
 | `tests/local-db/`                   | Local Supabase billing, ownership, security tests                                                                                                 | Local Supabase QA                                          | Requires local Supabase running                          |
 | `tests/integration/dev-billing/`    | Deployed Edge Function billing tests                                                                                                              | Deployed development QA                                    | Requires live dev Supabase credentials                   |
@@ -85,10 +90,10 @@ stated scope; V5 governs whether that work is active or deferred.
 | `tests/stress.spec.js`              | UI stress test                                                                                                                                    | Stress/performance QA                                      | Separate from `npm test`; uses `stress:ui`               |
 | `scripts/billing-fixtures/`         | Billing fixture seeding, verification, cleanup scripts                                                                                            | Local and dev billing QA                                   | Never run against production                             |
 | `scripts/local-fixtures/`           | Local Supabase environment verification, cleanup                                                                                                  | Local Supabase setup                                       | Requires local Supabase                                  |
-| `supabase/migrations/`              | Database schema migrations (30 migrations)                                                                                                        | Schema understanding, drift debugging                      | Do not edit without explicit V5 scope                    |
+| `supabase/migrations/`              | Database schema migrations (30 migrations)                                                                                                        | Schema understanding, drift debugging                      | Do not edit without explicit V6 scope                    |
 | `supabase/functions/`               | Edge Functions: billing, org management, auth, Stripe                                                                                             | Edge Function debugging                                    | Each function is in its own subdirectory                 |
 | `supabase/config.toml`              | Local Supabase config (project ID, ports)                                                                                                         | Local Supabase setup                                       | Ports may vary from development                          |
-| `docs/product/`                     | V5, billing entitlement rules, product strategy debrief                                                                                           | Operational status, billing product rules                  | Product debrief is not an implementation approval        |
+| `docs/product/`                     | V6, billing entitlement rules, product strategy debrief                                                                                           | Operational status, billing product rules                  | Product debrief is not an implementation approval        |
 | `docs/engineering/`                 | Architecture contracts, AutoPack contract, business identity contract                                                                             | Domain behavior rules                                      | Engineering docs are frozen contracts, not TODOs         |
 | `docs/audits/`                      | Audit reports and evidence                                                                                                                        | Evidence lookup                                            | Audits are historical evidence only                      |
 | `docs/billing/`                     | Pricing operations runbook, billing evidence                                                                                                      | Billing operations                                         | Runbook does not approve commercial terms                |
@@ -381,7 +386,7 @@ Use this checklist to begin useful browser QA in a few minutes.
    - **If unexpected changes exist, stop before starting QA or changing branches.** Preserve
      existing work. Do not hide, relocate, or discard it.
    - Do not proceed until the working tree matches the expected state.
-2. **Read V5 for current active task and approved branch.** `docs/product/TP3D-MASTER-TODO-V5.md` →
+2. **Read V6 for current active task and approved branch.** `docs/product/TP3D-MASTER-TODO-V6.md` →
    Section 4 (Active Work).
 3. **Start a static HTTP server** on the workspace root.  
    Confirm the app loads at `http://localhost:5500/index.html`.
@@ -403,16 +408,12 @@ Use this checklist to begin useful browser QA in a few minutes.
 
 ### Current status
 
-`playwright` (v1.62.1) is installed as a **devDependency** but there is **no `playwright.config.*`
-file in the repository**. No browser test specs, no storage state files, and no CI integration for
-Playwright currently exist.
+`playwright` (v1.62.1) is installed as a dev dependency. Seven audit specs use Chromium through
+browser harnesses and run in the serial CI browser lane. There is no `playwright.config.*` or
+`playwright test` project; the repository uses Node's test runner for these specs. The separate
+`playwright-cli` tool remains available for ad-hoc browser inspection and manual QA evidence.
 
-Playwright is **not currently configured as a supported repository test path.**
-
-The `playwright-cli` tool can be used for **ad-hoc browser inspection and manual QA evidence
-collection** but not for automated test runs.
-
-### What a future Playwright setup would require
+### What a separate Playwright Test project would require
 
 - A `playwright.config.ts` or `playwright.config.js` at the project root.
 - A `tests/e2e/` or `tests/browser/` directory for spec files.
@@ -430,11 +431,16 @@ Do not claim Playwright coverage exists from ad-hoc `playwright-cli` usage.
 
 ## 11. Test Command Matrix
 
-All commands verified from `package.json` scripts. Do not run commands not listed here.
+Test and CI commands below were verified from `package.json` and the Quality Gate workflow.
 
 | Command                                   | What it proves                                                   | Prerequisites                               | Category           | Writes data?                      | Cleanup                           |
 | ----------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------- | ------------------ | --------------------------------- | --------------------------------- |
-| `npm test`                                | Node audit tests pass (behavioral/invariants, no browser)        | Node.js                                     | quick              | No                                | None                              |
+| `npm test`                                | Local audit suite, including Chromium specs                     | Node.js, installed Chromium                | full local        | No                                | None                              |
+| `npm run test:ci:node`                    | 42 non-browser audit specs at concurrency 2                     | Node.js                                     | required CI lane  | No                                | None                              |
+| `npm run test:ci:browser`                 | Seven Chromium audit specs at concurrency 1                     | Node.js, installed Chromium                | required CI lane  | No                                | None                              |
+| `npm run test:ci`                         | Node lane, then browser lane                                     | Node.js, installed Chromium                | full local        | No                                | None                              |
+| `npm run quality:ci`                      | Local mirror: lint, typecheck, both lanes, build, audit          | Node.js, installed Chromium                | full local        | No                                | None                              |
+| `node --test tests/behavioral/app-js-characterization.spec.mjs` | Auth/workspace/provider/identity transition characterization | Node.js, installed Chromium | Tier 2 domain | No | None |
 | `npm run test:all`                        | All audit tests including stress phases                          | Node.js, `TP3D_STRESS=1` env                | full               | No                                | None                              |
 | `npm run test:stress`                     | AutoPack perf stress phases only (PHASE-E1, E2A, E2B, A1-PERF-1) | Node.js                                     | focused            | No                                | None                              |
 | `npm run lint`                            | JS + CSS + HTML lint all pass                                    | Node.js, eslint, stylelint, html-validate   | quick              | No                                | None                              |
@@ -464,19 +470,63 @@ All commands verified from `package.json` scripts. Do not run commands not liste
 
 - **quick** — Safe to run anytime, no external dependencies.
 - **focused** — Scoped subset of a larger suite.
+- **full local** — Complete local suite; run deliberately, not after each edit.
+- **required CI lane** — Part of the single PR Quality Gate job.
+- **Tier 2 domain** — Required for affected contracts; separate from the global PR gate.
 - **full** — Complete suite including slow phases.
 - **destructive local** — Modifies local database; requires local Supabase; isolated.
 - **remote development** — Requires hosted development Supabase credentials; modifies dev data.
 - **operator-only** — Requires human-supplied production-adjacent credentials (Stripe test keys).
 
+### Validation tiers
+
+Choose the smallest tier that covers the changed contract. Do **not** run `npm test`,
+`npm run test:ci`, `npm run test:all`, or `npm run quality:ci` after every local edit or commit.
+
+| Tier | When | Validation |
+|---|---|---|
+| 0 — Static micro | Docs, comments, trivial cleanup | Inspect the diff; run `git diff --check`. No test suite. |
+| 1 — Focused | Isolated helper, Settings UI, test cleanup | Run directly affected specs and relevant lint/typecheck. |
+| 2 — Domain | AutoPack, auth/storage, Three/rendering, import/recovery contracts | Run all tests owned by the affected contract. |
+| 3 — Final required Quality Gate | Complete PR candidate after the final material change | Let the single PR gate run the full Node lane, then the serial Chromium lane, plus lint, typecheck, build, production audit, and patch check. |
+
+At Tier 2, auth, workspace, provider/session, and identity-transition changes also require the
+separate `tests/behavioral/app-js-characterization.spec.mjs` suite. It is not in the global PR gate.
+AutoPack solver changes need solver, lifecycle, and relevant handling/Max Capacity tests.
+Three/rendering changes need the runtime guard and affected Editor/browser specs. CSS-only changes
+need stylelint and an affected visual/browser contract only if layout behavior changes. Docs-only
+changes need a diff check, with no test suite.
+
+### P2.5 suite footprint (2026-10-03)
+
+| Measure | Pre-P2.5 main `fe4bfe3` | P2.5 candidate |
+|---|---:|---:|
+| Audit specs | 38 | 49 |
+| Audit spec lines | 61,054 | 57,878 |
+| Audit spec bytes | 3,335,630 | 3,172,067 |
+| Static `test()` / `t.test()` declaration sites | 1,992 | 1,981 |
+| Largest audit spec | 26,112 lines / 1,498,847 bytes | 4,302 lines / 247,227 bytes |
+| Direct `.indexOf()` source-declaration anchors | 583* | 555 |
+| Explicit literal waits | 11 | 6 |
+| Chromium audit specs | 7 | 7 |
+| Non-browser audit specs proven serial-required | 0 | 0 |
+
+The new shared test fixture, `tests/fixtures/security-invariants-support.mjs`, is 3,151 lines /
+124,566 bytes outside `tests/audit`. Including it, the candidate has 61,029 lines / 3,296,633
+bytes of audit spec and shared-fixture source. The line and byte reductions in the audit-spec row
+are therefore primarily a reduction in individual spec/context size. *The original P2.5 audit
+reported 582 private declaration anchors; the reproducible direct `.indexOf()` literal heuristic
+over the baseline tree counts 583, a one-site measurement difference.
+
 ---
 
 ## 12. Test and Fixture Data
 
-### Node audit tests (`tests/audit/*.spec.mjs`)
+### Audit tests (`tests/audit/*.spec.mjs`)
 
-These tests run entirely in Node.js. They import source modules and exercise logic without a browser
-or database connection. They cover:
+The non-browser specs import source modules and exercise logic in Node.js. Seven specs launch
+Chromium and cover browser behavior. The required PR Quality Gate runs these as separate Node and
+browser lanes in one job. They cover:
 
 - AutoPack results carousel and strategy differentiation
 - Billing catalog and fixture safety
@@ -813,7 +863,7 @@ User clicks #btn-autopack
 | -------------- | ------------------------------------------------------------------------------------------ |
 | Standard       | Default trailer with no special features                                                   |
 | Wheel Wells    | Floor geometry has wheel well shelves; wider cases require bridge/support approval         |
-| Front Overhang | C2 (front deck) requires rear retention before loading; wall-building requires V5 approval |
+| Front Overhang | C2 (front deck) requires rear retention before loading; wall-building requires V6 approval |
 
 ### Deterministic reproduction
 
@@ -874,7 +924,7 @@ These reflect existing project direction and current stress test structure.
 - AutoPack duration at 300 cases: current observed baseline (record per test run)
 - No formal acceptance thresholds exist for FPS or draw calls — document as baselines
 
-Do not convert observed baselines into acceptance criteria without V5 approval.
+Do not convert observed baselines into acceptance criteria without V6 approval.
 
 ---
 
@@ -1081,16 +1131,16 @@ Available via Settings overlay workspace management (owner only).
 | Development Supabase credentials required for dev tests | `npm run test:billing:dev` requires operator-supplied dev project credentials              |
 | No `data-testid` attributes                             | All browser selectors rely on DOM IDs or fragile CSS classes                               |
 | Main-thread blocking at 800–1200+ cases                 | AutoPack solver is synchronous; no Web Worker; large loads can freeze the UI               |
-| No CI browser testing                                   | No GitHub Actions or CI Playwright runs are configured                                     |
+| No separate Playwright Test project                    | Browser audit specs run through Node's test runner in CI; no `playwright.config.*` exists  |
 | Workspace Slug Phase 2 (friendly slugs)                 | Deferred; UUID-derived slug is the current only slug                                       |
-| Cargo persistence — server-side                         | Not yet implemented; future work requires V5 approval                                      |
+| Cargo persistence — server-side                         | Not yet implemented; future work requires V6 approval                                      |
 
 ---
 
 ## 23. Agent Safety Rules
 
-1. **Read V5 and agent instructions first.** Do not begin work without confirming active task,
-   branch, and blockers from `docs/product/TP3D-MASTER-TODO-V5.md`.
+1. **Read V6 and agent instructions first.** Do not begin work without confirming active task,
+   branch, and blockers from `docs/product/TP3D-MASTER-TODO-V6.md`.
 2. **Use Graphify first for codebase questions** when `graphify-out/graph.json` exists and the
    repository instructions require it.
 3. **Verify runtime paths against current source.** Do not trust memory of past sessions.
@@ -1154,7 +1204,7 @@ Available via Settings overlay workspace management (owner only).
 | Stripe fixtures      | `scripts/billing-fixtures/stripe-cli.mjs` · [Section 15](#15-stripe-and-billing-qa)                                    |
 | Browser QA           | [Section 9](#9-browser-qa-fast-path) · [Section 20](#20-evidence-collection-standard)                                  |
 | Performance / stress | `npm run test:stress` · `npm run stress:ui` · `localStorage.tp3dDebug='1'`                                             |
-| Active task status   | `docs/product/TP3D-MASTER-TODO-V5.md` Section 4                                                                        |
+| Active task status   | `docs/product/TP3D-MASTER-TODO-V6.md` Section 4                                                                        |
 | DOM IDs              | `index.html` (authoritative) · [Section 5](#5-main-product-surfaces)                                                   |
 | Debug flags          | `localStorage.tp3dDebug = '1'` · `src/debugger.js`                                                                     |
 
@@ -1179,7 +1229,7 @@ commands, or environment rules change.
 **Do not update sections without re-verifying the corresponding commands, paths, or selectors
 against current source.** Mark stale sections explicitly with `⚠️ STALE — verify before use`.
 
-V5 (`docs/product/TP3D-MASTER-TODO-V5.md`) remains the operational authority. This document
+V6 (`docs/product/TP3D-MASTER-TODO-V6.md`) remains the operational authority. This document
 describes how to move through the repository, not what to build.
 
 ---

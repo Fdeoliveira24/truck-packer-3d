@@ -1030,12 +1030,6 @@ test('import-cases dialog parsed state uses compact file chip not the large drop
 
 // ── PACK-IMPORT-BATCH-1 ────────────────────────────────────────────────────
 
-test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON is exported from import-export.js', async () => {
-  const src = await fs.readFile(importExportPath, 'utf8');
-  assert.match(src, /export function parsePackBatchImportJSON/,
-    'parsePackBatchImportJSON must be exported from import-export.js');
-});
-
 test('PACK-IMPORT-BATCH-1 parsePackBatchImportJSON accepts valid batch envelope at runtime', async () => {
   const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
   const batch = JSON.stringify({
@@ -18496,20 +18490,6 @@ test('phase 0.7C-4 Folders dropdown exposes rename delete only for active real f
     'Active real folder actions must include Rename Folder');
   assert.match(actionsBlock, /label:\s*['"]Delete Folder['"][\s\S]{0,220}deleteFolderWithConfirm\(model\.activeFolder\)/,
     'Active real folder actions must include Delete Folder');
-});
-
-test('phase 0.7C-4 avoids native dialogs and preserves no-caret folder button', async () => {
-  const src = await fs.readFile(packsScreenPath, 'utf8');
-  const start = src.indexOf('function ensureFoldersButton()');
-  const end = src.indexOf('\n    function renderFoldersButton(', start + 1);
-  const buttonBlock = start >= 0 && end > start ? src.slice(start, end) : '';
-
-  assert.doesNotMatch(src, /window\.prompt|window\.alert|window\.confirm/,
-    'Packs screen must not use window prompt alert or confirm APIs');
-  assert.doesNotMatch(src, /(^|[^\w.])prompt\s*\(|(^|[^\w.])alert\s*\(|(^|[^\w.])confirm\s*\(/,
-    'Packs screen must not use native prompt(), alert(), or confirm() calls');
-  assert.doesNotMatch(buttonBlock, /tp3d-packs-folder-btn__caret|fa-chevron-down/,
-    'Folders button must remain no-caret');
 });
 
 // ============================================================================

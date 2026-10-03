@@ -181,14 +181,6 @@ export function commitCasesWithCategory(casePatches, categoryUpdate) {
   return { cases: updated, category };
 }
 
-export function reassignCategory(oldKey, newKey) {
-  const from = normalizeCategoryFilterKey(oldKey);
-  const to = normalizeCategoryFilterKey(newKey) || 'default';
-  if (!from || from === to) return;
-  const next = getCases().map(c => (normalizeCategoryFilterKey(c.category || 'default') === from ? { ...c, category: to } : c));
-  StateStore.set({ caseLibrary: next });
-}
-
 export function remove(caseId) {
   const cases = getCases().filter(c => c.id !== caseId);
   StateStore.set({ caseLibrary: cases });

@@ -1143,21 +1143,6 @@ const TP3D_BUILD_STAMP = Object.freeze({
       requestAuthRefresh('settings-open');
     }
 
-    function _openAccountOverlay() {
-      closeDropdowns();
-      try {
-        if (SettingsOverlay && typeof SettingsOverlay.close === 'function') SettingsOverlay.close();
-      } catch {
-        // ignore
-      }
-      try {
-        AccountOverlay.open();
-      } catch {
-        // ignore
-      }
-      requestAuthRefresh('account-open');
-    }
-
     function syncWorkspaceUiAfterOrgRefresh(source = 'workspace-refresh') {
       try {
         if (AccountSwitcher && typeof AccountSwitcher.refresh === 'function') {

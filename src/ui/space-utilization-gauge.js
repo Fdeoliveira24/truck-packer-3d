@@ -4,12 +4,6 @@
  * @module ui/space-utilization-gauge
  */
 
-export const BOTTOM_LEFT_GAUGE_POSITION = Object.freeze({
-  mode: 'bottom-left',
-  x: 0,
-  y: 1,
-});
-
 // Density tiers describe capacity only. Red means near capacity, not invalid.
 export const UTILIZATION_DENSITY_TIERS = Object.freeze([
   'very-low',
@@ -19,9 +13,6 @@ export const UTILIZATION_DENSITY_TIERS = Object.freeze([
   'very-high',
 ]);
 
-const SAFE_MARGIN = 12;
-const DEFAULT_DOCK_LEFT = 88;
-const DOCK_CONTROL_GAP = 24;
 let gaugeSequence = 0;
 
 function finiteNumber(value, fallback = 0) {
@@ -72,145 +63,6 @@ export function getSpaceUtilizationGaugeDetail(preferences) {
   return preferences && preferences.spaceUtilization && preferences.spaceUtilization.detail === 'standard'
     ? 'standard'
     : 'minimal';
-}
-
-export function resetSpaceUtilizationPosition() {
-  return { ...BOTTOM_LEFT_GAUGE_POSITION };
-}
-
-export function getSpaceUtilizationSafeBounds(hostSize, gaugeSize) {
-  const hostWidth = Math.max(0, finiteNumber(hostSize && hostSize.width));
-  const hostHeight = Math.max(0, finiteNumber(hostSize && hostSize.height));
-  const gaugeWidth = Math.max(0, finiteNumber(gaugeSize && gaugeSize.width));
-  const gaugeHeight = Math.max(0, finiteNumber(gaugeSize && gaugeSize.height));
-
-  return {
-    minX: SAFE_MARGIN,
-    maxX: Math.max(SAFE_MARGIN, hostWidth - gaugeWidth - SAFE_MARGIN),
-    minY: SAFE_MARGIN,
-    maxY: Math.max(SAFE_MARGIN, hostHeight - gaugeHeight - SAFE_MARGIN),
-  };
-}
-
-/**
- * Resolve the default dock from the real bottom-left controls. The 88px
- * baseline keeps Information, Utilization, and the gauge on one visual line;
- * wider controls move the gauge only as far as their measured edge requires.
- */
-export function getSpaceUtilizationDockedPosition(bounds, bottomControlsRight = 0) {
-  const safeBounds = bounds || { minX: SAFE_MARGIN, maxX: SAFE_MARGIN, minY: SAFE_MARGIN, maxY: SAFE_MARGIN };
-  return clampSpaceUtilizationPixels({
-    x: Math.max(DEFAULT_DOCK_LEFT, finiteNumber(bottomControlsRight) + DOCK_CONTROL_GAP),
-    y: safeBounds.maxY,
-  }, safeBounds);
-}
-
-export function clampSpaceUtilizationPixels(position, bounds) {
-  const safeBounds = bounds || { minX: SAFE_MARGIN, maxX: SAFE_MARGIN, minY: SAFE_MARGIN, maxY: SAFE_MARGIN };
-  return {
-    x: clamp(position && position.x, safeBounds.minX, safeBounds.maxX),
-    y: clamp(position && position.y, safeBounds.minY, safeBounds.maxY),
-  };
-}
-
-function rectangleAt(position, size) {
-  const width = Math.max(0, finiteNumber(size && size.width));
-  const height = Math.max(0, finiteNumber(size && size.height));
-  return {
-    left: position.x,
-    top: position.y,
-    right: position.x + width,
-    bottom: position.y + height,
-  };
-}
-
-function rectanglesOverlap(first, second, gap = 0) {
-  return first.left < second.right + gap &&
-    first.right > second.left - gap &&
-    first.top < second.bottom + gap &&
-    first.bottom > second.top - gap;
-}
-
-/**
- * Keep the complete gauge inside the canvas and away from visible controls.
- * A safe user-selected position is returned unchanged; alternate positions are
- * only considered when an obstruction actually overlaps the gauge.
- */
-export function findSpaceUtilizationSafePosition(
-  requestedPosition,
-  bounds,
-  gaugeSize,
-  obstructions = [],
-  gap = 8
-) {
-  const requested = clampSpaceUtilizationPixels(requestedPosition, bounds);
-  const normalizedObstructions = (Array.isArray(obstructions) ? obstructions : [])
-    .map(obstruction => ({
-      left: finiteNumber(obstruction && obstruction.left),
-      top: finiteNumber(obstruction && obstruction.top),
-      right: finiteNumber(obstruction && obstruction.right),
-      bottom: finiteNumber(obstruction && obstruction.bottom),
-    }))
-    .filter(obstruction => obstruction.right > obstruction.left && obstruction.bottom > obstruction.top);
-  const isSafe = position => normalizedObstructions.every(obstruction =>
-    !rectanglesOverlap(rectangleAt(position, gaugeSize), obstruction, gap)
-  );
-  if (isSafe(requested)) return requested;
-
-  const width = Math.max(0, finiteNumber(gaugeSize && gaugeSize.width));
-  const height = Math.max(0, finiteNumber(gaugeSize && gaugeSize.height));
-  const candidates = [];
-  normalizedObstructions.forEach(obstruction => {
-    candidates.push(
-      { x: requested.x, y: obstruction.top - height - gap },
-      { x: requested.x, y: obstruction.bottom + gap },
-      { x: obstruction.left - width - gap, y: requested.y },
-      { x: obstruction.right + gap, y: requested.y }
-    );
-  });
-  candidates.push(
-    { x: bounds.minX, y: bounds.minY },
-    { x: bounds.maxX, y: bounds.minY },
-    { x: bounds.minX, y: bounds.maxY },
-    { x: bounds.maxX, y: bounds.maxY }
-  );
-
-  const uniqueCandidates = Array.from(new Map(candidates.map(candidate => {
-    const clamped = clampSpaceUtilizationPixels(candidate, bounds);
-    return [`${clamped.x}:${clamped.y}`, clamped];
-  })).values()).sort((first, second) =>
-    Math.hypot(first.x - requested.x, first.y - requested.y) -
-    Math.hypot(second.x - requested.x, second.y - requested.y)
-  );
-  return uniqueCandidates.find(isSafe) || requested;
-}
-
-export function spaceUtilizationPixelsFromPreference(position, bounds, dockedPosition = null) {
-  const safeBounds = bounds || { minX: SAFE_MARGIN, maxX: SAFE_MARGIN, minY: SAFE_MARGIN, maxY: SAFE_MARGIN };
-  const saved = position && typeof position === 'object' ? position : BOTTOM_LEFT_GAUGE_POSITION;
-  if (saved.mode !== 'custom' || !Number.isFinite(Number(saved.x)) || !Number.isFinite(Number(saved.y))) {
-    return dockedPosition
-      ? clampSpaceUtilizationPixels(dockedPosition, safeBounds)
-      : getSpaceUtilizationDockedPosition(safeBounds);
-  }
-  const width = Math.max(0, safeBounds.maxX - safeBounds.minX);
-  const height = Math.max(0, safeBounds.maxY - safeBounds.minY);
-  return clampSpaceUtilizationPixels({
-    x: safeBounds.minX + clamp(saved.x, 0, 1) * width,
-    y: safeBounds.minY + clamp(saved.y, 0, 1) * height,
-  }, safeBounds);
-}
-
-export function spaceUtilizationPreferenceFromPixels(position, bounds) {
-  const safeBounds = bounds || { minX: SAFE_MARGIN, maxX: SAFE_MARGIN, minY: SAFE_MARGIN, maxY: SAFE_MARGIN };
-  const clamped = clampSpaceUtilizationPixels(position, safeBounds);
-  const width = Math.max(0, safeBounds.maxX - safeBounds.minX);
-  const height = Math.max(0, safeBounds.maxY - safeBounds.minY);
-  return {
-    mode: 'custom',
-    x: width > 0 ? clamp((clamped.x - safeBounds.minX) / width, 0, 1) : 0,
-    y: height > 0 ? clamp((clamped.y - safeBounds.minY) / height, 0, 1) : 1,
-  };
 }
 
 /**

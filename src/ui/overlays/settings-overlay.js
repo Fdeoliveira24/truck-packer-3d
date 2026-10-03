@@ -479,15 +479,6 @@ export function createSettingsOverlay({
     ].includes(raw) ? raw : '';
   }
 
-  function _escapeHtml(value) {
-    return String(value ?? '')
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
-  }
-
   function nextSettingsInstanceId() {
     settingsInstanceCounter += 1;
     settingsInstanceId = settingsInstanceCounter;

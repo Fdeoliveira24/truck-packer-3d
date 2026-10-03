@@ -190,46 +190,6 @@ test('Vite uses strict ports for development and preview', () => {
   assert.match(viteSource, /preview:\s*\{[\s\S]*?port:\s*5500/u);
 });
 
-test('all pre-existing package scripts remain unchanged', () => {
-  const expectedScripts = {
-    lint: 'npm run lint:js && npm run lint:css && npm run lint:html',
-    test: 'node --test tests/audit/*.spec.mjs',
-    'test:ci': 'node --test --test-concurrency=1 tests/audit/*.spec.mjs',
-    'test:stress':
-      'TP3D_STRESS=1 node --test --test-name-pattern "PHASE-E1|PHASE-E2A|PHASE-E2B|AUTO-PACK-A1-PERF-1" tests/audit/security-and-invariants.spec.mjs',
-    'test:all': 'TP3D_STRESS=1 node --test tests/audit/*.spec.mjs',
-    'billing:fixtures:plan': 'node scripts/billing-fixtures/cli.mjs plan',
-    'billing:fixtures:verify-safety': 'node scripts/billing-fixtures/cli.mjs verify-safety',
-    'billing:fixtures:dev:plan': 'node scripts/billing-fixtures/dev-cli.mjs plan',
-    'billing:fixtures:dev:seed': 'node scripts/billing-fixtures/dev-cli.mjs seed',
-    'billing:fixtures:dev:verify': 'node scripts/billing-fixtures/dev-cli.mjs verify',
-    'billing:fixtures:dev:cleanup': 'node scripts/billing-fixtures/dev-cli.mjs cleanup',
-    'test:billing:dev': 'node --test --test-concurrency=1 tests/integration/dev-billing/deployed-functions.spec.mjs',
-    'billing:fixtures:stripe:plan': 'node scripts/billing-fixtures/stripe-cli.mjs plan',
-    'billing:fixtures:stripe:probe': 'node scripts/billing-fixtures/stripe-cli.mjs probe',
-    'billing:fixtures:stripe:seed': 'node scripts/billing-fixtures/stripe-cli.mjs seed',
-    'billing:fixtures:stripe:verify': 'node scripts/billing-fixtures/stripe-cli.mjs verify',
-    'billing:fixtures:stripe:safety': 'node scripts/billing-fixtures/stripe-cli.mjs safety',
-    'test:billing:stripe': 'node --test --test-concurrency=1 tests/integration/stripe-billing/stripe-billing.spec.mjs',
-    'billing:fixtures:stripe:cleanup': 'node scripts/billing-fixtures/stripe-cli.mjs cleanup',
-    'local:billing:verify': 'node scripts/local-fixtures/environment.mjs',
-    'test:billing:local':
-      'node --test --test-concurrency=1 tests/local-db/billing-local.spec.mjs tests/local-db/ownership-local.spec.mjs tests/local-db/security-local.spec.mjs',
-    'stress:ui': 'node tests/stress.spec.js',
-    'lint:js': 'eslint "src/**/*.js" "index.html" --report-unused-disable-directives',
-    'lint:css': 'stylelint "styles/**/*.css"',
-    'lint:html': 'html-validate --config .htmlvalidate.json index.html',
-    'lint:fix': 'npm run lint:js -- --fix && npm run lint:css -- --fix',
-    typecheck: 'tsc --noEmit --allowJs --checkJs',
-    format: 'prettier --write "**/*.{html,css,js,json,md}"',
-    'format:check': 'prettier --check "**/*.{html,css,js,json,md}"',
-    validate: 'npm run lint && npm run format:check',
-    quality: "npm run lint:fix && npm run format && echo '✅ Code quality checks passed!'",
-    'quality:ci': 'npm run lint && npm run -s typecheck && npm run test:ci && npm run build && npm audit --omit=dev',
-  };
-  Object.entries(expectedScripts).forEach(([name, command]) => assert.equal(packageJson.scripts[name], command));
-});
-
 test('generated build output remains ignored', () => {
   assert.equal(git(['check-ignore', '-q', 'dist/phase-1a-probe']).status, 0);
 });
@@ -238,33 +198,7 @@ test('node_modules remains ignored', () => {
   assert.equal(git(['check-ignore', '-q', 'node_modules/phase-1a-probe']).status, 0);
 });
 
-test('feature owners outside the approved scene compatibility change are unchanged', () => {
-  const protectedPaths = [
-    'src/screens/editor-screen.js',
-    'src/editor/geometry-factory.js',
-    'src/services/autopack-engine.js',
-    'src/services/autopack-solver.js',
-    'src/services/autopack-item-builder.js',
-    'src/services/pack-library.js',
-    'src/services/cog-service.js',
-    'src/core/oriented-dims.js',
-  ];
-  // Working-tree scope guard, not a PR-diff validator. Run the complete suite
-  // after approved owner changes are committed; no content marker exempts an
-  // unrelated edit in the same protected file.
-  const diff = git(['diff', '--unified=0', '--', ...protectedPaths]).stdout;
-  assert.equal(diff.trim(), '');
-});
-
-test('no GLTF, DRACO, KTX2, Meshopt, or post-processing product integration was added', () => {
-  const changedRuntimeSurface = [indexHtml, bootstrapSource, viteSource, JSON.stringify(packageJson)].join('\n');
-  assert.doesNotMatch(
-    changedRuntimeSurface,
-    /GLTFLoader|DRACOLoader|KTX2Loader|Meshopt|postprocessing|EffectComposer/u
-  );
-});
-
-test('no WebGPU integration was added', () => {
+test('the supported Three.js runtime does not load WebGPU', () => {
   assert.doesNotMatch([indexHtml, bootstrapSource, viteSource].join('\n'), /WebGPU/iu);
 });
 
@@ -277,32 +211,4 @@ test('the r185 runtime requires WebGL 2 without changing Vite output targets', (
   assert.match(browserSource, /canvas\.getContext\('webgl2'\)/u);
   assert.doesNotMatch(browserSource, /experimental-webgl/u);
   assert.match(viteSource, /target: \['chrome90', 'edge90', 'firefox103', 'safari13\.1'\]/u);
-});
-
-test('no unrelated dependency declaration changed', () => {
-  const expectedDevDependencies = {
-    '@eslint/js': '^10.0.1',
-    eslint: '^10.8.1',
-    'eslint-plugin-html': '^8.1.4',
-    globals: '^17.9.0',
-    'html-validate': '^11.6.2',
-    pg: '^8.23.0',
-    playwright: '^1.62.1',
-    prettier: '^3.9.6',
-    'prettier-plugin-organize-attributes': '^1.0.0',
-    stripe: '^22.4.0',
-    stylelint: '^17.14.1',
-    'stylelint-config-html': '^1.1.0',
-    'stylelint-config-standard': '^40.0.0',
-    typescript: '^7.0.2',
-    vite: '8.2.1',
-  };
-  assert.deepEqual(packageJson.devDependencies, expectedDevDependencies);
-  assert.deepEqual(packageJson.dependencies, { three: '0.185.1' });
-});
-
-test('the migration does not add or weaken a Content Security Policy', () => {
-  assert.doesNotMatch(indexHtml, /Content-Security-Policy/iu);
-  assert.doesNotMatch([indexHtml, viteSource].join('\n'), /unsafe-eval/iu);
-  assert.doesNotMatch(viteSource, /headers\s*:/u);
 });

@@ -337,8 +337,7 @@ const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swift
 // Settle: no operation running and the automatic preview it scheduled written.
 async function settle(page) {
   await page.waitForFunction(() => window.probe.op() === 'idle', null, { timeout: 60000 });
-  await page.waitForTimeout(700);
-  await page.waitForFunction(() => window.probe.op() === 'idle', null, { timeout: 10000 });
+  await previewQuiet(page);
 }
 
 // Preview work already scheduled (debounce or capture) has finished, so the

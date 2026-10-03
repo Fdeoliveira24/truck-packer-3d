@@ -1,6 +1,6 @@
 # Truck Packer 3D — Master TODO V6
 
-**Last updated:** 2026-10-02
+**Last updated:** 2026-10-03
 **Status:** Active operational roadmap.
 
 ---
@@ -27,8 +27,9 @@
 |---|---|
 | Repository branch | `main` |
 | V6 creation baseline | `002c1f187b4a67fae6a1cbfde373c233f83d42f7` (snapshot at V6 creation; historical reference only) |
-| Current verified HEAD (2026-09-30 rebaseline) | `59ed22e513a61001d1bca6a9bbecfc5a46a86246` — PR #88 merged; local `main` matches `origin/main` |
-| Last merge | PR #88 `feat(settings): add keyboard shortcuts resource` |
+| Verified main at P2.5 start (2026-10-03) | `fe4bfe3be2b9a77b0d7ef9fc183fa08fd0ed15e3` — PR #95 merged; local `main` matched `origin/main` before branching |
+| Last merge before P2.5 | PR #95 `cleanup: complete P2 legacy and dead code cleanup` |
+| P2.5 implementation base | `test/p2-5-suite-ci-optimization` branched from that verified main; its PR and merge commit record the final P2.5 state |
 | Three.js runtime | `three@0.185.1` via npm/Vite (WebGLRenderer, r185.1) |
 | Vite | `8.2.1` |
 | Node requirement | `^20.19.0` or `>=22.12.0` |
@@ -55,7 +56,7 @@
 | AutoPack Cleanup | Legacy solver removed, strategy differentiation audit, Max Capacity Phase C profile reporting | V5 milestones |
 | Cargo Instructions (Phases 1–3) | Standard Instructions, Instance Notes, Pack Notes Editor access | V5 milestones |
 | app.js P0 modularization | Billing/Org/Auth/AccountSwitcher extracted; app.js −27.8% (9,510 → 6,867 lines) | PR #7 |
-| P2 — Legacy / Dead Code | Removed disconnected legacy modules and test-pinned dead code; retired the legacy Settings screen safely (`#/settings` now opens Settings → Preferences; "Reset demo data" removed); removed broken `lint:report` and unused `knip.json`; corrected stale active contracts; KEEP/DEFER registry in Section 8 | PR #93, PR #94, P2 finalization PR |
+| P2 — Legacy / Dead Code | Removed disconnected legacy modules and test-pinned dead code; retired the legacy Settings screen safely (`#/settings` now opens Settings → Preferences; "Reset demo data" removed); removed broken `lint:report` and unused `knip.json`; corrected stale active contracts; KEEP/DEFER registry in Section 8 | PR #93, PR #94, PR #95 |
 
 ---
 

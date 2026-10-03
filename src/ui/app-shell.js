@@ -38,7 +38,6 @@ export function createAppShell({
       editor: { title: 'Editor', subtitle: '3D workspace' },
       updates: { title: 'Release Notes', subtitle: 'Verified product changes' },
       roadmap: { title: 'Roadmap', subtitle: 'Published product plans' },
-      settings: { title: 'Settings', subtitle: 'Preferences' },
     };
 
     function toggleSidebar() {

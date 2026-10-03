@@ -3084,7 +3084,8 @@ export function createSettingsOverlay({
   }
 
   function savePrefsFromForm({
-    length, weight, theme, labelSize, hiddenOpacity, showAutoPackLoadingOverlay, autoPackResultsStartView,
+    length, weight, theme, labelSize, hiddenOpacity, snappingEnabled, gridSize, screenshotResolution,
+    pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView,
   }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
@@ -3093,6 +3094,10 @@ export function createSettingsOverlay({
     next.theme = theme;
     next.labelFontSize = Utils.clamp(Number(labelSize) || 12, 8, 24);
     next.hiddenCaseOpacity = Utils.clamp(Number(hiddenOpacity) || 0.3, 0, 1);
+    next.snapping.enabled = snappingEnabled === 'true';
+    next.snapping.gridSize = Math.max(0.25, Number(gridSize) || 1);
+    next.export.screenshotResolution = screenshotResolution;
+    next.export.pdfIncludeStats = pdfIncludeStats === 'true';
     next.showAutoPackLoadingOverlay = showAutoPackLoadingOverlay !== false;
     next.autoPackResultsStartView = autoPackResultsStartView;
     PreferencesManager.set(next);
@@ -5041,6 +5046,35 @@ export function createSettingsOverlay({
         options: [{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }],
       });
 
+      const snappingPrefs = prefs.snapping || {};
+      const exportPrefs = prefs.export || {};
+
+      const snappingEnabled = UIComponents.createSelect({
+        label: 'Snapping', value: String(Boolean(snappingPrefs.enabled)),
+        options: [{ value: 'true', label: 'Enabled' }, { value: 'false', label: 'Disabled' }],
+      });
+
+      const gridSize = doc.createElement('input');
+      gridSize.className = 'input';
+      gridSize.type = 'number';
+      gridSize.min = '0.25';
+      gridSize.step = '0.25';
+      gridSize.value = String(snappingPrefs.gridSize);
+
+      const screenshotResolution = UIComponents.createSelect({
+        label: 'Screenshot Resolution', value: exportPrefs.screenshotResolution,
+        options: [
+          { value: '1920x1080', label: '1920×1080' },
+          { value: '2560x1440', label: '2560×1440' },
+          { value: '3840x2160', label: '3840×2160' },
+        ],
+      });
+
+      const pdfIncludeStats = UIComponents.createSelect({
+        label: 'Include Stats in PDF', value: String(Boolean(exportPrefs.pdfIncludeStats)),
+        options: [{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }],
+      });
+
       const prefsCard = doc.createElement('div');
       prefsCard.className = 'card tp3d-settings-card-max tp3d-prefs-card';
 
@@ -5060,6 +5094,15 @@ export function createSettingsOverlay({
 
       labelSize.classList.add('tp3d-prefs-number-input');
       prefsCard.appendChild(row('Label Font Size', labelSize));
+
+      const snappingHeading = doc.createElement('div');
+      snappingHeading.className = 'tp3d-prefs-heading';
+      snappingHeading.textContent = 'Editor Snapping';
+      prefsCard.appendChild(snappingHeading);
+      prefsCard.appendChild(row('Snapping', snappingEnabled));
+
+      gridSize.classList.add('tp3d-prefs-number-input');
+      prefsCard.appendChild(row('Grid Size (in)', gridSize));
 
       const autoPackHeading = doc.createElement('div');
       autoPackHeading.className = 'tp3d-prefs-heading';
@@ -5114,6 +5157,12 @@ export function createSettingsOverlay({
       autoPackResultsStartView.dataset.role = 'autopack-results-start-view';
       prefsCard.appendChild(row('AutoPack Results starting view', autoPackResultsStartView));
 
+      const exportHeading = doc.createElement('div');
+      exportHeading.className = 'tp3d-prefs-heading';
+      exportHeading.textContent = 'Export';
+      prefsCard.appendChild(exportHeading);
+      prefsCard.appendChild(row('Screenshot Resolution', screenshotResolution));
+      prefsCard.appendChild(row('Include Stats in PDF', pdfIncludeStats));
 
       const appearanceHeading = doc.createElement('div');
       appearanceHeading.className = 'tp3d-prefs-heading';
@@ -5179,6 +5228,10 @@ export function createSettingsOverlay({
           theme: theme.value,
           labelSize: labelSize.value,
           hiddenOpacity: hiddenOpacity.value,
+          snappingEnabled: snappingEnabled.value,
+          gridSize: gridSize.value,
+          screenshotResolution: screenshotResolution.value,
+          pdfIncludeStats: pdfIncludeStats.value,
           showAutoPackLoadingOverlay: autoPackLoading.dataset.value === 'on',
           autoPackResultsStartView: autoPackResultsStartView.value,
         })

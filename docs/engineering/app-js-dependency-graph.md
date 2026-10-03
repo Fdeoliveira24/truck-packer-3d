@@ -459,12 +459,12 @@ These are defined *inside* `src/app.js`'s own IIFE, not imported from another fi
 
 ## 2. External library / vendor dependencies
 
-**`three` (via `esm.sh`/`cdn.skypack.dev`, local fallback `vendor/three.min.js` / `vendor/three.module.js`) → `window.THREE`**
+**`three` (npm `three@0.185.1` / r185, bundled by Vite via `src/bootstrap/three-runtime.js`) → `window.THREE`**
 
-- Type: External library (ESM, loaded outside the `src/app.js` module graph, via `index.html`).
-- Imported from: Not a static `import` in `app.js`; consumed as the global `window.THREE` after `index.html` awaits its own loader and App.js awaits `window.__TP3D_BOOT.threeReady`.
+- Type: External library (npm package bundled by Vite, loaded outside the `src/app.js` module graph via `index.html`). There is no CDN or vendor fallback; `vendor/three.module.js` (r160) is a test fixture only.
+- Imported from: Not a static `import` in `app.js`; consumed as the global `window.THREE` after `index.html`'s module script resolves `installThreeRuntime()` and App.js awaits `window.__TP3D_BOOT.threeReady`.
 - Used by: Scene startup (§1.7 above), `validateRuntime()`'s missing-library check (PREP-4 §1).
-- Initialized by: `index.html`'s ESM loader script (`index.html:144-181` area).
+- Initialized by: `index.html`'s module script, which imports `src/bootstrap/three-runtime.js`; `installThreeRuntime()` asserts r185 and sets `window.THREE` (including `OrbitControls` from `three/addons`).
 - Lifetime: Page-lifetime, loaded once before App.js's boot IIFE proceeds past its first `await`.
 - Direction: App.js depends on it.
 - Required or optional: Required — `validateRuntime()` treats its absence as a missing-library degraded-boot condition.
@@ -475,7 +475,7 @@ These are defined *inside* `src/app.js`'s own IIFE, not imported from another fi
 - Cross-tab interaction: None.
 - Circular dependency risk: None — a vendor library, not part of the app's module graph.
 - Coupling level: High by necessity (the whole editor depends on it) but the dependency edge itself (App.js → THREE) is a simple presence check plus pass-through to `scene-runtime.js`.
-- Notes: Per PREP-2 §8.2, no standalone `window.OrbitControls` assignment was confirmed — it is expected to arrive as `window.THREE.OrbitControls`.
+- Notes: No standalone `window.OrbitControls` is assigned — `three-runtime.js` sets `window.THREE = { ...THREE, OrbitControls }`, so it arrives as `window.THREE.OrbitControls`.
 
 **`@tweenjs/tween.js` (classic script, local fallback `vendor/tween.umd.js`) → `window.TWEEN`**
 

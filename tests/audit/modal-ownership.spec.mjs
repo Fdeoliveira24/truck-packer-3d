@@ -1119,3 +1119,135 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   assert.equal(reopened.value, 'recommended', 'the saved starting view is shown again');
   settings.close();
 });
+
+test('Settings Preferences owns Snapping and Export preferences now that the legacy Settings screen is retired', async t => {
+  const dom = installDom(t);
+  const { normalizePreferences } = await import('../../src/core/normalizer.js');
+  let prefs = normalizePreferences({ theme: 'light', units: { length: 'ft', weight: 'kg' } });
+  const saved = [];
+  const toasts = [];
+  const settings = createSettingsOverlay({
+    UIComponents: { ...dom.UI, showToast: (...args) => toasts.push(args) }, documentRef: dom.doc,
+    PreferencesManager: {
+      get: () => prefs,
+      set: next => { prefs = normalizePreferences(next); saved.push(prefs); },
+      applyTheme() {},
+    },
+    Utils: { deepClone: value => structuredClone(value), clamp: (value, min, max) => Math.min(max, Math.max(min, value)) },
+  });
+  settings.open('preferences');
+  const walk = el => [el, ...el.children.flatMap(walk)];
+  const find = predicate => walk(dom.doc.body).find(predicate);
+  const rowFor = label => find(el => el.className.split(' ').includes('tp3d-settings-row') &&
+    el.children[0]?.textContent === label);
+  const control = label => rowFor(label).children[1];
+  const heading = text => find(el => el.className === 'tp3d-prefs-heading' && el.textContent === text);
+
+  assert.ok(heading('Editor Snapping') && heading('Export'), 'Snapping and Export sections render in Preferences');
+  for (const label of ['Snapping', 'Grid Size (in)', 'Screenshot Resolution', 'Include Stats in PDF']) {
+    assert.ok(rowFor(label), `${label} renders as a Preferences row`);
+  }
+  const before = structuredClone(prefs);
+  assert.equal(control('Snapping').value, String(before.snapping.enabled));
+  assert.equal(control('Grid Size (in)').value, String(before.snapping.gridSize));
+  assert.equal(control('Screenshot Resolution').value, before.export.screenshotResolution);
+  assert.equal(control('Include Stats in PDF').value, String(before.export.pdfIncludeStats));
+
+  control('Snapping').value = String(!before.snapping.enabled);
+  control('Grid Size (in)').value = '0.1'; // below the 0.25 in floor
+  control('Screenshot Resolution').value = '2560x1440';
+  control('Include Stats in PDF').value = String(!before.export.pdfIncludeStats);
+  assert.equal(saved.length, 0, 'controls do not save until Save changes');
+  find(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').dispatchEvent({ type: 'click' });
+  assert.equal(saved.length, 1);
+  assert.deepEqual(toasts, [['Preferences saved', 'success']]);
+  assert.equal(saved[0].snapping.enabled, !before.snapping.enabled);
+  assert.equal(saved[0].snapping.gridSize, 0.25, 'grid size keeps its 0.25 in floor');
+  assert.equal(saved[0].export.screenshotResolution, '2560x1440');
+  assert.equal(saved[0].export.pdfIncludeStats, !before.export.pdfIncludeStats);
+  assert.deepEqual(saved[0].units, { length: 'ft', weight: 'kg' }, 'unrelated preferences are preserved');
+  assert.equal(saved[0].hiddenCaseOpacity, before.hiddenCaseOpacity, 'unrelated preferences are preserved');
+  settings.close();
+});
+
+test('#/settings is a compatibility entry that settles on a stable screen and opens Settings Preferences without a loop', async () => {
+  const appSrc = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
+  const start = appSrc.indexOf('let settingsRouteOpenPending = false;');
+  const end = appSrc.indexOf('// SECTION: 3D ENGINE (SCENE)', start);
+  assert.ok(start > 0 && end > start, 'the route compatibility helpers must be extractable');
+  const build = new Function('deps', `
+    const { StateStore, Router, AppShell, BootState, openSettingsOverlay, document } = deps;
+    ${appSrc.slice(start, end)}
+    return { openSettingsFromRoute, flushPendingSettingsRoute };
+  `);
+  const harness = ({ screen = 'packs', ready = false, locked = false } = {}) => {
+    const calls = [];
+    const boot = { appReady: ready };
+    const api = build({
+      StateStore: { get: key => (key === 'currentScreen' ? screen : undefined) },
+      Router: { replaceScreen: s => calls.push(['replaceScreen', s]), setScreen: s => calls.push(['setScreen', s]) },
+      AppShell: { navigate: s => calls.push(['navigate', s]) },
+      BootState: boot,
+      openSettingsOverlay: tab => calls.push(['openSettingsOverlay', tab]),
+      document: { body: { classList: { contains: name => locked && name === 'tp3d-shared-modal-lock' } } },
+    });
+    return { api, calls, boot };
+  };
+  const everyCall = [];
+
+  // Boot: the hash settles on Load Plans first; the overlay waits for the auth gate.
+  const boot = harness();
+  boot.api.openSettingsFromRoute();
+  assert.deepEqual(boot.calls, [['replaceScreen', 'packs'], ['navigate', 'packs']], 'no overlay before the app is ready');
+  boot.boot.appReady = true;
+  boot.api.flushPendingSettingsRoute();
+  boot.api.flushPendingSettingsRoute();
+  assert.deepEqual(boot.calls.slice(2), [['openSettingsOverlay', 'preferences']], 'opens once, on Preferences');
+  everyCall.push(...boot.calls);
+
+  // Boot while another modal (e.g. the Auth overlay) owns the screen: nothing competes with it.
+  const gated = harness({ locked: true });
+  gated.api.openSettingsFromRoute();
+  gated.boot.appReady = true;
+  gated.api.flushPendingSettingsRoute();
+  assert.deepEqual(gated.calls.map(call => call[0]), ['replaceScreen', 'navigate']);
+  everyCall.push(...gated.calls);
+
+  // After boot: an in-app hash change keeps the current screen and opens the overlay immediately.
+  const live = harness({ screen: 'editor', ready: true });
+  live.api.openSettingsFromRoute();
+  assert.deepEqual(live.calls, [
+    ['replaceScreen', 'editor'], ['navigate', 'editor'], ['openSettingsOverlay', 'preferences'],
+  ]);
+  everyCall.push(...live.calls);
+
+  // A retired or unknown current screen falls back to Load Plans.
+  const fallback = harness({ screen: 'settings', ready: true });
+  fallback.api.openSettingsFromRoute();
+  assert.deepEqual(fallback.calls[0], ['replaceScreen', 'packs']);
+  everyCall.push(...fallback.calls);
+
+  assert.equal(everyCall.some(call => call[0] === 'setScreen'), false, 'never re-enters #/settings, so no redirect loop');
+  assert.equal(everyCall.some(call => call[0] === 'navigate' && call[1] === 'settings'), false, 'settings is never a current screen');
+
+  // The Router still accepts the hash (no NotFound) and the app routes it to the overlay.
+  const { Router } = await import('../../src/router.js');
+  const priorWindow = globalThis.window;
+  globalThis.window = { location: { hash: '#/settings' } };
+  try {
+    assert.deepEqual(Router.parseHash(), { screen: 'settings', isNotFound: false });
+  } finally {
+    if (priorWindow === undefined) delete globalThis.window;
+    else globalThis.window = priorWindow;
+  }
+  assert.match(appSrc, /if \(screen === 'settings'\) openSettingsFromRoute\(\);\s*else AppShell\.navigate\(screen\);/);
+
+  // The legacy screen and its destructive Reset are gone.
+  const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+  assert.doesNotMatch(html, /screen-settings|btn-reset-demo|Reset demo data|btn-save-prefs/);
+  assert.doesNotMatch(appSrc, /createSettingsScreen|SettingsUI|settings-screen/);
+  assert.doesNotMatch(appSrc, /clearAll\(/, 'app wiring has no Storage.clearAll path');
+  assert.throws(() => readFileSync(new URL('../../src/screens/settings-screen.js', import.meta.url)), /ENOENT/);
+  const shell = readFileSync(new URL('../../src/ui/app-shell.js', import.meta.url), 'utf8');
+  assert.doesNotMatch(shell, /settings:\s*\{ title/);
+});

@@ -59,9 +59,9 @@ This diagram is the single source of truth for where a Cargo Instructions field 
 
 | Field | Owner | Lives in | Why |
 |---|---|---|---|
-| Standard Instructions | Case | `CaseLibrary` record, `notes` key, normalized by `case.model.js::normalizeCase` and `normalizer.js::normalizeCase` (both route through the shared `cargo-canonical.js::parseCargoNotes`) | It is template information — describes the *kind* of cargo, identical to name, dimensions, category, and handling rules, all of which already live on the Case and are already shared across every placement of that Case |
+| Standard Instructions | Case | `CaseLibrary` record, `notes` key, normalized by `normalizer.js::normalizeCase` (routes through the shared `cargo-canonical.js::parseCargoNotes`; the former `case.model.js` duplicate was removed in P2) | It is template information — describes the *kind* of cargo, identical to name, dimensions, category, and handling rules, all of which already live on the Case and are already shared across every placement of that Case |
 | Instance Notes | Pack Instance | `pack.cases[i]`, normalized by `normalizer.js::normalizeInstance` (field does not exist yet — this phase only reserves the name) | It describes *this specific physical unit in this specific load* — e.g. "this one arrived with a dent," a fact that cannot be true of every unit of the Case, so it cannot live on the Case without corrupting every other placement |
-| Pack Notes | Pack | `PackLibrary` record, `notes` key, normalized independently in three places: `pack.model.js::normalizePack`, `normalizer.js::normalizePack`, and inline in `pack-library.js::create()` | It describes the load plan as a whole — client, project, drawn-by, and truck live at the same level for the same reason: they describe the Pack, not any one item in it |
+| Pack Notes | Pack | `PackLibrary` record, `notes` key, normalized in two places: `normalizer.js::normalizePack` and inline in `pack-library.js::create()` (the former `pack.model.js` duplicate was removed in P2) | It describes the load plan as a whole — client, project, drawn-by, and truck live at the same level for the same reason: they describe the Pack, not any one item in it |
 
 **Why Instance Notes cannot be named `notes`:** `Case.notes` and the future Pack-instance field would otherwise share an identical property name across two different owning objects that are frequently handled together in the same function (e.g. `renderSingleInspector(pack, inst, caseData, prefs)` already holds both `inst` and `caseData` in scope simultaneously). A future reader or a future spread/merge (`{...inst, ...caseData}`, a pattern already used elsewhere in this codebase for handling-rule flattening) could silently collide the two. `instanceNotes` removes that possibility structurally, not by convention alone.
 
@@ -75,7 +75,7 @@ This diagram is the single source of truth for where a Cargo Instructions field 
 - Canonical update path: `CaseLibrary.upsert(caseData)`.
 
 ### Pack Instance owns (Instance Notes is new; everything else already exists)
-- `instanceNotes` — **implemented, Phase 2 (`086004b`).** Same contract as Standard Instructions: string or `null`, trimmed, whitespace-only → `null`. Normalized in `normalizer.js::normalizeInstance` (the only normalizer for instances — there is no `instance.model.js` counterpart to `case.model.js`).
+- `instanceNotes` — **implemented, Phase 2 (`086004b`).** Same contract as Standard Instructions: string or `null`, trimmed, whitespace-only → `null`. Normalized in `normalizer.js::normalizeInstance` (the only normalizer for instances).
 - `transform` (position, rotation, scale), `placement` (`'packed' | 'staged' | null`), `hidden`, `groupId`, `orientationLocked`, `lockedRotation`, `orientedDims`, `deliverySequence`, `packedProfile`.
 - Recommended canonical update path for `instanceNotes`: `PackLibrary.updateInstance(packId, instanceId, { instanceNotes })` — an existing, production-used, single-instance patch function (currently used for the `hidden` visibility toggle at `editor-screen.js:4902`). It does not trigger placement/collision revalidation, which is correct for a non-geometric text field.
 
@@ -84,7 +84,7 @@ This diagram is the single source of truth for where a Cargo Instructions field 
 - Canonical update path: `PackLibrary.update(packId, patch)` / `PackLibrary.create(packData)`.
 
 ### Project-level (not owned by any Cargo Instructions field; listed for completeness of the diagram)
-- Truck geometry, Pack Settings, AutoPack Results (transient, not persisted on the Pack record itself — confirmed: `pack.model.js` / `normalizer.js::normalizePack` carry no `autoPackResults`-shaped field), Statistics (`pack.stats`).
+- Truck geometry, Pack Settings, AutoPack Results (transient, not persisted on the Pack record itself — confirmed: `normalizer.js::normalizePack` carries no `autoPackResults`-shaped field), Statistics (`pack.stats`).
 
 ---
 
@@ -105,7 +105,7 @@ No file listed here has been modified in Phase 0. This is a plan, not a change l
 
 **Phase 3 (Pack Notes — Editor access point):**
 - `src/screens/editor-screen.js` — new toolbar/header action opening a notes-only modal that calls `PackLibrary.update(pack.id, { notes })` directly (not through `TruckChangeController`, which the existing Packs-screen Edit Pack modal uses only because it edits truck dimensions in the same form).
-- No change expected to `src/screens/packs-screen.js`, `src/services/pack-library.js`, `src/data/models/pack.model.js`, `src/core/normalizer.js`'s `normalizePack`, or the PDF export code in `src/app.js` — Pack Notes already has a full, working data layer; this phase only adds a second UI entry point to the same field.
+- No change expected to `src/screens/packs-screen.js`, `src/services/pack-library.js`, `src/core/normalizer.js`'s `normalizePack`, or the PDF export code in `src/app.js` — Pack Notes already has a full, working data layer; this phase only adds a second UI entry point to the same field.
 
 **Not expected to require modification in any phase**, based on the evidence in Section 6: `src/services/autopack-item-builder.js`, `src/packing-core/*`, `src/core/operation-lifecycle.js`, any Supabase function, `src/core/supabase-client.js`, `src/services/import-export.js`'s spreadsheet column list (Case-level `notes`/Standard Instructions already has a column; neither Instance Notes nor Pack Notes have — or need — a spreadsheet surface, since no spreadsheet import/export exists for Pack or instance data at all today).
 

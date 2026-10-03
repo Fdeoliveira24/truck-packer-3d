@@ -259,7 +259,6 @@
 │   ├── 📁 services
 │   │   ├── 📄 autopack-engine.js
 │   │   ├── 📄 autopack-item-builder.js
-│   │   ├── 📄 autopack-legacy-solver.js
 │   │   ├── 📄 autopack-solver.js
 │   │   ├── 📄 case-library.js
 │   │   ├── 📄 case-rule-summary.js

@@ -1,8 +1,8 @@
 {
-  "generatedAt": "2026-09-14T05:52:54.665Z",
+  "generatedAt": "2026-10-03T06:54:02.230Z",
   "root": ".",
-  "nodeCount": 107,
-  "edgeCount": 221,
+  "nodeCount": 86,
+  "edgeCount": 198,
   "indexHtml": {
     "scripts": [
       {
@@ -29,7 +29,7 @@
     "stylesheets": [
       "https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css",
       "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap",
-      "styles/main.css?v=20260808-editor-inspector-refinement"
+      "styles/main.css?rev=20260920-p1c-mgmt"
     ],
     "vendors": [
       {
@@ -306,7 +306,6 @@
         "src/screens/editor-screen.js",
         "src/screens/packs-screen.js",
         "src/screens/cases-screen.js",
-        "src/screens/settings-screen.js",
         "src/screens/updates-screen.js",
         "src/screens/roadmap-screen.js",
         "src/core/utils/index.js",
@@ -314,6 +313,7 @@
         "src/core/defaults.js",
         "src/core/state-store.js",
         "src/core/storage.js",
+        "src/core/normalizer.js",
         "src/core/session.js",
         "src/services/category-service.js",
         "src/services/case-library.js",
@@ -329,6 +329,7 @@
         "src/ui/overlays/import-pack-dialog.js",
         "src/ui/overlays/import-cases-dialog.js",
         "src/core/app-helpers.js",
+        "src/core/cargo-canonical.js",
         "src/core/dev/dev-helpers.js",
         "src/core/supabase-client.js",
         "src/ui/overlays/auth-overlay.js",
@@ -344,71 +345,6 @@
         "));\n    const xlsx = document.createElement("
       ],
       "importedBy": []
-    },
-    "src/auth/permissions.js": {
-      "id": "src/auth/permissions.js",
-      "path": "src/auth/permissions.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/config/roles.js",
-        "src/config/plans.js"
-      ],
-      "externalImports": [],
-      "importedBy": []
-    },
-    "src/auth/session.js": {
-      "id": "src/auth/session.js",
-      "path": "src/auth/session.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": {
-        "name": "createOrganization",
-        "params": [],
-        "returns": []
-      },
-      "imports": [
-        "src/core/constants.js",
-        "src/core/storage.js",
-        "src/utils/json.js",
-        "src/utils/uuid.js"
-      ],
-      "externalImports": [],
-      "importedBy": [
-        "src/data/services/analytics.service.js",
-        "src/data/services/cases.service.js",
-        "src/data/services/packs.service.js",
-        "src/data/services/users.service.js"
-      ]
     },
     "src/bootstrap/three-runtime.js": {
       "id": "src/bootstrap/three-runtime.js",
@@ -436,87 +372,6 @@
         "three/addons/controls/OrbitControls.js"
       ],
       "importedBy": []
-    },
-    "src/config/features.js": {
-      "id": "src/config/features.js",
-      "path": "src/config/features.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/config/plans.js"
-      ],
-      "externalImports": [],
-      "importedBy": [
-        "src/data/services/analytics.service.js"
-      ]
-    },
-    "src/config/plans.js": {
-      "id": "src/config/plans.js",
-      "path": "src/config/plans.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": [
-        "src/auth/permissions.js",
-        "src/config/features.js"
-      ]
-    },
-    "src/config/roles.js": {
-      "id": "src/config/roles.js",
-      "path": "src/config/roles.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": [
-        "src/auth/permissions.js"
-      ]
     },
     "src/core/app-helpers.js": {
       "id": "src/core/app-helpers.js",
@@ -571,7 +426,11 @@
         ],
         "listeners": []
       },
-      "factory": null,
+      "factory": {
+        "name": "createDownloadActionGuard",
+        "params": [],
+        "returns": []
+      },
       "imports": [],
       "externalImports": [],
       "importedBy": [
@@ -608,10 +467,6 @@
         "src/core/defaults.js",
         "src/core/normalizer.js",
         "src/core/storage.js",
-        "src/data/models/case.model.js",
-        "src/data/models/pack.model.js",
-        "src/data/services/cases.service.js",
-        "src/data/services/packs.service.js",
         "src/screens/cases-screen.js",
         "src/screens/packs-screen.js",
         "src/services/case-library.js",
@@ -645,42 +500,15 @@
       ],
       "externalImports": [],
       "importedBy": [
+        "src/app.js",
+        "src/core/import-schema.js",
         "src/core/normalizer.js",
-        "src/data/models/case.model.js",
         "src/services/autopack-engine.js",
         "src/services/autopack-item-builder.js",
         "src/services/autopack-solver.js",
         "src/services/case-library.js",
         "src/services/import-export.js",
         "src/services/pack-library.js"
-      ]
-    },
-    "src/core/constants.js": {
-      "id": "src/core/constants.js",
-      "path": "src/core/constants.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": [
-        "src/auth/session.js",
-        "src/data/models/pack.model.js",
-        "src/data/repositories/local.repository.js"
       ]
     },
     "src/core/defaults.js": {
@@ -748,34 +576,6 @@
         "src/app.js"
       ]
     },
-    "src/core/event-bus.js": {
-      "id": "src/core/event-bus.js",
-      "path": "src/core/event-bus.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": {
-        "name": "createEventBus",
-        "params": [],
-        "returns": []
-      },
-      "imports": [],
-      "externalImports": [],
-      "importedBy": []
-    },
     "src/core/events.js": {
       "id": "src/core/events.js",
       "path": "src/core/events.js",
@@ -825,7 +625,10 @@
         "listeners": []
       },
       "factory": null,
-      "imports": [],
+      "imports": [
+        "src/core/cargo-canonical.js",
+        "src/core/normalizer.js"
+      ],
       "externalImports": [],
       "importedBy": [
         "src/core/storage.js",
@@ -862,7 +665,11 @@
       ],
       "externalImports": [],
       "importedBy": [
+        "src/app.js",
+        "src/core/import-schema.js",
         "src/core/storage.js",
+        "src/editor/scene-runtime.js",
+        "src/screens/editor-screen.js",
         "src/services/import-export.js",
         "src/services/pack-library.js",
         "src/services/preferences-manager.js"
@@ -1030,36 +837,6 @@
         "src/ui/overlays/settings-overlay.js"
       ]
     },
-    "src/core/state.js": {
-      "id": "src/core/state.js",
-      "path": "src/core/state.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": {
-        "name": "createStateStore",
-        "params": [],
-        "returns": []
-      },
-      "imports": [
-        "src/utils/json.js"
-      ],
-      "externalImports": [],
-      "importedBy": []
-    },
     "src/core/storage.js": {
       "id": "src/core/storage.js",
       "path": "src/core/storage.js",
@@ -1100,8 +877,6 @@
       "externalImports": [],
       "importedBy": [
         "src/app.js",
-        "src/auth/session.js",
-        "src/data/repositories/local.repository.js",
         "src/screens/cases-screen.js",
         "src/screens/editor-screen.js",
         "src/screens/packs-screen.js",
@@ -1217,7 +992,6 @@
         "src/core/session.js",
         "src/core/state-store.js",
         "src/core/storage.js",
-        "src/data/models/pack.model.js",
         "src/services/case-library.js",
         "src/services/folder-library.js",
         "src/services/import-export.js",
@@ -1252,7 +1026,6 @@
       ],
       "externalImports": [],
       "importedBy": [
-        "src/data/models/case.model.js",
         "src/packing-core/space-utilization-engine.js"
       ]
     },
@@ -1283,202 +1056,6 @@
         "src/core/storage.js",
         "src/services/import-export.js"
       ]
-    },
-    "src/data/models/case.model.js": {
-      "id": "src/data/models/case.model.js",
-      "path": "src/data/models/case.model.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/utils/uuid.js",
-        "src/core/utils.js",
-        "src/core/cargo-canonical.js",
-        "src/core/business-identity.js"
-      ],
-      "externalImports": [],
-      "importedBy": [
-        "src/data/services/cases.service.js"
-      ]
-    },
-    "src/data/models/org.model.js": {
-      "id": "src/data/models/org.model.js",
-      "path": "src/data/models/org.model.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": []
-    },
-    "src/data/models/pack.model.js": {
-      "id": "src/data/models/pack.model.js",
-      "path": "src/data/models/pack.model.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/utils/uuid.js",
-        "src/core/constants.js",
-        "src/core/utils/index.js",
-        "src/core/business-identity.js"
-      ],
-      "externalImports": [],
-      "importedBy": [
-        "src/data/services/packs.service.js"
-      ]
-    },
-    "src/data/models/user.model.js": {
-      "id": "src/data/models/user.model.js",
-      "path": "src/data/models/user.model.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": []
-    },
-    "src/data/repositories/base.repository.js": {
-      "id": "src/data/repositories/base.repository.js",
-      "path": "src/data/repositories/base.repository.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": [
-        "src/data/repositories/local.repository.js"
-      ]
-    },
-    "src/data/repositories/local.repository.js": {
-      "id": "src/data/repositories/local.repository.js",
-      "path": "src/data/repositories/local.repository.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/core/constants.js",
-        "src/core/storage.js",
-        "src/utils/json.js",
-        "src/utils/uuid.js",
-        "src/data/repositories/base.repository.js"
-      ],
-      "externalImports": [],
-      "importedBy": [
-        "src/data/services/cases.service.js",
-        "src/data/services/packs.service.js"
-      ]
-    },
-    "src/data/services/analytics.service.js": {
-      "id": "src/data/services/analytics.service.js",
-      "path": "src/data/services/analytics.service.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/config/features.js",
-        "src/auth/session.js"
-      ],
-      "externalImports": [],
-      "importedBy": []
     },
     "src/data/services/billing.service.js": {
       "id": "src/data/services/billing.service.js",
@@ -1530,138 +1107,6 @@
         "src/app.js",
         "src/ui/overlays/settings-overlay.js"
       ]
-    },
-    "src/data/services/cases.service.js": {
-      "id": "src/data/services/cases.service.js",
-      "path": "src/data/services/cases.service.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/auth/session.js",
-        "src/data/repositories/local.repository.js",
-        "src/data/models/case.model.js",
-        "src/core/business-identity.js"
-      ],
-      "externalImports": [],
-      "importedBy": []
-    },
-    "src/data/services/collaboration.service.js": {
-      "id": "src/data/services/collaboration.service.js",
-      "path": "src/data/services/collaboration.service.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": []
-    },
-    "src/data/services/maps.service.js": {
-      "id": "src/data/services/maps.service.js",
-      "path": "src/data/services/maps.service.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": []
-    },
-    "src/data/services/packs.service.js": {
-      "id": "src/data/services/packs.service.js",
-      "path": "src/data/services/packs.service.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/auth/session.js",
-        "src/data/repositories/local.repository.js",
-        "src/data/models/pack.model.js",
-        "src/core/business-identity.js"
-      ],
-      "externalImports": [],
-      "importedBy": []
-    },
-    "src/data/services/users.service.js": {
-      "id": "src/data/services/users.service.js",
-      "path": "src/data/services/users.service.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [
-        "src/auth/session.js"
-      ],
-      "externalImports": [],
-      "importedBy": []
     },
     "src/data/trailer-presets.js": {
       "id": "src/data/trailer-presets.js",
@@ -1807,7 +1252,9 @@
         "params": [],
         "returns": []
       },
-      "imports": [],
+      "imports": [
+        "src/core/normalizer.js"
+      ],
       "externalImports": [],
       "importedBy": [
         "src/app.js"
@@ -1842,30 +1289,6 @@
       "importedBy": [
         "src/app.js"
       ]
-    },
-    "src/features/editor/model-loader.js": {
-      "id": "src/features/editor/model-loader.js",
-      "path": "src/features/editor/model-loader.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": []
-      },
-      "factory": null,
-      "imports": [],
-      "externalImports": [],
-      "importedBy": []
     },
     "src/packing-core/budget.js": {
       "id": "src/packing-core/budget.js",
@@ -2277,8 +1700,8 @@
           "setTimeout()"
         ],
         "listeners": [
-          "keydown",
           "click",
+          "keydown",
           "input",
           "change"
         ]
@@ -2321,27 +1744,33 @@
         ],
         "singleFlight": [
           "debounce()",
-          "setTimeout()"
+          "setTimeout()",
+          "clearTimeout()"
         ],
         "listeners": [
           "change",
           "pointermove",
           "pointerdown",
           "pointerup",
+          "pointercancel",
+          "lostpointercapture",
           "dblclick",
+          "blur",
           "keydown",
           "click",
           "input",
           "resize",
           "orientationchange",
+          "start",
+          "end",
           "dragstart",
-          "blur",
+          "focus",
           "dragover",
           "drop"
         ]
       },
       "factory": {
-        "name": "createCaseScene",
+        "name": "createStagingActionDuplicateGuard",
         "params": [],
         "returns": []
       },
@@ -2351,6 +1780,7 @@
         "src/ui/overlays/notes-overlay.js",
         "src/ui/space-utilization-gauge.js",
         "src/core/storage.js",
+        "src/core/normalizer.js",
         "src/services/autopack-engine.js",
         "src/services/pack-library.js",
         "src/services/case-rule-summary.js"
@@ -2381,8 +1811,15 @@
           "setTimeout()"
         ],
         "listeners": [
+          "scroll",
+          "resize",
           "keydown",
           "click",
+          "pointerdown",
+          "pointerenter",
+          "pointerleave",
+          "focus",
+          "blur",
           "input",
           "change"
         ]
@@ -2426,39 +1863,6 @@
       },
       "factory": {
         "name": "createRoadmapScreen",
-        "params": [],
-        "returns": []
-      },
-      "imports": [],
-      "externalImports": [],
-      "importedBy": [
-        "src/app.js"
-      ]
-    },
-    "src/screens/settings-screen.js": {
-      "id": "src/screens/settings-screen.js",
-      "path": "src/screens/settings-screen.js",
-      "churnRisk": 0,
-      "signals": {
-        "auth": [],
-        "billing": [],
-        "bundle": [],
-        "orgChange": [],
-        "hiddenTabGuard": [],
-        "tp3dEvents": {
-          "emit": [],
-          "listen": [],
-          "referenced": []
-        },
-        "storage": [],
-        "singleFlight": [],
-        "listeners": [
-          "click",
-          "input"
-        ]
-      },
-      "factory": {
-        "name": "createSettingsScreen",
         "params": [],
         "returns": []
       },
@@ -2776,6 +2180,7 @@
       "importedBy": [
         "src/screens/cases-screen.js",
         "src/screens/editor-screen.js",
+        "src/services/import-export.js",
         "src/ui/overlays/import-cases-dialog.js"
       ]
     },
@@ -2899,6 +2304,7 @@
         "src/services/pack-library.js",
         "src/core/version.js",
         "src/core/orientation.js",
+        "src/services/case-rule-summary.js",
         "src/core/business-identity.js",
         "src/core/import-schema.js",
         "src/core/cargo-canonical.js"
@@ -3111,7 +2517,9 @@
         "singleFlight": [],
         "listeners": [
           "click",
-          "resize"
+          "keydown",
+          "resize",
+          "tp3d-modal-ownership-change"
         ]
       },
       "factory": {
@@ -3154,7 +2562,8 @@
       "imports": [],
       "externalImports": [],
       "importedBy": [
-        "src/app.js"
+        "src/app.js",
+        "src/ui/system-overlay.js"
       ]
     },
     "src/ui/helpers/import-dialog-utils.js": {
@@ -3207,8 +2616,7 @@
         "storage": [],
         "singleFlight": [],
         "listeners": [
-          "keydown",
-          "click"
+          "keydown"
         ]
       },
       "factory": {
@@ -3220,6 +2628,36 @@
       "externalImports": [],
       "importedBy": [
         "src/app.js"
+      ]
+    },
+    "src/ui/modal-focus.js": {
+      "id": "src/ui/modal-focus.js",
+      "path": "src/ui/modal-focus.js",
+      "churnRisk": 0,
+      "signals": {
+        "auth": [],
+        "billing": [],
+        "bundle": [],
+        "orgChange": [],
+        "hiddenTabGuard": [],
+        "tp3dEvents": {
+          "emit": [],
+          "listen": [],
+          "referenced": []
+        },
+        "storage": [],
+        "singleFlight": [],
+        "listeners": []
+      },
+      "factory": {
+        "name": "createModalFocus",
+        "params": [],
+        "returns": []
+      },
+      "imports": [],
+      "externalImports": [],
+      "importedBy": [
+        "src/ui/ui-components.js"
       ]
     },
     "src/ui/overlays/account-overlay.js": {
@@ -3291,7 +2729,6 @@
           "clearTimeout()"
         ],
         "listeners": [
-          "keydown",
           "online",
           "offline"
         ]
@@ -3531,8 +2968,7 @@
           "setTimeout()"
         ],
         "listeners": [
-          "click",
-          "keydown"
+          "click"
         ]
       },
       "factory": null,
@@ -3719,7 +3155,9 @@
         "params": [],
         "returns": []
       },
-      "imports": [],
+      "imports": [
+        "src/ui/error-overlay.js"
+      ],
       "externalImports": [],
       "importedBy": [
         "src/app.js"
@@ -3752,7 +3190,9 @@
         "params": [],
         "returns": []
       },
-      "imports": [],
+      "imports": [
+        "src/ui/ui-components.js"
+      ],
       "externalImports": [],
       "importedBy": [
         "src/app.js"
@@ -3775,9 +3215,7 @@
         },
         "storage": [],
         "singleFlight": [],
-        "listeners": [
-          "keydown"
-        ]
+        "listeners": []
       },
       "factory": {
         "name": "createTruckChangeController",
@@ -3811,24 +3249,33 @@
           "clearTimeout()"
         ],
         "listeners": [
+          "pointerdown",
+          "focusin",
           "click",
+          "pointercancel",
+          "dragend",
+          "contextmenu",
+          "focusout",
+          "keydown",
           "load",
           "error",
           "change",
-          "keydown",
           "resize",
           "scroll"
         ]
       },
       "factory": {
-        "name": "createUIComponents",
+        "name": "createSharedSelect",
         "params": [],
         "returns": []
       },
-      "imports": [],
+      "imports": [
+        "src/ui/modal-focus.js"
+      ],
       "externalImports": [],
       "importedBy": [
-        "src/app.js"
+        "src/app.js",
+        "src/ui/table-footer.js"
       ]
     },
     "src/utils/debounce.js": {
@@ -3884,10 +3331,7 @@
       "imports": [],
       "externalImports": [],
       "importedBy": [
-        "src/auth/session.js",
-        "src/core/state.js",
-        "src/core/utils/index.js",
-        "src/data/repositories/local.repository.js"
+        "src/core/utils/index.js"
       ]
     },
     "src/utils/uuid.js": {
@@ -3913,12 +3357,8 @@
       "imports": [],
       "externalImports": [],
       "importedBy": [
-        "src/auth/session.js",
         "src/core/utils/index.js",
-        "src/core/utils.js",
-        "src/data/models/case.model.js",
-        "src/data/models/pack.model.js",
-        "src/data/repositories/local.repository.js"
+        "src/core/utils.js"
       ]
     }
   },
@@ -4027,12 +3467,6 @@
     },
     {
       "from": "src/app.js",
-      "to": "src/screens/settings-screen.js",
-      "type": "import",
-      "spec": "./screens/settings-screen.js"
-    },
-    {
-      "from": "src/app.js",
       "to": "src/screens/updates-screen.js",
       "type": "import",
       "spec": "./screens/updates-screen.js"
@@ -4072,6 +3506,12 @@
       "to": "src/core/storage.js",
       "type": "import",
       "spec": "./core/storage.js"
+    },
+    {
+      "from": "src/app.js",
+      "to": "src/core/normalizer.js",
+      "type": "import",
+      "spec": "./core/normalizer.js"
     },
     {
       "from": "src/app.js",
@@ -4165,6 +3605,12 @@
     },
     {
       "from": "src/app.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "./core/cargo-canonical.js"
+    },
+    {
+      "from": "src/app.js",
       "to": "src/core/dev/dev-helpers.js",
       "type": "import",
       "spec": "./core/dev/dev-helpers.js"
@@ -4224,48 +3670,6 @@
       "spec": "./account-switcher.js"
     },
     {
-      "from": "src/auth/permissions.js",
-      "to": "src/config/roles.js",
-      "type": "import",
-      "spec": "../config/roles.js"
-    },
-    {
-      "from": "src/auth/permissions.js",
-      "to": "src/config/plans.js",
-      "type": "import",
-      "spec": "../config/plans.js"
-    },
-    {
-      "from": "src/auth/session.js",
-      "to": "src/core/constants.js",
-      "type": "import",
-      "spec": "../core/constants.js"
-    },
-    {
-      "from": "src/auth/session.js",
-      "to": "src/core/storage.js",
-      "type": "import",
-      "spec": "../core/storage.js"
-    },
-    {
-      "from": "src/auth/session.js",
-      "to": "src/utils/json.js",
-      "type": "import",
-      "spec": "../utils/json.js"
-    },
-    {
-      "from": "src/auth/session.js",
-      "to": "src/utils/uuid.js",
-      "type": "import",
-      "spec": "../utils/uuid.js"
-    },
-    {
-      "from": "src/config/features.js",
-      "to": "src/config/plans.js",
-      "type": "import",
-      "spec": "./plans.js"
-    },
-    {
       "from": "src/core/cargo-canonical.js",
       "to": "src/core/orientation.js",
       "type": "import",
@@ -4282,6 +3686,18 @@
       "to": "src/core/business-identity.js",
       "type": "import",
       "spec": "./business-identity.js"
+    },
+    {
+      "from": "src/core/import-schema.js",
+      "to": "src/core/cargo-canonical.js",
+      "type": "import",
+      "spec": "./cargo-canonical.js"
+    },
+    {
+      "from": "src/core/import-schema.js",
+      "to": "src/core/normalizer.js",
+      "type": "import",
+      "spec": "./normalizer.js"
     },
     {
       "from": "src/core/normalizer.js",
@@ -4336,12 +3752,6 @@
       "to": "src/core/utils/index.js",
       "type": "import",
       "spec": "./utils/index.js"
-    },
-    {
-      "from": "src/core/state.js",
-      "to": "src/utils/json.js",
-      "type": "import",
-      "spec": "../utils/json.js"
     },
     {
       "from": "src/core/storage.js",
@@ -4428,154 +3838,16 @@
       "spec": "../utils/uuid.js"
     },
     {
-      "from": "src/data/models/case.model.js",
-      "to": "src/utils/uuid.js",
-      "type": "import",
-      "spec": "../../utils/uuid.js"
-    },
-    {
-      "from": "src/data/models/case.model.js",
-      "to": "src/core/utils.js",
-      "type": "import",
-      "spec": "../../core/utils.js"
-    },
-    {
-      "from": "src/data/models/case.model.js",
-      "to": "src/core/cargo-canonical.js",
-      "type": "import",
-      "spec": "../../core/cargo-canonical.js"
-    },
-    {
-      "from": "src/data/models/case.model.js",
-      "to": "src/core/business-identity.js",
-      "type": "import",
-      "spec": "../../core/business-identity.js"
-    },
-    {
-      "from": "src/data/models/pack.model.js",
-      "to": "src/utils/uuid.js",
-      "type": "import",
-      "spec": "../../utils/uuid.js"
-    },
-    {
-      "from": "src/data/models/pack.model.js",
-      "to": "src/core/constants.js",
-      "type": "import",
-      "spec": "../../core/constants.js"
-    },
-    {
-      "from": "src/data/models/pack.model.js",
-      "to": "src/core/utils/index.js",
-      "type": "import",
-      "spec": "../../core/utils/index.js"
-    },
-    {
-      "from": "src/data/models/pack.model.js",
-      "to": "src/core/business-identity.js",
-      "type": "import",
-      "spec": "../../core/business-identity.js"
-    },
-    {
-      "from": "src/data/repositories/local.repository.js",
-      "to": "src/core/constants.js",
-      "type": "import",
-      "spec": "../../core/constants.js"
-    },
-    {
-      "from": "src/data/repositories/local.repository.js",
-      "to": "src/core/storage.js",
-      "type": "import",
-      "spec": "../../core/storage.js"
-    },
-    {
-      "from": "src/data/repositories/local.repository.js",
-      "to": "src/utils/json.js",
-      "type": "import",
-      "spec": "../../utils/json.js"
-    },
-    {
-      "from": "src/data/repositories/local.repository.js",
-      "to": "src/utils/uuid.js",
-      "type": "import",
-      "spec": "../../utils/uuid.js"
-    },
-    {
-      "from": "src/data/repositories/local.repository.js",
-      "to": "src/data/repositories/base.repository.js",
-      "type": "import",
-      "spec": "./base.repository.js"
-    },
-    {
-      "from": "src/data/services/analytics.service.js",
-      "to": "src/config/features.js",
-      "type": "import",
-      "spec": "../../config/features.js"
-    },
-    {
-      "from": "src/data/services/analytics.service.js",
-      "to": "src/auth/session.js",
-      "type": "import",
-      "spec": "../../auth/session.js"
-    },
-    {
       "from": "src/data/services/billing.service.js",
       "to": "src/core/supabase-client.js",
       "type": "import",
       "spec": "../../core/supabase-client.js"
     },
     {
-      "from": "src/data/services/cases.service.js",
-      "to": "src/auth/session.js",
+      "from": "src/editor/scene-runtime.js",
+      "to": "src/core/normalizer.js",
       "type": "import",
-      "spec": "../../auth/session.js"
-    },
-    {
-      "from": "src/data/services/cases.service.js",
-      "to": "src/data/repositories/local.repository.js",
-      "type": "import",
-      "spec": "../repositories/local.repository.js"
-    },
-    {
-      "from": "src/data/services/cases.service.js",
-      "to": "src/data/models/case.model.js",
-      "type": "import",
-      "spec": "../models/case.model.js"
-    },
-    {
-      "from": "src/data/services/cases.service.js",
-      "to": "src/core/business-identity.js",
-      "type": "import",
-      "spec": "../../core/business-identity.js"
-    },
-    {
-      "from": "src/data/services/packs.service.js",
-      "to": "src/auth/session.js",
-      "type": "import",
-      "spec": "../../auth/session.js"
-    },
-    {
-      "from": "src/data/services/packs.service.js",
-      "to": "src/data/repositories/local.repository.js",
-      "type": "import",
-      "spec": "../repositories/local.repository.js"
-    },
-    {
-      "from": "src/data/services/packs.service.js",
-      "to": "src/data/models/pack.model.js",
-      "type": "import",
-      "spec": "../models/pack.model.js"
-    },
-    {
-      "from": "src/data/services/packs.service.js",
-      "to": "src/core/business-identity.js",
-      "type": "import",
-      "spec": "../../core/business-identity.js"
-    },
-    {
-      "from": "src/data/services/users.service.js",
-      "to": "src/auth/session.js",
-      "type": "import",
-      "spec": "../../auth/session.js"
+      "spec": "../core/normalizer.js"
     },
     {
       "from": "src/packing-core/index.js",
@@ -4774,6 +4046,12 @@
       "to": "src/core/storage.js",
       "type": "import",
       "spec": "../core/storage.js"
+    },
+    {
+      "from": "src/screens/editor-screen.js",
+      "to": "src/core/normalizer.js",
+      "type": "import",
+      "spec": "../core/normalizer.js"
     },
     {
       "from": "src/screens/editor-screen.js",
@@ -5035,6 +4313,12 @@
     },
     {
       "from": "src/services/import-export.js",
+      "to": "src/services/case-rule-summary.js",
+      "type": "import",
+      "spec": "./case-rule-summary.js"
+    },
+    {
+      "from": "src/services/import-export.js",
       "to": "src/core/business-identity.js",
       "type": "import",
       "spec": "../core/business-identity.js"
@@ -5248,11 +4532,29 @@
       "to": "src/data/services/billing.service.js",
       "type": "import",
       "spec": "../../data/services/billing.service.js"
+    },
+    {
+      "from": "src/ui/system-overlay.js",
+      "to": "src/ui/error-overlay.js",
+      "type": "import",
+      "spec": "./error-overlay.js"
+    },
+    {
+      "from": "src/ui/table-footer.js",
+      "to": "src/ui/ui-components.js",
+      "type": "import",
+      "spec": "./ui-components.js"
+    },
+    {
+      "from": "src/ui/ui-components.js",
+      "to": "src/ui/modal-focus.js",
+      "type": "import",
+      "spec": "./modal-focus.js"
     }
   ],
   "summary": {
-    "totalFiles": 107,
-    "totalEdges": 221,
+    "totalFiles": 86,
+    "totalEdges": 198,
     "tp3dEventsEmitted": [
       "tp3d:auth-error",
       "tp3d:auth-signed-out",
@@ -5339,28 +4641,18 @@
         "returns": []
       },
       {
-        "id": "src/auth/session.js",
-        "factory": "createOrganization",
-        "returns": []
-      },
-      {
         "id": "src/core/app-helpers.js",
         "factory": "createAppHelpers",
         "returns": []
       },
       {
-        "id": "src/core/event-bus.js",
-        "factory": "createEventBus",
+        "id": "src/core/browser.js",
+        "factory": "createDownloadActionGuard",
         "returns": []
       },
       {
         "id": "src/core/operation-lifecycle.js",
         "factory": "createOperationLifecycle",
-        "returns": []
-      },
-      {
-        "id": "src/core/state.js",
-        "factory": "createStateStore",
         "returns": []
       },
       {
@@ -5400,7 +4692,7 @@
       },
       {
         "id": "src/screens/editor-screen.js",
-        "factory": "createCaseScene",
+        "factory": "createStagingActionDuplicateGuard",
         "returns": []
       },
       {
@@ -5411,11 +4703,6 @@
       {
         "id": "src/screens/roadmap-screen.js",
         "factory": "createRoadmapScreen",
-        "returns": []
-      },
-      {
-        "id": "src/screens/settings-screen.js",
-        "factory": "createSettingsScreen",
         "returns": []
       },
       {
@@ -5466,6 +4753,11 @@
       {
         "id": "src/ui/keyboard-manager.js",
         "factory": "createKeyboardManager",
+        "returns": []
+      },
+      {
+        "id": "src/ui/modal-focus.js",
+        "factory": "createModalFocus",
         "returns": []
       },
       {
@@ -5535,7 +4827,7 @@
       },
       {
         "id": "src/ui/ui-components.js",
-        "factory": "createUIComponents",
+        "factory": "createSharedSelect",
         "returns": []
       }
     ]

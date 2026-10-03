@@ -724,21 +724,6 @@ function getUnpackCategoryKey(inst, getCaseById) {
   return String(inst && inst.caseId ? inst.caseId : 'unknown').trim() || 'unknown';
 }
 
-export function sortInstancesForUnpackStaging(instances, getCaseById) {
-  const categoryOrder = new Map();
-  const records = (Array.isArray(instances) ? instances : []).map((inst, index) => {
-    const categoryKey = getUnpackCategoryKey(inst, getCaseById);
-    if (!categoryOrder.has(categoryKey)) categoryOrder.set(categoryKey, categoryOrder.size);
-    return { inst, index, categoryKey };
-  });
-
-  return records
-    .sort((a, b) =>
-      (categoryOrder.get(a.categoryKey) - categoryOrder.get(b.categoryKey)) ||
-      (a.index - b.index))
-    .map(record => record.inst);
-}
-
 export function groupInstancesForUnpackStaging(instances, getCaseById) {
   const groups = [];
   const groupByKey = new Map();

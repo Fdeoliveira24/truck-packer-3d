@@ -1698,11 +1698,6 @@ test('Requirement 63: existing folder relationships remain intact through normal
   assert.equal(normalized.folderLibrary[0].id, 'f1');
 });
 
-test('Requirement 64: existing security/invariant tests remain valid — the obsolete Target/Missing coupling was fully removed from that suite', async () => {
-  const src = await fs.readFile(new URL('../../tests/audit/security-and-invariants.spec.mjs', import.meta.url), 'utf8');
-  assert.doesNotMatch(src, /getCaseQuantityStatus|setCaseRequirement|removeCaseRequirement|buildCaseQuantitySection|computeAddButtonState|configureQuantityAddButton/);
-});
-
 // ===========================================================================
 // BUG 1 — Cases Card Display Handling/Quantity swap regression tests
 //

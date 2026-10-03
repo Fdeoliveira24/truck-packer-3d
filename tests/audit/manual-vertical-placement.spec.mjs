@@ -1274,13 +1274,7 @@ test('MANUAL-VERTICAL empty orbit drag preserves selection and pending pose', as
 // V3A vertical gizmo handle: pure scale helper + source-slice contracts for
 // pointer routing, attach gating, and release-path reuse. No pixel testing.
 test('MANUAL-VERTICAL computeGizmoScale keeps the handle usable across the zoom range', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const start = src.indexOf('export function computeGizmoScale');
-  assert.ok(start >= 0, 'computeGizmoScale must be exported for unit testing');
-  const end = src.indexOf('\n}', start) + 2;
-  const computeGizmoScale = new Function(
-    `${src.slice(start, end).replace('export ', '')}; return computeGizmoScale;`
-  )();
+  const { computeGizmoScale } = await loadEditorScreenModule();
   assert.equal(computeGizmoScale(0), 0.35, 'scale must clamp at the close-zoom minimum');
   assert.equal(computeGizmoScale(1000), 3.5, 'scale must clamp at the far-zoom maximum');
   assert.ok(Math.abs(computeGizmoScale(40) - 1.8) < 1e-9, 'scale must grow linearly in the working range');

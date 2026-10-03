@@ -197,10 +197,17 @@ function capturePackPreview(id, options) {
   return productionCapturePackPreview(id, options).then(result => { log.push({ type: 'captureResult', at: performance.now(), result }); return result; });
 }
 const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn createPackPreviewScheduler;')();
+const previewTimers = new Set();
 const AutoPackPreviewScheduler = createPreviewScheduler({
   StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => getActiveWorkspaceKey() + '|' + CoreStorage.captureScopeContext().generation,
   getViewSignature: pack => Normalizer.editorViewSignature(
     Normalizer.normalizeEditorView(pack.editorView) || SceneManager.getDefaultEditorView(pack.truck)),
+  setTimer: (fn, delay) => {
+    const timer = setTimeout(() => { previewTimers.delete(timer); fn(); }, delay);
+    previewTimers.add(timer);
+    return timer;
+  },
+  clearTimer: timer => { previewTimers.delete(timer); clearTimeout(timer); },
 });
 
 const ExportService = { captureScreenshot, generatePDF, capturePackPreview, clearPackPreview, capturePackPreviewFromLibrary, flushPackPreviewBeforeNavigation };
@@ -295,6 +302,7 @@ window.probe = {
   log, faults, packId, otherPackId, StateStore, OperationLifecycle, AppShell, CorePackLibrary,
   toasts: [],
   op: () => OperationLifecycle.currentOperation().kind,
+  previewQuiet: () => previewTimers.size === 0 && OperationLifecycle.currentOperation().kind === 'idle',
   mark() { log.length = 0; this.toasts.length = 0; },
   results: () => StateStore.get('autoPackResults'),
   resultsJson: () => JSON.stringify(StateStore.get('autoPackResults')),
@@ -573,9 +581,12 @@ const counts = page => page.evaluate(() => {
   };
 });
 const settlePreview = async page => {
-  await page.waitForFunction(() => window.probe.op() === 'idle');
-  await page.waitForTimeout(650); // Beyond the production debounce; detect duplicates.
-  await page.waitForFunction(() => window.probe.op() === 'idle');
+  await page.waitForFunction(() => {
+    const q = window.probe;
+    if (!q.previewQuiet()) return false;
+    if (q.StateStore.get('currentScreen') !== 'editor' || !q.EditorUI.getPreviewScene()) return true;
+    return Boolean(q.EditorUI.getPreviewView());
+  }, null, { timeout: 60000 });
 };
 const openPack = (page, id = A) => page.evaluate(id => {
   const q = window.probe;
@@ -1103,7 +1114,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       await t.test(`manual ${mode} opens B, captures B pixels once and stays in Editor`, async () => {
         await page.evaluate(() => window.probe.reset());
         await openPack(page, B);
-        await page.waitForTimeout(100);
+        await settlePreview(page);
         const expectedB = await page.evaluate(() => window.probe.snapshotImage());
         await openPack(page, A);
         await page.evaluate(async () => {
@@ -1851,9 +1862,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
 // Real Editor, scene, PacksUI/CasesUI and the production Screenshot/PDF service.
 // Downloads and jsPDF are recorded in-page; nothing leaves the browser.
 const settleExport = async page => {
-  await page.waitForFunction(() => window.probe.op() === 'idle');
-  await page.waitForTimeout(700);
-  await page.waitForFunction(() => window.probe.op() === 'idle');
+  await settlePreview(page);
 };
 const installAttempts = page => page.evaluate(() => {
   const q = window.probe;
@@ -2150,7 +2159,6 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
           persistedAtCapture: persisted() === before.persisted,
           difference: frame ? q.maxDifference(frame.pixels, q.referenceDisplay(camera, 1920, 1080)) : null,
         };
-        await new Promise(resolve => setTimeout(resolve, 900));
         return result;
       });
       assert.equal(proof.previewBlocked, true, 'Preview waits for the camera to settle');

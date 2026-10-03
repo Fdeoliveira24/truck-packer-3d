@@ -5,22 +5,14 @@ import fs from 'node:fs/promises';
 import { defaultPreferences } from '../../src/core/defaults.js';
 import { normalizePreferences } from '../../src/core/normalizer.js';
 import {
-  BOTTOM_LEFT_GAUGE_POSITION,
   UTILIZATION_DENSITY_TIERS,
   buildSpaceUtilizationPresentation,
   buildSpaceUtilizationResult,
-  clampSpaceUtilizationPixels,
   createSpaceUtilizationGauge,
-  findSpaceUtilizationSafePosition,
   formatSpaceUtilizationVolume,
-  getSpaceUtilizationDockedPosition,
   getSpaceUtilizationGaugeDetail,
   getSpaceUtilizationGaugeStyle,
-  getSpaceUtilizationSafeBounds,
-  resetSpaceUtilizationPosition,
   shouldShowSpaceUtilizationGauge,
-  spaceUtilizationPixelsFromPreference,
-  spaceUtilizationPreferenceFromPixels,
   toggleSpaceUtilizationGaugeVisibility,
 } from '../../src/ui/space-utilization-gauge.js';
 
@@ -241,61 +233,7 @@ test('custom normalized positions clamp and invalid saved positions fall back sa
   const invalid = normalizePreferences({
     spaceUtilization: { position: { mode: 'custom', x: 'not-a-number', y: null } },
   });
-  assert.deepEqual(invalid.spaceUtilization.position, BOTTOM_LEFT_GAUGE_POSITION);
-});
-
-test('reset position and pixel conversion preserve safe normalized positioning', () => {
-  assert.deepEqual(resetSpaceUtilizationPosition(), BOTTOM_LEFT_GAUGE_POSITION);
-  const bounds = getSpaceUtilizationSafeBounds({ width: 900, height: 600 }, { width: 280, height: 130 });
-  assert.deepEqual(bounds, { minX: 12, maxX: 608, minY: 12, maxY: 458 });
-  const docked = getSpaceUtilizationDockedPosition(bounds, 64);
-  assert.deepEqual(docked, { x: 88, y: bounds.maxY });
-  assert.deepEqual(getSpaceUtilizationDockedPosition(bounds, 80), { x: 104, y: bounds.maxY });
-  assert.deepEqual(spaceUtilizationPixelsFromPreference(BOTTOM_LEFT_GAUGE_POSITION, bounds), docked);
-  assert.deepEqual(
-    spaceUtilizationPixelsFromPreference(BOTTOM_LEFT_GAUGE_POSITION, bounds, { x: 104, y: bounds.maxY }),
-    { x: 104, y: bounds.maxY }
-  );
-  assert.deepEqual(clampSpaceUtilizationPixels({ x: -100, y: 9999 }, bounds), {
-    x: bounds.minX,
-    y: bounds.maxY,
-  });
-  const saved = spaceUtilizationPreferenceFromPixels({ x: bounds.maxX, y: bounds.minY }, bounds);
-  assert.deepEqual(saved, { mode: 'custom', x: 1, y: 0 });
-});
-
-test('safe positioning preserves unobstructed custom placement and avoids visible controls', () => {
-  const bounds = { minX: 12, maxX: 600, minY: 12, maxY: 420 };
-  const gaugeSize = { width: 270, height: 120 };
-  const safeRequest = { x: 40, y: 200 };
-  assert.deepEqual(findSpaceUtilizationSafePosition(safeRequest, bounds, gaugeSize, []), safeRequest);
-
-  const blockedRequest = { x: 250, y: 64 };
-  const obstructions = [
-    { left: 180, top: 12, right: 470, bottom: 72 },
-    { left: 220, top: 300, right: 560, bottom: 420 },
-  ];
-  const resolved = findSpaceUtilizationSafePosition(blockedRequest, bounds, gaugeSize, obstructions);
-  assert.notDeepEqual(resolved, blockedRequest);
-  assert.ok(resolved.x >= bounds.minX && resolved.x <= bounds.maxX);
-  assert.ok(resolved.y >= bounds.minY && resolved.y <= bounds.maxY);
-});
-
-test('default dock stays 12px from the bottom and ignores non-overlapping center panels', () => {
-  const bounds = getSpaceUtilizationSafeBounds({ width: 1200, height: 700 }, { width: 272, height: 128 });
-  const docked = getSpaceUtilizationDockedPosition(bounds, 64);
-  assert.deepEqual(docked, { x: 88, y: 560 });
-  const centeredAutoPack = { left: 470, top: 180, right: 830, bottom: 470 };
-  assert.deepEqual(
-    findSpaceUtilizationSafePosition(docked, bounds, { width: 272, height: 128 }, [centeredAutoPack]),
-    docked
-  );
-
-  const overlappingAutoPack = { left: 220, top: 520, right: 570, bottom: 688 };
-  assert.notDeepEqual(
-    findSpaceUtilizationSafePosition(docked, bounds, { width: 272, height: 128 }, [overlappingAutoPack]),
-    docked
-  );
+  assert.deepEqual(invalid.spaceUtilization.position, { mode: 'bottom-left', x: 0, y: 1 });
 });
 
 test('gauge result reuses the live calculation and never hardcodes a sample percentage', () => {

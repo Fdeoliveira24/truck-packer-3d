@@ -1,8 +1,9 @@
 # Vendor Libraries (Local Fallbacks and Test Fixtures)
 
 This folder contains local copies of non-Three.js CDN dependencies used as final fallbacks. It also
-keeps one Three.js r160 module as an existing automated-test fixture; that fixture is not an active
-browser runtime dependency and is not emitted into the Vite production build.
+keeps one Three.js r160 module (`three.module.js`) as an intentional automated-test fixture. It is
+**not** the production Three.js runtime (production uses the npm `three@0.185.1` / r185 package),
+is not an active browser runtime dependency, and is not emitted into the Vite production build.
 
 ## Files
 
@@ -16,8 +17,8 @@ browser runtime dependency and is not emitted into the Vite production build.
 
 ## Load Strategy
 
-1. **Three.js and OrbitControls** → Imported from pinned `three@0.160.0` npm package and bundled by
-   Vite into application-owned assets.
+1. **Three.js and OrbitControls** → Imported from the pinned `three@0.185.1` (r185) npm package by
+   `src/bootstrap/three-runtime.js` and bundled by Vite into application-owned assets.
 2. **Other primary CDNs** → Load from the existing jsdelivr/cdnjs URLs.
 3. **Other secondary CDNs** → Fallback to the existing unpkg/alternate CDN URLs.
 4. **Other local fallbacks** → Final fallback to `/vendor/` files emitted by the Vite build.
@@ -27,7 +28,8 @@ browser runtime dependency and is not emitted into the Vite production build.
 - The non-Three.js fallback files are only loaded if their CDN attempts fail (for example, offline
   mode or a firewall blocking those CDNs).
 - `three.module.js` remains because `tests/audit/security-and-invariants.spec.mjs` imports it as an
-  existing r160 geometry reference. Production runtime code does not import it.
+  existing r160 geometry reference. Production runtime code does not import it, and it must not be
+  mistaken for (or replaced by) the r185 runtime.
 - Three.js runtime rollback is handled through Git and the previous tested static build; there is no
   dual npm/CDN runtime path.
 

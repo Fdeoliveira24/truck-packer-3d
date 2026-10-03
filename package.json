@@ -39,8 +39,7 @@
     "format:check": "prettier --check \"**/*.{html,css,js,json,md}\"",
     "validate": "npm run lint && npm run format:check",
     "quality": "npm run lint:fix && npm run format && echo '✅ Code quality checks passed!'",
-    "quality:ci": "npm run lint && npm run -s typecheck && npm run test:ci && npm run build && npm audit --omit=dev",
-    "lint:report": "node cleanup/scripts/eslint-report.mjs"
+    "quality:ci": "npm run lint && npm run -s typecheck && npm run test:ci && npm run build && npm audit --omit=dev"
   },
   "keywords": [
     "3d",

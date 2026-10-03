@@ -65,7 +65,7 @@ Quality priorities:
 - avoid wasting constrained spaces;
 - center channel and other constrained openings may need special reservation or leftover passes;
 - tighter side/contact fit is quality only, not a hard rule;
-- deterministic output matters unless a future multi-solution strategy explicitly changes this.
+- deterministic output matters: each strategy's output must stay deterministic (multiple solution strategies are implemented in `src/packing-core/solution.js`).
 
 ## Wheel Wells Contract
 
@@ -118,8 +118,8 @@ Rules:
 - Hidden packed cases may be retained as physical blockers/support context depending on current engine behavior.
 - AutoPack must not leave stale selected IDs after solve.
 - Unpack is currently whole-pack staging.
-- Unpack should not be confused with partial unpack unless a future feature explicitly adds selected/organized unpack behavior.
-- Organized Unpack is future work.
+- Unpack should not be confused with partial unpack unless a future feature explicitly adds selected unpack behavior.
+- Organized Unpack is implemented: Unpack stages Cases grouped by case type (`groupInstancesForUnpackStaging`) in contiguous bands laid out by `buildOrganizedUnpackStagingCases` (`src/screens/editor-screen.js`). It remains whole-pack staging and must not change solver behavior.
 - If AutoPack/Unpack movement surprises users, fix the UX/copy/selection contract before changing solver behavior.
 
 ## AutoPack Results Authority
@@ -131,7 +131,7 @@ Rules:
 - Apply must respect `OperationLifecycle` busy ownership.
 - Apply commits through canonical Pack mutation authority.
 - Browsing must not mutate history, `lastEdited`, export authority, or saved Pack state.
-- Future transient live 3D Results preview remains presentation-only until Apply.
+- The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
 
 ## Manual Vertical Placement Authority
 
@@ -151,9 +151,7 @@ Do not expose or claim these as completed solver behavior unless implemented and
 - delivery sequence / stop groups / keep together;
 - true Wheel Wells bridge/spanning;
 - Front Overhang retaining-wall strategy;
-- multi-solution AutoPack strategies;
-- Web Worker / InstancedMesh performance rewrite;
-- organized Unpack.
+- Web Worker / InstancedMesh performance rewrite.
 
 ## Validation Expectations
 
@@ -185,6 +183,4 @@ Before commit:
 - Delete/revalidation UX contract: deleting a support can stage dependents; the user must be told what moved and why.
 - Wheel Wells constrained leftover pass: after floor/filler/stack, try staged leftovers into remaining legal floor/channel holes with smaller/channel-fitting cartons prioritized.
 - Front Overhang retaining-wall strategy.
-- Organized Unpack.
-- AutoPack Results live preview: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
 - Keep any future persistence/Supabase/NCB migration work strictly separate from solver/editor packets.

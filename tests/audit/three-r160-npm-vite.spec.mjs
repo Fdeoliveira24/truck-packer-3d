@@ -226,7 +226,6 @@ test('all pre-existing package scripts remain unchanged', () => {
     validate: 'npm run lint && npm run format:check',
     quality: "npm run lint:fix && npm run format && echo '✅ Code quality checks passed!'",
     'quality:ci': 'npm run lint && npm run -s typecheck && npm run test:ci && npm run build && npm audit --omit=dev',
-    'lint:report': 'node cleanup/scripts/eslint-report.mjs',
   };
   Object.entries(expectedScripts).forEach(([name, command]) => assert.equal(packageJson.scripts[name], command));
 });

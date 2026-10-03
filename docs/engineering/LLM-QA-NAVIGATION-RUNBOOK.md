@@ -67,7 +67,7 @@ stated scope; V5 governs whether that work is active or deferred.
 | `src/app.js`                        | App wiring, auth lifecycle, workspace lifecycle, screen orchestration, keyboard shortcuts, billing state                                          | App-boot bugs, workspace-switch issues, cross-screen state | It is monolithic; it was modularized in PR #7            |
 | `src/core/`                         | State store, storage, events, session, Supabase client, operation lifecycle, normalizer, defaults, business-identity, constants                   | State bugs, storage-scope bugs, lifecycle locks            | `storage.js` is P0-risk; edit only when clearly required |
 | `src/services/`                     | CaseLibrary, PackLibrary, AutoPack engine, AutoPack solver, billing, auth, import/export, organization, category, preferences                     | Feature-specific logic bugs                                | Services are not UI — they do not own DOM                |
-| `src/screens/`                      | Screen-level UI modules: `cases-screen.js`, `packs-screen.js`, `editor-screen.js`, `settings-screen.js`, `updates-screen.js`, `roadmap-screen.js` | Screen-specific QA and UI bugs                             | Screen modules delegate persistence to services          |
+| `src/screens/`                      | Screen-level UI modules: `cases-screen.js`, `packs-screen.js`, `editor-screen.js`, `updates-screen.js`, `roadmap-screen.js` | Screen-specific QA and UI bugs                             | Screen modules delegate persistence to services          |
 | `src/ui/`                           | App shell, overlays, error overlays, system overlay, keyboard manager, truck-change controller, UI components                                     | Overlay and modal QA, error display bugs                   | Many overlays are lazily initialized                     |
 | `src/ui/overlays/`                  | Auth, account, settings, case modal, notes, card display, help, import dialogs                                                                    | Auth flow, settings rendering, modal QA                    | `settings-overlay.js` is large and org-scoped            |
 | `src/editor/`                       | Scene runtime, geometry factory, trailer geometry, space model, wheel-well model, validation, repair, orientation                                 | Editor/3D scene QA, geometry bugs                          | This is separate from `src/packing-core/`                |
@@ -109,8 +109,10 @@ stated scope; V5 governs whether that work is active or deferred.
 index.html
   ├── BOOT init script (window.__TP3D_BOOT object, CDN failure capture)
   │
-  ├── Three.js module load (ESM via esm.sh primary, then jsdelivr fallback, then vendor/three.module.js)
-  │   └── OrbitControls module (co-loaded with Three)
+  ├── Three.js npm runtime (three@0.185.1 / r185, bundled by Vite):
+  │   `import('./src/bootstrap/three-runtime.js')` → `installThreeRuntime()` asserts r185 and sets
+  │   `window.THREE` (including OrbitControls from `three/addons`); awaited as `window.__TP3D_BOOT.threeReady`.
+  │   There is no CDN or vendor fallback for Three.
   │
   ├── Vendor scripts (Supabase, Font Awesome, TWEEN, jsPDF, XLSX)
   │   └── Each has CDN primary → CDN fallback → local vendor/ fallback
@@ -160,16 +162,15 @@ All surfaces verified against live DOM using the `main` baseline at `7409b12`.
 `src/screens/cases-screen.js` | `#screen-cases` | Case library management | | Editor |
 `src/screens/editor-screen.js` | `#screen-editor` | 3D scene, AutoPack, Inspector | | Release Notes
 | `src/screens/updates-screen.js` | `#screen-updates` | Static update log | | Roadmap |
-`src/screens/roadmap-screen.js` | `#screen-roadmap` | Static roadmap content | | Settings (screen) |
-`src/screens/settings-screen.js` | `#screen-settings` | Per-user preferences: units, theme, label
-size, snapping, grid, export resolution. Navigated to via the sidebar. |
+`src/screens/roadmap-screen.js` | `#screen-roadmap` | Static roadmap content |
 
-**Settings surface note:** The app has two distinct Settings surfaces with different roles. The
-**Settings screen** (`src/screens/settings-screen.js`, `#screen-settings`) shows per-user preference
-controls accessible directly from the sidebar navigation. The **Settings overlay**
-(`src/ui/overlays/settings-overlay.js`) is a full overlay opened via `openSettingsOverlay(tab)` that
-hosts org-scoped settings: billing, workspace membership, invites, and org general settings. Agents
-must not conflate the two.
+**Settings surface note:** Settings is a single overlay, not a screen. The **Settings overlay**
+(`src/ui/overlays/settings-overlay.js`) is opened via `openSettingsOverlay(tab)`. Its Preferences tab
+hosts the per-user preference controls (units, theme, label size, hidden-case opacity, snapping, grid
+size, screenshot resolution, PDF stats, AutoPack options); its other tabs host org-scoped settings:
+billing, workspace membership, invites, and org general settings. The legacy Settings screen
+(`settings-screen.js`, `#screen-settings`) was retired in P2. `#/settings` remains a compatibility
+entry: it settles on a stable screen and opens the overlay on Preferences.
 
 ### Overlays and Modals
 
@@ -177,7 +178,7 @@ must not conflate the two.
 | ------------------ | ----------------------------------------- | ------------------------------ | -------------------------------------------------------------------------------------- |
 | Authentication     | `src/ui/overlays/auth-overlay.js`         | Signed out                     | Dialog role, blocks all app content                                                    |
 | Account            | `src/ui/overlays/account-overlay.js`      | Account switcher button        | Workspace/org/billing/members/invites                                                  |
-| Settings (overlay) | `src/ui/overlays/settings-overlay.js`     | `openSettingsOverlay(tab)`     | Org-scoped: billing, members, invites, org general. Distinct from the Settings screen. |
+| Settings (overlay) | `src/ui/overlays/settings-overlay.js`     | `openSettingsOverlay(tab)`     | Preferences, plus org-scoped billing, members, invites, org general. |
 | Case Modal         | `src/ui/overlays/case-modal.js`           | New/Edit case                  | Case create and edit                                                                   |
 | Notes Overlay      | `src/ui/overlays/notes-overlay.js`        | Item Notes, Pack Notes actions | Three-tier cargo instructions                                                          |
 | Card Display       | `src/ui/overlays/card-display-overlay.js` | Card Display toolbar button    | Grid card field configuration                                                          |
@@ -235,13 +236,14 @@ must not conflate the two.
 - `#editor-right` — right panel (Inspector)
 - `#inspector-body` — Inspector content
 
-**Settings screen (`#screen-settings`):**
+**Settings overlay → Preferences tab** (generated DOM; no `#pref-*` ids — locate `.tp3d-settings-row`
+rows by label text):
 
-- `#pref-length`, `#pref-weight`, `#pref-theme`, `#pref-label-size`, `#pref-hidden-opacity` —
-  preference controls
-- `#pref-snapping-enabled`, `#pref-grid-size`, `#pref-shot-res`, `#pref-pdf-stats` — preference
-  controls
-- `#btn-save-prefs`, `#btn-reset-demo` — save/reset actions
+- Rows: Length, Weight, Hidden Case Opacity, Label Font Size, Snapping, Grid Size (in), Show AutoPack
+  loading screen (`data-role="autopack-loading-visibility"`), AutoPack Results starting view
+  (`data-role="autopack-results-start-view"`), Screenshot Resolution, Include Stats in PDF, Theme
+- `Save changes` button — persists the form through `PreferencesManager.set()`
+- There is no reset/demo-data action; the retired legacy screen's `#btn-reset-demo` is gone
 
 **Selector stability guidance:**
 
@@ -269,9 +271,10 @@ npx serve . -l 5500
 # URL: http://localhost:5500/index.html
 ```
 
-- **Prerequisites:** None beyond a static server. Network access to CDN vendors (Three.js, Supabase
-  JS, Font Awesome, TWEEN, jsPDF, XLSX) is required on first load. Local vendor fallbacks exist in
-  `vendor/` but may be outdated.
+- **Prerequisites:** None beyond a static server. Network access to CDN vendors (Supabase
+  JS, Font Awesome, TWEEN, jsPDF, XLSX) is required on first load. Three.js is bundled by Vite from
+  the npm package (r185) and needs no CDN. Local vendor fallbacks exist in `vendor/` for the
+  non-Three libraries but may be outdated.
 - **Supabase required:** Yes — authentication and workspace data require a Supabase connection. The
   Supabase URL and anon key are embedded in the app at runtime from `src/core/supabase-client.js`.
   Without valid Supabase config, auth fails.
@@ -511,14 +514,15 @@ without verifying the target environment first.
 
 ### Demo/seed data
 
-The app contains a demo reset button (`#btn-reset-demo` in Settings) that resets local storage to a
-pre-built demo state. This creates demo Cases and Load Plans in browser localStorage and is useful
-for quick UI QA without manual data entry.
+The app no longer has a demo reset button. The legacy `#btn-reset-demo` ("Reset demo data") was retired
+with the legacy Settings screen because it cleared every workspace key under the user's storage
+scope, and cases and load plans are browser-local only. Create QA data with the Test Pack/Case
+procedures below or an App Backup import; never wipe local storage to get a clean fixture.
 
 ### Test Pack/Case creation
 
 No programmatic browser-side factory exists for seeding Cases or Load Plans from test code. Create
-test data manually via the Cases and Load Plans screens, or use the demo reset.
+test data manually via the Cases and Load Plans screens, or import an App Backup.
 
 ### No deterministic seed
 
@@ -737,8 +741,8 @@ Valid normalized `entitlementStatus` values (from `BILLING_ENTITLEMENT_RULES.md`
 | Concern                               | Location                                                                    |
 | ------------------------------------- | --------------------------------------------------------------------------- |
 | Scene initialization, render loop     | `src/editor/scene-runtime.js`                                               |
-| Camera                                | `src/editor/scene-runtime.js` (OrbitControls via vendor)                    |
-| Controls (orbit/pan/zoom)             | `vendor/OrbitControls.module.js` + `src/editor/scene-runtime.js`            |
+| Camera                                | `src/editor/scene-runtime.js` (OrbitControls from `three/addons`)           |
+| Controls (orbit/pan/zoom)             | `src/bootstrap/three-runtime.js` (installs OrbitControls) + `src/editor/scene-runtime.js` |
 | Trailer geometry, dimensions          | `src/editor/trailer-geometry.js`                                            |
 | Geometry factory for Case meshes      | `src/editor/geometry-factory.js`                                            |
 | Space model                           | `src/editor/space-model.js` and `src/packing-core/space-model.js`           |
@@ -1043,12 +1047,12 @@ currently required.
 - Screenshot: `#btn-screenshot` in Editor viewport toolbar.
 - PDF: `#btn-pdf` in Editor viewport toolbar.
 - Load Plan export: Load Plans screen → kebab/action menu on a Load Plan card.
-- Workspace export/backup: Settings screen → Export Workspace.
+- Workspace export/backup: Settings overlay → Resources → Export App Backup.
 
 ### Account and workspace settings
 
 1. Click `#btn-account-switcher` → Account overlay.
-2. Or navigate to Settings screen via sidebar.
+2. Or open `#/settings`, which opens the Settings overlay on Preferences.
 3. Settings overlay (full) opens for billing, members, invites when accessed via account overlay.
 
 ### Workspace members

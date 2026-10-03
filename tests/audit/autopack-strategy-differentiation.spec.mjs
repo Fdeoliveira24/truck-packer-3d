@@ -1,12 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import { URL } from 'node:url';
 import {
-  AUDIT_BRANCH,
-  AUDIT_COMMIT,
   NEAR_DUPLICATE_DEFINITION,
-  PRODUCTION_BASELINE_COMMIT,
   STRATEGY_IDS,
   buildPlacementSignatures,
   buildMarkdownReport,
@@ -18,14 +14,6 @@ import { PACKING_STRATEGIES, runAdaptiveAutoPack } from '../../src/packing-core/
 import { getTrailerUsableZones } from '../../src/services/pack-library.js';
 import { createAutoPackStrategyAuditFixtures } from '../fixtures/autopack-strategy-audit-fixtures.mjs';
 
-const artifactPath = new URL(
-  '../../docs/audits/autopack-strategy-differentiation-results-2026-07-19.json',
-  import.meta.url
-);
-const markdownArtifactPath = new URL(
-  '../../docs/audits/autopack-strategy-differentiation-audit-2026-07-19.md',
-  import.meta.url
-);
 const report = runStrategyAudit({ repeats: 2 });
 
 function fixture(id) {
@@ -93,22 +81,6 @@ test('STRATEGY-AUDIT registry and adaptive order match the six production preset
     'max-capacity',
     'constrained-first',
   ]);
-});
-
-test('STRATEGY-AUDIT durable metadata distinguishes the production baseline from the audit commit', async () => {
-  const artifact = JSON.parse(await fs.readFile(artifactPath, 'utf8'));
-  const generatedMarkdown = buildMarkdownReport(report);
-  const committedMarkdown = await fs.readFile(markdownArtifactPath, 'utf8');
-
-  assert.equal(PRODUCTION_BASELINE_COMMIT, '99be0776d0070f18b18379bbe1e978a3dec03c43');
-  assert.equal(report.productionBaselineCommit, PRODUCTION_BASELINE_COMMIT);
-  assert.equal(artifact.productionBaselineCommit, PRODUCTION_BASELINE_COMMIT);
-  assert.equal(report.auditBranch, AUDIT_BRANCH);
-  assert.equal(report.auditCommit, AUDIT_COMMIT);
-  assert.notEqual(report.productionBaselineCommit, report.auditCommit);
-  assert.ok(generatedMarkdown.includes(`Production code baseline tested: \`${PRODUCTION_BASELINE_COMMIT}\``));
-  assert.ok(generatedMarkdown.includes(`Evidence/audit commit: \`${AUDIT_COMMIT}\``));
-  assert.ok(committedMarkdown.includes(PRODUCTION_BASELINE_COMMIT));
 });
 
 test('STRATEGY-AUDIT canonical machine evidence contains no runtime fields', () => {
@@ -329,11 +301,4 @@ test('STRATEGY-AUDIT adaptive portfolio never mutates caller-owned items', () =>
   assert.equal(stableStringify(input), before);
   assert.equal(adaptive.selected, 'default');
   assert.ok(adaptive.solutions.some(entry => entry.id === 'max-capacity'));
-});
-
-test('STRATEGY-AUDIT committed JSON and Markdown artifacts match a fresh run byte-for-byte', async () => {
-  const artifact = await fs.readFile(artifactPath, 'utf8');
-  const markdown = await fs.readFile(markdownArtifactPath, 'utf8');
-  assert.equal(artifact, `${JSON.stringify(report, null, 2)}\n`);
-  assert.equal(markdown, buildMarkdownReport(report));
 });

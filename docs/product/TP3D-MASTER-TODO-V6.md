@@ -1,6 +1,6 @@
 # Truck Packer 3D — Master TODO V6
 
-**Last updated:** 2026-09-30
+**Last updated:** 2026-10-02
 **Status:** Active operational roadmap.
 
 ---
@@ -55,6 +55,7 @@
 | AutoPack Cleanup | Legacy solver removed, strategy differentiation audit, Max Capacity Phase C profile reporting | V5 milestones |
 | Cargo Instructions (Phases 1–3) | Standard Instructions, Instance Notes, Pack Notes Editor access | V5 milestones |
 | app.js P0 modularization | Billing/Org/Auth/AccountSwitcher extracted; app.js −27.8% (9,510 → 6,867 lines) | PR #7 |
+| P2 — Legacy / Dead Code | Removed disconnected legacy modules and test-pinned dead code; retired the legacy Settings screen safely (`#/settings` now opens Settings → Preferences; "Reset demo data" removed); removed broken `lint:report` and unused `knip.json`; corrected stale active contracts; KEEP/DEFER registry in Section 8 | PR #93, PR #94, P2 finalization PR |
 
 ---
 
@@ -205,6 +206,35 @@ Not approved branches. Not active work. Require focused audits and product decis
 - Workspace Slug Phase 2 (friendly slugs) remains required product work.
 - `docs/product/PROJECT_TREE.md` is a point-in-time snapshot (2026-07-16) — no active authority.
 - Graphify: run `graphify update .` after significant code changes. Do not hardcode node/edge counts in permanent instructions.
+
+### P2 — Legacy / Dead Code: COMPLETE (2026-10)
+
+Confirmed dead ordinary code is removed, test-pinned dead code is removed, the duplicate legacy Settings screen is retired safely, broken unused tooling is removed, and materially stale active contracts are corrected. The registry below records what remains on purpose so future audits do not reopen it. Provider/persistence and rendering cleanup are **not** complete; they are assigned to their own phases.
+
+**Intentional KEEP (not dead code):**
+
+| Item | Reason |
+|---|---|
+| `getCurrentAuthKey`, `debugAuthSnapshot`, `getMyMembership`, `getCurrentOrganization`, and the documented test/admin exports published via `window.__TP3D_SUPABASE_API` / `__TP3D_SUPABASE` / `SupabaseClient` | Public/debug/backward-compat surface; no in-repo caller is not proof of no consumer |
+| `src/packing-core/{index,domain,space-model,orientation}.js` | Intentional, tested Phase-5 architectural boundary; do not delete as orphans |
+| `src/core/utils.js` | Still has live production and test consumers |
+| `vendor/three.module.js` (r160) | Intentional documented test fixture; production Three is npm r185 (`src/bootstrap/three-runtime.js`) |
+| Browser harness `esm.sh` / `skypack` abort route (`tests/behavioral/app-js-browser-harness.mjs`) | Guards against accidental reintroduction of CDN Three loading |
+| Storage legacy v1 migration (`src/core/storage.js`) | Backward compatibility for old persisted data |
+| Retired HTTP 410 Edge Function tombstones (`supabase/functions/*`) | Provider/external endpoint compatibility; frontend call-graph absence does not prove no external caller |
+| Constant-false auth/provider flags (e.g. `AUTH_GUARD_*_ENABLED`) | Explicit dormant provider gates; provider/persistence scope |
+| Persisted `preferences.spaceUtilization` compatibility fields | Old backups/imported preferences may still carry them |
+
+**Explicit DEFER (not dead-code cleanup):**
+
+| Item | Owner |
+|---|---|
+| AccountOverlay module/lifecycle (the old opener is removed; auth-transition `close()` / `handleAuthChange` wiring remains) | Future auth/provider cleanup |
+| `getSessionRawSingleFlight` and related auth internal state / string probes | Provider/persistence cleanup |
+| Legacy `BillingService` compatibility helper object (`src/data/services/billing.service.js`) | Billing/provider cleanup |
+| `readJson` / `writeJson` / `removeKey` (`src/core/storage.js`; may have no ordinary callers now) | Provider/persistence/recovery cleanup |
+| DevOverlay (`src/editor/scene-runtime.js`) | Rendering phase |
+| CoG visual marker / `updateCoG` | Rendering / future CoG safety work |
 
 ---
 

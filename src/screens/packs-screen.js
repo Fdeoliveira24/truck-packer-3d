@@ -1486,13 +1486,13 @@ export function createPacksScreen({
       const casesQtyByPack = new Map(
         allPacks.map(pack => [
           pack,
-          (pack.cases || []).reduce((total, instance) => total + (instance && !instance.hidden ? 1 : 0), 0),
+          (pack.cases || []).length,
         ])
       );
 
       const compareTitle = (a, b) => (a.title || '').localeCompare(b.title || '');
-      // Cases Qty sorts by total active non-hidden physical instances
-      // (inTruck + staged), matching the List/Grid "Cases Qty" value below —
+      // Cases Qty sorts by total physical instances regardless of visibility,
+      // matching the List/Grid "Cases Qty" value below —
       // derive it directly from the live instances rather than persisted stats,
       // which can be absent or stale on normalized/imported Load Plans.
       const compareCasesQty = (a, b) => (casesQtyByPack.get(a) || 0) - (casesQtyByPack.get(b) || 0);
@@ -1684,9 +1684,7 @@ export function createPacksScreen({
 
         const tdCasesQty = document.createElement('td');
         const inTruckQty = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : null;
-        const totalQty = stats
-          ? Math.max(0, (stats.totalCases || 0) - (stats.hiddenCases || 0))
-          : null;
+        const totalQty = stats ? Math.max(0, stats.totalCases || 0) : null;
         tdCasesQty.textContent = inTruckQty === null || totalQty === null ? '—' : `${inTruckQty}/${totalQty}`;
         if (badgePrefs.showCasesQty === false) tdCasesQty.style.display = 'none';
 
@@ -1895,7 +1893,7 @@ export function createPacksScreen({
         if (showCasesQty || showVolume || showWeight) {
           const stats = PackLibrary.computeStats(pack);
           const inTruck = stats && Number.isFinite(stats.packedCases) ? stats.packedCases : 0;
-          const total = stats ? Math.max(0, (stats.totalCases || 0) - (stats.hiddenCases || 0)) : 0;
+          const total = stats ? Math.max(0, stats.totalCases || 0) : 0;
           const pct = stats && Number.isFinite(stats.volumePercent) ? stats.volumePercent : 0;
           const weight = Utils.formatWeight(stats && stats.totalWeight, prefs.units.weight);
 

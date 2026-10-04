@@ -912,19 +912,19 @@ test('Requirement 23: inLoad = inTruck + staged', async () => {
   assert.equal(counts.inLoad, counts.inTruck + counts.staged);
 });
 
-test('Requirement 24: hidden instances are excluded from inTruck/staged/inLoad and counted separately', async () => {
+test('Requirement 24: hidden is a separate visibility count while physical instances remain in inTruck/staged/inLoad', async () => {
   const { StateStore, PackLibrary } = await loadModules();
   StateStore.init({
     caseLibrary: [baseCase()],
-    packLibrary: [basePack({ cases: [insideInstance({ id: 'i1' }), outsideInstance({ id: 'i2', hidden: true })] })],
+    packLibrary: [basePack({ cases: [insideInstance({ id: 'i1', hidden: true }), outsideInstance({ id: 'i2', hidden: true })] })],
     folderLibrary: [],
     preferences: {},
   });
   const counts = PackLibrary.getCaseInstanceCounts('pack-1', 'case-a');
   assert.equal(counts.inTruck, 1);
-  assert.equal(counts.staged, 0);
-  assert.equal(counts.inLoad, 1);
-  assert.equal(counts.hidden, 1);
+  assert.equal(counts.staged, 1);
+  assert.equal(counts.inLoad, 2);
+  assert.equal(counts.hidden, 2);
 });
 
 test('Requirement 25: no-Load-Plan message replaces per-card controls, is not repeated on every card', async () => {
@@ -1001,7 +1001,7 @@ test('the established workspace reset boundary invokes Cases and Editor transien
 // CASES PAGE (Requirements 28-41)
 // ===========================================================================
 
-test('Requirement 28: workspace Quantity counts active non-hidden physical instances across all Load Plans', async () => {
+test('Requirement 28: workspace Quantity counts all physical instances across Load Plans regardless of visibility', async () => {
   const { StateStore, PackLibrary } = await loadModules();
   StateStore.init({
     caseLibrary: [baseCase()],
@@ -1013,7 +1013,7 @@ test('Requirement 28: workspace Quantity counts active non-hidden physical insta
     preferences: {},
   });
   const quantities = PackLibrary.getWorkspaceCaseQuantities();
-  assert.equal(quantities.get('case-a'), 3);
+  assert.equal(quantities.get('case-a'), 4);
 });
 
 test('Requirement 29: zero quantity for a Case with no physical instances anywhere', async () => {
@@ -1113,7 +1113,7 @@ test('Requirement 38: Load Plan duplication increases derived Quantity by the du
   assert.equal(PackLibrary.getWorkspaceCaseQuantities().get('case-a'), 4);
 });
 
-test('Requirement 39: hide/unhide updates derived Quantity', async () => {
+test('Requirement 39: hide/unhide does not change derived physical Quantity', async () => {
   const { StateStore, PackLibrary } = await loadModules();
   StateStore.init({
     caseLibrary: [baseCase()],
@@ -1123,7 +1123,7 @@ test('Requirement 39: hide/unhide updates derived Quantity', async () => {
   });
   assert.equal(PackLibrary.getWorkspaceCaseQuantities().get('case-a'), 1);
   PackLibrary.updateInstance('pack-1', 'a', { hidden: true });
-  assert.equal(PackLibrary.getWorkspaceCaseQuantities().get('case-a') || 0, 0);
+  assert.equal(PackLibrary.getWorkspaceCaseQuantities().get('case-a'), 1);
   PackLibrary.updateInstance('pack-1', 'a', { hidden: false });
   assert.equal(PackLibrary.getWorkspaceCaseQuantities().get('case-a'), 1);
 });
@@ -1165,10 +1165,9 @@ test('Requirement 43: List Cases Qty value is inTruck/total', async () => {
   assert.match(src, /tdCasesQty\.textContent = inTruckQty === null \|\| totalQty === null \? '—' : `\$\{inTruckQty\}\/\$\{totalQty\}`;/);
 });
 
-test('Requirement 43: Cases Qty sorting uses live non-hidden instances, never persisted stats', async () => {
+test('Requirement 43: Cases Qty sorting uses all live instances, never persisted stats', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
-  assert.match(src, /const casesQtyByPack = new Map\([\s\S]*\(pack\.cases \|\| \[\]\)\.reduce\(/);
-  assert.match(src, /instance && !instance\.hidden \? 1 : 0/);
+  assert.match(src, /const casesQtyByPack = new Map\([\s\S]*\(pack\.cases \|\| \[\]\)\.length/);
   assert.match(src, /const compareCasesQty = \(a, b\) => \(casesQtyByPack\.get\(a\) \|\| 0\) - \(casesQtyByPack\.get\(b\) \|\| 0\);/);
   assert.doesNotMatch(src, /totalCasesQty\s*=\s*p\s*=>[\s\S]*p\.stats/);
 });
@@ -1207,10 +1206,10 @@ test('Requirement 47: Grid and List derive Cases Qty from the same stats fields 
   const src = await fs.readFile(packsScreenPath, 'utf8');
   const listUses = src.match(/stats\.packedCases/g) || [];
   const gridUses = src.match(/stats && Number\.isFinite\(stats\.packedCases\) \? stats\.packedCases : (0|null)/g) || [];
-  assert.ok(listUses.length >= 2 && gridUses.length >= 1, 'both List and Grid must read stats.packedCases/totalCases/hiddenCases');
+  assert.ok(listUses.length >= 2 && gridUses.length >= 1, 'both List and Grid must read stats.packedCases/totalCases');
 });
 
-test('Requirement 48: hidden instances are excluded from the Cases Qty total', async () => {
+test('Requirement 48: hidden instances remain in the Cases Qty total', async () => {
   const { StateStore, PackLibrary } = await loadModules();
   StateStore.init({
     caseLibrary: [baseCase()],
@@ -1219,8 +1218,9 @@ test('Requirement 48: hidden instances are excluded from the Cases Qty total', a
     preferences: {},
   });
   const stats = PackLibrary.computeStats(PackLibrary.getById('pack-1'));
-  const total = stats.totalCases - stats.hiddenCases;
-  assert.equal(total, 1);
+  assert.equal(stats.totalCases, 2);
+  assert.equal(stats.hiddenCases, 1);
+  assert.equal(stats.packedCases, 1);
 });
 
 test('Requirement 49: Unpack preserves total, only the inTruck numerator changes', async () => {
@@ -1233,12 +1233,12 @@ test('Requirement 49: Unpack preserves total, only the inTruck numerator changes
   });
   const before = PackLibrary.computeStats(PackLibrary.getById('pack-1'));
   assert.equal(before.packedCases, 2);
-  const totalBefore = before.totalCases - before.hiddenCases;
+  const totalBefore = before.totalCases;
 
   // Simulate Unpack: move one instance outside the truck geometry.
   PackLibrary.updateInstance('pack-1', 'b', { transform: outsideInstance().transform });
   const after = PackLibrary.computeStats(PackLibrary.getById('pack-1'));
-  const totalAfter = after.totalCases - after.hiddenCases;
+  const totalAfter = after.totalCases;
 
   assert.equal(after.packedCases, 1);
   assert.equal(totalAfter, totalBefore, 'total physical quantity must not change from Unpack');
@@ -1253,10 +1253,10 @@ test('Requirement 50: Truck Change preserves total physical quantity', async () 
     preferences: {},
   });
   const before = PackLibrary.computeStats(PackLibrary.getById('pack-1'));
-  const totalBefore = before.totalCases - before.hiddenCases;
+  const totalBefore = before.totalCases;
   PackLibrary.update('pack-1', { truck: rectTruck({ length: 300, width: 100, height: 100 }) });
   const after = PackLibrary.computeStats(PackLibrary.getById('pack-1'));
-  const totalAfter = after.totalCases - after.hiddenCases;
+  const totalAfter = after.totalCases;
   assert.equal(totalAfter, totalBefore, 'a truck geometry change must never create or delete physical instances');
 });
 
@@ -2145,7 +2145,7 @@ test('P1-A R1/R2/R3/R5/R9/R10/R18: staged Case removal is selective, determinist
   });
   const counts = PackLibrary.getCaseInstanceCounts('pack-1', 'case-a');
   assert.equal(counts.inTruck, 1);
-  assert.equal(counts.staged, 4);
+  assert.equal(counts.staged, 5);
   assert.equal(counts.hidden, 1);
   let packWrites = 0;
   const unsubscribe = StateStore.subscribe(changes => {
@@ -2580,7 +2580,7 @@ test('P1-B R1: Unstage is offered only when the Case has physically staged cargo
   const { StateStore, PackLibrary } = await loadModules();
   const cases = {
     'packed only': { cases: [insideInstance({ id: 'p1' })], staged: 0 },
-    'hidden staged only': { cases: [outsideInstance({ id: 'h1', hidden: true })], staged: 0 },
+    'hidden staged only': { cases: [outsideInstance({ id: 'h1', hidden: true })], staged: 1 },
     'visible staged': { cases: [outsideInstance({ id: 's1' })], staged: 1 },
     'grouped staged only': { cases: [outsideInstance({ id: 'g1', groupId: 'group-1' })], staged: 1 },
   };

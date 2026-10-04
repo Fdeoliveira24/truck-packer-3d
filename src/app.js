@@ -1981,9 +1981,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           pdf.newPage();
           pdf.heading('CASE CHECKLIST', { size: 16, lineHeight: 22, gapAfter: 0 });
           const { hidden, unresolved } = report.population;
-          const statusParts = ['In truck', 'Staged', hidden > 0 && 'Hidden', unresolved > 0 && 'Unresolved'].filter(Boolean);
+          const statusParts = ['In truck', 'Staged', unresolved > 0 && 'Unresolved'].filter(Boolean);
           pdf.paragraph(
             `Qty counts every item of the Case in this load plan (${statusParts.join(' + ')} = Qty). ` +
+            (hidden > 0 ? 'Hidden is a separate visibility count. ' : '') +
             'Base dims are the Case’s catalog dimensions (L×W×H), not the placed orientation of each item.',
             { size: 8, lineHeight: 11 }
           );

@@ -88,7 +88,7 @@ function basePack(overrides = {}) {
   };
 }
 
-// Mixed population: 2 in truck, 1 staged, 1 hidden, 2 unresolved (missing Case).
+// Mixed population: 3 in truck (one hidden), 1 staged, 2 unresolved (missing Case).
 function mixedPack(overrides = {}) {
   return basePack({
     cases: [
@@ -233,18 +233,18 @@ test('EXPORT-B cargo populations and loaded weight reconcile with computeStats; 
   const record = runPdf(packId);
   assertInsidePage(record);
   assert.deepEqual(
-    ['Total cargo items', 'In truck', 'Staged (outside the truck)', 'Hidden', 'Unresolved'].map(label => fieldValue(record, label)),
+    ['Total cargo items', 'In truck', 'Staged (outside the truck)', 'Hidden from view', 'Unresolved'].map(label => fieldValue(record, label)),
     [stats.totalCases, stats.packedCases, stats.stagedCases, stats.hiddenCases, stats.unresolvedInstances].map(String));
   assert.deepEqual([stats.totalCases, stats.packedCases, stats.stagedCases, stats.hiddenCases, stats.unresolvedInstances],
-    [6, 2, 1, 1, 2], 'fixture exercises every population');
-  assert.equal(stats.totalWeight, 200, 'canonical loaded weight counts only the two in-truck crates');
-  assert.equal(fieldValue(record, 'Loaded weight (in truck)'), '200 lb (incomplete)',
+    [6, 3, 1, 1, 2], 'hidden visibility overlaps the loaded population');
+  assert.equal(stats.totalWeight, 240, 'canonical loaded weight includes the hidden in-truck crate');
+  assert.equal(fieldValue(record, 'Loaded weight (in truck)'), '240 lb (incomplete)',
     'loaded weight is the canonical loaded population and says it is incomplete');
   assert.match(fieldValue(record, 'Volume used (in truck)'), /^\d+\.\d% of usable truck volume \(incomplete\)$/);
   const text = allText(record);
   assert.doesNotMatch(text, /Cases loaded|Total weight|^Weight:/m, 'no legacy population or weight labels');
   assert.match(prose(record), /Staged cargo is not in the truck\. Cargo parked beside the truck may appear in the perspective view but is left out of the top and side views\./);
-  assert.match(text, /Hidden cargo is not shown in any view and is not counted in loaded weight or volume\./);
+  assert.match(text, /Hidden is a visibility count\. Hidden cargo is not shown in PDF views; cargo in the truck still counts in loaded weight and volume\./);
 });
 
 test('EXPORT-B checklist rows carry reconciled status quantities; missing and same-name Cases stay explicit', () => {
@@ -257,13 +257,14 @@ test('EXPORT-B checklist rows carry reconciled status quantities; missing and sa
   const report = ImportExport.buildLoadPlanReport(PackLibrary.getById(packId), { stats });
   assert.deepEqual(report.rows.map(row => [row.name, row.itemCode, row.qty, row.counts]), [
     ['Crate A', '', 3, { inTruck: 2, staged: 1, hidden: 0, unresolved: 0 }],
-    ['Crate B', '', 1, { inTruck: 0, staged: 0, hidden: 1, unresolved: 0 }],
+    ['Crate B', '', 1, { inTruck: 1, staged: 0, hidden: 1, unresolved: 0 }],
     ['Missing case definition (ghost)', '', 2, { inTruck: 0, staged: 0, hidden: 0, unresolved: 2 }],
     ['Crate A', 'CA-2', 2, { inTruck: 1, staged: 1, hidden: 0, unresolved: 0 }],
   ], 'same-name Cases with different ids stay separate rows; the missing definition is its own unresolved row');
   for (const row of report.rows) {
     const { inTruck, staged, hidden, unresolved } = row.counts;
-    assert.equal(inTruck + staged + hidden + unresolved, row.qty, `${row.name} reconciles`);
+    assert.equal(inTruck + staged + unresolved, row.qty, `${row.name} physical statuses reconcile`);
+    assert.ok(hidden <= row.qty, `${row.name} hidden visibility is a subset`);
   }
   const sum = key => report.rows.reduce((total, row) => total + row.counts[key], 0);
   assert.deepEqual([sum('inTruck'), sum('staged'), sum('hidden'), sum('unresolved')],
@@ -280,9 +281,26 @@ test('EXPORT-B checklist rows carry reconciled status quantities; missing and sa
     return body(record).filter(t => t.page === checklistPage && t.y === cell.y).map(t => t.text);
   };
   assert.deepEqual(row('Missing case definition (ghost)'), ['3', 'Missing case definition (ghost)', '—', '—', '—', '2', '0', '0', '0', '2']);
-  assert.deepEqual(row('Crate B'), ['2', 'Crate B', 'Default', '40×30×20 in', '40 lb', '1', '0', '0', '1', '0']);
+  assert.deepEqual(row('Crate B'), ['2', 'Crate B', 'Default', '40×30×20 in', '40 lb', '1', '1', '0', '1', '0']);
   assert.ok(body(record).some(t => t.text === 'Item Code: CA-2'), 'the Item Code identifies the second "Crate A"');
-  assert.match(allText(record), /\(In truck \+ Staged \+ Hidden \+ Unresolved = Qty\)/);
+  assert.match(allText(record), /\(In truck \+ Staged \+ Unresolved = Qty\)\. Hidden is a separate visibility count\./);
+});
+
+test('EXPORT-B hidden unresolved cargo remains visible in both reporting dimensions without invented totals', () => {
+  const pack = mixedPack();
+  pack.cases.find(inst => inst.id === 'g1').hidden = true;
+  const packId = setup({ pack });
+  const livePack = PackLibrary.getById(packId);
+  const stats = PackLibrary.computeStats(livePack);
+  const report = ImportExport.buildLoadPlanReport(livePack, { stats });
+  assert.deepEqual(report.population, { total: 6, inTruck: 3, staged: 1, hidden: 2, unresolved: 2 });
+  assert.deepEqual(report.rows.find(row => row.name.includes('ghost')).counts,
+    { inTruck: 0, staged: 0, hidden: 1, unresolved: 2 });
+  assert.equal(stats.totalWeight, 240, 'a missing Case contributes no fabricated weight');
+  const record = runPdf(packId);
+  assertInsidePage(record);
+  assert.equal(fieldValue(record, 'Hidden from view'), '2');
+  assert.equal(fieldValue(record, 'Unresolved'), '2');
 });
 
 test('EXPORT-B status classification reconciles for duplicate ids and unusable truck geometry', () => {
@@ -296,7 +314,7 @@ test('EXPORT-B status classification reconciles for duplicate ids and unusable t
   const duplicateStats = PackLibrary.computeStats(duplicate);
   const { statuses } = PackLibrary.getStatsInstanceStatuses(duplicate, duplicateStats);
   const tally = statuses.reduce((counts, status) => ({ ...counts, [status]: (counts[status] || 0) + 1 }), {});
-  assert.deepEqual(tally, { inTruck: 1, staged: 1, unresolved: 1, hidden: 1 }, 'the projection still reconciles');
+  assert.deepEqual(tally, { inTruck: 2, staged: 1, unresolved: 1 }, 'physical statuses include hidden packed cargo');
   assert.throws(() => ImportExport.buildLoadPlanReport(duplicate, { stats: duplicateStats }),
     /Duplicate cargo instance IDs make this load plan invalid for a trustworthy PDF export\./,
     'the report itself refuses duplicate instance ids');

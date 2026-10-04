@@ -1041,11 +1041,15 @@ export function buildLoadPlanReport(pack, {
   });
   const { statuses, unresolvedReasons } = PackLibrary.getStatsInstanceStatuses(pack, stats);
 
-  const population = { total: instances.length, inTruck: 0, staged: 0, hidden: 0, unresolved: 0 };
+  const population = {
+    total: instances.length, inTruck: 0, staged: 0,
+    hidden: instances.filter(inst => inst && inst.hidden).length, unresolved: 0,
+  };
   statuses.forEach(status => { population[status] += 1; });
   if (population.inTruck !== stats.packedCases || population.staged !== stats.stagedCases ||
       population.hidden !== stats.hiddenCases || population.unresolved !== stats.unresolvedInstances ||
-      population.total !== stats.totalCases) {
+      population.total !== stats.totalCases ||
+      population.inTruck + population.staged + population.unresolved !== population.total) {
     throw new Error('Cargo status totals do not reconcile');
   }
   const complete = stats.totalsComplete === true;
@@ -1055,7 +1059,7 @@ export function buildLoadPlanReport(pack, {
     { label: 'Total cargo items', value: String(population.total) },
     { label: 'In truck', value: String(population.inTruck) },
     { label: 'Staged (outside the truck)', value: String(population.staged) },
-    { label: 'Hidden', value: String(population.hidden) },
+    { label: 'Hidden from view', value: String(population.hidden) },
     { label: 'Unresolved', value: String(population.unresolved) },
     { label: 'Loaded weight (in truck)', value: `${Utils.formatWeight(Number(stats.totalWeight) || 0, weightUnit)}${incomplete}` },
   ];
@@ -1075,7 +1079,7 @@ export function buildLoadPlanReport(pack, {
       'view but is left out of the top and side views.');
   }
   if (population.hidden > 0) {
-    summaryNotes.push('Hidden cargo is not shown in any view and is not counted in loaded weight or volume.');
+    summaryNotes.push('Hidden is a visibility count. Hidden cargo is not shown in PDF views; cargo in the truck still counts in loaded weight and volume.');
   }
 
   const labels = buildInstanceLabels(pack, getCaseById);
@@ -1138,6 +1142,7 @@ export function buildLoadPlanReport(pack, {
     const deliverySequences = [];
     row.instanceIndexes.forEach(index => {
       counts[statuses[index]] += 1;
+      if (instances[index] && instances[index].hidden) counts.hidden += 1;
       const sequence = instances[index] && instances[index].deliverySequence;
       if (sequence != null && Number.isFinite(Number(sequence)) && !deliverySequences.includes(Number(sequence))) {
         deliverySequences.push(Number(sequence));

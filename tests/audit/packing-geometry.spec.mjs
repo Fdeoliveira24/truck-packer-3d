@@ -1,5 +1,6 @@
 // packing geometry: contract tests from the former security suite.
 
+import { TrailerPresets } from '../../src/data/trailer-presets.js';
 import {
   WW_SUPPORT_TRUCK,
   assert,
@@ -2441,29 +2442,63 @@ test('G2.2-CLEANUP getFrontOverhangDeckFloorYWorld checks the full X/Z footprint
     'a footprint that is not fully inside the overhang deck zone must fall back to null, not settle on the deck');
 });
 
-test('G2.2-CLEANUP new/edit pack flows initialize positive frontBonus defaults and normalize missing shapeConfig', async () => {
+test('G2.2-CLEANUP new/edit pack flows share Front Overhang normalization', async () => {
   const src = await fs.readFile(packsScreenPath, 'utf8');
-
-  assert.match(src, /function normalizeFrontBonusShapeConfig\(shapeConfig, truck\)/,
-    'packs-screen.js must define a helper to normalize frontBonus shapeConfig defaults');
-  assert.match(src, /if \(!Number\.isFinite\(cfg\.bonusLength\)\) cfg\.bonusLength = 0\.12 \* length;/,
-    'missing bonusLength must default to a positive value (12% of truck length)');
-  assert.match(src, /if \(!Number\.isFinite\(cfg\.bonusHeight\)\) cfg\.bonusHeight = 0\.45 \* height;/,
-    'missing bonusHeight must default to a positive value (45% of truck height)');
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'frontBonus' };
+  assert.deepEqual(TrailerPresets.normalizeFrontBonusShapeConfig({}, truck), {
+    bonusLength: 0.12 * truck.length,
+    bonusHeight: 0.45 * truck.height,
+    bonusWidth: truck.width,
+  });
+  assert.deepEqual(TrailerPresets.normalizeFrontBonusShapeConfig({ bonusLength: 0, bonusHeight: 0 }, truck), {
+    bonusLength: 0,
+    bonusHeight: 0,
+    bonusWidth: truck.width,
+  }, 'explicit zero remains a valid manually configured no-overhang shape');
 
   const newPackStart = src.indexOf('function openNewPackModal()');
   const newPackEnd = src.indexOf('\n    function openEditPackModal', newPackStart);
   const newPackBlock = newPackStart >= 0 && newPackEnd > newPackStart ? src.slice(newPackStart, newPackEnd) : '';
   assert.ok(newPackBlock, 'openNewPackModal must be defined in packs-screen.js');
-  assert.match(newPackBlock, /if \(newTruck\.shapeMode === 'frontBonus'\) \{\s*\n\s*newTruck\.shapeConfig = normalizeFrontBonusShapeConfig\(newTruck\.shapeConfig, newTruck\);/,
+  assert.match(newPackBlock, /if \(newTruck\.shapeMode === 'frontBonus'\) \{\s*\n\s*newTruck\.shapeConfig = TrailerPresets\.normalizeFrontBonusShapeConfig\(newTruck\.shapeConfig, newTruck\);/,
     'creating a new pack with the frontBonus shape mode must initialize valid positive bonusLength/bonusHeight defaults');
 
   const editPackStart = src.indexOf('function openEditPackModal(packId)');
   const editPackEnd = src.indexOf('\n    function openRename', editPackStart);
   const editPackBlock = editPackStart >= 0 && editPackEnd > editPackStart ? src.slice(editPackStart, editPackEnd) : '';
   assert.ok(editPackBlock, 'openEditPackModal must be defined in packs-screen.js');
-  assert.match(editPackBlock, /if \(nextTruck\.shapeMode === 'frontBonus'\) \{\s*\n\s*nextTruck\.shapeConfig = normalizeFrontBonusShapeConfig\(nextTruck\.shapeConfig, nextTruck\);/,
+  assert.match(editPackBlock, /if \(nextTruck\.shapeMode === 'frontBonus'\) \{\s*\n\s*nextTruck\.shapeConfig = TrailerPresets\.normalizeFrontBonusShapeConfig\(nextTruck\.shapeConfig, nextTruck\);/,
     'switching a pack to the frontBonus shape mode in Edit Pack must normalize missing shapeConfig with valid positive defaults');
+});
+
+test('A1 curated Front Overhang preset commits a real raised deck; Standard and Wheel Wells keep their config', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(packLibraryPath.href);
+  const base = {
+    length: 240, width: 96, height: 96, shapeMode: 'rect',
+    shapeConfig: { bonusLength: 0, bonusHeight: 0, wellHeight: 24 },
+  };
+  const frontPreset = TrailerPresets.getById('53ft_dry_van_us_front_overhang');
+  const front = TrailerPresets.applyToTruck(base, frontPreset);
+  const expected = TrailerPresets.normalizeFrontBonusShapeConfig({}, front);
+  assert.deepEqual(front.shapeConfig, expected, 'curated preset initializes its own default config');
+  assert.ok(front.shapeConfig.bonusLength > 0);
+  assert.ok(front.shapeConfig.bonusHeight > 0 && front.shapeConfig.bonusHeight < front.height);
+
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const committed = PackLibrary.create({ title: 'Front preset', truck: front });
+  assert.deepEqual(committed.truck.shapeConfig, expected, 'committed geometry equals the values supplied to the Editor fields');
+  const zones = PackLibrary.getTrailerUsableZones(committed.truck);
+  assert.equal(zones.length, 2);
+  assert.equal(zones[1].min.x, committed.truck.length);
+  assert.equal(zones[1].max.x, committed.truck.length + expected.bonusLength);
+  assert.equal(zones[1].min.y, expected.bonusHeight);
+
+  for (const id of ['53ft_dry_van_us', '53ft_dry_van_us_wheel_wells']) {
+    const unchanged = TrailerPresets.applyToTruck(base, TrailerPresets.getById(id));
+    assert.deepEqual(unchanged.shapeConfig, base.shapeConfig, `${id} preserves prior shapeConfig behavior`);
+    assert.equal(unchanged.shapeMode, TrailerPresets.getById(id).truck.shapeMode);
+  }
 });
 
 test('STAGING-S1 pack-library exposes one canonical staging layout helper', async () => {

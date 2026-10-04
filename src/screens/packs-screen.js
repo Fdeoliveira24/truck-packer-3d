@@ -218,24 +218,6 @@ export function createPacksScreen({
       return 'Standard';
     }
 
-    // Mirrors the frontBonus normalization in editor-screen.js's shape-mode
-    // change handler: fills in missing bonusLength/bonusHeight with sensible
-    // positive defaults (12% of length, 45% of height) and locks bonusWidth
-    // to the trailer width, so packs created/edited here never end up with a
-    // zero-length (invisible) overhang.
-    function normalizeFrontBonusShapeConfig(shapeConfig, truck) {
-      const cfg = shapeConfig && typeof shapeConfig === 'object' && !Array.isArray(shapeConfig) ? { ...shapeConfig } : {};
-      const length = Number(truck.length) || 0;
-      const height = Number(truck.height) || 0;
-      const width = Number(truck.width) || 0;
-      if (!Number.isFinite(cfg.bonusLength)) cfg.bonusLength = 0.12 * length;
-      if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = 0.45 * height;
-      cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength) || 0, 0, length);
-      cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight) || 0, 0, height);
-      cfg.bonusWidth = width;
-      return cfg;
-    }
-
     function setIdentityFieldError(fieldControl, message) {
       fieldControl.error.textContent = message || '';
       fieldControl.error.hidden = !message;
@@ -2199,7 +2181,7 @@ export function createPacksScreen({
                 shapeConfig: {},
               };
               if (newTruck.shapeMode === 'frontBonus') {
-                newTruck.shapeConfig = normalizeFrontBonusShapeConfig(newTruck.shapeConfig, newTruck);
+                newTruck.shapeConfig = TrailerPresets.normalizeFrontBonusShapeConfig(newTruck.shapeConfig, newTruck);
               }
               const pack = PackLibrary.create({
                 title: t,
@@ -2419,7 +2401,7 @@ export function createPacksScreen({
                 shapeConfig,
               };
               if (nextTruck.shapeMode === 'frontBonus') {
-                nextTruck.shapeConfig = normalizeFrontBonusShapeConfig(nextTruck.shapeConfig, nextTruck);
+                nextTruck.shapeConfig = TrailerPresets.normalizeFrontBonusShapeConfig(nextTruck.shapeConfig, nextTruck);
               }
               const metadata = {
                 title: t,

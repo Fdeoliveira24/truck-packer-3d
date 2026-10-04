@@ -139,6 +139,7 @@ function formatDeleteResultMessage(result, fallbackDeletedIds = []) {
 
 export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.parse(JSON.stringify(value)), currentCases = option?.nextCases) {
   const isMaxCapacity = option && option.id === 'max-capacity';
+  const movableIds = Array.isArray(option?.movableIds) ? new Set(option.movableIds) : null;
   const sourceCases = option && Array.isArray(option.nextCases) ? option.nextCases : [];
   if (!Array.isArray(currentCases) || sourceCases.length !== currentCases.length) return null;
   const proposed = cloneCases(sourceCases);
@@ -150,6 +151,7 @@ export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.par
   const rebased = current.map(inst => {
     const chosen = proposedById.get(inst.id);
     if (inst.caseId !== chosen.caseId || Boolean(inst.hidden) !== Boolean(chosen.hidden)) return null;
+    if (movableIds && !movableIds.has(inst.id)) return inst;
     // buildAutoPackNextCases owns placement and packed pose. It does not own
     // other instance metadata, or a staged pose edited after this result ran.
     const next = { ...inst, placement: chosen.placement };

@@ -8,6 +8,24 @@ import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 import { getOrientedDimsForRotation } from '../core/oriented-dims.js';
+import { getAabb } from './autopack-solver.js';
+import {
+  CONTACT_EPS,
+  MIN_SUPPORT_FRACTION,
+  canSupportCandidateWeight,
+  canSupportStack,
+  computeSupportFraction,
+  computeXzOverlapArea,
+  hasStackCapacity,
+  isAabbContainedInAnyZone,
+  isAabbContainedInZone,
+} from '../packing-core/validation.js';
+import {
+  getWheelWellGeometry,
+  isAabbWithinTruckMinusBlocked,
+  isWheelWellSupportedAndStable,
+} from '../packing-core/wheel-well-model.js';
+import { evaluateFrontOverhangRearRetention } from './pack-library.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
 // the SAME deterministic physical orientation. Staging is outside the truck and
@@ -174,11 +192,12 @@ function getStrictSignatureCaseFields(inst) {
   return fields;
 }
 
-export function buildAutoPackResultSignature(pack, packedProfileOverride) {
+export function buildAutoPackResultSignature(pack, packedProfileOverride, profileInstanceIds) {
   const truck = normalizeSignatureValue((pack && pack.truck) || {});
   const cases = (Array.isArray(pack && pack.cases) ? pack.cases : [])
     .map(inst => {
-      const signatureInstance = inst && inst.placement === 'packed' && packedProfileOverride !== undefined
+      const signatureInstance = inst && inst.placement === 'packed' && packedProfileOverride !== undefined &&
+        (!profileInstanceIds || profileInstanceIds.has(inst.id))
         ? { ...inst, packedProfile: packedProfileOverride }
         : inst;
       return {
@@ -237,6 +256,146 @@ function getSolverCargoRules(inst = {}, caseData = {}) {
     if (hasOwn(inst, field) && inst[field] !== undefined) source[field] = inst[field];
   }
   return canonicalCargoForStorage(source);
+}
+
+function savedPhysicalPose(inst) {
+  const position = inst?.transform?.position;
+  const dims = inst?.orientedDims;
+  if (!position || !dims ||
+    !['x', 'y', 'z'].every(axis => typeof position[axis] === 'number' && Number.isFinite(position[axis])) ||
+    !['length', 'width', 'height'].every(axis => typeof dims[axis] === 'number' && Number.isFinite(dims[axis]) && dims[axis] > 0)) {
+    return null;
+  }
+  return { position, dims: { l: dims.length, w: dims.width, h: dims.height } };
+}
+
+function existingPlacement(inst, caseData, canonicalDims, fixed = false) {
+  const position = inst?.transform?.position;
+  if (!position || !['x', 'y', 'z'].every(axis => typeof position[axis] === 'number' && Number.isFinite(position[axis]))) {
+    return null;
+  }
+  const dims = { l: canonicalDims.length, w: canonicalDims.width, h: canonicalDims.height };
+  const rules = getSolverCargoRules(inst, caseData);
+  return {
+    instanceId: inst.id,
+    fixed,
+    item: { ...rules, weight: caseData.weight },
+    pos: position,
+    dims,
+    aabb: getAabb(position, dims),
+  };
+}
+
+function existingSupportIsValid(candidate, placements, zones, wheelWell) {
+  const others = placements.filter(entry => entry !== candidate && !entry.collisionOnly);
+  if (wheelWell) {
+    return isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell) &&
+      isWheelWellSupportedAndStable(candidate.aabb, others, wheelWell, candidate.item);
+  }
+  if (!isAabbContainedInAnyZone(candidate.aabb, zones)) return false;
+  if (zones.some(zone => isAabbContainedInZone(candidate.aabb, zone) &&
+      Math.abs(candidate.aabb.min.y - zone.min.y) <= CONTACT_EPS)) return true;
+  const supporters = others.filter(entry =>
+    Math.abs(candidate.aabb.min.y - entry.aabb.max.y) <= CONTACT_EPS &&
+    computeXzOverlapArea(candidate.aabb, entry.aabb) > CONTACT_EPS
+  );
+  return supporters.length > 0 &&
+    supporters.every(entry => canSupportStack(entry) &&
+      hasStackCapacity(entry, others) && canSupportCandidateWeight(candidate.item, entry)) &&
+    computeSupportFraction(candidate.aabb, supporters.map(entry => entry.aabb), CONTACT_EPS) >= MIN_SUPPORT_FRACTION;
+}
+
+/** Pure preflight: only solved visible items can move; packed hidden and unresolved cargo cannot. */
+export function buildAutoPackPhysicalContext(pack, getCaseById, getCanonicalInstanceEffectiveDims, zones) {
+  const fixedPlacements = [];
+  const movablePacked = [];
+  const excludedIds = new Set();
+  let unresolvedStagedCount = 0;
+  let unresolvedPackedCount = 0;
+  for (const inst of pack?.cases || []) {
+    if (!inst) continue;
+    const caseData = getCaseById(inst.caseId);
+    if (!caseData) {
+      excludedIds.add(inst.id);
+      if (inst.placement === 'staged') {
+        unresolvedStagedCount++;
+        continue;
+      }
+      const pose = savedPhysicalPose(inst);
+      if (!pose) {
+        return { ok: false, reason: 'Packed cargo has a missing Case definition and unresolved physical geometry. Repair it before AutoPack.' };
+      }
+      fixedPlacements.push({
+        instanceId: inst.id,
+        fixed: true,
+        collisionOnly: true,
+        pos: pose.position,
+        dims: pose.dims,
+        aabb: getAabb(pose.position, pose.dims),
+      });
+      unresolvedPackedCount++;
+      continue;
+    }
+    if (inst.placement === 'staged' || !inst.hidden) continue;
+    const canonical = getCanonicalInstanceEffectiveDims(inst, caseData);
+    if (!canonical?.ok) {
+      return { ok: false, reason: 'Hidden packed cargo has unresolved physical geometry. Repair it before AutoPack.' };
+    }
+    const entry = existingPlacement(inst, caseData, canonical.dims, true);
+    if (!entry) {
+      return { ok: false, reason: 'Hidden packed cargo has unresolved physical geometry. Repair it before AutoPack.' };
+    }
+    fixedPlacements.push(entry);
+  }
+
+  const structuralFixed = fixedPlacements.filter(entry => !entry.collisionOnly);
+  if (fixedPlacements.length) {
+    for (const inst of pack?.cases || []) {
+      if (!inst || inst.hidden || inst.placement === 'staged') continue;
+      const caseData = getCaseById(inst.caseId);
+      if (!caseData) continue;
+      const canonical = getCanonicalInstanceEffectiveDims(inst, caseData);
+      const entry = canonical?.ok ? existingPlacement(inst, caseData, canonical.dims) : null;
+      if (entry) movablePacked.push(entry);
+    }
+    for (const blocker of fixedPlacements.filter(entry => entry.collisionOnly)) {
+      if (movablePacked.some(entry =>
+        Math.abs(blocker.aabb.min.y - entry.aabb.max.y) <= CONTACT_EPS &&
+        computeXzOverlapArea(blocker.aabb, entry.aabb) > CONTACT_EPS
+      )) {
+        return { ok: false, reason: 'Packed cargo with a missing Case definition rests on cargo AutoPack would move. Resolve it before AutoPack.' };
+      }
+    }
+  }
+  if (structuralFixed.length) {
+    const wheelWell = getWheelWellGeometry(pack.truck || {});
+    const currentStructural = [...structuralFixed, ...movablePacked];
+    for (const fixed of structuralFixed) {
+      const fixedOthers = structuralFixed.filter(entry => entry !== fixed);
+      const currentOthers = currentStructural.filter(entry => entry !== fixed);
+      const supportedByFixed = existingSupportIsValid(fixed, structuralFixed, zones, wheelWell);
+      if (!supportedByFixed) {
+        const supportedCurrently = existingSupportIsValid(fixed, currentStructural, zones, wheelWell);
+        return {
+          ok: false,
+          reason: supportedCurrently
+            ? 'Hidden packed cargo depends on visible cargo that AutoPack would move. Resolve that support before AutoPack.'
+            : 'Hidden packed cargo has no safe fixed support. Repair it before AutoPack.',
+        };
+      }
+      const retainedByFixed = evaluateFrontOverhangRearRetention(fixed.aabb, fixedOthers, pack.truck, zones).retained;
+      if (!retainedByFixed) {
+        const retainedCurrently = evaluateFrontOverhangRearRetention(fixed.aabb, currentOthers, pack.truck, zones).retained;
+        return {
+          ok: false,
+          reason: retainedCurrently
+            ? 'Hidden packed cargo depends on visible rear retention that AutoPack would move. Resolve it before AutoPack.'
+            : 'Hidden packed cargo has no safe fixed rear retention. Repair it before AutoPack.',
+        };
+      }
+    }
+  }
+  return { ok: true, fixedPlacements, excludedIds, unresolvedStagedCount, unresolvedPackedCount };
 }
 
 export function shouldSnapLargeAutoPackLoad(placementCount, threshold = LARGE_LOAD_ANIMATION_THRESHOLD) {
@@ -389,9 +548,11 @@ export function buildAutoPackNextCases(
   placements,
   rotations,
   orientedDimsMap,
-  stagingMap
+  stagingMap,
+  excludedIds = new Set()
 ) {
   return (cases || []).map(inst => {
+    if (excludedIds.has(inst.id)) return inst;
     if (inst.hidden) {
       if (inst.placement === 'staged' && inst.packedProfile !== undefined) {
         const next = { ...inst };
@@ -572,17 +733,18 @@ export function createAutoPackEngine({
     return preset && preset.description ? String(preset.description) : '';
   }
 
-  function buildAutoPackResultOption(solution, index, packData, stagingMap) {
+  function buildAutoPackResultOption(solution, index, packData, stagingMap, movableIds, excludedIds) {
     const nextCases = buildAutoPackNextCases(
       packData.cases || [],
       solution.placements,
       solution.rotations,
       solution.orientedDims,
-      stagingMap
+      stagingMap,
+      excludedIds
     );
     const optionPack = { ...packData, cases: nextCases };
     const stats = PackLibrary.computeStats(optionPack);
-    const stagedCount = Number(stats && stats.stagedCases) || 0;
+    const stagedCount = Math.max(0, movableIds.size - solution.placements.size);
     const solverComplete = solution.solveStatus
       ? solution.solveStatus.complete === true
       : !(Array.isArray(solution.unpacked) && solution.unpacked.length);
@@ -601,7 +763,7 @@ export function createAutoPackEngine({
       label: getSolutionLabel(solution, index),
       description: getSolutionDescription(solution),
       strategy: String(solution.strategy || id),
-      packedCount: Number(stats && stats.packedCases) || 0,
+      packedCount: solution.placements.size,
       stagedCount,
       floorCount,
       stackedCount,
@@ -609,13 +771,14 @@ export function createAutoPackEngine({
       status: complete ? 'complete' : 'partial',
       statusLabel: complete ? 'Complete' : 'Partial',
       partialCauses,
-      signature: buildAutoPackResultSignature(optionPack, id === 'max-capacity' ? 'max-capacity' : null),
+      signature: buildAutoPackResultSignature(optionPack, id === 'max-capacity' ? 'max-capacity' : null, movableIds),
       layoutSignature: buildAutoPackLayoutSignature(optionPack),
       nextCases: cloneForAutoPackResults(nextCases),
+      movableIds: [...movableIds],
     };
   }
 
-  function buildAutoPackResultsState({ packId, packData, packingSolution, selectedSolution, stagingMap }) {
+  function buildAutoPackResultsState({ packId, packData, packingSolution, selectedSolution, stagingMap, movableIds, excludedIds }) {
     const solverSolutions = Array.isArray(packingSolution && packingSolution.solutions)
       ? packingSolution.solutions
       : [];
@@ -625,7 +788,7 @@ export function createAutoPackEngine({
 
     const rawOptions = solutions
       .filter(solution => solution && solution.placements instanceof Map)
-      .map((solution, index) => buildAutoPackResultOption(solution, index, packData, stagingMap));
+      .map((solution, index) => buildAutoPackResultOption(solution, index, packData, stagingMap, movableIds, excludedIds));
     if (!rawOptions.length) return null;
 
     const selectedRawId = String(
@@ -828,6 +991,20 @@ export function createAutoPackEngine({
       return;
     }
 
+    // Refuse unsafe immutable context before claiming a token, clearing Results,
+    // moving a scene object to staging, or creating a history entry.
+    const physicalContextZones = TrailerGeometry.getTrailerUsableZones(packData.truck);
+    const physicalContext = buildAutoPackPhysicalContext(
+      packData,
+      caseId => CaseLibrary.getById(caseId),
+      (inst, caseData) => PackLibrary.getCanonicalInstanceEffectiveDims(inst, caseData),
+      physicalContextZones
+    );
+    if (!physicalContext.ok) {
+      UIComponents.showToast(physicalContext.reason, 'warning', { title: 'AutoPack' });
+      return;
+    }
+
     // Claim the single mutating-operation slot for the whole run. No await ran
     // between the isBusy() check above and here. Acquisition fails closed: a
     // rejected claim leaves previous Results, the Pack, the scene, and any
@@ -901,7 +1078,7 @@ export function createAutoPackEngine({
       const truckL = truck.length || 636;
       const truckW = truck.width || 102;
       const truckH = truck.height || 98;
-      const zones = TrailerGeometry.getTrailerUsableZones(truck);
+      const zones = physicalContextZones;
 
       // All truck modes default to front-first loading (high X first), keeping
       // Standard, Wheel Wells, and Front Overhang consistent. This flag only
@@ -922,15 +1099,18 @@ export function createAutoPackEngine({
         },
       });
 
-      // Surface dangling instances that AutoPack cannot pack: they are never given
-      // fabricated dimensions, so they are excluded rather than mis-placed.
-      const unresolvedExcluded = (packData.cases || []).filter(
-        inst => inst && !inst.hidden && !CaseLibrary.getById(inst.caseId)
-      ).length;
-      if (unresolvedExcluded > 0) {
+      if (physicalContext.unresolvedStagedCount > 0) {
+        const count = physicalContext.unresolvedStagedCount;
         toast(
-          `${unresolvedExcluded} unresolved item${unresolvedExcluded === 1 ? '' : 's'} excluded from AutoPack ` +
-          '(missing case definition).',
+          `${count} staged item${count === 1 ? '' : 's'} excluded from AutoPack (missing Case definition).`,
+          'warning',
+          { title: 'AutoPack' }
+        );
+      }
+      if (physicalContext.unresolvedPackedCount > 0) {
+        const count = physicalContext.unresolvedPackedCount;
+        toast(
+          `${count} packed item${count === 1 ? '' : 's'} with missing Case definitions preserved as fixed physical blockers and excluded from AutoPack.`,
           'warning',
           { title: 'AutoPack' }
         );
@@ -963,16 +1143,6 @@ export function createAutoPackEngine({
       }
 
       const solverStartedAt = nowMs();
-      const hiddenPacked = (packData.cases || []).filter(inst =>
-        inst && inst.hidden === true && inst.placement !== 'staged'
-      );
-      const hiddenRetention = hiddenPacked.length
-        ? PackLibrary.reconcilePlacementsForTruck(
-          { ...packData, cases: hiddenPacked },
-          truck,
-          CaseLibrary.getCases()
-        ).acceptedPlacements
-        : [];
       // Adaptive production entry: default strategy first; bounded real-strategy
       // recovery only when the default legitimately could not place everything
       // (never on budget-caused or statically impossible misses). The selected
@@ -986,7 +1156,7 @@ export function createAutoPackEngine({
         // Interactive main-thread solve: cap the synchronous work so a huge
         // load returns the best partial plan instead of freezing the tab.
         solveBudgetMs: DEFAULT_SOLVE_BUDGET_MS,
-        retentionPlacements: hiddenRetention,
+        fixedPlacements: physicalContext.fixedPlacements,
         items: packItems.map(({ inst, caseData }) => {
           const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
           const rules = getSolverCargoRules(inst, caseData);
@@ -1040,7 +1210,8 @@ export function createAutoPackEngine({
         placements,
         rotations,
         orientedDimsMap,
-        stagingMap
+        stagingMap,
+        physicalContext.excludedIds
       );
       PackLibrary.update(packId, { cases: nextCases });
 
@@ -1087,12 +1258,12 @@ export function createAutoPackEngine({
       }
 
       const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
-      const totalPackable = (packData.cases || []).filter(i => !i.hidden).length;
-      const stagedCount = Math.max(0, totalPackable - stats.packedCases);
+      const totalPackable = packItems.length;
+      const stagedCount = Math.max(0, totalPackable - packedCount);
       const stagedSuffix = stagedCount > 0 ? ` ${stagedCount} moved to staging.` : '';
       UIComponents.showToast(
-        `Packed ${stats.packedCases} of ${totalPackable} cases (${stats.volumePercent.toFixed(1)}% volume).${stagedSuffix}`,
-        stats.packedCases === totalPackable ? 'success' : 'warning',
+        `Packed ${packedCount} of ${totalPackable} ${physicalContext.fixedPlacements.length || physicalContext.excludedIds.size ? 'eligible ' : ''}cases (${stats.volumePercent.toFixed(1)}% volume).${stagedSuffix}`,
+        packedCount === totalPackable ? 'success' : 'warning',
         { title: 'AutoPack' }
       );
       const budgetWarning = Array.isArray(solverResult.warnings) &&
@@ -1104,14 +1275,6 @@ export function createAutoPackEngine({
           { title: 'AutoPack' }
         );
       }
-      if (stats.unresolvedInstances > 0) {
-        UIComponents.showToast(
-          `${stats.unresolvedInstances} item(s) were excluded — their case definition is missing`,
-          'warning',
-          { title: 'AutoPack' }
-        );
-      }
-
       StateStore.set({
         autoPackResults: buildAutoPackResultsState({
           packId,
@@ -1119,6 +1282,8 @@ export function createAutoPackEngine({
           packingSolution,
           selectedSolution: solverResult,
           stagingMap,
+          movableIds: new Set(packItems.map(item => item.inst.id)),
+          excludedIds: physicalContext.excludedIds,
         }),
       }, { skipHistory: true });
 

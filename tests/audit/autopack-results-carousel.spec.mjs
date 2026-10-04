@@ -15,6 +15,43 @@ const packLibraryPath = new URL('../../src/services/pack-library.js', import.met
 const solutionPath = new URL('../../src/packing-core/solution.js', import.meta.url);
 const stylesPath = new URL('../../styles/main.css', import.meta.url);
 
+test('A3 Results Apply preserves immutable fixed rows and profiles while changing only solver-owned cargo', async () => {
+  const EditorScreen = await import(editorScreenPath.href);
+  const Engine = await import(enginePath.href);
+  const fixed = {
+    id: 'fixed', caseId: 'hidden', hidden: true, placement: 'packed', packedProfile: 'max-capacity',
+    transform: { position: { x: 10, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 20, width: 10, height: 10 },
+  };
+  const unresolved = {
+    id: 'missing', caseId: 'deleted', hidden: false, placement: 'packed',
+    transform: { position: { x: 30, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 10, width: 10, height: 10 },
+  };
+  const movable = {
+    id: 'move', caseId: 'known', hidden: false, placement: 'packed',
+    transform: { position: { x: 50, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 10, width: 10, height: 10 },
+  };
+  const current = [fixed, unresolved, movable];
+  const chosen = structuredClone(current);
+  chosen[0].transform.position.x = 999;
+  chosen[1].transform.position.x = 999;
+  chosen[2].transform.position.x = 60;
+  const option = { id: 'max-capacity', movableIds: ['move'], nextCases: chosen };
+  const applied = EditorScreen.buildAppliedAutoPackCases(option, structuredClone, current);
+  assert.equal(JSON.stringify(applied[0]), JSON.stringify(fixed));
+  assert.equal(JSON.stringify(applied[1]), JSON.stringify(unresolved));
+  assert.equal(applied[2].transform.position.x, 60);
+  assert.equal(applied[2].packedProfile, 'max-capacity');
+  const pack = { truck: { length: 100, width: 20, height: 20 }, cases: applied };
+  assert.equal(
+    Engine.buildAutoPackResultSignature(pack),
+    Engine.buildAutoPackResultSignature({ ...pack, cases: [fixed, unresolved, chosen[2]] }, 'max-capacity', new Set(['move'])),
+    'option signature stamps only the movable instance'
+  );
+});
+
 function sliceFn(src, startNeedle, endNeedle) {
   const start = src.indexOf(startNeedle);
   const end = src.indexOf(endNeedle, start + 1);
@@ -429,8 +466,8 @@ test('AUTOPACK-STALE packed pose and packed Max Capacity profile remain protecte
   const engineSrc = await fs.readFile(enginePath, 'utf8');
   const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
   assert.match(optionBlock,
-    /signature: buildAutoPackResultSignature\(optionPack, id === 'max-capacity' \? 'max-capacity' : null\),/,
-    'option signatures must project the same packed profile that Apply persists');
+    /signature: buildAutoPackResultSignature\(optionPack, id === 'max-capacity' \? 'max-capacity' : null, movableIds\),/,
+    'option signatures must project the packed profile only for cargo that Apply may change');
 });
 
 test('AUTOPACK-STALE membership, quantity, identity, and hidden-state changes still invalidate', async () => {

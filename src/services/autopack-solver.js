@@ -68,6 +68,30 @@ const BASE_ANCHOR_CAP = 18;
 const MAX_ANCHOR_CAP = 24;
 const REPEATED_BATCH_MIN = 8;
 const FORWARD_RETENTION_Y_PENALTY = 10000;
+// A solver-owned working set contains movable placements only. Its fixed
+// physical context is read by legality/search paths, never by output writers
+// or the compaction/repack mutation loops.
+const fixedContextByWorkingSet = new WeakMap();
+
+function fixedContextOf(packed) {
+  return fixedContextByWorkingSet.get(packed) || null;
+}
+
+function physicalPlacements(packed) {
+  const fixed = fixedContextOf(packed)?.all || [];
+  return fixed.length ? [...fixed, ...packed] : packed;
+}
+
+function structuralPlacements(packed) {
+  const fixed = fixedContextOf(packed)?.structural || [];
+  return fixed.length ? [...fixed, ...packed] : packed;
+}
+
+function inheritFixedContext(target, source) {
+  const context = fixedContextOf(source);
+  if (context) fixedContextByWorkingSet.set(target, context);
+  return target;
+}
 
 function finiteNumber(value, fallback = 0) {
   const n = Number(value);
@@ -317,7 +341,7 @@ function normalizeZones(zones = []) {
 }
 
 function collidesPacked(aabb, packed) {
-  return packed.some(placement => aabbsOverlap(aabb, placement.aabb));
+  return physicalPlacements(packed).some(placement => aabbsOverlap(aabb, placement.aabb));
 }
 
 function intervalsOverlap(aMin, aMax, bMin, bMax, epsilon = CONTACT_EPS) {
@@ -353,18 +377,19 @@ function wallContactCount(aabb, zone, loadFrontFirst) {
 
 function getCandidateSupports(candidateAabb, packed, tolerance = 0.05) {
   const bottom = candidateAabb.min.y;
-  return packed.filter(placement =>
+  return structuralPlacements(packed).filter(placement =>
     Math.abs(bottom - placement.aabb.max.y) <= tolerance &&
     computeXzOverlapArea(candidateAabb, placement.aabb) > 0.05
   );
 }
 
 function supportsCandidate(candidateAabb, packed, candidateItem = null, capacityCache = null) {
+  const structural = structuralPlacements(packed);
   const supports = getCandidateSupports(candidateAabb, packed);
   if (!supports.length) return false;
   if (supports.some(support =>
     !canSupportStack(support) ||
-    !(capacityCache ? capacityCache.hasCapacity(support) : hasStackCapacity(support, packed))
+    !(capacityCache ? capacityCache.hasCapacity(support) : hasStackCapacity(support, structural))
   )) return false;
   if (supports.some(support => !canSupportCandidateWeight(candidateItem, support))) return false;
   return computeSupportFraction(candidateAabb, supports) >= MIN_SUPPORT_FRACTION;
@@ -420,6 +445,7 @@ function createStackCapacityCache(packed) {
 function applyMaxCapacityRuleProfile(item = {}) {
   return {
     ...item,
+    actualWeight: item.weight,
     noStackOnTop: false,
     stackable: true,
     maxStackCount: 0,
@@ -458,6 +484,7 @@ function normalizeItem(item = {}, index = 0) {
     volume: dims.l * dims.w * dims.h,
     footprint: dims.l * dims.w,
     weight: finiteNumber(source.weight, 0),
+    actualWeight: finiteNumber(source.actualWeight ?? source.weight, 0),
     index,
     className: classifyAutoPackItem({ ...source, classificationDims }),
   };
@@ -697,7 +724,7 @@ function evaluateCandidateRetention(aabb, packed, retentionContext) {
   if (!retentionContext?.geometry) return { required: false, retained: true, retainerIds: [] };
   return evaluateFrontOverhangRearRetention(
     aabb,
-    [...retentionContext.fixedPlacements, ...(packed || [])],
+    [...retentionContext.fixedPlacements, ...(packed || []).filter(entry => !entry.collisionOnly)],
     retentionContext.truck,
     retentionContext.zones
   );
@@ -709,7 +736,7 @@ function candidateHasRearRetention(aabb, packed, retentionContext) {
 
 function placementsHaveRearRetention(placements, retentionContext) {
   if (!retentionContext?.geometry) return true;
-  const all = [...retentionContext.fixedPlacements, ...(placements || [])];
+  const all = [...retentionContext.fixedPlacements, ...(placements || []).filter(entry => !entry.collisionOnly)];
   return (placements || []).every(placement =>
     evaluateFrontOverhangRearRetention(
       placement.aabb,
@@ -1094,7 +1121,7 @@ function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = 
   const requiredFloorY = Number.isFinite(options.floorY) ? options.floorY : null;
 
   for (const orientation of item.candidates) {
-    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed)) {
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, physicalPlacements(packed))) {
       if (requiredFloorY !== null && Math.abs(candidate.aabb.min.y - requiredFloorY) > CONTACT_EPS) continue;
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
@@ -1188,7 +1215,7 @@ function findLanePlacement(item, floorState, packed, loadFrontFirst, layoutQuali
   let bestScore = null;
 
   for (const orientation of getLaneOrientations(item)) {
-    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed)) {
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, physicalPlacements(packed))) {
       if (!isAabbContainedInZone(candidate.aabb, candidate.zone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
       if (!candidateHasRearRetention(candidate.aabb, packed, floorState.retentionContext)) continue;
@@ -1564,6 +1591,7 @@ function mergeAdjacentStackRects(rects) {
 }
 
 export function buildStackLayerFreeRects(packed, yLevel, capacityCache = null) {
+  packed = structuralPlacements(packed);
   let rects = [];
   for (const support of packed || []) {
     if (!support?.aabb || Math.abs(support.aabb.max.y - yLevel) > CONTACT_EPS) continue;
@@ -1813,15 +1841,16 @@ function findStackPlacement(
   wheelWell = null,
   budget = null
 ) {
+  const structural = structuralPlacements(packed);
   let best = null;
   let bestScore = null;
   // E2B: wheel-well channel stacks must follow the floor block+filler footprint.
   const channelZones = layoutQualityEnabled ? narrowChannelZones(zones) : [];
   // Capacity answers are stable within one placement search — memoize them so
   // the yLevel filter and per-candidate support checks stop rescanning packed.
-  const capacityCache = createStackCapacityCache(packed);
+  const capacityCache = createStackCapacityCache(structural);
   const yLevels = uniqueSorted(
-    packed
+    structural
       .filter(placement => canSupportStack(placement) && capacityCache.hasCapacity(placement))
       .map(placement => placement.aabb.max.y),
     (a, b) => a - b
@@ -1834,7 +1863,7 @@ function findStackPlacement(
   const layerRectsFor = yLevel => {
     let rects = layerRectsByLevel.get(yLevel);
     if (!rects) {
-      rects = buildStackLayerFreeRects(packed, yLevel, capacityCache);
+      rects = buildStackLayerFreeRects(structural, yLevel, capacityCache);
       layerRectsByLevel.set(yLevel, rects);
     }
     return rects;
@@ -1846,10 +1875,10 @@ function findStackPlacement(
     /** @type {Array<any>} */
     const candidates = [];
     for (const yLevel of yLevels) {
-      candidates.push(...buildStackCandidates(orientation, packed, yLevel, loadFrontFirst, layerRectsFor(yLevel)));
+      candidates.push(...buildStackCandidates(orientation, structural, yLevel, loadFrontFirst, layerRectsFor(yLevel)));
     }
     if (wheelWell) {
-      candidates.push(...buildWheelWellStackCandidates(orientation, packed, wheelWell, loadFrontFirst));
+      candidates.push(...buildWheelWellStackCandidates(orientation, structural, wheelWell, loadFrontFirst));
       for (const yLevel of yLevels) {
         candidates.push(...buildWheelWellOverhangStackCandidates(orientation, layerRectsFor(yLevel), wheelWell));
       }
@@ -1860,7 +1889,7 @@ function findStackPlacement(
       const containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
       if (wheelWell) {
         if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) continue;
-        if (!isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) continue;
+        if (!isWheelWellSupportedAndStable(candidate.aabb, structural, wheelWell, item)) continue;
       } else if (!containedInUsableZone) {
         continue;
       }
@@ -1878,7 +1907,7 @@ function findStackPlacement(
       const supportFraction = wheelWellCandidate
         ? candidate.supportFraction
         : wheelWell
-          ? computeWheelWellSupport(candidate.aabb, packed, wheelWell, item).fraction
+          ? computeWheelWellSupport(candidate.aabb, structural, wheelWell, item).fraction
         : computeSupportFraction(candidate.aabb, supports);
       const scoredCandidate = { ...candidate, supportFraction, orientation };
       const groupScore = layoutQualityEnabled
@@ -2001,7 +2030,7 @@ function repeatedStackCandidateIsLegal(candidate, item, zones, packed, retention
   const containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
   if (wheelWell) {
     if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) return false;
-    if (!isWheelWellSupportedAndStable(candidate.aabb, packed, wheelWell, item)) return false;
+    if (!isWheelWellSupportedAndStable(candidate.aabb, structuralPlacements(packed), wheelWell, item)) return false;
   } else if (!containedInUsableZone) {
     return false;
   }
@@ -2032,11 +2061,11 @@ function placeRepeatedStackGroup(
 
   while (queue.length && progress && !stackBatchBudgetExpired(budget, useCleanupBudget)) {
     progress = false;
-    const levels = stackBatchLayerLevels(packed);
+    const levels = stackBatchLayerLevels(structuralPlacements(packed));
 
     for (const yLevel of levels) {
       if (!queue.length || stackBatchBudgetExpired(budget, useCleanupBudget)) break;
-      const layerRects = buildStackLayerFreeRects(packed, yLevel);
+      const layerRects = buildStackLayerFreeRects(structuralPlacements(packed), yLevel);
       const orientations = rankedRepeatedStackOrientations(queue, layerRects);
       if (!orientations.length) continue;
 
@@ -2290,7 +2319,7 @@ function compactFloorPlacements(
       // Quality-only pass: bail mid-sweep at the hard cleanup deadline. Every
       // move already accepted remains fully validated.
       if (compactionBudget && compactionBudget.cleanupExpired()) break;
-      const others = packed.filter(other => other !== placement);
+      const others = physicalPlacements(packed).filter(other => other !== placement);
       const placementInChannel =
         channelZones.length > 0 && aabbInNarrowChannel(placement.aabb, channelZones);
       let best = null;
@@ -2364,16 +2393,21 @@ function getFrontCompressionBounds(placement, zones, wheelWell) {
 }
 
 function placementHasValidVerticalSupport(placement, packedWithoutPlacement, zones, wheelWell) {
+  // Compression passes an explicit combined array rather than the mapped
+  // movable working set; strip collision-only blockers before support checks.
+  const supports = packedWithoutPlacement.some(entry => entry.collisionOnly)
+    ? packedWithoutPlacement.filter(entry => !entry.collisionOnly)
+    : packedWithoutPlacement;
   if (wheelWell) {
     return isWheelWellSupportedAndStable(
       placement.aabb,
-      packedWithoutPlacement,
+      structuralPlacements(supports),
       wheelWell,
       placement.item
     );
   }
   return isPlacementOnZoneFloor(placement.aabb, zones) ||
-    supportsCandidate(placement.aabb, packedWithoutPlacement, placement.item);
+    supportsCandidate(placement.aabb, supports, placement.item);
 }
 
 function placementPassesCompressionRules(placement, packedWithoutPlacement, zones, retentionContext, wheelWell) {
@@ -2477,7 +2511,7 @@ function compressWheelWellPlacementsForward(output, packed, zones, loadFrontFirs
     if (!shouldFrontCompressPlacement(placement, zones)) continue;
     const bounds = getFrontCompressionBounds(placement, zones, wheelWell);
     if (!bounds) continue;
-    const others = packed.filter(other => other !== placement);
+    const others = physicalPlacements(packed).filter(other => other !== placement);
     const anchors = collectForwardCompressionAnchors(placement, others, bounds, loadFrontFirst, wheelWell);
     let accepted = null;
 
@@ -2495,7 +2529,7 @@ function compressWheelWellPlacementsForward(output, packed, zones, loadFrontFirs
         zone: placement.zone && isAabbContainedInZone(aabb, placement.zone) ? placement.zone : getPlacementZone({ ...placement, aabb }, zones),
       };
       if (!placementPassesCompressionRules(candidate, others, zones, retentionContext, wheelWell)) continue;
-      if (!movedPlacementPreservesDependents(placement, candidate, packed, zones, retentionContext, wheelWell)) continue;
+      if (!movedPlacementPreservesDependents(placement, candidate, physicalPlacements(packed), zones, retentionContext, wheelWell)) continue;
       accepted = candidate;
       break;
     }
@@ -2567,6 +2601,7 @@ function validatePackedPlacements(output, packed, zones, options = {}) {
   // bridge/top placements gain acceptance.
   const wheelWell = options.wheelWell || null;
   const accepted = [];
+  inheritFixedContext(accepted, packed);
   const rejected = [];
 
   const validationOrder = retentionContext?.geometry
@@ -2588,7 +2623,7 @@ function validatePackedPlacements(output, packed, zones, options = {}) {
       reason = 'outside usable zones';
     } else if (collidesPacked(placement.aabb, accepted)) {
       reason = 'overlaps another packed item';
-    } else if (!placementHasValidVerticalSupport(placement, accepted, zones, wheelWell)) {
+    } else if (!placementHasValidVerticalSupport(placement, structuralPlacements(accepted), zones, wheelWell)) {
       reason = 'does not have safe stack support';
     } else if (!candidateHasRearRetention(placement.aabb, accepted, retentionContext)) {
       reason = 'does not have complete rear retention at the overhang step';
@@ -2618,9 +2653,9 @@ function rebuildFloorStateFromPacked(
   retentionContext = null
 ) {
   const floorState = createFloorState(zones, frontSurfaceFirst, retentionContext);
-  for (const placement of packed) {
+  for (const placement of physicalPlacements(packed)) {
     if (!isPlacementOnZoneFloor(placement.aabb, zones)) continue;
-    occupyFloorSpace(floorState, placement);
+    occupyFloorSpace(floorState, { ...placement, zone: getPlacementZone(placement, zones) });
   }
   return floorState;
 }
@@ -2635,7 +2670,7 @@ function repackRejectedPlacements(
   retentionContext = null
 ) {
   if (!rejected.length) return { packed: accepted, rejected: [] };
-  const repacked = [...accepted];
+  const repacked = inheritFixedContext([...accepted], accepted);
   const floorState = rebuildFloorStateFromPacked(
     zones,
     repacked,
@@ -2772,11 +2807,11 @@ function findWheelWellBridgePlacement(item, packed, geometry, loadFrontFirst) {
   let best = null;
   let bestScore = null;
   for (const orientation of item.candidates) {
-    for (const candidate of buildWheelWellBridgeCandidates(orientation, packed, geometry)) {
+    for (const candidate of buildWheelWellBridgeCandidates(orientation, structuralPlacements(packed), geometry)) {
       if (!isAabbWithinTruckMinusBlocked(candidate.aabb, geometry)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
-      if (!isWheelWellSupportedAndStable(candidate.aabb, packed, geometry, item)) continue;
-      const score = scoreWheelWellBridge(candidate, geometry, packed, loadFrontFirst, item);
+      if (!isWheelWellSupportedAndStable(candidate.aabb, structuralPlacements(packed), geometry, item)) continue;
+      const score = scoreWheelWellBridge(candidate, geometry, structuralPlacements(packed), loadFrontFirst, item);
       if (!best || compareScore(score, bestScore) < 0) {
         best = candidate;
         bestScore = score;
@@ -3002,7 +3037,7 @@ function buildDeckRetentionWall(output, packed, itemsById, retentionContext, bud
   while (progress && guard-- > 0) {
     progress = false;
     if (budget && budget.cleanupExpired()) break;
-    const { uncovered } = computeDeckRetentionCoverage(geometry, packed);
+    const { uncovered } = computeDeckRetentionCoverage(geometry, structuralPlacements(packed));
     if (!uncovered.length) break;
     const target = uncovered[0];
     // A below-plane base is only worth placing while a remaining leftover could
@@ -3022,7 +3057,7 @@ function buildDeckRetentionWall(output, packed, itemsById, retentionContext, bud
           (a, b) => a - b
         );
         for (const zMin of zAnchors) {
-          for (const bottom of wallBottomsAt(packed, mainZone, xMin, stepX, zMin, zMin + orientation.w)) {
+          for (const bottom of wallBottomsAt(structuralPlacements(packed), mainZone, xMin, stepX, zMin, zMin + orientation.w)) {
             if (bottom + orientation.h > mainZone.max.y + FREE_RECT_EPS) continue;
             const position = {
               x: xMin + orientation.l / 2,
@@ -3145,7 +3180,7 @@ function findFrontOverhangDeckFillPlacement(item, floorState, packed, retentionC
   let bestScore = null;
   for (const orientation of item.candidates || []) {
     if (orientation.h > deckZone.max.y - deckY + FREE_RECT_EPS) continue;
-    for (const candidate of buildFreeRectCandidates(orientation, floorState, false, packed)) {
+    for (const candidate of buildFreeRectCandidates(orientation, floorState, false, physicalPlacements(packed))) {
       if (Math.abs(candidate.aabb.min.y - deckY) > CONTACT_EPS) continue;
       if (!isAabbContainedInZone(candidate.aabb, deckZone)) continue;
       if (collidesPacked(candidate.aabb, packed)) continue;
@@ -3257,7 +3292,7 @@ function findWheelWellSeamFloorPlacement(item, packed, geometry, loadFrontFirst)
     const xRaw = [];
     for (const seam of seams) xRaw.push(seam - l / 2);
     const zRaw = [-geometry.betweenHalfW, geometry.betweenHalfW - w];
-    for (const placement of packed) {
+    for (const placement of physicalPlacements(packed)) {
       if (Math.abs(placement.aabb.min.y - floorY) > CONTACT_EPS) continue;
       xRaw.push(placement.aabb.max.x, placement.aabb.min.x - l);
       zRaw.push(placement.aabb.min.z, placement.aabb.max.z - w, placement.aabb.min.z - w, placement.aabb.max.z);
@@ -3281,7 +3316,7 @@ function findWheelWellSeamFloorPlacement(item, packed, geometry, loadFrontFirst)
         const aabb = getAabb(position, dims);
         if (!isAabbWithinTruckMinusBlocked(aabb, geometry)) continue;
         if (collidesPacked(aabb, packed)) continue;
-        if (!isWheelWellSupportedAndStable(aabb, packed, geometry, item)) continue;
+        if (!isWheelWellSupportedAndStable(aabb, structuralPlacements(packed), geometry, item)) continue;
         const score = [loadFrontFirst ? -aabb.max.x : aabb.min.x, aabb.min.z, h];
         if (!best || compareScore(score, bestScore) < 0) {
           best = { position, dims, aabb, orientation, zone: null, freeRect: null };
@@ -3492,6 +3527,12 @@ export function solveAutoPack(input = {}) {
   const output = makeEmptyOutput();
   if (!rawItems.length) return output;
 
+  const fixedPlacements = Array.isArray(input.fixedPlacements) ? input.fixedPlacements : [];
+  if (fixedPlacements.some(entry => !entry?.aabb?.min || !entry?.aabb?.max || entry.fixed !== true)) {
+    throw new Error('AutoPack fixed physical context is malformed.');
+  }
+  const structuralFixed = fixedPlacements.filter(entry => !entry.collisionOnly);
+
   const solverItems = input.maxCapacityMode === true
     ? rawItems.map(applyMaxCapacityRuleProfile)
     : rawItems;
@@ -3513,10 +3554,17 @@ export function solveAutoPack(input = {}) {
   const retentionContext = createRetentionContext(
     input.truck || {},
     floorZones,
-    input.retentionPlacements
+    fixedPlacements.length ? structuralFixed : input.retentionPlacements
   );
   const floorState = createFloorState(floorZones, frontSurfaceFirst, retentionContext);
   const packed = [];
+  if (fixedPlacements.length) {
+    fixedContextByWorkingSet.set(packed, { all: fixedPlacements, structural: structuralFixed });
+    for (const fixed of fixedPlacements) {
+      if (!isPlacementOnZoneFloor(fixed.aabb, floorZones)) continue;
+      occupyFloorSpace(floorState, { ...fixed, zone: getPlacementZone(fixed, floorZones) });
+    }
+  }
   const wheelWell = getWheelWellGeometry(input.truck || {});
   const wheelWellFloorChannelCompaction =
     wheelWell && input.enableWheelWellFloorChannelCompaction !== false;

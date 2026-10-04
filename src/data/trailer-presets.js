@@ -11,6 +11,8 @@
 // SECTION: IMPORTS AND DEPENDENCIES
 // ============================================================================
 
+import { clamp } from '../core/utils/index.js';
+
 export const TrailerPresets = (() => {
   const presets = [
     {
@@ -101,6 +103,22 @@ export const TrailerPresets = (() => {
     return 'rect';
   }
 
+  // Shared with the New/Edit Pack and Editor shape-mode flows. Missing values
+  // use the established 12% length / 45% deck-height defaults; explicit zero
+  // remains valid for a manually configured shape without an overhang.
+  function normalizeFrontBonusShapeConfig(shapeConfig, truck) {
+    const cfg = shapeConfig && typeof shapeConfig === 'object' && !Array.isArray(shapeConfig) ? { ...shapeConfig } : {};
+    const length = Number(truck.length) || 0;
+    const height = Number(truck.height) || 0;
+    const width = Number(truck.width) || 0;
+    if (!Number.isFinite(cfg.bonusLength)) cfg.bonusLength = 0.12 * length;
+    if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = 0.45 * height;
+    cfg.bonusLength = clamp(Number(cfg.bonusLength) || 0, 0, length);
+    cfg.bonusHeight = clamp(Number(cfg.bonusHeight) || 0, 0, height);
+    cfg.bonusWidth = width;
+    return cfg;
+  }
+
   function applyToTruck(truck, preset) {
     const base = truck && typeof truck === 'object' ? truck : {};
     const p = preset && typeof preset === 'object' ? preset : null;
@@ -110,7 +128,7 @@ export const TrailerPresets = (() => {
         ? JSON.parse(JSON.stringify(base.shapeConfig))
         : {};
 
-    return {
+    const nextTruck = {
       ...base,
       length: Number(pt.length) || Number(base.length) || 636,
       width: Number(pt.width) || Number(base.width) || 102,
@@ -118,7 +136,13 @@ export const TrailerPresets = (() => {
       shapeMode: normalizeShapeMode(pt.shapeMode || base.shapeMode),
       shapeConfig,
     };
+    if (pt.shapeMode === 'frontBonus') {
+      // A curated Front Overhang preset starts from its own config. Reusing a
+      // previous truck's empty/zero config would silently erase its raised deck.
+      nextTruck.shapeConfig = normalizeFrontBonusShapeConfig(pt.shapeConfig, nextTruck);
+    }
+    return nextTruck;
   }
 
-  return { getAll, getById, applyToTruck };
+  return { getAll, getById, applyToTruck, normalizeFrontBonusShapeConfig };
 })();

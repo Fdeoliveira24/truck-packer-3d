@@ -7164,16 +7164,7 @@ export function createEditorScreen({
           cfg.wellOffsetFromRear = Utils.clamp(Number(cfg.wellOffsetFromRear) || 0, 0, nextTruck.length);
           nextTruck.shapeConfig = cfg;
         } else if (nextTruck.shapeMode === 'frontBonus') {
-          const cfg = nextTruck.shapeConfig || {};
-          if (!Number.isFinite(cfg.bonusLength)) cfg.bonusLength = 0.12 * nextTruck.length;
-          if (!Number.isFinite(cfg.bonusHeight)) cfg.bonusHeight = 0.45 * nextTruck.height;
-          cfg.bonusLength = Utils.clamp(Number(cfg.bonusLength) || 0, 0, nextTruck.length);
-          cfg.bonusHeight = Utils.clamp(Number(cfg.bonusHeight) || 0, 0, nextTruck.height);
-          // bonusWidth is no longer used in overhang geometry (the overhang
-          // always spans the full trailer width). Kept on shapeConfig for
-          // backward compatibility only, normalized to truck.width.
-          cfg.bonusWidth = nextTruck.width;
-          nextTruck.shapeConfig = cfg;
+          nextTruck.shapeConfig = TrailerPresets.normalizeFrontBonusShapeConfig(nextTruck.shapeConfig, nextTruck);
         }
 
         // Pending only — store the new shape (with its default config) and re-render

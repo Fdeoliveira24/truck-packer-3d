@@ -23,7 +23,13 @@ import {
   getOrientedDimsForRotation,
   isHeightAxisVertical,
 } from '../core/oriented-dims.js';
-import { caseSafeReuseKey, caseSafeReuseEqual } from '../core/cargo-canonical.js';
+import {
+  caseSafeReuseKey,
+  caseSafeReuseEqual,
+  parseCargoDimension,
+  parseCargoNonNegNumber,
+  WEIGHT_MAX_LBS,
+} from '../core/cargo-canonical.js';
 // Hard-rule predicates and tolerances come from the single validation authority
 // shared with the AutoPack solver (packing-core/validation.js), so manual
 // revalidation and AutoPack can never silently diverge on a rule or epsilon.
@@ -1933,11 +1939,11 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
 // SECTION: HANDLING-RULES CASE-CHANGE PROPAGATION (P0-A)
 //
 // A Case is a shared definition; packed Load Plan instances reference it by
-// caseId. Editing a placement-affecting Handling Rule can make an
+// caseId. Editing a placement-affecting rule, dimension, or weight can make an
 // already-packed Load Plan illegal without moving cargo out from under the
 // user's feet in a Plan they aren't looking at. See docs/engineering — this
-// section owns: the semantic (not raw-storage) Case validity fingerprint, the
-// per-Pack durable signature built from it, and the single-write Case-Save
+// section owns: the semantic (not raw-storage) Case change detector, the
+// per-Pack durable signature, and the single-write Case-Save
 // orchestration that revalidates only the actively-displayed Editor Pack and
 // marks every other affected Pack "Validation required" without touching cargo.
 // ============================================================================
@@ -1950,9 +1956,9 @@ const HANDLING_RULES_SIGNATURE_VERSION = 'v1';
 // AutoPack/manual revalidation already consult), never from raw stored values.
 // Two storage representations with identical hard-rule behavior (e.g. the
 // legacy stackable/noStackOnTop aliases) therefore always fingerprint
-// identically. canFlip, maxPalletWeight, laneItem, loadPriority, and shape do
-// not define existing manual packed-placement validity and are intentionally
-// excluded.
+// identically. Keep this v1 signature component unchanged for persisted Packs.
+// canFlip, maxPalletWeight, laneItem, loadPriority, and shape do not define
+// existing manual packed-placement validity and are intentionally excluded.
 function handlingRuleSemanticFingerprint(caseData) {
   const lock = canonicalOrientationLock(caseData && caseData.orientationLock);
   const allowStackOnTop = rulesAllowStackOnTop(caseData || {});
@@ -1961,13 +1967,26 @@ function handlingRuleSemanticFingerprint(caseData) {
   return `${lock}:${allowStackOnTop ? 1 : 0}:${maxStackCount}:${isPallet ? 1 : 0}`;
 }
 
-// True only when the two Cases' EFFECTIVE placement-affecting semantics
-// differ. A missing oldCase (new Case creation, or a caseId no longer in the
-// library) is defined as "not a change" — there is nothing for any Pack to
-// have been validated against yet.
+// Match the dimensions and weight CaseLibrary actually stores (and manual
+// revalidation consumes), so equivalent raw strings and clamped values do not
+// create false placement impacts. Keep these out of the persisted v1 signature:
+// existing signed Packs must stay current until a future Case edit affects them.
+function placementAffectingCaseFingerprint(caseData) {
+  const dims = caseData && caseData.dimensions || {};
+  return JSON.stringify([
+    handlingRuleSemanticFingerprint(caseData),
+    parseCargoDimension(dims.length).value,
+    parseCargoDimension(dims.width).value,
+    parseCargoDimension(dims.height).value,
+    parseCargoNonNegNumber(caseData && caseData.weight, { max: WEIGHT_MAX_LBS }).value,
+  ]);
+}
+
+// Historical API name retained for callers. A missing oldCase (new Case
+// creation, or a caseId no longer in the library) is not a change.
 export function hasPlacementAffectingHandlingRuleChange(oldCase, newCase) {
   if (!oldCase) return false;
-  return handlingRuleSemanticFingerprint(oldCase) !== handlingRuleSemanticFingerprint(newCase);
+  return placementAffectingCaseFingerprint(oldCase) !== placementAffectingCaseFingerprint(newCase);
 }
 
 // Handling Rules ACTIVE-LOAD membership authority: does this instance
@@ -2056,6 +2075,18 @@ export function isHandlingRulesValidationRequired(pack, caseLibrary) {
   return stored !== buildHandlingRulesValiditySignature(pack, caseLibrary || CaseLibrary.getCases());
 }
 
+// A physical edit can leave the rule-only v1 signature byte-identical. In that
+// case use the existing non-current marker rather than changing the meaning of
+// every persisted v1 signature or migrating all Packs. Preserve a prior stale
+// signature whenever it already differs from the post-edit Pack.
+function signatureRequiringValidation(beforePack, beforeCases, afterPack, afterCases) {
+  const prior = beforePack.handlingRulesValidatedSignature ||
+    buildHandlingRulesValiditySignature(beforePack, beforeCases);
+  return prior === buildHandlingRulesValiditySignature(afterPack, afterCases)
+    ? 'v1:incomplete'
+    : prior;
+}
+
 // Atomic Case Save orchestration: prepares the Case (+ optional category) and,
 // when the edit changed placement-affecting semantics, the impact on every
 // affected Pack — all BEFORE publishing — then commits everything through
@@ -2111,14 +2142,13 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
           if (result.validationComplete === true) {
             revalidated.handlingRulesValidatedSignature =
               buildHandlingRulesValiditySignature(revalidated, nextCaseLibrary);
-          } else if (!p.handlingRulesValidatedSignature) {
-            // Do not silently stamp a current signature over an unresolved
-            // validation: baseline to the pre-change signature so the Pack
-            // continues to report "Validation required".
-            revalidated.handlingRulesValidatedSignature =
-              buildHandlingRulesValiditySignature(p, oldCaseLibrary);
+          } else {
+            // An unresolved validation must stay stale even when only physical
+            // Case data changed and the legacy rule-only signature still matches.
+            revalidated.handlingRulesValidatedSignature = signatureRequiringValidation(
+              p, oldCaseLibrary, revalidated, nextCaseLibrary
+            );
           }
-          // else: leave the existing (already pre-change) signature untouched.
           packImpact = {
             packId: p.id,
             summary: result.summary,
@@ -2132,11 +2162,12 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
         }
 
         // Not actively displayed: never move cargo, never touch lastEdited.
-        if (p.handlingRulesValidatedSignature) return p;
-        return {
-          ...p,
-          handlingRulesValidatedSignature: buildHandlingRulesValiditySignature(p, oldCaseLibrary),
-        };
+        const staleSignature = signatureRequiringValidation(
+          p, oldCaseLibrary, p, nextCaseLibrary
+        );
+        return p.handlingRulesValidatedSignature === staleSignature
+          ? p
+          : { ...p, handlingRulesValidatedSignature: staleSignature };
       });
 
       setPatch.packLibrary = nextPacks;

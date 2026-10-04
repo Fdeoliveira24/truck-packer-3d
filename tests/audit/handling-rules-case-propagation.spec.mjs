@@ -66,6 +66,185 @@ function activePackFixture(caseId = 'case-a') {
   return { id: 'pack-active', title: 'Active', truck: RECT_TRUCK, cases: [baseInst, childInst], lastEdited: 123, stats: {} };
 }
 
+test('A2 Case placement-change detection uses effective dimensions and weight, not raw strings or metadata', async () => {
+  const { PackLibrary } = await freshModules();
+  const original = mkCase({ dimensions: { length: 20, width: 12, height: 10 }, weight: 50 });
+  const equivalent = {
+    ...original,
+    dimensions: { length: '20', width: '12', height: '10' },
+    weight: '50', volume: 999, name: 'Renamed', notes: 'Updated', color: '#ff0000',
+  };
+  assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, equivalent), false);
+  for (const axis of ['length', 'width', 'height']) {
+    const changed = { ...original, dimensions: { ...original.dimensions, [axis]: original.dimensions[axis] + 1 } };
+    assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, changed), true, `${axis} changes the envelope`);
+  }
+  assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, { ...original, weight: 51 }), true);
+  assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, { ...original, weight: '50' }), false);
+  assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(null, original), false, 'new Cases have no prior placement to invalidate');
+});
+
+test('A2 active Case dimension growth revalidates overlapping cargo in the same Save and Undo/Redo action', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase({ id: 'case-a', dimensions: { length: 20, width: 20, height: 10 } });
+  const caseB = mkCase({ id: 'case-b', dimensions: { length: 20, width: 20, height: 10 } });
+  const pack = {
+    id: 'pack-active', truck: { length: 60, width: 20, height: 20, shapeMode: 'rect' },
+    cases: [mkInst('A', 'case-a', { x: 20, y: 5, z: 0 }), mkInst('B', 'case-b', { x: 45, y: 5, z: 0 })],
+    lastEdited: 123, stats: {},
+  };
+  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
+    caseLibrary: [caseA, caseB], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+
+  const result = PackLibrary.commitCaseHandlingRuleChange({ ...caseA, dimensions: { ...caseA.dimensions, length: 40 } });
+  const after = StateStore.snapshot();
+  const next = after.packLibrary[0];
+  const a = next.cases.find(inst => inst.id === 'A');
+  const b = next.cases.find(inst => inst.id === 'B');
+  assert.equal(result.packImpact?.packId, pack.id, 'Case Save must run active-Pack revalidation');
+  assert.equal(after.caseLibrary.find(c => c.id === 'case-a').dimensions.length, 40);
+  assert.ok(a.placement !== 'packed' || b.placement !== 'packed' ||
+    Math.abs(a.transform.position.x - b.transform.position.x) >= 30,
+  'the two changed envelopes must not remain overlapping while both are packed');
+  assert.notDeepEqual(next.cases, pack.cases, 'the pre-edit invalid placement must be repaired or staged');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(next, after.caseLibrary), false);
+
+  assert.equal(StateStore.undo(), true);
+  assert.deepEqual(StateStore.snapshot(), before, 'one Undo restores both the Case definition and original Pack');
+  assert.equal(StateStore.undo(), false, 'Case Save added exactly one history action');
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(StateStore.snapshot(), after, 'one Redo restores the Case and revalidated Pack together');
+});
+
+test('A2 active Case weight increase revalidates an overweight stacked child during Case Save', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const base = mkCase({ id: 'case-base', dimensions: { length: 20, width: 20, height: 10 }, weight: 100 });
+  const child = mkCase({ id: 'case-child', dimensions: { length: 20, width: 20, height: 10 }, weight: 50 });
+  const pack = {
+    id: 'pack-active', truck: { length: 20, width: 20, height: 20, shapeMode: 'rect' },
+    cases: [mkInst('base', base.id, { x: 10, y: 5, z: 0 }), mkInst('child', child.id, { x: 10, y: 15, z: 0 })],
+    lastEdited: 123, stats: {},
+  };
+  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
+    caseLibrary: [base, child], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  const result = PackLibrary.commitCaseHandlingRuleChange({ ...child, weight: 150 });
+  const next = StateStore.get('packLibrary')[0];
+  assert.equal(result.packImpact?.packId, pack.id);
+  assert.equal(next.cases.find(inst => inst.id === 'base').placement, 'packed');
+  assert.equal(next.cases.find(inst => inst.id === 'child').placement, 'staged',
+    'the existing strict child-vs-support rule must reject the heavier child');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(next, StateStore.get('caseLibrary')), false);
+});
+
+for (const [kind, patch] of [
+  ['dimension', c => ({ ...c, dimensions: { ...c.dimensions, length: 30 } })],
+  ['weight', c => ({ ...c, weight: 75 })],
+]) {
+  for (const signed of [true, false]) {
+    test(`A2 unseen Pack becomes durably stale after ${kind} Case edit (${signed ? 'signed v1' : 'unsigned legacy'}) without moving cargo`, async () => {
+      const { StateStore, PackLibrary } = await freshModules();
+      const { normalizePack } = await import(normalizerPath.href);
+      const caseA = mkCase({ dimensions: { length: 20, width: 20, height: 10 }, weight: 50 });
+      const caseB = mkCase({ id: 'case-b' });
+      const pack = {
+        id: 'pack-unseen', truck: { length: 60, width: 20, height: 20, shapeMode: 'rect' },
+        cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 })], lastEdited: 123, stats: {},
+      };
+      const unrelated = { id: 'pack-unrelated', truck: RECT_TRUCK,
+        cases: [mkInst('B', caseB.id, { x: 20, y: 5, z: 0 })], lastEdited: 456, stats: {} };
+      if (signed) pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
+      StateStore.init({ currentScreen: 'packs', currentPackId: pack.id, selectedInstanceIds: [],
+        caseLibrary: [caseA, caseB], packLibrary: [pack, unrelated], folderLibrary: [], preferences: {} });
+      const before = StateStore.get('packLibrary')[0];
+      const beforeUnrelated = StateStore.get('packLibrary')[1];
+      assert.equal(PackLibrary.isHandlingRulesValidationRequired(before, [caseA]), false);
+
+      const result = PackLibrary.commitCaseHandlingRuleChange(patch(caseA));
+      const after = StateStore.get('packLibrary')[0];
+      assert.equal(result.packImpact, null, 'an unseen Pack must not be revalidated automatically');
+      assert.deepEqual(after.cases, before.cases, 'cargo transforms and placements must remain untouched');
+      assert.equal(after.lastEdited, before.lastEdited);
+      assert.equal(StateStore.get('packLibrary')[1], beforeUnrelated, 'an unrelated Pack remains untouched');
+      assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete',
+        'an effective physical change must not look current under the legacy rule-only signature');
+      assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
+      const reloaded = normalizePack(JSON.parse(JSON.stringify(after)));
+      assert.equal(PackLibrary.isHandlingRulesValidationRequired(reloaded, StateStore.get('caseLibrary')), true,
+        'Validation required remains visible after persistence normalization');
+    });
+  }
+
+  test(`A2 staged-only ${kind} Case reference leaves its Pack and signature untouched`, async () => {
+    const { StateStore, PackLibrary } = await freshModules();
+    const caseA = mkCase({ dimensions: { length: 20, width: 20, height: 10 }, weight: 50 });
+    const caseB = mkCase({ id: 'case-b' });
+    const pack = {
+      id: 'pack-staged-only', truck: RECT_TRUCK,
+      cases: [mkInst('staged', caseA.id, { x: 20, y: 5, z: 0 }, 'staged'),
+        mkInst('other', caseB.id, { x: 50, y: 5, z: 0 })],
+      lastEdited: 123, stats: {},
+    };
+    pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA, caseB]);
+    StateStore.init({ currentScreen: 'packs', currentPackId: pack.id, selectedInstanceIds: [],
+      caseLibrary: [caseA, caseB], packLibrary: [pack], folderLibrary: [], preferences: {} });
+    const before = StateStore.get('packLibrary');
+
+    PackLibrary.commitCaseHandlingRuleChange(patch(caseA));
+
+    assert.equal(StateStore.get('packLibrary'), before, 'staged-only references cannot invalidate a packed placement');
+    assert.equal(PackLibrary.isHandlingRulesValidationRequired(before[0], StateStore.get('caseLibrary')), false);
+  });
+}
+
+test('A2 an already-valid persisted v1 signature stays current with no Case edit', async () => {
+  const { PackLibrary } = await freshModules();
+  const caseA = mkCase({ dimensions: { length: 20, width: 15, height: 10 }, weight: 123 });
+  const pack = { id: 'pack-v1', truck: RECT_TRUCK,
+    cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 })],
+    handlingRulesValidatedSignature: 'v1:case-a:any:1:0:0' };
+  assert.equal(PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]), pack.handlingRulesValidatedSignature);
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(pack, [caseA]), false);
+});
+
+test('A2 Case notes and display metadata do not trigger placement revalidation', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase();
+  const pack = { id: 'pack-active', truck: RECT_TRUCK,
+    cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 })], lastEdited: 123, stats: {} };
+  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
+    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const beforePacks = StateStore.get('packLibrary');
+
+  const result = PackLibrary.commitCaseHandlingRuleChange({
+    ...caseA, name: 'Renamed', notes: 'New note', manufacturer: 'Other', color: '#ff0000',
+  });
+
+  assert.equal(result.packImpact, null);
+  assert.equal(StateStore.get('packLibrary'), beforePacks);
+});
+
+test('A2 incomplete active revalidation after a physical Case edit cannot retain a current v1 signature', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const caseA = mkCase();
+  const pack = { id: 'pack-active', truck: RECT_TRUCK,
+    cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 }),
+      mkInst('unresolved', 'case-missing', { x: 50, y: 5, z: 0 })], lastEdited: 123, stats: {} };
+  pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
+  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
+    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
+
+  const result = PackLibrary.commitCaseHandlingRuleChange({
+    ...caseA, dimensions: { ...caseA.dimensions, length: 11 },
+  });
+  const after = StateStore.get('packLibrary')[0];
+  assert.equal(result.packImpact?.validationComplete, false);
+  assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
+  assert.deepEqual(after.cases.find(inst => inst.id === 'unresolved'), pack.cases[1]);
+});
+
 test('HANDLING-RULES-P0A A: active Editor Pack + hard-rule Case edit publishes Case + repaired/staged Pack atomically', async () => {
   const { StateStore, PackLibrary } = await freshModules();
   const caseA = mkCase({ id: 'case-a', noStackOnTop: false });

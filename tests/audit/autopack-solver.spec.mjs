@@ -1,5 +1,7 @@
 // autopack solver: contract tests from the former security suite.
 
+import { runInNewContext } from 'node:vm';
+
 import {
   PHB_DIMS,
   R1_HALF,
@@ -864,6 +866,54 @@ test('AUTO-PACK-A1-R6.1 solver keeps final validation gate for unsafe packed pla
     'validation gate must reject floating or unsupported stacks');
   assert.match(src, /output\.unpacked = \[\.\.\.unpacked\];/,
     'validation failures must be staged through the existing unpacked output path');
+});
+
+test('A2 equal-count repack hands final accepted records to every later solver consumer', async () => {
+  // The public solver has no deterministic fixture known to force a rejected
+  // placement to repack at a new pose while preserving the accepted count.
+  // Pin and execute the narrow production handoff instead of adding a hook.
+  const src = await fs.readFile(autoPackSolverPath, 'utf8');
+  const start = src.indexOf('  const finalValidation = validatePackedPlacements(');
+  const end = src.indexOf('  const runWheelWellFrontCompression =', start);
+  assert.ok(start >= 0 && end > start, 'the final-validation handoff exists');
+  const handoffRegion = src.slice(start, end);
+  const handoff = handoffRegion.match(/\n  packed\.length = 0;\n  packed\.push\(\.\.\.finalValidation\.accepted\);\n/);
+  assert.ok(handoff, 'the final accepted array must replace packed unconditionally');
+  assert.doesNotMatch(handoffRegion, /finalValidation\.accepted\.length\s*!==\s*packed\.length/,
+    'equal length must not stand in for equal placement identity');
+
+  const oldA = { instanceId: 'A', pos: { x: 50 }, phase: 'stack' };
+  const finalA = { instanceId: 'A', pos: { x: 30 }, phase: 'floor' };
+  const b = { instanceId: 'B', pos: { x: 10 }, phase: 'floor' };
+  const packed = [oldA, b];
+  const accepted = [finalA, b];
+  runInNewContext(handoff[0], { packed, finalValidation: { accepted } });
+  assert.equal(packed.length, 2, 'the repair retained the same placement count');
+  assert.equal(packed[0], finalA, 'the changed pose and phase now own the mutable working array');
+
+  const statsStart = src.indexOf('function refreshPhaseStats(output, packed) {');
+  const statsEnd = src.indexOf('\nfunction recordRetentionDependencies(', statsStart);
+  assert.ok(statsStart >= 0 && statsEnd > statsStart);
+  const output = { phaseStats: {}, unpacked: [] };
+  runInNewContext(`${src.slice(statsStart, statsEnd)}\nrefreshPhaseStats(output, packed);`, { output, packed });
+  assert.equal(output.phaseStats.floorCount, 2, 'a downstream phase consumer sees the final phase');
+  assert.equal(output.phaseStats.stackCount, 0, 'the stale pre-repack phase is gone');
+
+  const laterRegion = src.slice(end, src.indexOf('  return output;', end));
+  for (const consumer of [
+    'compressWheelWellPlacementsForward(',
+    'refreshPhaseStats(output, packed);',
+    'recordRetentionDependencies(output, packed, retentionContext);',
+  ]) {
+    assert.ok(laterRegion.includes(consumer), `${consumer} must consume packed after the handoff`);
+  }
+  assert.match(handoffRegion, /writeOutputPlacements\(output, finalValidation\.accepted\);/,
+    'a final rejection rebuilds all output maps from accepted records');
+  const repackRegion = src.slice(src.indexOf('function repackRejectedPlacements('), statsStart);
+  assert.match(repackRegion, /writeOutputPlacements\(output, repacked\);/,
+    'repack starts maps from accepted records');
+  assert.match(repackRegion, /recordPlacement\(output, repacked, item, (?:floorPlacement|stackPlacement), '(?:floor|stack)'\);/,
+    'each repaired record also updates the output maps');
 });
 
 test('AUTO-PACK-A1-R6.3 floor compaction rebuilds free space before filler and stack phases', async () => {

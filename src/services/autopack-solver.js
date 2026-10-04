@@ -3978,10 +3978,10 @@ export function solveAutoPack(input = {}) {
     writeOutputPlacements(output, finalValidation.accepted);
   }
 
-  if (finalValidation.accepted.length !== packed.length) {
-    packed.length = 0;
-    packed.push(...finalValidation.accepted);
-  }
+  // Repacking can change pose or phase without changing the placement count.
+  // Downstream passes must use the final accepted records, not the old array.
+  packed.length = 0;
+  packed.push(...finalValidation.accepted);
 
   const runWheelWellFrontCompression =
     wheelWell &&

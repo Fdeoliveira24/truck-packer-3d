@@ -554,7 +554,7 @@ test('UI hotfix selected-case Inspector mirrors the Truck header with compact me
       const caseId = pack.cases.find(i => i.id === 'cargo-7').caseId;
       const cases = StateStore.get('caseLibrary').map(c => c.id !== caseId ? c : {
         ...c, name: 'Extremely long fixture case name that wraps instead of colliding with Notes',
-        orientationLock: 'upright', laneItem: false, loadPriority: 1,
+        weight: 52.91, orientationLock: 'upright', laneItem: false, loadPriority: 1,
       });
       StateStore.set({
         caseLibrary: cases,
@@ -569,6 +569,8 @@ test('UI hotfix selected-case Inspector mirrors the Truck header with compact me
       return {
         name: caseData.name, manufacturer: caseData.manufacturer,
         dims: Utils.formatDims(caseData.dimensions, StateStore.get('preferences').units.length),
+        volume: Utils.formatVolume(caseData.dimensions, StateStore.get('preferences').units.length),
+        weight: `${caseData.weight.toFixed(2)} lb`,
         category: CategoryService.meta(caseData.category || 'default').name, categoryColor,
       };
     });
@@ -616,15 +618,16 @@ test('UI hotfix selected-case Inspector mirrors the Truck header with compact me
       assert.equal(view.nameTitle, fixture.name);
       assert.ok(view.nameBelowHeader, 'the case name sits below the Cases / Notes header');
       assert.ok(view.nameWeight >= 600 && view.nameSize > 14, 'the name is semibold and above body size');
-      assert.deepEqual(view.meta.map(chip => chip.text), [fixture.dims, fixture.manufacturer, fixture.category],
-        'canonical formatDims, manufacturer, then category');
+      assert.deepEqual(view.meta.map(chip => chip.text),
+        [fixture.dims, fixture.volume, fixture.weight, fixture.manufacturer, fixture.category],
+        'dimensions, canonical volume, two-decimal weight, manufacturer, then category');
       for (const chip of view.meta) {
         assert.ok(chip.pill && chip.radius >= 8 && chip.border === 'solid', `${chip.text} is a rounded bordered pill`);
         assert.equal(chip.color, view.nameColor, `${chip.text} uses normal text color`);
         assert.ok(chip.size < view.nameSize, `${chip.text} is quieter than the name`);
         assert.ok(chip.width < view.cardWidth / 2 + 40, `${chip.text} is content-sized, not a full-width field`);
       }
-      assert.equal(view.meta[2].dot, fixture.categoryColor, 'Category keeps its color dot');
+      assert.equal(view.meta[4].dot, fixture.categoryColor, 'Category keeps its color dot');
       assert.deepEqual(view.rules.map(rule => rule.text), ['Handling rules', 'This item']);
       const [caseRules, itemRules] = view.rules;
       assert.equal(caseRules.color, view.nameColor, 'Handling rules heading uses primary, not muted, text');
@@ -646,7 +649,133 @@ test('UI hotfix selected-case Inspector mirrors the Truck header with compact me
     assert.ok(narrow.overflow <= 0 && narrow.meta.every(chip => chip.right <= narrow.cardRight + 0.5));
     assert.ok(new Set(narrow.meta.map(chip => chip.top)).size > 1, 'metadata wraps onto another line');
     await card.evaluate(el => { el.style.width = ''; });
+    const metric = await page.evaluate(() => {
+      const { StateStore, InteractionManager, Utils } = window.probe;
+      const prefs = StateStore.get('preferences');
+      StateStore.set({ preferences: { ...prefs, units: { length: 'cm', weight: 'kg' } } }, { skipHistory: true });
+      InteractionManager.setSelection(['cargo-7']);
+      const chips = [...document.querySelectorAll('#inspector-body .card .tp3d-editor-case-meta > *')]
+        .map(el => el.textContent);
+      const caseId = StateStore.get('packLibrary')[0].cases.find(i => i.id === 'cargo-7').caseId;
+      const c = StateStore.get('caseLibrary').find(item => item.id === caseId);
+      return { chips, dims: Utils.formatDims(c.dimensions, 'cm'), volume: Utils.formatVolume(c.dimensions, 'cm'),
+        weight: `${(c.weight * 0.453592).toFixed(2)} kg`, manufacturer: c.manufacturer,
+        category: window.probe.CategoryService.meta(c.category || 'default').name };
+    });
+    assert.deepEqual(metric.chips,
+      [metric.dims, metric.volume, metric.weight, metric.manufacturer, metric.category],
+      'Inspector follows Case Browser unit preferences');
     assert.equal(await page.locator('#inspector-body').getByText('Handling rules (case)').count(), 0);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('hidden packed cargo keeps one physical pose through Hide, selection, drag, and Show', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const id = 'cargo-7';
+    await page.evaluate(id => {
+      const { StateStore } = window.probe;
+      const [pack] = StateStore.get('packLibrary');
+      const source = pack.cases.find(inst => inst.id === id);
+      const c = StateStore.get('caseLibrary').find(item => item.id === source.caseId);
+      const packed = { ...source, placement: 'packed', hidden: false,
+        transform: { ...source.transform, position: { x: 318, y: c.dimensions.height / 2, z: 0 } } };
+      StateStore.set({ packLibrary: [{ ...pack, cases: [packed] }], selectedInstanceIds: [] }, { skipHistory: true });
+    }, id);
+
+    const pose = () => page.evaluate(id => {
+      const { PackLibrary, StateStore, SceneManager, CaseScene } = window.probe;
+      const inst = PackLibrary.getById(StateStore.get('currentPackId')).cases.find(item => item.id === id);
+      const group = CaseScene.getObject(id);
+      const mesh = group.userData.mesh;
+      const bounds = new window.THREE.Box3().setFromObject(mesh);
+      const handle = CaseScene.getGizmoHandleMeshes()[0];
+      const gizmo = handle ? handle.parent.parent : null;
+      const vec = value => value ? value.toArray() : null;
+      const material = Array.isArray(mesh.material) ? mesh.material[0] : mesh.material;
+      return {
+        saved: { ...inst.transform.position }, hidden: inst.hidden,
+        expected: vec(SceneManager.vecInchesToWorld(inst.transform.position)),
+        group: vec(group.getWorldPosition(group.position.clone())),
+        mesh: vec(mesh.getWorldPosition(mesh.position.clone())),
+        meshBoundsCenter: vec(bounds.getCenter(group.position.clone())),
+        meshBoundsMinY: bounds.min.y,
+        meshLocal: vec(mesh.position),
+        gizmoTarget: CaseScene.getGizmoTargetId(),
+        gizmo: gizmo ? vec(gizmo.getWorldPosition(gizmo.position.clone())) : null,
+        selected: window.probe.selection(),
+        opacity: material.opacity, transparent: material.transparent, depthWrite: material.depthWrite,
+      };
+    }, id);
+    const close = (actual, expected, label) => {
+      assert.ok(actual && expected, `${label}: missing position`);
+      assert.equal(actual.length, expected.length, `${label}: dimension mismatch`);
+      for (let axis = 0; axis < actual.length; axis += 1) {
+        assert.ok(Math.abs(actual[axis] - expected[axis]) < 0.01,
+          `${label} axis ${axis}: ${JSON.stringify({ actual, expected })}`);
+      }
+    };
+    const aligned = (state, label, matchSaved = true) => {
+      if (matchSaved) close(state.group, state.expected, `${label} group/saved`);
+      close(state.mesh, state.group, `${label} rendered mesh/group`);
+      close(state.meshBoundsCenter, state.group, `${label} rendered geometry center/group`);
+      close(state.meshLocal, [0, 0, 0], `${label} mesh local origin`);
+      if (state.gizmo) {
+        close([state.gizmo[0], state.gizmo[2]], [state.group[0], state.group[2]], `${label} gizmo x/z`);
+        assert.ok(state.gizmo[1] > state.group[1], `${label} gizmo sits above the same Case, not at another cargo pose`);
+      }
+    };
+
+    const before = await pose();
+    aligned(before, 'before Hide');
+    assert.ok(Math.abs(before.meshBoundsMinY) < 0.01, 'the known packed Case rests at floor level');
+    assert.deepEqual(before.selected, []);
+    const visiblePoint = await page.evaluate(id => window.probe.pointFor(id), id);
+    assert.ok(visiblePoint, 'the known floor-level packed Case is raycastable');
+    await page.mouse.click(visiblePoint.x, visiblePoint.y);
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), [id]);
+    await page.locator('#inspector-body').getByRole('button', { name: 'Hide' }).click();
+    const hidden = await pose();
+    aligned(hidden, 'after Hide');
+    assert.ok(Math.abs(hidden.meshBoundsMinY) < 0.01, 'Hide does not lift the rendered cargo off the floor');
+    assert.equal(hidden.hidden, true);
+    assert.deepEqual(hidden.saved, before.saved, 'Hide preserves the authoritative transform');
+    assert.ok(hidden.transparent && hidden.opacity > 0 && hidden.opacity < 1 && !hidden.depthWrite,
+      'hidden cargo retains its translucent visual contract');
+    await page.locator('#inspector-body').getByRole('button', { name: 'Deselect' }).click();
+    const hiddenPoint = await page.evaluate(id => window.probe.pointFor(id), id);
+    assert.ok(hiddenPoint, 'the hidden mesh remains pickable at the saved cargo pose');
+    await page.mouse.click(hiddenPoint.x, hiddenPoint.y);
+    const selected = await pose();
+    aligned(selected, 'hidden selected');
+    assert.deepEqual(selected.selected, [id]);
+    assert.equal(selected.gizmoTarget, id);
+    assert.deepEqual(selected.saved, before.saved, 'selection does not teleport the saved Case');
+
+    await page.mouse.move(hiddenPoint.x, hiddenPoint.y);
+    await page.mouse.down();
+    const grabbed = await pose();
+    aligned(grabbed, 'hidden grab start');
+    assert.deepEqual(grabbed.saved, before.saved, 'grabbing starts from the saved pose');
+    await page.mouse.move(hiddenPoint.x + 12, hiddenPoint.y + 6, { steps: 3 });
+    const dragging = await pose();
+    aligned(dragging, 'hidden drag preview', false);
+    assert.ok(dragging.group.some((value, axis) => Math.abs(value - grabbed.group[axis]) > 0.01),
+      'the real pointer gesture starts a spatial drag preview');
+    assert.equal(dragging.gizmoTarget, id);
+    assert.deepEqual(dragging.saved, before.saved, 'preview motion does not commit before release');
+    await page.mouse.up();
+    const released = await pose();
+    aligned(released, 'hidden drag release');
+    assert.equal(released.hidden, true);
+    await page.locator('#inspector-body').getByRole('button', { name: 'Show' }).click();
+    const shown = await pose();
+    aligned(shown, 'after Show');
+    assert.equal(shown.hidden, false);
+    assert.deepEqual(shown.saved, released.saved, 'Show preserves the committed transform');
+    assert.equal(shown.opacity, 1);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

@@ -134,6 +134,8 @@ export function canonicalCargoForStorage(raw) {
     maxPalletWeight: parseCargoNonNegNumber(c.maxPalletWeight, { max: PALLET_WEIGHT_MAX_LBS }).value,
     laneItem: parseCargoLane(c.laneItem).value,
     loadPriority: parseCargoLoadPriority(c.loadPriority).value,
+    mustLoadLast: parseCargoBoolean(c.mustLoadLast, false).value,
+    mustUnloadFirst: parseCargoBoolean(c.mustUnloadFirst, false).value,
     orientationLock: canonicalOrientationLock(c.orientationLock),
     shape: parseCargoShape(c.shape).value,
     notes: parseCargoNotes(c.notes),

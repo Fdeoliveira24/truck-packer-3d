@@ -60,6 +60,27 @@ test('CARGO-RULE-V3 typed boolean parser: accepts true/false/yes/no/1/0, rejects
   assert.equal(C.parseCargoBoolean('garbage', true).value, true, 'stackable garbage -> default true (invalid)');
 });
 
+test('A1 operational booleans use canonical tokens in storage and Case normalization', async () => {
+  const C = await import(cargoCanonicalPath.href);
+  const { normalizeCase } = await import(normalizerPath.href);
+  const { buildStorableCase } = await import(caseLibraryPath.href);
+  const tokens = [
+    [true, true], [false, false], ['true', true], ['false', false],
+    ['1', true], ['0', false], ['yes', true], ['no', false],
+    ['on', true], ['off', false], ['invalid', false],
+  ];
+  const base = { id: 'a1-bool', name: 'Boolean Case', dimensions: { length: 10, width: 10, height: 10 } };
+  for (const field of ['mustLoadLast', 'mustUnloadFirst']) {
+    for (const [raw, expected] of tokens) {
+      const input = { ...base, [field]: raw };
+      assert.equal(C.canonicalCargoForStorage(input)[field], expected, `${field} canonical ${String(raw)}`);
+      assert.equal(normalizeCase(input, 123)[field], expected, `${field} normalized ${String(raw)}`);
+      assert.equal(buildStorableCase(input)[field], expected, `${field} stored ${String(raw)}`);
+    }
+    assert.equal(normalizeCase(base, 123)[field], false, `${field} missing defaults false`);
+  }
+});
+
 test('CARGO-RULE-V3 typed numeric parsers: reject malformed/NaN/Infinity, floor counts, clamp bounds', async () => {
   const C = await import(`${cargoCanonicalPath.href}?t=${Date.now()}-${Math.random()}`);
   // Non-negative number.

@@ -4,8 +4,9 @@
 
 import { canonicalOrientationLock } from '../../core/orientation.js';
 import { checkItemCodeAvailability } from '../../core/business-identity.js';
+import { formatCaseModalNumber, formatCaseModalWeightNumber } from '../../core/utils/index.js';
 
-export { canonicalOrientationLock };
+export { canonicalOrientationLock, formatCaseModalNumber };
 
 let caseFieldId = 0;
 
@@ -129,20 +130,6 @@ function createSectionCaption(doc, text) {
   caption.className = 'tp3d-cases-modal-caption tp3d-grid-span-full';
   caption.textContent = text;
   return caption;
-}
-
-export function formatCaseModalNumber(value, unit) {
-  const n = Number(value);
-  if (!Number.isFinite(n)) return '';
-
-  const decimalsByUnit = {
-    in: 2,
-    ft: 2,
-    cm: 2,
-    m: 4,
-  };
-  const maxDecimals = decimalsByUnit[unit] ?? 2;
-  return Number(n.toFixed(maxDecimals)).toString();
 }
 
 function normalizeCaseModalColor(value, fallback = '#9ca3af') {
@@ -419,7 +406,7 @@ export function openCaseModal({
   const fWeight = createField(doc, `Weight (${weightUnit})`, 'number', '', false);
   fWeight.input.step = '0.1';
   const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
-  fWeight.input.value = String(Math.round(weightValue * 100) / 100);
+  fWeight.input.value = formatCaseModalWeightNumber(weightValue);
 
   // ── Handling Rules (collapsed) ──────────────────────────────────────────
   // Only rules the active AutoPack solver honors exactly (Cargo-Rule V1).
@@ -635,7 +622,8 @@ export function openCaseModal({
           // history entry — one Undo/Redo always covers the whole Save.
           const { packImpact } = PackLibrary.commitCaseHandlingRuleChange(
             caseData,
-            { key: categoryKey, name: catMeta.name, color: categoryColor }
+            { key: categoryKey, name: catMeta.name, color: categoryColor },
+            { lengthUnit, weightUnit }
           );
           const [toastMessage, toastTone] = caseSaveToastArgs(packImpact);
           UIComponents.showToast(toastMessage, toastTone);

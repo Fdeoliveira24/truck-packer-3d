@@ -1,6 +1,7 @@
 // autopack solver: contract tests from the former security suite.
 
 import { runInNewContext } from 'node:vm';
+import { runAdaptiveAutoPack } from '../../src/packing-core/solution.js';
 
 import {
   PHB_DIMS,
@@ -85,6 +86,221 @@ test('PLACEMENT-STATE-S2 AutoPack records placement from solver results', async 
     'AutoPack must classify packed vs staged by solver placement membership');
   assert.match(block, /placement: isPacked \? 'packed' : 'staged',/,
     'AutoPack must mark solver-placed cases as packed and overflow/staged cases as staged');
+});
+
+function a3Fixed(Solver, id, position, dims, rules = {}) {
+  return {
+    instanceId: id, fixed: true, item: { weight: 30, ...rules }, pos: position, dims,
+    aabb: Solver.getAabb(position, dims),
+  };
+}
+
+function a3Item(id, dims, rules = {}) {
+  return { instanceId: id, caseId: id, dims, orientationLock: 'upright', canFlip: false, weight: 20, ...rules };
+}
+
+test('A3 Standard fixed hidden cargo blocks every strategy, stays output-free, and empty context preserves parity', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(autoPackEnginePath.href);
+  const truck = { length: 40, width: 20, height: 20, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const caseData = { id: 'base', dimensions: { length: 20, width: 20, height: 10 }, weight: 30, orientationLock: 'upright' };
+  const hidden = {
+    id: 'hidden', caseId: 'base', hidden: true, placement: 'packed',
+    transform: { position: { x: 30, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 20, width: 20, height: 10 }, instanceNotes: 'keep',
+  };
+  const before = JSON.stringify(hidden);
+  const context = Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [hidden] }, () => caseData, PackLib.getCanonicalInstanceEffectiveDims, zones
+  );
+  assert.equal(context.ok, true);
+  const item = a3Item('movable', { l: 20, w: 20, h: 10 });
+  const portfolio = runAdaptiveAutoPack({ truck, zones, items: [item], fixedPlacements: context.fixedPlacements, loadFrontFirst: true });
+  assert.deepEqual(portfolio.solutions.map(option => option.id),
+    ['default', 'compact-fill', 'floor-first', 'stack-priority', 'max-capacity']);
+  for (const option of portfolio.solutions) {
+    assert.deepEqual([...option.placements.keys()], ['movable'], `${option.id} owns only the movable item`);
+    const pos = option.placements.get('movable');
+    const od = option.orientedDims.get('movable');
+    const aabb = Solver.getAabb(pos, { l: od.length, w: od.width, h: od.height });
+    assert.equal(Solver.aabbsOverlap(aabb, context.fixedPlacements[0].aabb), false, `${option.id} respects hidden collision`);
+    assert.equal(option.unpacked.includes('hidden'), false);
+  }
+  const chosen = portfolio.selectedSolution;
+  const composed = Engine.buildAutoPackNextCases(
+    [hidden, { id: 'movable', caseId: 'base', placement: 'staged', transform: { position: { x: -20, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }],
+    chosen.placements, chosen.rotations, chosen.orientedDims, new Map()
+  );
+  assert.equal(JSON.stringify(composed[0]), before, 'hidden persisted fields are byte-identical');
+  const absent = Solver.solveAutoPack({ truck, zones, items: [item], loadFrontFirst: true });
+  const empty = Solver.solveAutoPack({ truck, zones, items: [item], fixedPlacements: [], loadFrontFirst: true });
+  assert.deepEqual([...empty.placements], [...absent.placements]);
+  assert.deepEqual([...empty.orientedDims], [...absent.orientedDims]);
+  assert.deepEqual(empty.phaseStats, absent.phaseStats);
+});
+
+test('A3 fixed support uses normal no-stack, direct-child cap, weight, and Max Capacity strictness', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(autoPackEnginePath.href);
+  const truck = { length: 20, width: 20, height: 30, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const basePos = { x: 10, y: 5, z: 0 };
+  const baseDims = { l: 20, w: 20, h: 10 };
+  const child = a3Item('child', { l: 20, w: 20, h: 10 }, { weight: 20 });
+  const solve = (fixed, item = child, extra = {}) => Solver.solveAutoPack({
+    truck, zones, items: [item], fixedPlacements: fixed, loadFrontFirst: true, ...extra,
+  });
+  const base = a3Fixed(Solver, 'base', basePos, baseDims, { weight: 30 });
+  const allowed = solve([base]);
+  assert.equal(allowed.placements.get('child')?.y, 15, 'movable child may use resolved fixed support');
+  assert.equal(allowed.placements.has('base'), false);
+  for (const rule of [{ noStackOnTop: true }, { stackable: false }]) {
+    assert.deepEqual(solve([a3Fixed(Solver, 'base', basePos, baseDims, rule)]).unpacked, ['child']);
+    assert.deepEqual(solve([a3Fixed(Solver, 'base', basePos, baseDims, rule)], child, { maxCapacityMode: true }).unpacked,
+      ['child'], 'Max may not relax a fixed support rule');
+  }
+  const hiddenInst = { id: 'hidden-base', caseId: 'base', hidden: true, placement: 'packed', packedProfile: 'max-capacity',
+    transform: { position: basePos, rotation: { x: 0, y: 0, z: 0 } }, orientedDims: { length: 20, width: 20, height: 10 } };
+  const blockedCase = { id: 'base', dimensions: { length: 20, width: 20, height: 10 }, weight: 30, noStackOnTop: true };
+  const canonicalContext = Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [hiddenInst] }, () => blockedCase, PackLib.getCanonicalInstanceEffectiveDims, zones
+  );
+  assert.equal(canonicalContext.ok, true);
+  assert.deepEqual(solve(canonicalContext.fixedPlacements, child, { maxCapacityMode: true }).unpacked, ['child'],
+    'canonical fixed rules remain strict even when its saved profile is Max Capacity');
+  const heavyChild = a3Item('heavy', { l: 20, w: 20, h: 10 }, { weight: 31 });
+  assert.deepEqual(solve([base], heavyChild).unpacked, ['heavy']);
+  assert.deepEqual(solve([base], heavyChild, { maxCapacityMode: true }).unpacked, ['heavy'],
+    'Max must compare the real movable weight against fixed support');
+
+  const fullHeightBase = a3Fixed(Solver, 'base', basePos, baseDims, { weight: 30, maxStackCount: 1 });
+  const existingChild = a3Fixed(Solver, 'existing', { x: 5, y: 15, z: 0 }, { l: 10, w: 20, h: 10 }, { noStackOnTop: true });
+  const secondChild = a3Item('second', { l: 10, w: 20, h: 10 }, { weight: 10 });
+  assert.deepEqual(solve([fullHeightBase, existingChild], secondChild).unpacked, ['second'],
+    'existing fixed direct child consumes the only slot');
+  assert.equal(solve([{ ...fullHeightBase, item: { weight: 30, maxStackCount: 2 } }, existingChild], secondChild).placements.size, 1);
+});
+
+test('A3 unresolved packed geometry is collision-only while unresolved staged cargo is excluded', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(autoPackEnginePath.href);
+  const Normalizer = await import(normalizerPath.href);
+  const truck = { length: 20, width: 20, height: 20, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const unresolved = {
+    id: 'missing', caseId: 'deleted', placement: 'packed', hidden: false,
+    transform: { position: { x: 10, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 20, width: 20, height: 10 },
+  };
+  const normalized = Normalizer.normalizeInstance(unresolved, new Map());
+  assert.deepEqual(normalized.orientedDims, unresolved.orientedDims, 'identity missing-Case size survives hydration');
+  const staged = { ...structuredClone(unresolved), id: 'staged', placement: 'staged' };
+  const context = Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [unresolved, staged] }, () => null, PackLib.getCanonicalInstanceEffectiveDims, zones
+  );
+  assert.equal(context.ok, true);
+  assert.equal(context.unresolvedPackedCount, 1);
+  assert.equal(context.unresolvedStagedCount, 1);
+  assert.equal(context.fixedPlacements[0].collisionOnly, true);
+  const item = a3Item('movable', { l: 20, w: 20, h: 10 });
+  const result = Solver.solveAutoPack({ truck, zones, items: [item], fixedPlacements: context.fixedPlacements });
+  assert.deepEqual(result.unpacked, ['movable'], 'blocker fills floor and is not a trusted stack support');
+  assert.equal(result.placements.has('missing'), false);
+  const composed = Engine.buildAutoPackNextCases([unresolved, staged], result.placements, result.rotations,
+    result.orientedDims, new Map(), context.excludedIds);
+  assert.deepEqual(composed, [unresolved, staged], 'neither unresolved item gains mutation authority');
+  assert.equal(Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [{ ...unresolved, orientedDims: null }] }, () => null, PackLib.getCanonicalInstanceEffectiveDims, zones
+  ).ok, false, 'unknown packed dimensions fail closed');
+  const malformedPosition = Normalizer.normalizeInstance({
+    ...unresolved, transform: { ...unresolved.transform, position: { x: null, y: 5, z: 0 } },
+  }, new Map());
+  assert.equal(malformedPosition.transform.position.x, null, 'hydration does not fabricate missing-Case position');
+  assert.equal(Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [malformedPosition] }, () => null, PackLib.getCanonicalInstanceEffectiveDims, zones
+  ).ok, false);
+  const visibleSupport = {
+    id: 'support', caseId: 'base', placement: 'packed', hidden: false,
+    transform: { position: { x: 10, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 20, width: 20, height: 10 },
+  };
+  const restingBlocker = {
+    ...unresolved,
+    transform: { ...unresolved.transform, position: { x: 10, y: 15, z: 0 } },
+  };
+  const unsafe = Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [restingBlocker, visibleSupport] },
+    id => id === 'base' ? { dimensions: visibleSupport.orientedDims, weight: 30 } : null,
+    PackLib.getCanonicalInstanceEffectiveDims, zones
+  );
+  assert.equal(unsafe.ok, false, 'unresolved fixed blocker cannot be left resting on movable cargo');
+  assert.match(unsafe.reason, /rests on cargo AutoPack would move/);
+});
+
+test('A3 Wheel Wells fixed context blocks collision and supplies only legitimate structural support', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const truck = { length: 60, width: 40, height: 30, shapeMode: 'wheelWells',
+    shapeConfig: { wellOffsetFromRear: 20, wellLength: 20, wellHeight: 10, wellWidth: 8 } };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const fixed = [
+    a3Fixed(Solver, 'rear', { x: 10, y: 15, z: 0 }, { l: 20, w: 40, h: 30 }),
+    a3Fixed(Solver, 'front', { x: 50, y: 15, z: 0 }, { l: 20, w: 40, h: 30 }),
+    a3Fixed(Solver, 'channel', { x: 30, y: 5, z: 0 }, { l: 20, w: 24, h: 10 }),
+  ];
+  const item = a3Item('bridge', { l: 20, w: 40, h: 10 });
+  const options = { truck, zones, items: [item], fixedPlacements: fixed, loadFrontFirst: true, enableWheelWellBridge: true };
+  const portfolio = runAdaptiveAutoPack(options);
+  assert.ok(portfolio.solutions.some(option => option.id === 'constrained-first'));
+  for (const option of portfolio.solutions) {
+    for (const [id, pos] of option.placements) {
+      const dims = option.orientedDims.get(id);
+      const aabb = Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height });
+      assert.equal(fixed.some(entry => Solver.aabbsOverlap(aabb, entry.aabb)), false, `${option.id} cannot overlap fixed Wheel Wells cargo`);
+    }
+    assert.equal(option.placements.has('channel'), false);
+  }
+  const placed = portfolio.solutions.find(option => option.placements.has('bridge'));
+  assert.ok(placed, 'resolved fixed channel cargo completes real well-top support');
+  const bridgePos = placed.placements.get('bridge');
+  assert.equal(bridgePos.y, 15);
+  assert.equal(Solver.isWheelWellSupportedAndStable(
+    Solver.getAabb(bridgePos, { l: 20, w: 40, h: 10 }), [], Solver.getWheelWellGeometry(truck), item
+  ), false, 'well tops alone do not justify the bridge');
+});
+
+test('A3 Front Overhang uses the same hidden fixed cargo for retention and collision, and rejects movable retention dependencies', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(autoPackEnginePath.href);
+  const truck = phcFrontOverhangTruck();
+  const zones = PackLib.getTrailerUsableZones(truck);
+  const retainerCase = { id: 'wall', dimensions: { length: 24, width: 18, height: 48 }, weight: 30 };
+  const retainer = { id: 'wall-1', caseId: 'wall', hidden: true, placement: 'packed',
+    transform: { position: { x: 228, y: 24, z: -39 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 24, width: 18, height: 48 } };
+  const context = Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [retainer] }, () => retainerCase, PackLib.getCanonicalInstanceEffectiveDims, zones
+  );
+  assert.equal(context.ok, true);
+  const deck = a3Item('deck', { l: 24, w: 18, h: 16 }, { weight: 20 });
+  const result = Solver.solveAutoPack({ truck, zones, items: [deck], fixedPlacements: context.fixedPlacements, loadFrontFirst: true });
+  assert.deepEqual(result.retentionDependencies.get('deck'), ['wall-1'], 'hidden retainer still meets current threshold');
+  for (const [id, pos] of result.placements) {
+    const dims = result.orientedDims.get(id);
+    assert.equal(Solver.aabbsOverlap(Solver.getAabb(pos, { l: dims.length, w: dims.width, h: dims.height }),
+      context.fixedPlacements[0].aabb), false, 'retainer is also ordinary collision context');
+  }
+  const deckCase = { id: 'deck-case', dimensions: { length: 24, width: 18, height: 16 }, weight: 20 };
+  const fixedDeck = { id: 'fixed-deck', caseId: 'deck-case', hidden: true, placement: 'packed',
+    transform: { position: { x: 252, y: 51.2, z: -39 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 24, width: 18, height: 16 } };
+  const visibleRetainer = { ...retainer, id: 'visible-wall', hidden: false };
+  const byId = id => id === 'deck-case' ? deckCase : retainerCase;
+  const unsafe = Engine.buildAutoPackPhysicalContext(
+    { truck, cases: [fixedDeck, visibleRetainer] }, byId, PackLib.getCanonicalInstanceEffectiveDims, zones
+  );
+  assert.equal(unsafe.ok, false);
+  assert.match(unsafe.reason, /rear retention/);
 });
 
 test('PLACEMENT-STATE-S2 unpackAll records "staged" placement for every case', async () => {
@@ -1331,7 +1547,7 @@ test('AUTO-PACK-A1-R6 live adapter preserves runtime gates, zones, and orientati
     'A1-R6 must preserve the billing/pro gate in the runtime engine');
   assert.match(engineSrc, /function isActiveRunValid\(run\) \{[\s\S]*?run\.workspaceGeneration !== workspaceGeneration[\s\S]*?OperationLifecycle\.isCurrent\(run\.token\)/,
     'A1-R6 must preserve the stale-run guard (workspace generation, plus the E-UX operation-token check)');
-  assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\);/,
+  assert.match(engineSrc, /const physicalContextZones = TrailerGeometry\.getTrailerUsableZones\(packData\.truck\);[\s\S]*const zones = physicalContextZones;/,
     'A1-R6 must continue using TrailerGeometry as the single usable-zone source');
   assert.match(engineSrc, /stageInstant\(stagingMap\);/,
     'A1-R6 must preserve pre-run staging before solver placement');
@@ -3418,7 +3634,7 @@ test('AUTO-PACK-A0 AutoPack keeps zone containment and stacking guards wired', a
   const trailerGeometrySrc = await fs.readFile(trailerGeometryPath, 'utf8');
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
 
-  assert.match(engineSrc, /const zones = TrailerGeometry\.getTrailerUsableZones\(truck\)/,
+  assert.match(engineSrc, /const physicalContextZones = TrailerGeometry\.getTrailerUsableZones\(packData\.truck\);[\s\S]*const zones = physicalContextZones;/,
     'AutoPack must continue deriving usable zones from trailer geometry');
   assert.match(trailerGeometrySrc, /if \(mode === 'frontBonus'\)[\s\S]*if \(mode === 'wheelWells'\)/,
     'trailer-geometry.js must keep frontBonus and wheelWells branches');

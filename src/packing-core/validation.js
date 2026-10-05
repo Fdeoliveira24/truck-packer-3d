@@ -168,7 +168,7 @@ export function isPalletSupport(placement = {}) {
 export function canSupportCandidateWeight(candidateItem, support) {
   if (!candidateItem) return true;
   return weightAllowsSupport(
-    finiteNumber(candidateItem.weight, 0),
+    finiteNumber(support?.fixed === true ? candidateItem.actualWeight ?? candidateItem.weight : candidateItem.weight, 0),
     getPlacementWeight(support),
     isPalletSupport(support)
   );

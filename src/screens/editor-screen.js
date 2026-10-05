@@ -30,6 +30,12 @@ function caseCountText(count) {
   return `${count} case${count === 1 ? '' : 's'}`;
 }
 
+function formatEditorCaseWeightLabel(weight, unit) {
+  const value = Number(weight);
+  if (!Number.isFinite(value)) return '—';
+  return unit === 'kg' ? `${(value * 0.453592).toFixed(2)} kg` : `${value.toFixed(2)} lb`;
+}
+
 export function resetEditorCaseQtyDrafts(caseQtyDrafts) {
   caseQtyDrafts.clear();
 }
@@ -139,6 +145,7 @@ function formatDeleteResultMessage(result, fallbackDeletedIds = []) {
 
 export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.parse(JSON.stringify(value)), currentCases = option?.nextCases) {
   const isMaxCapacity = option && option.id === 'max-capacity';
+  const movableIds = Array.isArray(option?.movableIds) ? new Set(option.movableIds) : null;
   const sourceCases = option && Array.isArray(option.nextCases) ? option.nextCases : [];
   if (!Array.isArray(currentCases) || sourceCases.length !== currentCases.length) return null;
   const proposed = cloneCases(sourceCases);
@@ -150,6 +157,7 @@ export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.par
   const rebased = current.map(inst => {
     const chosen = proposedById.get(inst.id);
     if (inst.caseId !== chosen.caseId || Boolean(inst.hidden) !== Boolean(chosen.hidden)) return null;
+    if (movableIds && !movableIds.has(inst.id)) return inst;
     // buildAutoPackNextCases owns placement and packed pose. It does not own
     // other instance metadata, or a staged pose edited after this result ran.
     const next = { ...inst, placement: chosen.placement };
@@ -5461,12 +5469,7 @@ export function createEditorScreen({
       const volumeLabel = hasDims
         ? Utils.formatVolume(c.dimensions, lengthUnit)
         : '—';
-      const weightNum = Number(c.weight);
-      let weightLabel = '—';
-      if (Number.isFinite(weightNum)) {
-        const weightUnit = (prefs.units && prefs.units.weight) || 'lb';
-        weightLabel = weightUnit === 'kg' ? `${(weightNum * 0.453592).toFixed(2)} kg` : `${weightNum.toFixed(2)} lb`;
-      }
+      const weightLabel = formatEditorCaseWeightLabel(c.weight, (prefs.units && prefs.units.weight) || 'lb');
       const meta1 = document.createElement('div');
       meta1.className = 'tp3d-editor-card-dims tp3d-editor-case-meta-primary';
       const parts = [dimsLabel, volumeLabel, weightLabel].filter(v => v && v !== '—');
@@ -7502,7 +7505,8 @@ export function createEditorScreen({
       name.textContent = caseData.name || '—';
       name.title = caseData.name || '';
       card.appendChild(name);
-      // Read-only case metadata pills: dimensions, manufacturer (only when set), category.
+      // Read-only case metadata pills share the Case Browser's dimensions,
+      // volume, and two-decimal weight display contract.
       const meta = document.createElement('div');
       meta.className = 'tp3d-editor-case-meta';
       const addMetaChip = text => {
@@ -7512,7 +7516,13 @@ export function createEditorScreen({
         meta.appendChild(chip);
       };
       const d = caseData.dimensions || { length: 0, width: 0, height: 0 };
-      addMetaChip(Utils.formatDims(d, lengthUnit));
+      const hasDims = ['length', 'width', 'height'].every(axis => Number.isFinite(d[axis]));
+      if (hasDims) {
+        addMetaChip(Utils.formatDims(d, lengthUnit));
+        addMetaChip(Utils.formatVolume(d, lengthUnit));
+      }
+      const weightLabel = formatEditorCaseWeightLabel(caseData.weight, (prefs.units && prefs.units.weight) || 'lb');
+      if (weightLabel !== '—') addMetaChip(weightLabel);
       const manufacturer = String(caseData.manufacturer || '').trim();
       if (manufacturer) addMetaChip(manufacturer);
       meta.appendChild(makeMiniCategoryChip(caseData.category));

@@ -322,10 +322,7 @@ export function computeSpaceUtilization({
   let totalClippedInstanceVolume = 0;
 
   for (const instance of instances) {
-    if (instance && instance.hidden) {
-      hiddenCount++;
-      continue;
-    }
+    if (instance && instance.hidden) hiddenCount++;
 
     const instanceId = instance && instance.id != null ? String(instance.id) : null;
     const caseId = instance && instance.caseId != null ? String(instance.caseId) : null;

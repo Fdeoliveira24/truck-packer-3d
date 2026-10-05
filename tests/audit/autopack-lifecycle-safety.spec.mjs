@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import { createOperationLifecycle } from '../../src/core/operation-lifecycle.js';
 import { getOrientedDimsForRotation, normalizeRightAngleRotation } from '../../src/core/oriented-dims.js';
+import { getCanonicalInstanceEffectiveDims } from '../../src/services/pack-library.js';
 
 // Exercise the production engine while replacing only its synchronous solver
 // dependency. This keeps large-load and error paths deterministic without
@@ -157,6 +158,7 @@ async function withFixture(options, run) {
     },
     normalizeRightAngleRotation,
     getOrientedDimsForRotation,
+    getCanonicalInstanceEffectiveDims,
     reconcilePlacementsForTruck: () => ({ acceptedPlacements: [] }),
   };
   const objects = new Map(packA.cases.map(item => [item.id, makeObject(item.id)]));
@@ -601,8 +603,7 @@ test('10B: the status is the only running-progress channel; outcome, warning, an
       options: {},
       missingCase: true,
       expected: [
-        ['1 unresolved item excluded from AutoPack (missing case definition).', 'warning'],
-        ['1 item(s) were excluded — their case definition is missing', 'warning'],
+        ['1 staged item excluded from AutoPack (missing Case definition).', 'warning'],
       ],
     },
     failure: {
@@ -665,6 +666,100 @@ test('Loading screen OFF suppresses only the status card; run, animation, lifecy
       });
     }
   }
+});
+
+test('A3 fixed child on movable support refuses before Results, scene, Pack, history, or solver work', async () => {
+  await withFixture({ caseCount: 2 }, async f => {
+    const pack = f.packs.get('a');
+    pack.cases[0].placement = 'packed';
+    pack.cases[0].transform.position = { x: 30, y: 5, z: 0 };
+    pack.cases[1].hidden = true;
+    pack.cases[1].placement = 'packed';
+    pack.cases[1].transform.position = { x: 30, y: 15, z: 0 };
+    const before = structuredClone(pack.cases);
+    const result = f.state.autoPackResults;
+    const writes = [...f.objects.values()].map(object => object.writes.length);
+    await f.engine.pack();
+    assert.match(f.toasts[0]?.[0] || '', /depends on visible cargo/);
+    assert.deepEqual(pack.cases, before);
+    assert.equal(f.state.autoPackResults, result);
+    assert.deepEqual([...f.objects.values()].map(object => object.writes.length), writes);
+    assert.equal(f.stateWrites.length, 0);
+    assert.equal(f.packWrites.length, 0);
+    assert.equal(f.solveCalls, 0);
+    assert.equal(f.frames.length, 0);
+    assert.equal(f.overlays.length, 0);
+    assert.equal(f.lifecycle.isBusy(), false);
+  });
+});
+
+test('A3 unresolved packed unknown geometry refuses before any AutoPack mutation', async () => {
+  await withFixture({ caseCount: 2 }, async f => {
+    const pack = f.packs.get('a');
+    pack.cases[0].caseId = 'deleted';
+    pack.cases[0].placement = 'packed';
+    pack.cases[0].orientedDims = null;
+    const before = structuredClone(pack.cases);
+    const previousResults = f.state.autoPackResults;
+    await f.engine.pack();
+    assert.match(f.toasts[0]?.[0] || '', /unresolved physical geometry/);
+    assert.deepEqual(pack.cases, before);
+    assert.equal(f.state.autoPackResults, previousResults);
+    assert.equal(f.stateWrites.length, 0);
+    assert.equal(f.packWrites.length, 0);
+    assert.equal(f.solveCalls, 0);
+    assert.equal(f.frames.length, 0);
+    assert.equal(f.overlays.length, 0);
+    assert.equal(f.lifecycle.isBusy(), false);
+  });
+});
+
+test('A3 unresolved packed blocker is preserved, warned, and passed to every solve without output ownership', async () => {
+  let fixedSeen = null;
+  await withFixture({ caseCount: 2, tween: 'none', solve: args => {
+    fixedSeen = args.fixedPlacements;
+    return solutionFor(args.items);
+  } }, async f => {
+    const pack = f.packs.get('a');
+    pack.cases[0].caseId = 'deleted';
+    pack.cases[0].placement = 'packed';
+    pack.cases[0].orientedDims = { length: 10, width: 10, height: 10 };
+    const before = JSON.stringify(pack.cases[0]);
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    await f.finish(promise);
+    assert.equal(fixedSeen?.length, 1);
+    assert.equal(fixedSeen[0].collisionOnly, true);
+    assert.equal(JSON.stringify(f.packs.get('a').cases[0]), before);
+    assert.equal(JSON.stringify(f.state.autoPackResults.options[0].nextCases[0]), before);
+    assert.deepEqual(f.state.autoPackResults.options[0].movableIds, ['i1']);
+    assert.ok(f.toasts.some(([message]) => /preserved as fixed physical blockers/.test(message)));
+    assert.ok(f.toasts.some(([message]) => /Packed 1 of 1 eligible cases/.test(message)));
+  });
+});
+
+test('A3 resolved hidden packed cargo reaches the solver as fixed context and remains byte-identical', async () => {
+  let fixedSeen = null;
+  await withFixture({ caseCount: 2, tween: 'none', solve: args => {
+    fixedSeen = args.fixedPlacements;
+    return solutionFor(args.items);
+  } }, async f => {
+    const pack = f.packs.get('a');
+    pack.cases[0].hidden = true;
+    pack.cases[0].placement = 'packed';
+    pack.cases[0].transform.position = { x: 30, y: 5, z: 0 };
+    const before = JSON.stringify(pack.cases[0]);
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    await f.finish(promise);
+    assert.equal(fixedSeen?.length, 1);
+    assert.equal(fixedSeen[0].collisionOnly, undefined);
+    assert.equal(fixedSeen[0].fixed, true);
+    assert.equal(JSON.stringify(f.packs.get('a').cases[0]), before);
+    assert.equal(JSON.stringify(f.state.autoPackResults.options[0].nextCases[0]), before);
+    assert.deepEqual(f.state.autoPackResults.options[0].movableIds, ['i1']);
+    assert.equal(f.state.autoPackResults.options[0].packedCount, 1);
+  });
 });
 
 test('10B: screen departure invalidates the run at once and releases the operation within one batch wait', async () => {

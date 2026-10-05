@@ -406,6 +406,10 @@ export function normalizeInstance(inst, caseMap) {
       // and export; use null when invalid/missing. Never invent dimensions.
       orientedDims = normalizeOrientedDims(inst && inst.orientedDims);
     }
+  } else if (!caseData) {
+    // With no Case definition, even the identity pose cannot be reconstructed
+    // from base dimensions. Keep only explicitly saved, valid physical bounds.
+    orientedDims = normalizeOrientedDims(inst && inst.orientedDims);
   }
   const deliverySequence = normalizeDeliverySequence(inst && inst.deliverySequence);
   return {
@@ -413,9 +417,9 @@ export function normalizeInstance(inst, caseMap) {
     caseId,
     transform: {
       position: {
-        x: finiteNumber(pos.x, -80),
-        y: finiteNumber(pos.y, halfY),
-        z: finiteNumber(pos.z, 0),
+        x: caseData ? finiteNumber(pos.x, -80) : (typeof pos.x === 'number' && Number.isFinite(pos.x) ? pos.x : null),
+        y: caseData ? finiteNumber(pos.y, halfY) : (typeof pos.y === 'number' && Number.isFinite(pos.y) ? pos.y : null),
+        z: caseData ? finiteNumber(pos.z, 0) : (typeof pos.z === 'number' && Number.isFinite(pos.z) ? pos.z : null),
       },
       rotation: {
         x: finiteNumber(rot.x, 0),

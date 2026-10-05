@@ -285,16 +285,58 @@ test('UTIL-ENGINE-12 effective oriented dimensions drive the packing envelope', 
   assert.equal(result.occupiedEnvelopeVolume, 1000);
 });
 
-test('UTIL-ENGINE-13 hidden Cases preserve current exclusion semantics', () => {
-  const hidden = makeInstance('hidden', 'case-1', { x: -10, y: 5, z: 0 }, { hidden: true });
-  const result = calculate(STANDARD_TRUCK, [hidden]);
-  assert.equal(result.status, 'ready');
-  assert.equal(result.hiddenCount, 1);
-  assert.equal(result.loadedCount, 0);
-  assert.equal(result.stagedCount, 0);
-  assert.equal(result.unresolvedCount, 0);
-  assert.equal(result.instanceAabbs.length, 0);
-  assert.equal(result.outsideVolume, 0);
+test('UTIL-ENGINE-13 hiding packed cargo changes visibility, not physical totals or diagnostics', () => {
+  const caseData = makeCase('case-1', { length: 10, width: 10, height: 10 }, { volume: 1250, weight: 52.91 });
+  const visible = makeInstance('one', caseData.id, { x: 5, y: 5, z: 0 }, { placement: 'packed' });
+  const pack = { truck: STANDARD_TRUCK, cases: [visible] };
+  const before = PackLibrary.computeStats(pack, [caseData]);
+  const after = PackLibrary.computeStats({ ...pack, cases: [{ ...visible, hidden: true }] }, [caseData]);
+  assert.equal(before.hiddenCases, 0);
+  assert.equal(after.hiddenCases, 1);
+  for (const key of ['packedCases', 'stagedCases', 'totalWeight', 'volumeUsed', 'volumePercent']) {
+    assert.equal(after[key], before[key], `${key} is independent of visibility`);
+  }
+  for (const key of ['loadedCount', 'cargoCubeVolume', 'occupiedEnvelopeVolume', 'spatialUtilizationPercent']) {
+    assert.equal(after.spaceUtilization[key], before.spaceUtilization[key], `${key} is independent of visibility`);
+  }
+  assert.deepEqual(after.spaceUtilization.instanceAabbs, before.spaceUtilization.instanceAabbs);
+  assert.deepEqual(after.spaceUtilization.diagnostics.overlaps, before.spaceUtilization.diagnostics.overlaps);
+  assert.equal(after.totalWeight, 52.91);
+  assert.equal(after.volumeUsed, 1250);
+});
+
+test('UTIL-ENGINE-13B hidden staged cargo stays staged and multiple hidden packed cargo stays physical', () => {
+  const caseData = makeCase();
+  const packed = [
+    makeInstance('a', caseData.id, { x: 5, y: 5, z: 0 }, { hidden: true, placement: 'packed' }),
+    makeInstance('b', caseData.id, { x: 15, y: 5, z: 0 }, { hidden: true, placement: 'packed' }),
+  ];
+  const staged = makeInstance('c', caseData.id, { x: -10, y: 5, z: 0 }, { hidden: true, placement: 'staged' });
+  const result = calculate(STANDARD_TRUCK, [...packed, staged], [caseData]);
+  assert.equal(result.hiddenCount, 3);
+  assert.equal(result.loadedCount, 2);
+  assert.equal(result.stagedCount, 1);
+  assert.equal(result.cargoCubeVolume, 2000);
+  assert.equal(result.occupiedEnvelopeVolume, 2000);
+  assert.equal(result.instanceAabbs.find(entry => entry.instanceId === 'c').placement, 'staged');
+  const stats = PackLibrary.computeStats({ truck: STANDARD_TRUCK, cases: [...packed, staged] }, [caseData]);
+  assert.equal(stats.totalWeight, 20);
+  assert.equal(stats.packedCases, 2);
+  assert.equal(stats.stagedCases, 1);
+  const overlapping = calculate(STANDARD_TRUCK, [...packed, { ...packed[0], id: 'overlap', hidden: false }], [caseData]);
+  assert.ok(overlapping.diagnostics.overlaps.some(entry => entry.instanceIds.includes('a')),
+    'a hidden packed Case still participates in overlap diagnostics');
+});
+
+test('UTIL-ENGINE-13C hidden unresolved cargo stays unresolved without fabricated weight or cube', () => {
+  const missing = makeInstance('missing', 'deleted', { x: 5, y: 5, z: 0 }, { hidden: true, placement: 'packed' });
+  const stats = PackLibrary.computeStats({ truck: STANDARD_TRUCK, cases: [missing] }, []);
+  assert.equal(stats.hiddenCases, 1);
+  assert.equal(stats.unresolvedInstances, 1);
+  assert.equal(stats.packedCases, 0);
+  assert.equal(stats.totalWeight, 0);
+  assert.equal(stats.volumeUsed, 0);
+  assert.equal(stats.totalsComplete, false);
 });
 
 test('UTIL-ENGINE-14 unresolved Case definitions produce an incomplete partial result', () => {

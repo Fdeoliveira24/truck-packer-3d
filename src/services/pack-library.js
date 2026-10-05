@@ -3103,7 +3103,7 @@ export function computeStats(pack, caseLibraryOverride) {
       .map(entry => entry.instanceId)
   );
   ((pack && pack.cases) || []).forEach(inst => {
-    if (!inst || inst.hidden || !loadedInstanceIds.has(inst.id == null ? null : String(inst.id))) return;
+    if (!inst || !loadedInstanceIds.has(inst.id == null ? null : String(inst.id))) return;
     const c = caseLib.find(caseData => caseData && caseData.id === inst.caseId) || null;
     if (!c) return;
     // Contract C: packedProfile === 'max-capacity' on a currently packed instance
@@ -3150,11 +3150,9 @@ export function computeStats(pack, caseLibraryOverride) {
 }
 
 /**
- * Per-instance cargo status aligned with pack.cases ('inTruck' | 'staged' |
- * 'hidden' | 'unresolved'), read from the SAME classification a live
- * computeStats() result reports, so per-Case tallies always reconcile with its
- * totals. The space-utilization projection lists every resolved, non-hidden
- * instance as loaded or staged; any other non-hidden instance is unresolved.
+ * Per-instance physical status aligned with pack.cases ('inTruck' | 'staged' |
+ * 'unresolved'), read from the SAME classification a live computeStats() result
+ * reports. Hidden is an independent visibility count, not a physical status.
  * Entries match by instance id + case id and are consumed once, in Pack order.
  * Also returns the distinct reasons behind unresolved instances.
  */
@@ -3172,7 +3170,6 @@ export function getStatsInstanceStatuses(pack, stats) {
     queues.get(k).push(entry.placement === 'loaded' ? 'inTruck' : 'staged');
   });
   const statuses = ((pack && pack.cases) || []).map(inst => {
-    if (inst && inst.hidden) return 'hidden';
     const queue = queues.get(key(
       inst && inst.id != null ? String(inst.id) : null,
       inst && inst.caseId != null ? String(inst.caseId) : null
@@ -3209,10 +3206,7 @@ export function getCaseInstanceCounts(packOrId, caseId, caseLibraryOverride) {
   let hidden = 0;
   (pack.cases || []).forEach(inst => {
     if (!inst || inst.caseId !== caseId) return;
-    if (inst.hidden) {
-      hidden++;
-      return;
-    }
+    if (inst.hidden) hidden++;
     const physicalPlacement = classifyPhysicalPlacement(inst);
     // No resolvable case definition means no geometry to test — consistent with
     // computeStats() excluding unresolved instances from packed/staged totals.
@@ -3227,7 +3221,7 @@ export function getCaseInstanceCounts(packOrId, caseId, caseLibraryOverride) {
 }
 
 /**
- * Workspace-wide non-hidden physical instance count per Case, aggregated in
+ * Workspace-wide physical instance count per Case, aggregated in
  * ONE pass over the active workspace's packLibrary (never a per-Case scan).
  * Result is derived for the current render cycle only — never persisted.
  */
@@ -3235,7 +3229,7 @@ export function getWorkspaceCaseQuantities() {
   const counts = new Map();
   getPacks().forEach(pack => {
     (pack.cases || []).forEach(inst => {
-      if (!inst || inst.hidden || !inst.caseId) return;
+      if (!inst || !inst.caseId) return;
       counts.set(inst.caseId, (counts.get(inst.caseId) || 0) + 1);
     });
   });

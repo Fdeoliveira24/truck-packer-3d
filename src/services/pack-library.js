@@ -1101,10 +1101,11 @@ function buildAcceptedAabbs(pack, instances, caseLibrary) {
     const caseData = caseMap.get(inst && inst.caseId);
     const position = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
     if (!position) return;
-    const canonical = caseData ? getCanonicalInstanceEffectiveDims(inst, caseData) : null;
-    if (canonical && canonical.ok) {
-      acceptedAabbs.push(makeAabb(position, canonical.dims));
-    } else if (!caseData) {
+    if (caseData) {
+      // Staging layout reserves the same effective envelope as before,
+      // including an explicitly stored orientedDims on a resolved Case.
+      acceptedAabbs.push(makeAabb(position, getInstanceEffectiveDims(inst, caseData)));
+    } else {
       const unresolved = getTrustedSavedAabb(inst);
       if (unresolved) acceptedAabbs.push(unresolved);
     }

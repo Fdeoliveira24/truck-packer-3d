@@ -182,6 +182,57 @@ test('A3 fixed support uses normal no-stack, direct-child cap, weight, and Max C
   assert.equal(solve([{ ...fullHeightBase, item: { weight: 30, maxStackCount: 2 } }, existingChild], secondChild).placements.size, 1);
 });
 
+test('F03 committed Max support survives fixed preflight without relaxing new movable cargo', async () => {
+  const { Solver, PackLib } = await phbSolverModules();
+  const Engine = await import(autoPackEnginePath.href);
+  const baseCase = { id: 'base', dimensions: { length: 20, width: 20, height: 10 }, weight: 30, noStackOnTop: true };
+  const childCase = { id: 'child', dimensions: { length: 20, width: 20, height: 10 }, weight: 20 };
+  const cases = [baseCase, childCase];
+  const byId = id => cases.find(item => item.id === id) || null;
+  const packed = (id, caseId, y, profile = 'max-capacity') => ({
+    id, caseId, hidden: true, placement: 'packed', packedProfile: profile,
+    transform: { position: { x: 10, y, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    orientedDims: { length: 20, width: 20, height: 10 },
+  });
+  for (const truck of [
+    { length: 20, width: 20, height: 30, shapeMode: 'rect' },
+    { length: 60, width: 40, height: 30, shapeMode: 'wheelWells',
+      shapeConfig: { wellOffsetFromRear: 20, wellLength: 20, wellHeight: 10, wellWidth: 8 } },
+  ]) {
+    const zones = PackLib.getTrailerUsableZones(truck);
+    const pack = { truck, cases: [packed('base-1', 'base', 5), packed('child-1', 'child', 15)] };
+    assert.deepEqual(PackLib.reconcilePlacementsForTruck(pack, truck, cases).invalid, [],
+      'committed Max pair is accepted by reconciliation');
+    const context = Engine.buildAutoPackPhysicalContext(pack, byId, PackLib.getCanonicalInstanceEffectiveDims, zones);
+    assert.equal(context.ok, true, `${truck.shapeMode} fixed preflight preserves the same committed relationship`);
+    assert.equal(context.fixedPlacements.length, 2);
+    assert.equal(context.fixedPlacements[0].item.weight, 30, 'support keeps its real weight');
+    assert.equal(context.fixedPlacements[0].item.noStackOnTop, true, 'stored support rule stays canonical');
+    const newMaxChild = a3Item('new-child', { l: 20, w: 20, h: 10 }, { weight: 20 });
+    const solved = Solver.solveAutoPack({ truck, zones, items: [newMaxChild],
+      fixedPlacements: [context.fixedPlacements[0]], maxCapacityMode: true });
+    const newPosition = solved.placements.get('new-child');
+    if (newPosition) {
+      const newDims = solved.orientedDims.get('new-child');
+      const newAabb = Solver.getAabb(newPosition, { l: newDims.length, w: newDims.width, h: newDims.height });
+      assert.equal(
+        Math.abs(newAabb.min.y - context.fixedPlacements[0].aabb.max.y) <= 0.05 &&
+          Solver.computeXzOverlapArea(newAabb, context.fixedPlacements[0].aabb) > 0.05,
+        false, 'new movable Max child cannot use the fixed no-stack support'
+      );
+    } else {
+      assert.deepEqual(solved.unpacked, ['new-child']);
+    }
+
+    const ordinary = { ...pack, cases: pack.cases.map(inst => ({ ...inst, packedProfile: undefined })) };
+    assert.deepEqual(PackLib.reconcilePlacementsForTruck(ordinary, truck, cases).invalid, ['child-1']);
+    const rejected = Engine.buildAutoPackPhysicalContext(
+      ordinary, byId, PackLib.getCanonicalInstanceEffectiveDims, zones);
+    assert.equal(rejected.ok, false);
+    assert.match(rejected.reason, /no safe fixed support/);
+  }
+});
+
 test('A3 unresolved packed geometry is collision-only while unresolved staged cargo is excluded', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const Engine = await import(autoPackEnginePath.href);

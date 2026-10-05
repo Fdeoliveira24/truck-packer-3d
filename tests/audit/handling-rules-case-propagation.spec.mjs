@@ -21,6 +21,10 @@ import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
 import { buildOrganizedUnpackStagingCases } from '../../src/screens/editor-screen.js';
 import { createTruckChangeController } from '../../src/ui/truck-change-controller.js';
+import { formatCaseModalNumber } from '../../src/ui/overlays/case-modal.js';
+import {
+  formatCaseModalWeightNumber, inchesToUnit, unitToInches, poundsToUnit, unitToPounds,
+} from '../../src/core/utils/index.js';
 
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
@@ -56,6 +60,15 @@ function mkInst(id, caseId, position, placement = 'packed') {
   };
 }
 
+function caseModalPhysicalRoundTrip(caseData, { lengthUnit, weightUnit }, { lengthStep = 0, weightStep = 0 } = {}) {
+  const dimensions = Object.fromEntries(['length', 'width', 'height'].map(axis => {
+    const shown = Number(formatCaseModalNumber(inchesToUnit(caseData.dimensions[axis], lengthUnit), lengthUnit));
+    return [axis, unitToInches(shown + (axis === 'length' ? lengthStep : 0), lengthUnit)];
+  }));
+  const shownWeight = Number(formatCaseModalWeightNumber(poundsToUnit(caseData.weight, weightUnit)));
+  return { ...caseData, dimensions, weight: unitToPounds(shownWeight + weightStep, weightUnit) };
+}
+
 // Base + child directly on top: becomes invalid once the base's Case gets
 // noStackOnTop:true. The base covers nearly the full floor so, once the
 // support is correctly disqualified, there is no other legal floor spot —
@@ -82,6 +95,117 @@ test('A2 Case placement-change detection uses effective dimensions and weight, n
   assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, { ...original, weight: 51 }), true);
   assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, { ...original, weight: '50' }), false);
   assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(null, original), false, 'new Cases have no prior placement to invalidate');
+});
+
+test('F01-1/3/4/6 Case-modal dimension round trips are no-ops in in/ft/cm/m, but one displayed step is physical', async () => {
+  const { PackLibrary } = await freshModules();
+  const original = mkCase({ dimensions: { length: 47.3701, width: 26, height: 26 }, weight: 52.91 });
+  for (const [lengthUnit, step] of [['in', 0.01], ['ft', 0.01], ['cm', 0.01], ['m', 0.0001]]) {
+    const units = { lengthUnit, weightUnit: 'lb' };
+    const noOp = { ...caseModalPhysicalRoundTrip(original, units), notes: 'Changed only notes' };
+    assert.notEqual(noOp.dimensions.length, original.dimensions.length, `${lengthUnit} really does round-trip differently`);
+    assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, noOp, units), false,
+      `${lengthUnit} displayed value is physically unchanged`);
+    assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, noOp), true,
+      'non-modal callers retain exact canonical comparison');
+    const edited = caseModalPhysicalRoundTrip(original, units, { lengthStep: step });
+    assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, edited, units), true,
+      `${lengthUnit} one-step edit remains detectable`);
+  }
+});
+
+test('F01-2/5/6 Case-modal kg/lb weight round trips are no-ops, but one displayed step is physical', async () => {
+  const { PackLibrary } = await freshModules();
+  const original = mkCase({ dimensions: { length: 20, width: 20, height: 10 }, weight: 52.91 });
+  for (const weightUnit of ['kg', 'lb']) {
+    const units = { lengthUnit: 'in', weightUnit };
+    const noOp = { ...caseModalPhysicalRoundTrip(original, units), name: 'Renamed', category: 'audio' };
+    if (weightUnit === 'kg') assert.notEqual(noOp.weight, original.weight, 'kg conversion creates real numeric drift');
+    assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, noOp, units), false);
+    const edited = caseModalPhysicalRoundTrip(original, units, { weightStep: 0.01 });
+    assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(original, edited, units), true,
+      `${weightUnit} one-step edit remains detectable`);
+  }
+});
+
+test('F01-7/10 active metric metadata-only Case Save preserves Pack and canonical physical values in one Undo/Redo step', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const units = { lengthUnit: 'cm', weightUnit: 'kg' };
+  const caseA = mkCase({ dimensions: { length: 47.3701, width: 20, height: 10 }, weight: 52.91 });
+  const pack = { id: 'pack-active', truck: RECT_TRUCK,
+    cases: [mkInst('A', caseA.id, { x: 60, y: 5, z: 0 })], lastEdited: 123, stats: {} };
+  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
+    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+  const beforePacks = StateStore.get('packLibrary');
+  let packWrites = 0;
+  const unsubscribe = StateStore.subscribe(changes => { if (changes.packLibrary) packWrites++; });
+  const incoming = { ...caseModalPhysicalRoundTrip(caseA, units), name: 'Renamed', notes: 'Changed notes', category: 'audio' };
+  const result = PackLibrary.commitCaseHandlingRuleChange(incoming, null, units);
+  unsubscribe();
+
+  const after = StateStore.snapshot();
+  assert.equal(result.packImpact, null);
+  assert.equal(packWrites, 0, 'no revalidation Pack write');
+  assert.equal(StateStore.get('packLibrary'), beforePacks, 'active Pack identity and lastEdited stay unchanged');
+  assert.equal(after.packLibrary[0].lastEdited, 123);
+  assert.deepEqual(after.caseLibrary[0].dimensions, caseA.dimensions, 'round-trip drift does not enter canonical storage');
+  assert.equal(after.caseLibrary[0].weight, caseA.weight);
+  assert.equal(after.caseLibrary[0].name, 'Renamed');
+  assert.equal(after.caseLibrary[0].notes, 'Changed notes');
+  assert.equal(after.caseLibrary[0].category, 'audio');
+  assert.equal(StateStore.undo(), true);
+  assert.deepEqual(StateStore.snapshot(), before);
+  assert.equal(StateStore.undo(), false, 'one Case Save remains one history action');
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(StateStore.snapshot(), after);
+});
+
+test('F01-8/9 unseen metric no-op leaves Pack current, while a real cm edit marks it Validation required', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const units = { lengthUnit: 'cm', weightUnit: 'kg' };
+  const caseA = mkCase({ dimensions: { length: 47.3701, width: 20, height: 10 }, weight: 52.91 });
+  const pack = { id: 'pack-unseen', truck: RECT_TRUCK,
+    cases: [mkInst('A', caseA.id, { x: 60, y: 5, z: 0 })], lastEdited: 123, stats: {} };
+  pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
+  StateStore.init({ currentScreen: 'packs', currentPackId: pack.id, selectedInstanceIds: [],
+    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const beforePacks = StateStore.get('packLibrary');
+
+  const noOp = PackLibrary.commitCaseHandlingRuleChange(
+    { ...caseModalPhysicalRoundTrip(caseA, units), notes: 'Unseen note' }, null, units);
+  assert.equal(noOp.packImpact, null);
+  assert.equal(StateStore.get('packLibrary'), beforePacks);
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(pack, StateStore.get('caseLibrary')), false);
+  assert.equal(StateStore.get('caseLibrary')[0].dimensions.length, caseA.dimensions.length);
+  assert.equal(pack.lastEdited, 123);
+
+  const edited = caseModalPhysicalRoundTrip(StateStore.get('caseLibrary')[0], units, { lengthStep: 0.01 });
+  PackLibrary.commitCaseHandlingRuleChange(edited, null, units);
+  const after = PackLibrary.getById(pack.id);
+  assert.notEqual(after, pack);
+  assert.deepEqual(after.cases, pack.cases, 'unseen cargo remains unmoved');
+  assert.equal(after.lastEdited, 123);
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
+});
+
+test('F01-9 active real cm and kg edits still run the A2 physical revalidation path', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const units = { lengthUnit: 'cm', weightUnit: 'kg' };
+  const caseA = mkCase({ dimensions: { length: 47.3701, width: 20, height: 10 }, weight: 52.91 });
+  for (const edit of [{ lengthStep: 0.01 }, { weightStep: 0.01 }]) {
+    const pack = { id: 'pack-active', truck: RECT_TRUCK,
+      cases: [mkInst('A', caseA.id, { x: 60, y: 5, z: 0 })], lastEdited: 123, stats: {} };
+    StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
+      caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
+    const changed = caseModalPhysicalRoundTrip(caseA, units, edit);
+    const result = PackLibrary.commitCaseHandlingRuleChange(changed, null, units);
+    const after = PackLibrary.getById(pack.id);
+    assert.equal(result.packImpact?.packId, pack.id, JSON.stringify(edit));
+    assert.notEqual(after, pack);
+    assert.notEqual(after.lastEdited, 123);
+    assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
+  }
 });
 
 test('A2 active Case dimension growth revalidates overlapping cargo in the same Save and Undo/Redo action', async () => {

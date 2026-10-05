@@ -1982,11 +1982,52 @@ function placementAffectingCaseFingerprint(caseData) {
   ]);
 }
 
+// A Case-modal Save converts its rounded display values back to inches/lb.
+// Restore an old canonical value only when both values present identically in
+// the units and precision the user actually saw. This prevents a metadata-only
+// Save from silently drifting stored geometry or weight, while a one-step edit
+// in any supported display unit remains a physical change. Other callers keep
+// exact canonical comparison by omitting modalUnits.
+function preserveCaseModalRoundTrips(oldCase, newCase, modalUnits) {
+  if (!oldCase || !newCase || !modalUnits) return newCase;
+  const oldDims = oldCase.dimensions || {};
+  const proposedDims = newCase.dimensions || {};
+  let nextDims = proposedDims;
+  let nextWeight = newCase.weight;
+  let changed = false;
+
+  if (Utils.lengthUnits.includes(modalUnits.lengthUnit)) {
+    for (const axis of ['length', 'width', 'height']) {
+      const oldValue = parseCargoDimension(oldDims[axis]).value;
+      const proposedValue = parseCargoDimension(proposedDims[axis]).value;
+      const display = value => Utils.formatCaseModalNumber(Utils.inchesToUnit(value, modalUnits.lengthUnit), modalUnits.lengthUnit);
+      if (oldValue !== proposedValue && display(oldValue) === display(proposedValue)) {
+        if (nextDims === proposedDims) nextDims = { ...proposedDims };
+        nextDims[axis] = oldValue;
+        changed = true;
+      }
+    }
+  }
+
+  if (Utils.weightUnits.includes(modalUnits.weightUnit)) {
+    const oldValue = parseCargoNonNegNumber(oldCase.weight, { max: WEIGHT_MAX_LBS }).value;
+    const proposedValue = parseCargoNonNegNumber(newCase.weight, { max: WEIGHT_MAX_LBS }).value;
+    const display = value => Utils.formatCaseModalWeightNumber(Utils.poundsToUnit(value, modalUnits.weightUnit));
+    if (oldValue !== proposedValue && display(oldValue) === display(proposedValue)) {
+      nextWeight = oldValue;
+      changed = true;
+    }
+  }
+
+  return changed ? { ...newCase, dimensions: nextDims, weight: nextWeight } : newCase;
+}
+
 // Historical API name retained for callers. A missing oldCase (new Case
 // creation, or a caseId no longer in the library) is not a change.
-export function hasPlacementAffectingHandlingRuleChange(oldCase, newCase) {
+export function hasPlacementAffectingHandlingRuleChange(oldCase, newCase, modalUnits = null) {
   if (!oldCase) return false;
-  return placementAffectingCaseFingerprint(oldCase) !== placementAffectingCaseFingerprint(newCase);
+  return placementAffectingCaseFingerprint(oldCase) !==
+    placementAffectingCaseFingerprint(preserveCaseModalRoundTrips(oldCase, newCase, modalUnits));
 }
 
 // Handling Rules ACTIVE-LOAD membership authority: does this instance
@@ -2095,10 +2136,11 @@ function signatureRequiringValidation(beforePack, beforeCases, afterPack, afterC
 // automatically revalidated/repaired/staged; every other affected Pack is left
 // untouched except for the minimal validation-required metadata described
 // below, so cargo in a Plan the user is not viewing is never silently moved.
-export function commitCaseHandlingRuleChange(caseData, categoryUpdate) {
+export function commitCaseHandlingRuleChange(caseData, categoryUpdate, modalUnits = null) {
   const oldCaseLibrary = CaseLibrary.getCases();
   const oldCase = oldCaseLibrary.find(c => c && c.id === (caseData && caseData.id)) || null;
-  const { case: nextCase, cases: nextCaseLibrary } = CaseLibrary.prepareCaseSave(caseData, oldCaseLibrary);
+  const canonicalInput = preserveCaseModalRoundTrips(oldCase, caseData, modalUnits);
+  const { case: nextCase, cases: nextCaseLibrary } = CaseLibrary.prepareCaseSave(canonicalInput, oldCaseLibrary);
 
   const setPatch = { caseLibrary: nextCaseLibrary };
   let category = null;

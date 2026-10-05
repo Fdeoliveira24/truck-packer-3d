@@ -325,8 +325,11 @@ test('EDITOR Case Browser New Case shortcut uses shared modal without adding to 
     'saving a case from the editor must refresh and reveal it in the Case Browser');
   assert.doesNotMatch(editorModalBlock, /addCaseToPack|PackLibrary\.add|PackLibrary\.update\(/,
     'Editor New Case shortcut must not add the new case to the current pack');
-  assert.match(modalSrc, /export function formatCaseModalNumber\(value, unit\)[\s\S]*m: 4/,
-    'shared Case modal must use unit-aware numeric formatting');
+  const { formatCaseModalNumber } = await import(caseModalPath.href);
+  assert.equal(formatCaseModalNumber(1.23456, 'm'), '1.2346',
+    'shared Case modal keeps four-decimal meter input precision');
+  assert.match(modalSrc, /import \{ formatCaseModalNumber, formatCaseModalWeightNumber \} from '\.\.\/\.\.\/core\/utils\/index\.js'/,
+    'modal and physical-change authority share numeric presentation formatting');
   assert.match(modalSrc, /fL\.input\.value = formatCaseModalNumber\(Utils\.inchesToUnit\(initial\.dimensions\.length, lengthUnit\), lengthUnit\)/,
     'Case modal length input must avoid raw floating-point conversion strings');
   assert.doesNotMatch(modalSrc, /String\(Utils\.inchesToUnit/,
@@ -344,7 +347,7 @@ test('EDITOR Case Browser New Case shortcut uses shared modal without adding to 
   // revalidation as one StateStore write) instead of calling
   // CaseLibrary.commitCaseWithCategory directly — still exactly one commit,
   // still atomic with the category color.
-  assert.match(modalSrc, /PackLibrary\.commitCaseHandlingRuleChange\(\s*caseData,\s*\{ key: categoryKey, name: catMeta\.name, color: categoryColor \}\s*\)/,
+  assert.match(modalSrc, /PackLibrary\.commitCaseHandlingRuleChange\(\s*caseData,\s*\{ key: categoryKey, name: catMeta\.name, color: categoryColor \},\s*\{ lengthUnit, weightUnit \}\s*\)/,
     'shared Case modal must persist edited category colors atomically with the Case commit');
   assert.match(modalSrc, /color: categoryColor/,
     'saved case data must use the edited category color');

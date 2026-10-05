@@ -1977,6 +1977,39 @@ function categoryCreatorRow(config) {
   return config.content.querySelectorAll('.tp3d-cases-new-category-row')[0];
 }
 
+test('F01 shared Case modal metric metadata Save keeps canonical cargo and active Pack unchanged', async () => {
+  const caseData = baseCase({
+    dimensions: { length: 47.3701, width: 26, height: 26 }, weight: 52.91,
+    category: 'default', color: '#9ca3af',
+  });
+  const pack = basePack({
+    truck: { length: 120, width: 60, height: 60, shapeMode: 'rect' },
+    cases: [{ id: 'item-1', caseId: caseData.id, placement: 'packed', hidden: false,
+      transform: { position: { x: 60, y: 13, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }],
+    lastEdited: 123,
+  });
+  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
+    caseLibrary: [caseData], packLibrary: [pack], folderLibrary: [], preferences: {} });
+  const beforePacks = StateStore.get('packLibrary');
+  const harness = makeCaseModalHarness();
+  harness.PreferencesManager.get = () => ({ units: { length: 'cm', weight: 'kg' } });
+  const config = openTestCaseModal(harness, { existing: caseData });
+  const field = label => config.content.querySelectorAll('.field')
+    .find(el => el.children[0]?.textContent.startsWith(label))?.querySelector('input');
+  assert.equal(field('Length (cm)').value, '120.32');
+  assert.equal(field('Weight (kg)').value, '24');
+  field('Name').value = 'Renamed in metric';
+  config.content.querySelector('textarea').value = 'Metadata only';
+
+  assert.equal(config.actions.find(action => action.label === 'Save').onClick(), true);
+  assert.equal(StateStore.get('packLibrary'), beforePacks, 'the real modal Save must not invoke Pack revalidation');
+  const saved = CaseLibrary.getById(caseData.id);
+  assert.deepEqual(saved.dimensions, caseData.dimensions);
+  assert.equal(saved.weight, caseData.weight);
+  assert.equal(saved.name, 'Renamed in metric');
+  assert.equal(saved.notes, 'Metadata only');
+});
+
 test('CASES-CATEGORY-UI default modal state: the new-category creator is collapsed, + New is visible with the primary button treatment', async () => {
   StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
   const harness = makeCaseModalHarness();

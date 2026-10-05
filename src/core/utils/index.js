@@ -260,6 +260,21 @@ export function unitToPounds(value, unit) {
   }
 }
 
+// The Case modal's editable numeric representation is also the precision
+// boundary for deciding whether a Case Save changed physical cargo data.
+export function formatCaseModalNumber(value, unit) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return '';
+  const decimalsByUnit = { in: 2, ft: 2, cm: 2, m: 4 };
+  const maxDecimals = decimalsByUnit[unit] ?? 2;
+  return Number(n.toFixed(maxDecimals)).toString();
+}
+
+export function formatCaseModalWeightNumber(value) {
+  const n = Number(value);
+  return Number.isFinite(n) ? String(Math.round(n * 100) / 100) : '';
+}
+
 export function formatLength(inches, unit, digits = 1) {
   const v = inchesToUnit(inches, unit);
   const fixed = unit === 'in' ? 0 : digits;

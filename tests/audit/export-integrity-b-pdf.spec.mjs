@@ -581,7 +581,8 @@ test('EXPORT-B out-of-gauge and pallet warnings reuse the canonical warnings', (
   ] });
   const packId = setup({ pack, cases: [baseCase(), pallet, heavy], pdfIncludeStats: false });
   const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
-  assert.deepEqual(stats.oogWarnings.map(w => w.instanceId).sort(), ['o1', 's1'], 'canonical OOG warnings include staged cargo');
+  assert.deepEqual(stats.oogWarnings.map(w => w.instanceId).sort(), ['o1'],
+    'canonical OOG warnings exclude explicitly staged cargo');
   assert.equal(stats.palletWarnings.length, 1);
   const review = reviewSection(runPdf(packId)) || '';
   assert.match(review, /Out-of-gauge cargo\n• Crate A #1 extends past the right side\.\n/);

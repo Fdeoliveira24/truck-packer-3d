@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 
 import { computeSpaceUtilization } from '../../src/packing-core/space-utilization-engine.js';
 import * as PackLibrary from '../../src/services/pack-library.js';
+import { computeCoG } from '../../src/services/cog-service.js';
+import { computePalletWarnings } from '../../src/services/oog-service.js';
 import {
   buildSpaceUtilizationResult,
   createSpaceUtilizationGauge,
@@ -337,6 +339,118 @@ test('UTIL-ENGINE-13C hidden unresolved cargo stays unresolved without fabricate
   assert.equal(stats.totalWeight, 0);
   assert.equal(stats.volumeUsed, 0);
   assert.equal(stats.totalsComplete, false);
+});
+
+test('F02-COG-1 through 6: loaded visibility is orthogonal; staged and unresolved cargo do not move CoG', () => {
+  const light = makeCase('light', undefined, { weight: 20 });
+  const heavy = makeCase('heavy', undefined, { weight: 80 });
+  const visible = makeInstance('visible', light.id, { x: 20, y: 5, z: 0 }, { placement: 'packed' });
+  const staged = makeInstance('staged', heavy.id, { x: -30, y: 5, z: 0 }, { placement: 'staged' });
+  const loadedHidden = makeInstance('loaded-hidden', heavy.id, { x: 80, y: 5, z: 0 },
+    { placement: 'packed', hidden: true });
+  const missing = makeInstance('missing', 'deleted-case', { x: 95, y: 5, z: 0 },
+    { placement: 'packed', hidden: true });
+  const stats = cases => PackLibrary.computeStats({ truck: STANDARD_TRUCK, cases }, [light, heavy]);
+
+  const one = stats([visible]);
+  assert.deepEqual(one.cog.position, { x: 20, y: 5, z: 0 });
+  assert.equal(one.cog.totalWeight, 20);
+  assert.deepEqual(stats([{ ...visible, hidden: true }]).cog, one.cog);
+  assert.deepEqual(stats([visible, staged]).cog, one.cog);
+  assert.deepEqual(stats([visible, { ...staged, hidden: true }]).cog, one.cog);
+
+  const mixed = stats([visible, loadedHidden, staged]);
+  assert.deepEqual(mixed.cog.position, { x: 68, y: 5, z: 0 });
+  assert.equal(mixed.cog.totalWeight, 100);
+  assert.equal(mixed.cog.totalWeight, mixed.totalWeight,
+    'CoG and loaded statistics use the same resolved positive-weight population');
+  const unresolved = stats([visible, loadedHidden, staged, missing]);
+  assert.deepEqual(unresolved.cog, mixed.cog);
+  assert.equal(unresolved.unresolvedInstances, 1);
+});
+
+test('F02-PALLET-1 through 6: hidden loaded cargo counts; staged and unresolved cargo do not', () => {
+  const pallet = makeCase('pallet', { length: 20, width: 20, height: 4 },
+    { isPallet: true, maxPalletWeight: 100, weight: 10 });
+  const cargo = makeCase('cargo', { length: 10, width: 10, height: 10 }, { weight: 150 });
+  const malformed = makeCase('malformed', { length: 0, width: 10, height: 10 }, { weight: 999 });
+  const loadedPallet = makeInstance('pallet-1', pallet.id, { x: 50, y: 2, z: 0 }, { placement: 'packed' });
+  const loadedCargo = makeInstance('cargo-1', cargo.id, { x: 50, y: 9, z: 0 }, { placement: 'packed' });
+  const stagedCargo = makeInstance('staged-cargo', cargo.id, { x: 50, y: 45, z: 0 },
+    { placement: 'staged' });
+  const warnings = cases => PackLibrary.computeStats({ truck: STANDARD_TRUCK, cases },
+    [pallet, cargo, malformed]).palletWarnings;
+
+  const visible = warnings([loadedPallet, loadedCargo]);
+  assert.equal(visible.length, 1);
+  assert.equal(visible[0].actualWeight, 150);
+  assert.deepEqual(visible[0].loadedCaseIds, ['cargo-1']);
+  assert.deepEqual(warnings([{ ...loadedPallet, hidden: true }, loadedCargo]), visible);
+  assert.deepEqual(warnings([loadedPallet, { ...loadedCargo, hidden: true }]), visible);
+  assert.deepEqual(warnings([loadedPallet, { ...loadedCargo, hidden: true }, stagedCargo]), visible);
+  assert.deepEqual(warnings([loadedPallet, stagedCargo]), []);
+  assert.deepEqual(warnings([loadedPallet, { ...stagedCargo, hidden: true }]), []);
+  assert.deepEqual(warnings([
+    { ...loadedPallet, transform: { position: { x: 50, y: 45, z: 0 } }, placement: 'staged' },
+    makeInstance('above-staged-pallet', cargo.id, { x: 50, y: 52, z: 0 }, { placement: 'staged' }),
+  ]), [], 'a staged pallet is not a truck pallet diagnostic target');
+  assert.deepEqual(warnings([
+    { ...loadedPallet, transform: { position: { x: 50, y: 45, z: 0 } }, placement: 'staged', hidden: true },
+    makeInstance('above-staged-pallet', cargo.id, { x: 50, y: 52, z: 0 }, { placement: 'staged' }),
+  ]), [], 'hiding a staged pallet does not make it loaded');
+  assert.deepEqual(warnings([loadedPallet,
+    makeInstance('bad-dims', malformed.id, { x: 50, y: 9, z: 0 }, { placement: 'packed' }),
+  ]), [], 'malformed Case dimensions cannot contribute fabricated pallet load');
+});
+
+test('F02-OOG-1 through 5: packed cargo keeps shape warnings when hidden; staged cargo does not', () => {
+  const caseData = makeCase();
+  const fixtures = [
+    [STANDARD_TRUCK, { x: 98, y: 5, z: 0 }, 'protrudesFront'],
+    [WHEEL_WELL_TRUCK, { x: 25, y: 5, z: 20 }, 'outsideUsableZone'],
+    [FRONT_OVERHANG_TRUCK, { x: 85, y: 5, z: 0 }, 'outsideUsableZone'],
+  ];
+  for (const [truck, position, issue] of fixtures) {
+    const packed = makeInstance('packed-oog', caseData.id, position, { placement: 'packed' });
+    const staged = makeInstance('staged-oog', caseData.id, position, { placement: 'staged' });
+    const warnings = cases => PackLibrary.computeStats({ truck, cases }, [caseData]).oogWarnings;
+    const visible = warnings([packed]);
+    assert.equal(visible.length, 1, `${truck.shapeMode} packed OOG remains diagnosed`);
+    assert.ok(visible[0].issues.includes(issue));
+    assert.deepEqual(warnings([{ ...packed, hidden: true }]), visible);
+    assert.deepEqual(warnings([packed, staged]), visible);
+    assert.deepEqual(warnings([packed, { ...staged, hidden: true }]), visible);
+    assert.deepEqual(warnings([staged]), []);
+    assert.deepEqual(warnings([{ ...staged, hidden: true }]), []);
+  }
+  const unresolved = makeInstance('unresolved', caseData.id, { x: 0, y: 5, z: 0 },
+    { placement: 'packed', transform: { position: null } });
+  assert.deepEqual(PackLibrary.computeStats({ truck: STANDARD_TRUCK, cases: [unresolved] },
+    [caseData]).oogWarnings, [], 'missing position cannot be fabricated for OOG');
+});
+
+test('F02 direct service APIs retain explicit staged exclusion without a PackLibrary cycle', () => {
+  const caseData = makeCase('weighted', undefined, { weight: 20 });
+  const loaded = makeInstance('loaded', caseData.id, { x: 20, y: 5, z: 0 },
+    { placement: 'packed', hidden: true });
+  const staged = makeInstance('staged', caseData.id, { x: -30, y: 5, z: 0 },
+    { placement: 'staged' });
+  assert.equal(computeCoG({ truck: STANDARD_TRUCK, cases: [loaded, staged] },
+    [caseData]).totalWeight, 20);
+
+  const pallet = makeCase('pallet', { length: 20, width: 20, height: 4 },
+    { isPallet: true, maxPalletWeight: 10 });
+  const loadedPallet = makeInstance('p', pallet.id, { x: 50, y: 2, z: 0 },
+    { placement: 'packed', hidden: true });
+  const loadedTop = makeInstance('top', caseData.id, { x: 50, y: 9, z: 0 },
+    { placement: 'packed', hidden: true });
+  const stagedTop = makeInstance('staged-top', caseData.id, { x: 50, y: 45, z: 0 },
+    { placement: 'staged' });
+  const warning = computePalletWarnings({ cases: [loadedPallet, loadedTop, stagedTop] },
+    [pallet, caseData]);
+  assert.equal(warning.length, 1);
+  assert.equal(warning[0].actualWeight, 20);
+  assert.deepEqual(warning[0].loadedCaseIds, ['top']);
 });
 
 test('UTIL-ENGINE-14 unresolved Case definitions produce an incomplete partial result', () => {

@@ -10,9 +10,10 @@
  * Computes the center of gravity for a pack.
  * @param {{ truck?: { length?: number, width?: number }, cases?: Array<Record<string, any>> }} pack - Pack object with truck and cases
  * @param {Record<string, any>[]} caseLibrary - Array of case definitions
+ * @param {Set<string|null>|null} [loadedInstanceIds=null] - Canonical loaded IDs when available; direct callers exclude explicitly staged instances
  * @returns {object|null} CoG data or null if no valid weight
  */
-export function computeCoG(pack, caseLibrary) {
+export function computeCoG(pack, caseLibrary, loadedInstanceIds = null) {
     if (!pack || !pack.cases || !pack.truck) return null;
 
     let totalWeight = 0;
@@ -23,7 +24,9 @@ export function computeCoG(pack, caseLibrary) {
     const caseMap = new Map(caseLibrary.map(c => [c.id, c]));
 
     pack.cases.forEach(inst => {
-        if (inst.hidden) return;
+        if (!inst || (loadedInstanceIds
+            ? !loadedInstanceIds.has(inst.id == null ? null : String(inst.id))
+            : inst.placement === 'staged')) return;
         const caseData = caseMap.get(inst.caseId);
         if (!caseData) return;
         const w = Number(caseData.weight) || 0;

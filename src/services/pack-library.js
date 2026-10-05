@@ -1101,10 +1101,36 @@ function buildAcceptedAabbs(pack, instances, caseLibrary) {
     const caseData = caseMap.get(inst && inst.caseId);
     const position = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
     if (!position) return;
-    const dims = getInstanceEffectiveDims(inst, caseData);
-    acceptedAabbs.push(makeAabb(position, dims));
+    if (caseData) {
+      // Staging layout reserves the same effective envelope as before,
+      // including an explicitly stored orientedDims on a resolved Case.
+      acceptedAabbs.push(makeAabb(position, getInstanceEffectiveDims(inst, caseData)));
+    } else {
+      const unresolved = getTrustedSavedAabb(inst);
+      if (unresolved) acceptedAabbs.push(unresolved);
+    }
   });
   return acceptedAabbs;
+}
+
+// Saved geometry is usable as an obstacle only with a finite position and
+// positive explicit dimensions; no fallback Case size is invented. The packed
+// wrapper below matches AutoPack's collision-only physical boundary.
+function getTrustedSavedAabb(inst) {
+  if (!inst) return null;
+  const position = inst.transform && inst.transform.position;
+  const dims = inst.orientedDims;
+  if (!position || !dims ||
+      !['x', 'y', 'z'].every(axis => typeof position[axis] === 'number' && Number.isFinite(position[axis])) ||
+      !['length', 'width', 'height'].every(axis =>
+        typeof dims[axis] === 'number' && Number.isFinite(dims[axis]) && dims[axis] > 0)) {
+    return null;
+  }
+  return makeAabb(position, dims);
+}
+
+function getTrustedUnresolvedPackedAabb(inst) {
+  return inst && inst.placement !== 'staged' ? getTrustedSavedAabb(inst) : null;
 }
 
 function repairPackInstancePlacements(pack, caseLibrary) {
@@ -1277,7 +1303,8 @@ function isAabbInsideTruckGeometry(aabb, zones, wheelWell) {
 }
 
 function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL, wheelWell = null) {
-  const physicalSupportRecords = projectMaxCapacitySupportRecords(candidate, accepted);
+  const structural = (accepted || []).filter(entry => !entry.collisionOnly);
+  const physicalSupportRecords = projectMaxCapacitySupportRecords(candidate, structural);
   const physicallySupported = wheelWell
     ? isWheelWellSupportedAndStable(
       aabb,
@@ -1285,13 +1312,13 @@ function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_T
       wheelWell,
       { weight: Number(candidate?.caseData?.weight) || 0 }
     )
-    : aabbIsSupported(candidate, aabb, accepted, zones, tol);
+    : aabbIsSupported(candidate, aabb, structural, zones, tol);
   return isAabbInsideTruckGeometry(aabb, zones, wheelWell) &&
     !aabbIntersectsWheelWellBlockedBody(aabb, truck) &&
     !aabbIntersectsFrontBonusBlockedBody(aabb, truck) &&
     !overlapsAny(aabb, (accepted || []).map(entry => entry.aabb)) &&
     physicallySupported &&
-    evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained;
+    evaluateFrontOverhangRearRetention(aabb, structural, truck, zones).retained;
 }
 
 // Candidate floor/deck/support bottom-Y levels under a footprint at its current
@@ -1308,6 +1335,7 @@ function candidateSnapBottoms(curAabb, accepted, zones, tol = RECON_TOL, wheelWe
     }
   }
   for (const support of accepted || []) {
+    if (support.collisionOnly) continue;
     if (reconXzOverlapArea(curAabb, support.aabb) >= 0.5 * footprintArea) {
       bottoms.push(support.aabb.max.y);
     }
@@ -1347,7 +1375,8 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
       overlapsAny(aabb, (accepted || []).map(entry => entry.aabb))) {
     return manualVerticalFailure('blocked-collision');
   }
-  const physicalSupportRecords = projectMaxCapacitySupportRecords(node, accepted);
+  const structural = (accepted || []).filter(entry => !entry.collisionOnly);
+  const physicalSupportRecords = projectMaxCapacitySupportRecords(node, structural);
   const physicallySupported = wheelWell
     ? isWheelWellSupportedAndStable(
       aabb,
@@ -1355,21 +1384,23 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
       wheelWell,
       { weight: Number(node?.caseData?.weight) || 0 }
     )
-    : aabbIsSupported(node, aabb, accepted, zones, RECON_TOL);
+    : aabbIsSupported(node, aabb, structural, zones, RECON_TOL);
   if (!physicallySupported) return manualVerticalFailure('support-rules');
-  if (!evaluateFrontOverhangRearRetention(aabb, accepted, truck, zones).retained) {
+  if (!evaluateFrontOverhangRearRetention(aabb, structural, truck, zones).retained) {
     return manualVerticalFailure('needs-rear-retention');
   }
   return manualVerticalFailure('blocked-collision');
 }
 
 /**
- * Manual vertical placement resolver for ONE placed instance. Finds the next
- * valid support level above/below the case at its current X/Z ('up'/'down'),
+ * Manual vertical placement resolver for ONE instance. Staged cases may use
+ * only 'resolve' to test an in-truck drop; they cannot move vertically while
+ * staged. Finds the next valid support level above/below at the current X/Z ('up'/'down'),
  * the nearest valid resting surface below ('drop'), or validates/corrects a
  * requested position ('resolve', with options.desiredPosition). Every candidate
  * level flows through the same candidateSnapBottoms + aabbIsFullyValid pipeline
- * used by reconciliation, so a result can never fake support, penetrate blocked
+ * used by reconciliation. exact:true on 'resolve' refuses vertical repair and
+ * accepts only the requested pose, so a result can never fake support, penetrate blocked
  * wheel-well bodies, or bypass Front Overhang rear retention. Pure: reads the
  * given pack and never mutates state.
  */
@@ -1387,7 +1418,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
   for (const inst of (Array.isArray(source.cases) ? source.cases : [])) {
     if (!inst) continue;
     const isTarget = inst.id === instanceId;
-    if (inst.placement === 'staged') {
+    if (inst.placement === 'staged' && (!isTarget || mode !== 'resolve')) {
       if (isTarget) return manualVerticalFailure('staged-case');
       continue; // staged cargo sits outside the truck and is never an obstacle
     }
@@ -1396,7 +1427,9 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
     const canonical = caseData ? getCanonicalInstanceEffectiveDims(inst, caseData) : { ok: false };
     if (!caseData || !pos || !canonical.ok) {
       if (isTarget) return manualVerticalFailure('invalid-selection');
-      continue; // unresolved/malformed neighbors cannot participate as obstacles
+      const collisionAabb = !caseData ? getTrustedUnresolvedPackedAabb(inst) : null;
+      if (collisionAabb) accepted.push({ inst, aabb: collisionAabb, collisionOnly: true });
+      continue; // untrusted geometry cannot participate as an obstacle
     }
     const node = {
       inst,
@@ -1438,6 +1471,9 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
         toBottom: probe.min.y,
         corrected: false,
       };
+    }
+    if (options.exact === true) {
+      return explainInvalidLevel(target, probe, accepted, zones, truck, wheelWell, mode);
     }
   }
 
@@ -1505,6 +1541,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
   const stagedNodes = [];
   const unresolved = [];
   const malformed = [];
+  const collisionOnly = [];
 
   for (const inst of allInstances) {
     const caseData = caseMap.get(inst && inst.caseId);
@@ -1512,6 +1549,8 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     if (!inst) continue;
     if (!caseData) {
       unresolved.push({ id: inst.id, caseId: inst.caseId, name: inst.name || inst.caseId || 'Unknown case' });
+      const aabb = getTrustedUnresolvedPackedAabb(inst);
+      if (aabb) collisionOnly.push({ inst, aabb, collisionOnly: true });
       continue;
     }
     if (!pos) {
@@ -1541,7 +1580,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     (x.curAabb.min.y - y.curAabb.min.y) || (indexById.get(x.inst) - indexById.get(y.inst))
   );
 
-  const accepted = [];
+  const accepted = [...collisionOnly];
   const resultByInst = new Map();
   const kept = []; const adjusted = []; const invalid = [];
   const invalidReasons = {};
@@ -2766,14 +2805,39 @@ export function addInstance(packId, caseId, position) {
   const dims = normalizeDims(caseData.dimensions);
   const acceptedAabbs = buildAcceptedAabbs(pack, pack.cases || [], CaseLibrary.getCases());
   const explicitAabb = explicitPosition ? makeAabb(explicitPosition, dims) : null;
-  const needsSafeStaging = !explicitPosition ||
+  const blockedBody = explicitAabb && (
     aabbIntersectsWheelWellBlockedBody(explicitAabb, pack.truck) ||
-    aabbIntersectsFrontBonusBlockedBody(explicitAabb, pack.truck);
+    aabbIntersectsFrontBonusBlockedBody(explicitAabb, pack.truck)
+  );
+  const truckDrop = explicitAabb && (
+    blockedBody || overlapsAny(explicitAabb, getTrailerUsableZones(pack.truck))
+  );
+  const id = Utils.uuid();
+  // Existing blocked-body drops deliberately fall back to canonical staging.
+  // Other truck attempts must pass the exact manual placement rules.
+  if (truckDrop && !blockedBody) {
+    // The HTML5 drop supplies a floor pose. Validate that exact pose with the
+    // same manual hard-rule pipeline used by a packed drag release; never
+    // repair it onto a different case or displace existing packed cargo.
+    const candidate = {
+      id, caseId, placement: 'staged',
+      transform: { position: explicitPosition, rotation: { x: 0, y: 0, z: 0 } },
+    };
+    const resolved = findManualVerticalPlacement(
+      { ...pack, cases: [...(pack.cases || []), candidate] },
+      CaseLibrary.getCases(), id,
+      { mode: 'resolve', desiredPosition: explicitPosition, exact: true }
+    );
+    if (!resolved.ok) return null;
+  }
+  const needsSafeStaging = !explicitPosition || blockedBody ||
+    (!truckDrop && overlapsAny(explicitAabb, acceptedAabbs));
   const staged = needsSafeStaging ? findSafeStagingPosition(pack, dims, acceptedAabbs) : null;
-  const finalPosition = needsSafeStaging ? staged.position : explicitPosition;
-  const finalAabb = needsSafeStaging ? staged.aabb : explicitAabb;
+  if (staged && overlapsAny(staged.aabb, acceptedAabbs)) return null;
+  const finalPosition = staged ? staged.position : explicitPosition;
+  const finalAabb = staged ? staged.aabb : explicitAabb;
   const instance = {
-    id: Utils.uuid(),
+    id,
     caseId,
     transform: {
       position: finalPosition,

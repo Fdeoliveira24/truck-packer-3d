@@ -202,6 +202,97 @@ test('PLACEMENT-STATE-S2 explicit outside-truck addInstance writes "staged" plac
     'an explicit position outside the trailer usable zone must be recorded as staged');
 });
 
+test('M01 Case Browser explicit truck drop rejects occupied and hidden cargo without a Pack write', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'm01-case', dimensions: { length: 10, width: 10, height: 10 } });
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+  for (const hidden of [false, true]) {
+    const packId = `m01-truck-${hidden}`;
+    StateStore.init({
+      caseLibrary: [caseData],
+      packLibrary: [{ id: packId, title: 'Drop', truck, lastEdited: 1, cases: [
+        makePackImportInstance(caseData.id, {
+          id: 'obstacle', hidden, placement: 'packed',
+          transform: { position: { x: 20, y: 5, z: 0 } },
+        }),
+      ] }],
+      folderLibrary: [], preferences: {},
+    });
+    const before = PackLibrary.getById(packId);
+    assert.equal(PackLibrary.addInstance(packId, caseData.id, { x: 20, y: 5, z: 0 }), null);
+    assert.strictEqual(PackLibrary.getById(packId), before, 'rejection must not update the Pack');
+    const accepted = PackLibrary.addInstance(packId, caseData.id, { x: 40, y: 5, z: 0 });
+    assert.equal(accepted?.placement, 'packed', 'empty floor position must succeed');
+    assert.equal(PackLibrary.getById(packId).cases.length, 2);
+    assert.ok(PackLibrary.getById(packId).lastEdited > 1, 'the accepted add updates lastEdited');
+    assert.equal(StateStore.undo(), true, 'one Undo restores the prior Pack');
+    assert.equal(PackLibrary.getById(packId).cases.length, 1);
+    assert.equal(StateStore.undo(), false, 'the rejected drop created no history entry');
+    assert.equal(StateStore.redo(), true, 'one Redo restores the accepted placement');
+    assert.equal(PackLibrary.getById(packId).cases[1].id, accepted.id);
+  }
+});
+
+test('M01 Case Browser explicit staging drop reuses safe non-overlapping staging layout', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'm01-stage-case', dimensions: { length: 10, width: 10, height: 10 } });
+  const packId = 'm01-stage';
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+  const existing = makePackImportInstance(caseData.id, {
+    id: 'staged-obstacle', placement: 'staged',
+    transform: { position: { x: 20, y: 5, z: 60 } },
+  });
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: packId, title: 'Stage drop', truck, cases: [existing] }],
+    folderLibrary: [], preferences: {},
+  });
+  const added = PackLibrary.addInstance(packId, caseData.id, { x: 20, y: 5, z: 60 });
+  assert.equal(added?.placement, 'staged');
+  assertPackImportNoOverlaps(PackLibrary.getById(packId).cases, caseData);
+});
+
+test('M01 staging drop reserves trusted unresolved staged geometry without inventing dimensions', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'm01-known-stage', dimensions: { length: 10, width: 10, height: 10 } });
+  const packId = 'm01-unresolved-stage';
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: packId, truck, cases: [
+      { id: 'missing-staged', caseId: 'missing', placement: 'staged',
+        orientedDims: { length: 10, width: 10, height: 10 },
+        transform: { position: { x: 20, y: 5, z: 60 } } },
+    ] }],
+    folderLibrary: [], preferences: {},
+  });
+  const added = PackLibrary.addInstance(packId, caseData.id, { x: 20, y: 5, z: 60 });
+  assert.equal(added?.placement, 'staged');
+  assert.notDeepEqual(added.transform.position, { x: 20, y: 5, z: 60 });
+});
+
+test('M03 Case Browser truck drop respects trusted unresolved packed geometry', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'm03-browser-known', dimensions: { length: 10, width: 10, height: 10 } });
+  const packId = 'm03-browser';
+  StateStore.init({
+    caseLibrary: [caseData],
+    packLibrary: [{ id: packId, truck: { length: 120, width: 60, height: 60, shapeMode: 'rect' }, cases: [
+      { id: 'unresolved-packed', caseId: 'missing', placement: 'packed', hidden: true,
+        orientedDims: { length: 10, width: 10, height: 10 },
+        transform: { position: { x: 20, y: 5, z: 0 } } },
+    ] }],
+    folderLibrary: [], preferences: {},
+  });
+  const before = PackLibrary.getById(packId);
+  assert.equal(PackLibrary.addInstance(packId, caseData.id, { x: 20, y: 5, z: 0 }), null);
+  assert.strictEqual(PackLibrary.getById(packId), before);
+});
+
 test('PLACEMENT-STATE-S2 manual delete of a support recursively settles dependents', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);

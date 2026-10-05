@@ -2262,13 +2262,30 @@ export function createInteractionManager({
       return Math.abs(ax - bx) <= 0.05 && Math.abs(az - bz) <= 0.05;
     }
 
+    function positionsShareManualY(a, b) {
+      return a && b && Number.isFinite(Number(a.y)) && Number.isFinite(Number(b.y)) &&
+        Math.abs(Number(a.y) - Number(b.y)) <= 0.05;
+    }
+
     function tryCommitStagedIntoTruck(packId, pack, inst, obj, groupIds, startMap) {
       if (!inst || inst.placement !== 'staged' || !obj ||
+          typeof PackLibrary.findManualVerticalPlacement !== 'function' ||
           typeof PackLibrary.revalidateManualPlacements !== 'function' ||
           typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
         return false;
       }
       const desiredPosition = SceneManager.vecWorldToInches(obj.position);
+      const resolved = PackLibrary.findManualVerticalPlacement(
+        pack, CaseLibrary.getCases(), inst.id,
+        { mode: 'resolve', desiredPosition, exact: true }
+      );
+      if (!resolved.ok) {
+        if (resolved.code === 'outside-truck') return false;
+        revertGroupToStart(groupIds, startMap);
+        UIComponents.showToast(resolved.reason || 'Cannot place this staged case in the truck safely.', 'error');
+        resetDrag();
+        return true;
+      }
       const candidateCases = buildStagedToPackedCandidateCases(pack, inst.id, desiredPosition);
       const preflight = PackLibrary.revalidateManualPlacements(
         { ...pack, cases: candidateCases },
@@ -2280,7 +2297,8 @@ export function createInteractionManager({
         : null;
       if (preflightSelf && preflightSelf.placement === 'packed' &&
           preflightSelf.transform &&
-          positionsShareManualXZ(preflightSelf.transform.position, desiredPosition)) {
+          positionsShareManualXZ(preflightSelf.transform.position, desiredPosition) &&
+          positionsShareManualY(preflightSelf.transform.position, desiredPosition)) {
         const result = PackLibrary.updateCasesWithManualRevalidation(
           packId,
           candidateCases,
@@ -2292,6 +2310,7 @@ export function createInteractionManager({
           : null;
         const stagedSelf = !committedSelf || committedSelf.placement !== 'packed' ||
           !positionsShareManualXZ(committedSelf.transform && committedSelf.transform.position, desiredPosition) ||
+          !positionsShareManualY(committedSelf.transform && committedSelf.transform.position, desiredPosition) ||
           (Array.isArray(result && result.stagedIds) && result.stagedIds.includes(inst.id));
         if (committedSelf && committedSelf.transform && committedSelf.transform.position) {
           obj.position.copy(SceneManager.vecInchesToWorld(committedSelf.transform.position));
@@ -3547,6 +3566,23 @@ export function createInteractionManager({
         CaseScene.setCollision(id, check.collides);
       });
 
+      const packId = StateStore.get('currentPackId');
+      const pack = PackLibrary.getById(packId);
+      if (!pack) {
+        resetDrag();
+        return;
+      }
+      const singleDraggedInst = groupIds.length === 1
+        ? (pack.cases || []).find(i => i && i.id === instanceId)
+        : null;
+      // Staged truck releases use committed Pack geometry. A stale staged
+      // mesh may be in the scene at this spot, but it is not packed cargo.
+      if (singleDraggedInst && singleDraggedInst.placement === 'staged' &&
+          tryCommitStagedIntoTruck(packId, pack, singleDraggedInst, obj, groupIds, startMap)) {
+        CaseScene.refreshGizmo();
+        return;
+      }
+
       // A rigid group releases through the canonical atomic preflight below,
       // which owns the production overlap tolerance. Do not let this raw scene
       // check reject a near-flush group before that tolerant validator runs.
@@ -3558,22 +3594,12 @@ export function createInteractionManager({
         return;
       }
 
-      const packId = StateStore.get('currentPackId');
-      const pack = PackLibrary.getById(packId);
-      if (!pack) {
-        resetDrag();
-        return;
-      }
-
       // V2B: a single packed case releases through the validated placement
       // resolver so an Alt-drag raised position is honored when legal, corrected
       // to the nearest legal level when not, and never silently settled onto
       // cargo that cannot carry it. A single staged case gets one preflight
       // chance to become packed below. Multi-select uses the atomic group
       // preflight below; single out-of-truck releases keep the legacy path.
-      const singleDraggedInst = groupIds.length === 1
-        ? (pack.cases || []).find(i => i && i.id === instanceId)
-        : null;
       if (singleDraggedInst && singleDraggedInst.placement !== 'staged' &&
           typeof PackLibrary.findManualVerticalPlacement === 'function' &&
           typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
@@ -3628,11 +3654,6 @@ export function createInteractionManager({
           resetDrag();
           return;
         }
-      }
-      if (singleDraggedInst && singleDraggedInst.placement === 'staged' &&
-          tryCommitStagedIntoTruck(packId, pack, singleDraggedInst, obj, groupIds, startMap)) {
-        CaseScene.refreshGizmo();
-        return;
       }
       if (groupIds.length > 1 && tryCommitAtomicManualGroup(packId, pack, groupIds, startMap)) {
         return;
@@ -6025,6 +6046,8 @@ export function createEditorScreen({
       if (inst) {
         StateStore.set({ selectedInstanceIds: [inst.id] }, { skipHistory: true });
         UIComponents.showToast('Case added to load plan', 'success');
+      } else if (positionInches) {
+        UIComponents.showToast('Cannot place this case here safely.', 'error');
       }
     }
 

@@ -14,17 +14,21 @@
  * Computes pallet weight constraint warnings.
  * @param {OOGPack} pack - Pack object
  * @param {Record<string, any>[]} caseLibrary - Case definitions
+ * @param {Set<string|null>|null} [loadedInstanceIds=null] - Canonical loaded IDs when available; direct callers exclude explicitly staged instances
  * @returns {object[]} Array of pallet warning objects
  */
-export function computePalletWarnings(pack, caseLibrary) {
+export function computePalletWarnings(pack, caseLibrary, loadedInstanceIds = null) {
     if (!pack || !pack.cases) return [];
 
     const warnings = [];
     const caseMap = new Map(caseLibrary.map(c => [c.id, c]));
+    const isLoaded = inst => inst && (loadedInstanceIds
+        ? loadedInstanceIds.has(inst.id == null ? null : String(inst.id))
+        : inst.placement !== 'staged');
 
     // Find all pallets
     const pallets = pack.cases.filter(inst => {
-        if (inst.hidden) return false;
+        if (!isLoaded(inst)) return false;
         const caseData = caseMap.get(inst.caseId);
         return caseData?.isPallet === true;
     });
@@ -42,12 +46,12 @@ export function computePalletWarnings(pack, caseLibrary) {
         const palletHalfL = palletDims.length / 2;
         const palletHalfW = palletDims.width / 2;
 
-        // Sum weight of non-hidden cases stacked above the pallet within its footprint
+        // Sum weight of loaded cases stacked above the pallet within its footprint
         let loadWeight = 0;
         const loadedCases = [];
 
         pack.cases.forEach(inst => {
-            if (inst.hidden || inst.id === pallet.id) return;
+            if (!isLoaded(inst) || inst.id === pallet.id) return;
             const caseData = caseMap.get(inst.caseId);
             if (!caseData) return;
 

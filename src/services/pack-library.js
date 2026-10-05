@@ -3073,7 +3073,7 @@ export function removeCaseInstancesFromStaging(packId, caseId, count) {
   return stagedCaseRemovalResult('ok', count, eligibleCount, removedInstanceIds, updatedPack);
 }
 
-function computeShapeAwareOOGWarnings(pack, caseLibrary) {
+function computeShapeAwareOOGWarnings(pack, caseLibrary, resolvedInstanceIds) {
   if (!pack || !Array.isArray(pack.cases) || !pack.truck) return [];
   const zonesInches = getTrailerUsableZones(pack.truck);
   const oogWheelWell = getWheelWellGeometry(pack.truck);
@@ -3091,7 +3091,8 @@ function computeShapeAwareOOGWarnings(pack, caseLibrary) {
   const warnings = [];
 
   (pack.cases || []).forEach(inst => {
-    if (!inst || inst.hidden) return;
+    if (!inst || inst.placement === 'staged' ||
+        !resolvedInstanceIds.has(inst.id == null ? null : String(inst.id))) return;
     const caseData = caseMap.get(inst.caseId);
     if (!caseData) return;
     const dims = inst.orientedDims || caseData.dimensions || { length: 0, width: 0, height: 0 };
@@ -3139,11 +3140,14 @@ export function computeStats(pack, caseLibraryOverride) {
   });
   let totalWeight = 0;
   let maxCapacityProfileCount = 0;
-  const loadedInstanceIds = new Set(
-    spaceUtilization.instanceAabbs
-      .filter(entry => entry.placement === 'loaded')
-      .map(entry => entry.instanceId)
-  );
+  const loadedInstanceIds = new Set();
+  const resolvedInstanceIds = new Set();
+  spaceUtilization.instanceAabbs.forEach(entry => {
+    if (entry.placement === 'loaded' || entry.placement === 'staged') {
+      resolvedInstanceIds.add(entry.instanceId);
+    }
+    if (entry.placement === 'loaded') loadedInstanceIds.add(entry.instanceId);
+  });
   ((pack && pack.cases) || []).forEach(inst => {
     if (!inst || !loadedInstanceIds.has(inst.id == null ? null : String(inst.id))) return;
     const c = caseLib.find(caseData => caseData && caseData.id === inst.caseId) || null;
@@ -3155,9 +3159,9 @@ export function computeStats(pack, caseLibraryOverride) {
     if (instanceUsesMaxCapacityProfile(inst)) maxCapacityProfileCount++;
     totalWeight += Number(c.weight) || 0;
   });
-  const cog = computeCoG(pack, caseLib);
-  const oogWarnings = computeShapeAwareOOGWarnings(pack, caseLib);
-  const palletWarnings = computePalletWarnings(pack, caseLib);
+  const cog = computeCoG(pack, caseLib, loadedInstanceIds);
+  const oogWarnings = computeShapeAwareOOGWarnings(pack, caseLib, resolvedInstanceIds);
+  const palletWarnings = computePalletWarnings(pack, caseLib, loadedInstanceIds);
   // Completeness: when any instance is unresolved, weight/volume/utilization totals
   // are necessarily incomplete (we never fabricate the missing item's physical
   // contribution). Surfaces must avoid any "complete"/"fits all" wording when false.

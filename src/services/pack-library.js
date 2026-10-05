@@ -762,13 +762,17 @@ function buildDuplicatePayloadBounds(payload) {
 function buildDuplicateExistingAabbs(pack, caseLibrary) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   return (pack && Array.isArray(pack.cases) ? pack.cases : [])
-    .filter(inst => inst && inst.hidden !== true)
     .map(inst => {
+      if (!inst) return null;
       const caseData = caseMap.get(inst.caseId);
       if (!caseData) return null;
       const dims = getInstanceEffectiveDims(inst, caseData);
       if (!hasPositiveFiniteDims(dims)) return null;
-      return makeAabb(getDuplicateSourcePosition(inst, dims), dims);
+      const position = normalizeTransformPosition(inst.transform && inst.transform.position);
+      if (!position) return null;
+      const aabb = makeAabb(position, dims);
+      // Staged cargo is not a truck obstacle, even if its saved pose is stale.
+      return inst.placement === 'staged' && duplicateAabbIsInsideTruckGeometry(pack, aabb) ? null : aabb;
     })
     .filter(Boolean);
 }
@@ -784,13 +788,14 @@ function duplicateAabbIsInsideTruckGeometry(pack, aabb) {
 function buildDuplicateExistingEntries(pack, caseLibrary) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   return (pack && Array.isArray(pack.cases) ? pack.cases : [])
-    .filter(inst => inst && inst.hidden !== true)
+    .filter(inst => inst && inst.placement !== 'staged')
     .map(inst => {
       const caseData = caseMap.get(inst.caseId);
       if (!caseData) return null;
       const dims = getInstanceEffectiveDims(inst, caseData);
       if (!hasPositiveFiniteDims(dims)) return null;
-      const position = getDuplicateSourcePosition(inst, dims);
+      const position = normalizeTransformPosition(inst.transform && inst.transform.position);
+      if (!position) return null;
       return {
         id: inst.id,
         inst,
@@ -1184,10 +1189,10 @@ function maxCapacitySupportRelationship(candidate, support) {
     instanceUsesMaxCapacityProfile(support && support.inst);
 }
 
-// Wheel Wells support validation uses the shared packing-core rule helpers.
-// Project only marked-to-marked cargo relationships into relaxed validation
-// records; never mutate the stored support instance or its source case rules.
-function projectMaxCapacitySupportRecords(candidate, accepted) {
+// Existing committed Max-to-Max supports use the same relationship authority
+// in reconciliation and fixed AutoPack preflight. Project only marked pairs;
+// never mutate the stored support instance or its source case rules.
+export function projectMaxCapacitySupportRecords(candidate, accepted) {
   if (!instanceUsesMaxCapacityProfile(candidate && candidate.inst)) return accepted || [];
   return (accepted || []).map(support => {
     if (!maxCapacitySupportRelationship(candidate, support)) return support;
@@ -1200,6 +1205,13 @@ function projectMaxCapacitySupportRecords(candidate, accepted) {
         maxStackCount: 0,
         isPallet: true,
       },
+      ...(support.item && { item: {
+        ...support.item,
+        noStackOnTop: false,
+        stackable: true,
+        maxStackCount: 0,
+        isPallet: true,
+      } }),
     };
   });
 }

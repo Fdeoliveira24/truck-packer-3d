@@ -52,6 +52,32 @@ test('A3 Results Apply preserves immutable fixed rows and profiles while changin
   );
 });
 
+test('F06 current Results producer records movement identity while legacy whole-load Apply remains supported', async () => {
+  const [engineSource, EditorScreen, StateStore, Storage] = await Promise.all([
+    fs.readFile(enginePath, 'utf8'), import(editorScreenPath.href),
+    import(new URL('../../src/core/state-store.js', import.meta.url).href),
+    import(new URL('../../src/core/storage.js', import.meta.url).href),
+  ]);
+  const optionBuilder = sliceFn(engineSource, 'function buildAutoPackResultOption(', 'function buildAutoPackResultsState(');
+  const resultsBuilder = sliceFn(engineSource, 'function buildAutoPackResultsState(', 'function cancelAllTweens(');
+  assert.match(optionBuilder, /movableIds: \[\.\.\.movableIds\]/,
+    'every current engine option must carry its exact movable population');
+  assert.match(resultsBuilder, /buildAutoPackResultOption\(solution, index, packData, stagingMap, movableIds, excludedIds\)/,
+    'all current result options share that producer');
+
+  const current = [{ id: 'one', caseId: 'case-one', placement: 'packed',
+    transform: { position: { x: 5, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }];
+  const chosen = structuredClone(current);
+  chosen[0].transform.position.x = 15;
+  assert.equal(EditorScreen.buildAppliedAutoPackCases(
+    { id: 'default', nextCases: chosen }, structuredClone, current)?.[0].transform.position.x,
+  15, 'legacy whole-load direct Apply may omit movableIds');
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {},
+    autoPackResults: { options: [{ nextCases: chosen }] } });
+  assert.equal(Object.hasOwn(JSON.parse(Storage.exportAppJSON()).data, 'autoPackResults'), false,
+    'transient Results are excluded from App Backup');
+});
+
 function sliceFn(src, startNeedle, endNeedle) {
   const start = src.indexOf(startNeedle);
   const end = src.indexOf(endNeedle, start + 1);

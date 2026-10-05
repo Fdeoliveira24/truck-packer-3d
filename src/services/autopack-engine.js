@@ -25,7 +25,7 @@ import {
   isAabbWithinTruckMinusBlocked,
   isWheelWellSupportedAndStable,
 } from '../packing-core/wheel-well-model.js';
-import { evaluateFrontOverhangRearRetention } from './pack-library.js';
+import { evaluateFrontOverhangRearRetention, projectMaxCapacitySupportRecords } from './pack-library.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
 // the SAME deterministic physical orientation. Staging is outside the truck and
@@ -279,6 +279,7 @@ function existingPlacement(inst, caseData, canonicalDims, fixed = false) {
   return {
     instanceId: inst.id,
     fixed,
+    inst: { placement: inst.placement, packedProfile: inst.packedProfile },
     item: { ...rules, weight: caseData.weight },
     pos: position,
     dims,
@@ -288,20 +289,21 @@ function existingPlacement(inst, caseData, canonicalDims, fixed = false) {
 
 function existingSupportIsValid(candidate, placements, zones, wheelWell) {
   const others = placements.filter(entry => entry !== candidate && !entry.collisionOnly);
+  const supports = projectMaxCapacitySupportRecords(candidate, others);
   if (wheelWell) {
     return isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell) &&
-      isWheelWellSupportedAndStable(candidate.aabb, others, wheelWell, candidate.item);
+      isWheelWellSupportedAndStable(candidate.aabb, supports, wheelWell, candidate.item);
   }
   if (!isAabbContainedInAnyZone(candidate.aabb, zones)) return false;
   if (zones.some(zone => isAabbContainedInZone(candidate.aabb, zone) &&
       Math.abs(candidate.aabb.min.y - zone.min.y) <= CONTACT_EPS)) return true;
-  const supporters = others.filter(entry =>
+  const supporters = supports.filter(entry =>
     Math.abs(candidate.aabb.min.y - entry.aabb.max.y) <= CONTACT_EPS &&
     computeXzOverlapArea(candidate.aabb, entry.aabb) > CONTACT_EPS
   );
   return supporters.length > 0 &&
     supporters.every(entry => canSupportStack(entry) &&
-      hasStackCapacity(entry, others) && canSupportCandidateWeight(candidate.item, entry)) &&
+      hasStackCapacity(entry, supports) && canSupportCandidateWeight(candidate.item, entry)) &&
     computeSupportFraction(candidate.aabb, supporters.map(entry => entry.aabb), CONTACT_EPS) >= MIN_SUPPORT_FRACTION;
 }
 

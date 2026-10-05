@@ -60,6 +60,46 @@ test('KEYBOARD-DUPLICATE-SAFE Cmd/Ctrl+D duplicate near occupied packed cases do
   assertPackImportNoOverlaps(updated.cases, caseData);
 });
 
+test('F05 Duplicate treats hidden packed cargo as physical while staged cargo stays outside truck authority', async () => {
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const caseData = makePackImportSafeCase({ id: 'case-hidden-duplicate', dimensions: { length: 12, width: 12, height: 12 } });
+  const truck = { length: 24, width: 12, height: 12, shapeMode: 'rect' };
+  const instance = (id, x, hidden = false, placement = 'packed') =>
+    makePackImportInstance(caseData.id, {
+      id, hidden, placement, transform: { position: { x, y: 6, z: 0 } },
+    });
+  const source = instance('source', 6);
+  const packWith = obstacle => ({ id: 'duplicate-hidden', truck,
+    cases: obstacle ? [source, obstacle] : [source] });
+  const visible = PackLibrary.buildSafeDuplicateInstances(
+    packWith(instance('obstacle', 18)), [source], [caseData]);
+  const hidden = PackLibrary.buildSafeDuplicateInstances(
+    packWith(instance('obstacle', 18, true)), [source], [caseData]);
+  assert.equal(visible.placement, 'staged', 'visible packed obstacle blocks the only open offset');
+  assert.equal(hidden.placement, 'staged', 'hidden packed obstacle blocks the same physical offset');
+  const staged = PackLibrary.buildSafeDuplicateInstances(
+    packWith(instance('obstacle', 18, true, 'staged')), [source], [caseData]);
+  assert.equal(staged.placement, 'packed', 'hidden staged row with stale truck pose is not a truck obstacle');
+  assert.equal(staged.newInstances[0].transform.position.x, 18);
+  const empty = PackLibrary.buildSafeDuplicateInstances(packWith(), [source], [caseData]);
+  assert.equal(empty.placement, 'packed', 'genuinely empty truck space still accepts Duplicate');
+  assert.equal(empty.newInstances[0].transform.position.x, 18);
+
+  StateStore.init({ caseLibrary: [caseData], packLibrary: [packWith(instance('obstacle', 18, true))],
+    folderLibrary: [], preferences: {} });
+  const committed = PackLibrary.duplicateInstancesSafely('duplicate-hidden', [source], [caseData]);
+  assert.equal(committed.placement, 'staged');
+  const after = PackLibrary.getById('duplicate-hidden');
+  assert.equal(after.cases.length, 3);
+  assert.equal(after.cases[2].placement, 'staged', 'no overlapping packed placement is committed');
+  assert.equal(StateStore.undo(), true);
+  assert.equal(PackLibrary.getById('duplicate-hidden').cases.length, 2, 'one Undo removes the duplicate');
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(PackLibrary.getById('duplicate-hidden').cases, after.cases,
+    'one Redo restores the same safe duplicate');
+});
+
 test('KEYBOARD-DUPLICATE-SAFE Cmd/Ctrl+C then Cmd/Ctrl+V paste near occupied packed cases does not overlap', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);

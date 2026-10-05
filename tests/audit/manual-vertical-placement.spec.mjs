@@ -522,6 +522,173 @@ test('MANUAL-VERTICAL staged candidate may become packed only through manual rev
   );
 });
 
+test('M02 staged exact truck release uses the packed manual hard rules across all truck shapes', async t => {
+  const caseData = makeVerticalCase({ id: 'm02-case' });
+  const staged = (position = { x: 160, y: 5, z: 0 }) =>
+    makeVerticalInstance(caseData.id, 'moving', position, { placement: 'staged' });
+  const obstacle = (hidden = false) =>
+    makeVerticalInstance(caseData.id, 'obstacle', { x: 20, y: 5, z: 0 }, { hidden });
+  const cases = [caseData];
+  const scenarios = [
+    ['Standard empty floor', RECT_TRUCK, [staged()], { x: 20, y: 5, z: 0 }, true],
+    ['Standard occupied floor', RECT_TRUCK, [obstacle(), staged()], { x: 20, y: 5, z: 0 }, false],
+    ['Wheel Wells main floor', WHEEL_WELL_TRUCK, [staged()], { x: 20, y: 5, z: 0 }, true],
+    ['Wheel Well blocked body', WHEEL_WELL_TRUCK, [staged()], { x: 60, y: 5, z: 24 }, false],
+    ['Front Overhang main floor', FRONT_OVERHANG_TRUCK, [staged()], { x: 20, y: 5, z: 0 }, true],
+    ['hidden packed obstacle', RECT_TRUCK, [obstacle(true), staged()], { x: 20, y: 5, z: 0 }, false],
+    ['stale old staged in-truck pose', RECT_TRUCK, [staged({ x: 20, y: 5, z: 0 })], { x: 40, y: 5, z: 0 }, true],
+  ];
+  for (const [label, truck, instances, desiredPosition, expected] of scenarios) {
+    await t.test(label, async () => {
+      const { StateStore, PackLibrary, packId } = await setupVerticalPack({
+        cases, instances, truck, packId: `m02-${label}`,
+      });
+      const pack = PackLibrary.getById(packId);
+      const before = JSON.stringify(pack);
+      const result = PackLibrary.findManualVerticalPlacement(pack, cases, 'moving', {
+        mode: 'resolve', desiredPosition, exact: true,
+      });
+      assert.equal(result.ok, expected, label);
+      assert.equal(JSON.stringify(PackLibrary.getById(packId)), before, 'preflight must be pure');
+      if (label === 'Standard empty floor') {
+        const candidateCases = pack.cases.map(inst => inst.id === 'moving'
+          ? { ...inst, placement: 'packed',
+            transform: { ...inst.transform, position: desiredPosition } }
+          : inst);
+        const committed = PackLibrary.updateCasesWithManualRevalidation(
+          packId, candidateCases, cases, { repairDependents: true });
+        assert.equal(committed.pack.cases.find(inst => inst.id === 'moving').placement, 'packed');
+        assert.equal(StateStore.undo(), true);
+        assert.equal(PackLibrary.getById(packId).cases.find(inst => inst.id === 'moving').placement, 'staged');
+        assert.equal(StateStore.undo(), false, 'one staged release creates one history entry');
+        assert.equal(StateStore.redo(), true);
+        assert.equal(PackLibrary.getById(packId).cases.find(inst => inst.id === 'moving').placement, 'packed');
+      } else {
+        assert.equal(StateStore.undo(), false, 'pure rejection/validation creates no history entry');
+      }
+    });
+  }
+});
+
+test('M02 staged Front Overhang deck release keeps the existing rear-retention rule', async () => {
+  const caseData = makeVerticalCase({ id: 'm02-deck-case' });
+  const retainer = makeVerticalCase({
+    id: 'm02-retainer', dimensions: { length: 20, width: 20, height: 30 }, weight: 40,
+  });
+  const staged = makeVerticalInstance(caseData.id, 'moving', { x: 160, y: 5, z: 0 }, { placement: 'staged' });
+  const desiredPosition = { x: 110, y: 29, z: 0 };
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [caseData, retainer], truck: FRONT_OVERHANG_TRUCK, instances: [staged],
+    packId: 'm02-deck',
+  });
+  const without = PackLibrary.findManualVerticalPlacement(
+    PackLibrary.getById(packId), [caseData, retainer], 'moving',
+    { mode: 'resolve', desiredPosition, exact: true });
+  assert.equal(without.ok, false);
+  assert.equal(without.code, 'needs-rear-retention');
+  const withRetainer = {
+    ...PackLibrary.getById(packId),
+    cases: [makeVerticalInstance(retainer.id, 'retainer', { x: 90, y: 15, z: 0 }), staged],
+  };
+  const withResult = PackLibrary.findManualVerticalPlacement(
+    withRetainer, [caseData, retainer], 'moving',
+    { mode: 'resolve', desiredPosition, exact: true });
+  assert.equal(withResult.ok, true);
+  assert.deepEqual(withResult.position, desiredPosition);
+});
+
+test('M03 manual placement treats a missing packed Case with trusted saved geometry as collision-only', async () => {
+  const caseData = makeVerticalCase({ id: 'm03-known' });
+  const blocker = makeVerticalInstance('missing-case', 'unresolved', { x: 20, y: 5, z: 0 }, {
+    orientedDims: { length: 10, width: 10, height: 10 }, hidden: true,
+  });
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [caseData], instances: [blocker, makeVerticalInstance(caseData.id, 'moving', { x: 40, y: 5, z: 0 })],
+    packId: 'm03-manual',
+  });
+  const pack = PackLibrary.getById(packId);
+  const overlap = PackLibrary.findManualVerticalPlacement(pack, [caseData], 'moving', {
+    mode: 'resolve', desiredPosition: { x: 20, y: 5, z: 0 }, exact: true,
+  });
+  assert.equal(overlap.ok, false, 'trusted unresolved physical cargo blocks a manual move');
+  const onTop = PackLibrary.findManualVerticalPlacement(pack, [caseData], 'moving', {
+    mode: 'resolve', desiredPosition: { x: 20, y: 15, z: 0 }, exact: true,
+  });
+  assert.equal(onTop.ok, false, 'collision-only cargo cannot supply support');
+  assert.equal(onTop.code, 'support-rules');
+  const clear = PackLibrary.findManualVerticalPlacement(pack, [caseData], 'moving', {
+    mode: 'resolve', desiredPosition: { x: 60, y: 5, z: 0 }, exact: true,
+  });
+  assert.equal(clear.ok, true, 'unresolved cargo must not blanket-block clear floor space');
+  const proposed = {
+    ...pack,
+    cases: pack.cases.map(inst => inst.id === 'moving'
+      ? { ...inst, transform: { ...inst.transform, position: { x: 20, y: 5, z: 0 } } }
+      : inst),
+  };
+  const revalidated = PackLibrary.revalidateManualPlacements(proposed, [caseData]);
+  assert.notEqual(revalidated.pack.cases.find(inst => inst.id === 'moving').placement, 'packed',
+    'the shared commit revalidation must also refuse overlap with collision-only cargo');
+  assert.deepEqual(revalidated.pack.cases.find(inst => inst.id === 'unresolved'), blocker,
+    'manual validation must leave the unresolved packed obstacle immutable');
+});
+
+test('M02 raw scene collision can falsely block a valid truck floor pose through stale staged cargo', async () => {
+  const priorThree = globalThis.THREE;
+  const priorDocument = globalThis.document;
+  globalThis.THREE = await import('three');
+  globalThis.document = {
+    createElement: () => ({ getContext: () => ({
+      fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {},
+    }) }),
+  };
+  try {
+    const THREE = globalThis.THREE;
+    const Editor = await loadEditorScreenModule();
+    const caseData = makeVerticalCase({ id: 'm02-stale-scene' });
+    const moving = makeVerticalInstance(caseData.id, 'moving', { x: 160, y: 5, z: 0 }, { placement: 'staged' });
+    const stale = makeVerticalInstance(caseData.id, 'stale-staged', { x: 20, y: 5, z: 0 }, { placement: 'staged' });
+    const { StateStore, PackLibrary, packId } = await setupVerticalPack({
+      cases: [caseData], instances: [moving, stale], packId: 'm02-stale-scene-pack',
+    });
+    StateStore.set({ currentPackId: packId }, { skipHistory: true });
+    const scene = Editor.createCaseScene({
+      SceneManager: {
+        getScene: () => new THREE.Scene(),
+        toWorld: value => Number(value), toInches: value => Number(value),
+        vecInchesToWorld: position => new THREE.Vector3(position.x, position.y, position.z),
+      },
+      CaseLibrary: { getById: id => id === caseData.id ? caseData : null },
+      CategoryService: { meta: () => ({ color: '#9ca3af' }) },
+      PackLibrary, StateStore,
+      TrailerGeometry: {
+        getTrailerUsableZones: PackLibrary.getTrailerUsableZones,
+        isAabbContainedInAnyZone: PackLibrary.isAabbContainedInAnyZone,
+      },
+      Utils: { clamp: (n, min, max) => Math.max(min, Math.min(max, n)), getCssVar: () => '#ff9f1c' },
+      PreferencesManager: { get: () => ({ hiddenCaseOpacity: 0.3 }) },
+    });
+    scene.sync(PackLibrary.getById(packId));
+    const target = new THREE.Vector3(20, 5, 0);
+    assert.equal(scene.checkCollision('moving', target, new Set(['moving'])).collides, true,
+      'the preexisting scene gate counts a stale staged mesh as a truck obstacle');
+    const candidateCases = [
+      { ...moving, placement: 'packed', transform: { ...moving.transform, position: { x: 20, y: 5, z: 0 } } },
+      stale,
+    ];
+    const preflight = PackLibrary.revalidateManualPlacements(
+      { ...PackLibrary.getById(packId), cases: candidateCases }, [caseData], { repairDependents: true });
+    assert.equal(preflight.pack.cases.find(inst => inst.id === 'moving').placement, 'packed',
+      'the canonical Pack check excludes staged cargo and accepts the same candidate');
+    scene.clear();
+  } finally {
+    if (priorThree === undefined) delete globalThis.THREE;
+    else globalThis.THREE = priorThree;
+    if (priorDocument === undefined) delete globalThis.document;
+    else globalThis.document = priorDocument;
+  }
+});
+
 test('MANUAL-VERTICAL wheel wells: drop lands on the rigid well top and never inside the blocked body', async () => {
   const caseData = makeVerticalCase({
     id: 'case-vertical-shelf',
@@ -1120,6 +1287,13 @@ test('MANUAL-VERTICAL drag release for a single packed case resolves through val
     'out-of-truck releases must fall through to the legacy staging path');
   assert.match(block, /singleDraggedInst && singleDraggedInst\.placement === 'staged' &&\s*\n\s*tryCommitStagedIntoTruck\(packId, pack, singleDraggedInst, obj, groupIds, startMap\)/,
     'a single staged release must get a narrow staged-to-packed transition path before legacy staging');
+  assert.ok(
+    block.indexOf('tryCommitStagedIntoTruck(packId, pack, singleDraggedInst, obj, groupIds, startMap)') <
+      block.indexOf('if (anyCollides && groupIds.length === 1)'),
+    'staged truck release must reach canonical Pack validation before the stale scene collision gate'
+  );
+  assert.match(src, /function tryCommitStagedIntoTruck\([\s\S]*findManualVerticalPlacement\(\s*\n\s*pack, CaseLibrary\.getCases\(\), inst\.id,[\s\S]*exact: true/,
+    'staged release must validate the exact candidate pose through the normal manual hard rules');
   assert.match(src, /function tryCommitStagedIntoTruck\(packId, pack, inst, obj, groupIds, startMap\) \{[\s\S]*PackLibrary\.revalidateManualPlacements\(\s*\n\s*\{ \.\.\.pack, cases: candidateCases \},\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true \}/,
     'staged-to-packed preflight must use pure manual revalidation with dependent repair');
   assert.match(src, /PackLibrary\.updateCasesWithManualRevalidation\(\s*\n\s*packId,\s*\n\s*candidateCases,\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true \}/,

@@ -1592,3 +1592,270 @@ test('HANDLING-RULES-P0B canFlip is not part of the exact-lock policy gate, and 
   assert.match(unlockedBody, /if \(canFlip && lock === 'any'\) \{/,
     'canFlip-gated tipped-face generation for unlocked items must be unchanged');
 });
+
+// Phase C1: pure foundations only. Existing runtime policy tests above stay
+// unchanged until the deliberate C3 mass/orientation cutover.
+const c1Cargo = await import('../../src/core/cargo-canonical.js');
+const c1Orientation = await import('../../src/core/orientation.js');
+const c1Dims = await import('../../src/core/oriented-dims.js');
+const c1Domain = await import('../../src/packing-core/domain.js');
+
+function c1Sources() {
+  return {
+    caseData: {
+      id: 'case-c1', name: 'Case', dimensions: { length: 30, width: 20, height: 10 },
+      weight: null, shape: 'box', orientationLock: 'upright',
+      noStackOnTop: false, stackable: true, maxStackCount: 0, isPallet: false, maxPalletWeight: 0,
+    },
+    instance: {
+      id: 'instance-c1', caseId: 'case-c1', placement: 'packed', hidden: false,
+      transform: { position: { x: 50, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+    },
+    truck: {
+      length: 200, width: 100, height: 100, shapeMode: 'wheelWells',
+      shapeConfig: { wellHeight: 20, wellWidth: 15, wellLength: 60, wellOffsetFromRear: 80 },
+    },
+  };
+}
+
+function c1Project({ caseData, instance, truck }) {
+  return {
+    caseData: c1Domain.projectCasePhysicalSource(caseData),
+    instance: c1Domain.projectInstancePhysicalSource(instance),
+    truck: c1Domain.projectTargetSpaceSource(truck),
+  };
+}
+
+function c1Freeze(value) {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(c1Freeze);
+    Object.freeze(value);
+  }
+  return value;
+}
+
+test('C1 mass distinguishes unknown, positive and invalid explicit input without coercion or clamping', () => {
+  const { parseCaseMass, isCanonicalCaseMass, WEIGHT_MAX_LBS } = c1Cargo;
+  for (const raw of [null, undefined, '', '  \t ']) {
+    assert.deepEqual(parseCaseMass(raw), { value: null, valid: true });
+    assert.deepEqual(parseCaseMass(raw, { allowUnknown: false }), { value: undefined, valid: false });
+  }
+  for (const [raw, expected] of [[0.00000001, 0.00000001], ['.00001', 0.00001], [' 1.25 ', 1.25],
+    ['+1.25e-3', 0.00125], [WEIGHT_MAX_LBS, WEIGHT_MAX_LBS], [Number.MIN_VALUE, Number.MIN_VALUE]]) {
+    assert.deepEqual(parseCaseMass(raw), { value: expected, valid: true });
+    assert.ok(expected > 0);
+    assert.equal(isCanonicalCaseMass(expected), true);
+  }
+  for (const raw of [0, -0, '0', '-0', -1, '-2', 'bad', '10lb', '1,000', '0x10', '0b10', '1e-9999',
+    NaN, Infinity, -Infinity, 'NaN', 'Infinity', '1e999', WEIGHT_MAX_LBS + 1, true, false,
+    [], [1], {}, { toString: () => '12' }, 1n, Symbol('mass')]) {
+    assert.deepEqual(parseCaseMass(raw), { value: undefined, valid: false }, String(raw));
+    assert.equal(isCanonicalCaseMass(raw), false);
+  }
+  assert.equal(isCanonicalCaseMass(null), true);
+  assert.equal(isCanonicalCaseMass(undefined), false);
+  assert.equal(isCanonicalCaseMass('12'), false, 'parsed text is not canonical storage');
+});
+
+test('C1 mass conversion preserves null and numeric precision in both supported units', () => {
+  const { parseCaseMass, caseMassToUnit, WEIGHT_MAX_LBS } = c1Cargo;
+  for (const unit of ['lb', 'kg']) {
+    assert.deepEqual(parseCaseMass(null, { unit }), { value: null, valid: true });
+    assert.deepEqual(caseMassToUnit(null, unit), { value: null, valid: true });
+    for (const weight of [1e-12, 0.00001, 1.23456789, 453.59237, WEIGHT_MAX_LBS]) {
+      const display = caseMassToUnit(weight, unit);
+      assert.equal(display.valid, true);
+      assert.ok(display.value > 0);
+      const roundTrip = parseCaseMass(display.value, { unit });
+      assert.equal(roundTrip.valid, true);
+      assert.ok(Math.abs(roundTrip.value - weight) <= weight * 1e-15);
+    }
+  }
+  assert.deepEqual(parseCaseMass('0.45359237', { unit: 'kg' }), { value: 1, valid: true });
+  assert.equal(parseCaseMass(WEIGHT_MAX_LBS, { unit: 'kg' }).valid, false, 'bound is in pounds');
+  assert.equal(caseMassToUnit(Number.MIN_VALUE, 'kg').valid, false, 'underflow must not become zero');
+  for (const unit of ['g', '', null, undefined]) {
+    assert.deepEqual(caseMassToUnit(null, unit), { value: undefined, valid: false });
+  }
+  assert.equal(parseCaseMass(null, { unit: 'g' }).valid, false);
+  for (const raw of [0, -0, -1, undefined, '1', NaN, Infinity, WEIGHT_MAX_LBS + 1]) {
+    assert.deepEqual(caseMassToUnit(raw, 'kg'), { value: undefined, valid: false });
+  }
+});
+
+test('C1 physical orientation uses signed authored faces across all 64 Euler combinations', async () => {
+  const THREE = await import(vendorThreePath.href);
+  const permitted = c1Orientation.isCasePhysicalOrientationAllowed;
+  const faces = new Set();
+  for (const x of RIGHT_ANGLES) for (const y of RIGHT_ANGLES) for (const z of RIGHT_ANGLES) {
+    const rotation = c1Freeze({ x, y, z });
+    const up = new THREE.Vector3(0, 1, 0).applyEuler(new THREE.Euler(x, y, z, 'XYZ'));
+    faces.add([up.x, up.y, up.z].map(v => Math.round(v) || 0).join(','));
+    for (const canFlip of [false, true, undefined]) {
+      for (const [orientationLock, expected] of [['any', true], ['upright', up.y > 0.999999], ['onSide', Math.abs(up.y) < 0.000001]]) {
+        const caseData = c1Freeze({ orientationLock, canFlip, dimensions: { length: 20, width: 20, height: 20 },
+          packedProfile: 'max-capacity', orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 } });
+        assert.equal(permitted(caseData, rotation), expected, `${orientationLock}: ${JSON.stringify(rotation)}`);
+      }
+    }
+  }
+  assert.equal(faces.size, 6, 'all six signed authored height-axis directions exercised');
+  assert.equal(permitted({ orientationLock: 'upright' }, { x: 0, y: 0, z: 0 }), true);
+  assert.equal(permitted({ orientationLock: 'upright' }, { x: 0, y: RIGHT_ANGLE, z: 0 }), true);
+  assert.equal(permitted({ orientationLock: 'upright' }, { x: Math.PI, y: 0, z: 0 }), false);
+  assert.equal(permitted({ orientationLock: 'upright' }, { x: Math.PI, y: 0, z: Math.PI }), true);
+  assert.equal(permitted({ orientationLock: 'onSide' }, { x: RIGHT_ANGLE, y: 0, z: 0 }), true);
+  assert.equal(permitted({ orientationLock: 'onSide' }, { x: 0, y: 0, z: 0 }), false);
+  assert.equal(permitted({ orientationLock: 'onSide' }, { x: Math.PI, y: 0, z: 0 }), false);
+});
+
+test('C1 strict orientation parsing and pose interpretation never default malformed values', () => {
+  const { parseCaseOrientationLock, isCasePhysicalOrientationAllowed } = c1Orientation;
+  for (const raw of ['onSide', 'ONSIDE', 'on side', 'on-side', 'on_side']) {
+    assert.deepEqual(parseCaseOrientationLock(raw), { value: 'onSide', valid: true });
+  }
+  for (const raw of [null, undefined, '', '   ']) {
+    assert.equal(parseCaseOrientationLock(raw).valid, false);
+    assert.deepEqual(parseCaseOrientationLock(raw, { allowDefault: true }), { value: 'any', valid: true });
+  }
+  for (const raw of ['sideways', 0, false, [], {}, { toString: () => 'any' }]) {
+    assert.deepEqual(parseCaseOrientationLock(raw, { allowDefault: true }), { value: undefined, valid: false });
+    assert.equal(isCasePhysicalOrientationAllowed({ orientationLock: raw }, { x: 0, y: 0, z: 0 }), false);
+  }
+  for (const rotation of [null, undefined, {}, [], { x: 0, y: 0 }, { x: '0', y: 0, z: 0 },
+    { x: NaN, y: 0, z: 0 }, { x: Infinity, y: 0, z: 0 }, { x: Math.PI / 4, y: 0, z: 0 }]) {
+    assert.equal(c1Dims.getPhysicalOrientationAxes(rotation).valid, false);
+    assert.equal(isCasePhysicalOrientationAllowed({ orientationLock: 'any' }, rotation), false);
+  }
+  assert.deepEqual(c1Dims.getPhysicalOrientationAxes({ x: -2 * Math.PI, y: 5 * RIGHT_ANGLE, z: 0 }),
+    c1Dims.getPhysicalOrientationAxes({ x: 0, y: RIGHT_ANGLE, z: 0 }));
+});
+
+test('C1 actual dimensions follow actual rotation and ignore every planning/cache field', async () => {
+  const { caseData, instance } = c1Sources();
+  const oracle = await threeOrientedTruth();
+  for (const x of RIGHT_ANGLES) for (const y of RIGHT_ANGLES) for (const z of RIGHT_ANGLES) {
+    const actual = { ...instance, transform: { ...instance.transform, rotation: { x, y, z } } };
+    assert.deepEqual(c1Dims.getActualPoseDimensions(caseData, actual), {
+      value: oracle(caseData.dimensions, { x, y, z }), valid: true,
+    });
+  }
+  const actual = { ...instance, transform: { ...instance.transform, rotation: { x: RIGHT_ANGLE, y: 0, z: 0 } } };
+  const expected = { value: { length: 30, width: 10, height: 20 }, valid: true };
+  for (const patch of [
+    { lockedRotation: { x: 0, y: RIGHT_ANGLE, z: 0 } }, { orientationLocked: true },
+    { packedProfile: 'max-capacity' }, { canFlip: true }, { orientedDims: { length: 900, width: 800, height: 700 } },
+    { orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, packedProfile: 'max-capacity' },
+  ]) assert.deepEqual(c1Dims.getActualPoseDimensions(caseData, { ...actual, ...patch }), expected);
+  assert.deepEqual(c1Dims.getActualPoseDimensions({ ...caseData, canFlip: true, orientationLock: 'onSide' }, actual), expected);
+  assert.deepEqual(c1Dims.getActualPoseDimensions({ ...caseData, dimensions: { length: 1e-9, width: 0.123456789, height: 2 } }, instance), {
+    value: { length: 1e-9, width: 0.123456789, height: 2 }, valid: true,
+  });
+  assert.equal(c1Dims.getActualPoseDimensions(null, actual).valid, false);
+  assert.equal(c1Dims.getActualPoseDimensions(caseData, { ...actual, transform: {} }).valid, false);
+  assert.equal(c1Dims.getActualPoseDimensions({ dimensions: { length: 0, width: 20, height: 10 } }, actual).valid, false);
+});
+
+test('C1 projection is deterministic for equivalent physical sources and ignores display/planning metadata', () => {
+  const source = c1Sources();
+  const baseline = c1Project(source);
+  assert.ok(Object.values(baseline).every(result => result.valid));
+  const equivalent = structuredClone(source);
+  equivalent.caseData = { ...equivalent.caseData, name: 'Renamed', color: '#abcdef', category: 'other',
+    manufacturer: 'Changed', notes: 'Text', updatedAt: 'later', canFlip: true, laneItem: true, loadPriority: 9 };
+  equivalent.instance = { ...equivalent.instance, orientationLocked: true, lockedRotation: { x: 0, y: RIGHT_ANGLE, z: 0 },
+    packedProfile: 'max-capacity', orientedDims: { length: 1, width: 2, height: 3 }, instanceNotes: 'Text',
+    orientationLock: 'onSide', canFlip: true };
+  equivalent.truck = { ...equivalent.truck, name: 'Display', __packId: 'editor-only', color: '#fff',
+    shapeConfig: { ...equivalent.truck.shapeConfig, bonusWidth: 600, unused: 'display' } };
+  assert.deepEqual(c1Project(equivalent), baseline);
+  assert.equal(JSON.stringify(c1Project(equivalent)), JSON.stringify(baseline));
+  const a = { ...source.instance, transform: { ...source.instance.transform, rotation: { x: Math.PI, y: 0, z: Math.PI } } };
+  const b = { ...source.instance, transform: { ...source.instance.transform, rotation: { x: 0, y: Math.PI, z: 0 } } };
+  assert.deepEqual(c1Domain.projectInstancePhysicalSource(a), c1Domain.projectInstancePhysicalSource(b));
+  const omittedDefaults = { ...source.caseData };
+  for (const key of ['stackable', 'noStackOnTop', 'maxStackCount', 'isPallet', 'maxPalletWeight']) delete omittedDefaults[key];
+  assert.deepEqual(c1Domain.projectCasePhysicalSource(omittedDefaults), baseline.caseData);
+  assert.deepEqual(c1Domain.projectCasePhysicalSource({ ...source.caseData, stackable: false }),
+    c1Domain.projectCasePhysicalSource({ ...source.caseData, noStackOnTop: true }));
+});
+
+test('C1 projection identity retains mass knowledge and changes with physical source dependencies', () => {
+  const source = c1Sources();
+  const key = value => JSON.stringify(c1Project(value));
+  const baseline = key(source);
+  assert.equal(JSON.parse(baseline).caseData.value.weight, null);
+  for (const edit of [
+    s => { s.caseData.id = 'another'; }, s => { s.caseData.weight = 0.00001; },
+    s => { s.caseData.dimensions.width = 21; }, s => { s.caseData.shape = 'drum'; },
+    s => { s.caseData.orientationLock = 'onSide'; }, s => { s.caseData.noStackOnTop = true; },
+    s => { s.caseData.maxStackCount = 2; }, s => { s.caseData.isPallet = true; },
+    s => { s.caseData.maxPalletWeight = 100; }, s => { s.instance.id = 'another'; },
+    s => { s.instance.caseId = 'another'; }, s => { s.instance.placement = 'staged'; },
+    s => { s.instance.transform.position.x += 1; }, s => { s.instance.transform.rotation.x = Math.PI; },
+    s => { s.truck.length += 1; }, s => { s.truck.shapeMode = 'rect'; },
+    s => { s.truck.shapeConfig.wellOffsetFromRear += 1; },
+  ]) {
+    const changed = structuredClone(source);
+    edit(changed);
+    assert.ok(Object.values(c1Project(changed)).every(result => result.valid));
+    assert.notEqual(key(changed), baseline);
+  }
+  for (const weight of [0, -0, undefined, '1', NaN, Infinity, c1Cargo.WEIGHT_MAX_LBS + 1]) {
+    assert.deepEqual(c1Domain.projectCasePhysicalSource({ ...source.caseData, weight }),
+      { value: undefined, valid: false, field: 'weight' });
+    assert.notEqual(key({ ...source, caseData: { ...source.caseData, weight } }), baseline);
+  }
+});
+
+test('C1 projection keeps hidden and staged poses without deciding physical participation', () => {
+  const { instance } = c1Sources();
+  const original = c1Domain.projectInstancePhysicalSource(instance).value;
+  for (const placement of ['packed', 'staged']) for (const hidden of [true, false]) {
+    const result = c1Domain.projectInstancePhysicalSource({ ...instance, placement, hidden });
+    assert.equal(result.valid, true);
+    assert.equal(result.value.placement, placement);
+    assert.deepEqual(result.value.visibility, { hidden });
+    assert.deepEqual(result.value.pose, original.pose, 'visibility/membership never erases physical pose');
+  }
+});
+
+test('C1 target source projection includes only active geometry and rejects malformed explicit inputs', () => {
+  const source = c1Sources();
+  const front = { ...source.truck, shapeMode: 'frontBonus', shapeConfig: { bonusLength: 50, bonusHeight: 40, bonusWidth: 100 } };
+  assert.deepEqual(c1Domain.projectTargetSpaceSource(front).value.shapeConfig, { bonusLength: 50, bonusHeight: 40 });
+  assert.notDeepEqual(c1Domain.projectTargetSpaceSource(front),
+    c1Domain.projectTargetSpaceSource({ ...front, shapeConfig: { ...front.shapeConfig, bonusHeight: 41 } }));
+  assert.deepEqual(c1Domain.projectTargetSpaceSource({ ...source.truck, shapeMode: 'rect' }).value.shapeConfig, {});
+  assert.deepEqual(c1Domain.projectTargetSpaceSource({ ...source.truck, shapeConfig: undefined }),
+    c1Domain.projectTargetSpaceSource({ ...source.truck, shapeConfig: {} }));
+  for (const truck of [null, { ...source.truck, length: 0 }, { ...source.truck, width: '100' },
+    { ...source.truck, shapeMode: 'unknown' }, { ...source.truck, shapeConfig: null },
+    { ...source.truck, shapeConfig: { wellWidth: -1 } }, { ...source.truck, shapeConfig: { wellWidth: Infinity } }]) {
+    const result = c1Domain.projectTargetSpaceSource(truck);
+    assert.equal(result.valid, false);
+    assert.equal(result.value, undefined);
+  }
+  for (const patch of [{ dimensions: { length: 1e6, width: 20, height: 10 } }, { orientationLock: 'garbage' },
+    { shape: 'invalid' }, { stackable: 'false' }, { maxStackCount: 1.5 }, { maxPalletWeight: -1 }]) {
+    assert.equal(c1Domain.projectCasePhysicalSource({ ...source.caseData, ...patch }).valid, false);
+  }
+  for (const patch of [{ id: '' }, { caseId: '' }, { placement: null }, { hidden: 'false' },
+    { transform: { position: { x: NaN, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }]) {
+    assert.equal(c1Domain.projectInstancePhysicalSource({ ...source.instance, ...patch }).valid, false);
+  }
+});
+
+test('C1 helpers read frozen inputs and projections share no mutable records with source', () => {
+  const source = c1Freeze(c1Sources());
+  const before = structuredClone(source);
+  const projection = c1Project(source);
+  assert.equal(c1Dims.getActualPoseDimensions(source.caseData, source.instance).valid, true);
+  assert.equal(c1Orientation.isCasePhysicalOrientationAllowed(source.caseData, source.instance.transform.rotation), true);
+  projection.caseData.value.dimensions.length = 900;
+  projection.instance.value.pose.position.x = 900;
+  projection.instance.value.pose.axes.y.y = -1;
+  projection.truck.value.shapeConfig.wellHeight = 900;
+  assert.deepEqual(source, before);
+  assert.deepEqual(c1Project(source), c1Project(before));
+});

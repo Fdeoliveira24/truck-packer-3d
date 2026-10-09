@@ -2224,6 +2224,60 @@ test('APP-STABILIZATION-PHASE1 pending autosave flushes into the outgoing scope 
   }
 });
 
+test('C3 legacy stored zero mass loads as unknown without rewriting Cases or Pack poses', async () => {
+  const originalWindow = globalThis.window;
+  const { applyCanonicalCargoFields } = await import('../../src/core/cargo-canonical.js');
+  const masses = [0, -0, '0', ' -0.00 ', '+0e2', '.0', null, 25.5, '12.5'];
+  const cases = masses.map((weight, index) => ({
+    id: `legacy-${index}`, name: `Saved Case ${index}`, weight, itemCode: null,
+    dimensions: { length: 10, width: 12, height: 14 }, orientationLock: 'upright',
+    notes: 'Keep saved metadata', createdAt: 12, canFlip: false,
+  }));
+  const pack = {
+    id: 'saved-pack', loadPlanNumber: 'LP-00000001', customerReference: null,
+    cases: [{ id: 'saved-instance', caseId: 'legacy-0', hidden: true, placement: 'staged',
+      orientationLocked: true, lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+      orientedDims: { length: 12, width: 10, height: 14 },
+      transform: { position: { x: -200, y: 7, z: 20 }, rotation: { x: 0, y: 0, z: 0 } } }],
+  };
+  const payload = { version: 'legacy', savedAt: 123, caseLibrary: cases,
+    packLibrary: [pack], folderLibrary: [{ id: 'folder' }], currentPackId: pack.id };
+
+  try {
+    for (const sourceKey of ['truckPacker3d:v1', 'truckPacker3d:v1:legacy-user',
+      'truckPacker3d:v1:legacy-user:workspace:legacy-org']) {
+      const localStorage = createStabilizationMemoryStorage();
+      globalThis.window = { localStorage, setTimeout, clearTimeout };
+      const Storage = await import(`${storagePath.href}?c3-legacy=${encodeURIComponent(sourceKey)}`);
+      Storage.setStorageScope('legacy-user');
+      Storage.setWorkspaceScope('legacy-org');
+      const original = JSON.stringify(payload);
+      localStorage.setItem(sourceKey, original);
+      const loaded = Storage.load();
+      const canonical = loaded.caseLibrary.map(applyCanonicalCargoFields);
+      assert.deepEqual(canonical.map(c => c.weight), [null, null, null, null, null, null, null, 25.5, 12.5]);
+      assert.deepEqual(loaded.caseLibrary, cases.map(c => ({ ...c,
+        weight: c.weight === 25.5 || c.weight === '12.5' ? c.weight : null })));
+      assert.deepEqual(loaded.packLibrary, payload.packLibrary, 'load never repairs saved physical/planning state');
+      assert.deepEqual(loaded.folderLibrary, payload.folderLibrary);
+      assert.equal(loaded.currentPackId, pack.id);
+      assert.equal(localStorage.getItem(sourceKey), original, 'reading does not overwrite the saved source');
+
+      // The compatibility boundary must not silently convert other invalid mass.
+      const invalidCases = [-1, 'bad', false, [], '1e-9999', 10000001].map((weight, i) => ({ ...cases[0], id: `bad-${i}`, weight }));
+      localStorage.setItem(sourceKey, JSON.stringify({ ...payload, caseLibrary: invalidCases }));
+      const invalid = Storage.load();
+      assert.deepEqual(invalid.caseLibrary.map(c => c.weight), invalidCases.map(c => c.weight));
+      invalid.caseLibrary.forEach(c => assert.throws(() => applyCanonicalCargoFields(c), /Invalid Case weight/));
+    }
+    [0, -0, '0'].forEach(weight => assert.throws(() => applyCanonicalCargoFields({ weight }), /Invalid Case weight/,
+      'new writes and imports retain strict zero-mass rejection'));
+  } finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+  }
+});
+
 test('APP-STABILIZATION-PHASE1 legacy combined storage stays intact until authoritative finalization', async () => {
   const originalWindow = globalThis.window;
   const localStorage = createStabilizationMemoryStorage();

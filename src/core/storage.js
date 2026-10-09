@@ -390,6 +390,17 @@ export function removeKey(key) {
   }
 }
 
+// Pre-C3 storage used zero for blank/unknown Case mass. Translate that legacy
+// sentinel only while reading saved data, before app.js applies strict current
+// validation. Do not relax new writes/imports or rewrite the stored payload.
+function migrateLegacyStoredCaseMass(caseData) {
+  const weight = caseData?.weight;
+  const legacyZero = weight === 0 || (
+    typeof weight === 'string' && /^[+-]?(?:0+(?:\.0*)?|\.0+)(?:e[+-]?\d+)?$/i.test(weight.trim())
+  );
+  return legacyZero ? { ...caseData, weight: null } : caseData;
+}
+
 export function load() {
   const scopedKey = getScopedKey();
   const workspaceKey = getWorkspaceScopedKey();
@@ -426,7 +437,7 @@ export function load() {
       : { packLibrary: [], changed: false };
     const identityLibraries = hasEffectiveWorkspaceData
       ? normalizeBusinessIdentityLibraries(
-          effectiveWorkspacePayload.caseLibrary,
+          effectiveWorkspacePayload.caseLibrary.map(migrateLegacyStoredCaseMass),
           identityMigration.packLibrary
         )
       : { caseLibrary: null, packLibrary: null };

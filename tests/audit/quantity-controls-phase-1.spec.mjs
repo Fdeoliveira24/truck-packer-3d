@@ -98,6 +98,8 @@ function baseCase(overrides = {}) {
     name: 'Case A',
     dimensions: { length: 10, width: 10, height: 10 },
     weight: 5,
+    orientationLock: 'any',
+    shape: 'box',
     ...overrides,
   };
 }
@@ -2325,20 +2327,25 @@ function trackPackWrites(StateStore) {
   return { count: () => writes, stop: unsubscribe };
 }
 
-// A single enormous pre-existing instance. With rect truck 120x60 and a 10x10x10
+// A single large pre-existing Case within the canonical dimension bound. With rect truck 120x60 and a 10x10x10
 // Case the staging grid is 6 columns wide, rows start at z=42 and repeat every
 // 22. `fromZ` is where the blocker's footprint begins: everything at or beyond it
 // is unplaceable, everything before it stays free.
+function stagingBlockerCase() {
+  return baseCase({ id: 'staging-blocker-case',
+    dimensions: { length: 120, width: 100000, height: 10 } });
+}
+
 function stagingBlockerInstance(fromZ) {
-  const width = 1e9;
+  const width = stagingBlockerCase().dimensions.width;
   return outsideInstance({
     id: 'staging-blocker',
+    caseId: 'staging-blocker-case',
     transform: {
       position: { x: 60, y: 5, z: fromZ + width / 2 },
       rotation: { x: 0, y: 0, z: 0 },
       scale: { x: 1, y: 1, z: 1 },
     },
-    orientedDims: { length: 1e6, width, height: 1e6 },
   });
 }
 
@@ -2420,12 +2427,12 @@ test('P1-B A4: placement-incomplete is all-or-nothing — a partial batch is nev
   // unplaceable. Requesting 10 could only ever place 6 before the search gives up.
   const blocked = [
     { name: 'partially blocked (6 placeable, 10 requested)', fromZ: 60, requested: 10 },
-    { name: 'fully blocked (0 placeable)', fromZ: -5e8, requested: 3 },
+    { name: 'fully blocked (0 placeable)', fromZ: 0, requested: 3 },
   ];
   for (const scenario of blocked) {
     const cases = [stagingBlockerInstance(scenario.fromZ)];
     StateStore.init({
-      caseLibrary: [baseCase()],
+      caseLibrary: [baseCase(), stagingBlockerCase()],
       packLibrary: [basePack({ cases, lastEdited: 12345 })],
       folderLibrary: [],
       preferences: {},
@@ -2449,7 +2456,7 @@ test('P1-B A4: placement-incomplete is all-or-nothing — a partial batch is nev
   // Positive control: the very same partially-blocked fixture does place a full
   // batch that fits, so the failure above is the all-or-nothing rule, not a bad fixture.
   StateStore.init({
-    caseLibrary: [baseCase()],
+    caseLibrary: [baseCase(), stagingBlockerCase()],
     packLibrary: [basePack({ cases: [stagingBlockerInstance(60)] })],
     folderLibrary: [],
     preferences: {},

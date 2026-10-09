@@ -16,7 +16,8 @@
  * @author Truck Packer 3D Team
  */
 
-import { stripForbiddenCaseQuantityFields } from './cargo-canonical.js';
+import { stripForbiddenCaseQuantityFields, parseCaseMass, isCanonicalCaseMass, pickSafeExtensions, CANONICAL_CASE_KEYS } from './cargo-canonical.js';
+import { parseCaseOrientationLock } from './orientation.js';
 import { normalizeEditorView, stripInternalTruckFields } from './normalizer.js';
 
 // ============================================================================
@@ -242,11 +243,33 @@ export function projectPortableCategories(preferences) {
 // SECTION: PORTABLE DTO PROJECTION (export-side — strip derived/transient)
 // ============================================================================
 
+/** Validate physical Case fields before any machine-format import mutation. */
+export function validatePortableCasePhysicalFields(caseData, { legacy = false, label = 'Case' } = {}) {
+  if (!isPlainRecord(caseData)) {
+    fail(IMPORT_SCHEMA_ERROR.MALFORMED_STRUCTURE, `Invalid ${label}: expected a Case object.`);
+  }
+  const hasMass = Object.prototype.hasOwnProperty.call(caseData, 'weight');
+  const mass = parseCaseMass(caseData.weight);
+  if (!mass.valid || (hasMass && !legacy && !isCanonicalCaseMass(caseData.weight)) ||
+      (hasMass && typeof caseData.weight === 'string' && !caseData.weight.trim())) {
+    fail(IMPORT_SCHEMA_ERROR.MALFORMED_STRUCTURE, `Invalid ${label}.weight: expected null or positive canonical pounds.`);
+  }
+  const hasOrientation = Object.prototype.hasOwnProperty.call(caseData, 'orientationLock');
+  const orientation = parseCaseOrientationLock(caseData.orientationLock, { allowDefault: !hasOrientation });
+  if (!orientation.valid || (!legacy && hasOrientation &&
+      !['any', 'upright', 'onSide'].includes(caseData.orientationLock))) {
+    fail(IMPORT_SCHEMA_ERROR.MALFORMED_STRUCTURE, `Invalid ${label}.orientationLock.`);
+  }
+  return { weight: mass.value, orientationLock: orientation.value };
+}
+
 /** Case DTO minus `volume`, which every import path recomputes from dimensions. */
 export function projectPortableCase(caseData) {
   const c = stripForbiddenCaseQuantityFields(caseData);
-  const { volume: _volume, ...portable } = c;
-  return portable;
+  const { volume: _volume, canFlip: _canFlip, ...portable } = c;
+  const physical = validatePortableCasePhysicalFields(c, { legacy: true });
+  const extensions = pickSafeExtensions(portable, CANONICAL_CASE_KEYS);
+  return { ...Object.fromEntries(Object.entries(portable).filter(([key]) => CANONICAL_CASE_KEYS.has(key))), ...extensions, ...physical };
 }
 
 /**
@@ -262,6 +285,12 @@ export function projectPortableCase(caseData) {
 export function projectPortablePack(pack) {
   const p = pack && typeof pack === 'object' ? pack : {};
   const { stats: _stats, thumbnail: _thumbnail, thumbnailUpdatedAt: _thumbnailUpdatedAt, thumbnailSource: _thumbnailSource, thumbnailVisualSignature: _thumbnailVisualSignature, thumbnailViewSignature: _thumbnailViewSignature, thumbnailRenderVersion: _thumbnailRenderVersion, editorView: _editorView, ...portable } = p;
+  if (Array.isArray(portable.cases)) {
+    portable.cases = portable.cases.map(instance => {
+      const { canFlip: _canFlip, orientationLock: _orientationLock, ...physicalInstance } = instance;
+      return physicalInstance;
+    });
+  }
   if (Object.prototype.hasOwnProperty.call(portable, 'truck')) portable.truck = stripInternalTruckFields(portable.truck);
   return portable;
 }

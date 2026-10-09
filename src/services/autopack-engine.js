@@ -7,7 +7,7 @@ import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 // A1-R6 source contract pinned — update that spec on the validation branch.)
 import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
-import { getOrientedDimsForRotation } from '../core/oriented-dims.js';
+import { getOrientedDimsForRotation, getActualPoseDimensions } from '../core/oriented-dims.js';
 import { getAabb } from './autopack-solver.js';
 import {
   CONTACT_EPS,
@@ -68,7 +68,6 @@ export function buildAutoPackStagingMap(packItems, truck, findSafeStagingPositio
 const ANIMATION_BOUNDARY_EPS = 0.05;
 export const LARGE_LOAD_ANIMATION_THRESHOLD = 300;
 const CARGO_RULE_FIELDS = [
-  'canFlip',
   'noStackOnTop',
   'isPallet',
   'stackable',
@@ -134,12 +133,23 @@ function getSignatureDims(dims) {
   };
 }
 
+// Rule source and exact planning intent must not inherit layout display tolerance.
+// Tag numbers before stableSignature's position-oriented rounding pass.
+function exactRuleSignatureValue(value) {
+  if (typeof value === 'number') return { number: String(value) };
+  if (Array.isArray(value)) return value.map(exactRuleSignatureValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, exactRuleSignatureValue(value[key])]));
+  }
+  return value;
+}
+
 function getSignatureCaseRules(caseData) {
   if (!caseData) return null;
   const rules = {
     id: caseData.id || null,
     dimensions: getSignatureDims(caseData.dimensions),
-    weight: normalizeSignatureNumber(caseData.weight),
+    weight: exactRuleSignatureValue(caseData.weight),
   };
   CARGO_RULE_FIELDS.forEach(field => {
     if (hasOwn(caseData, field)) rules[field] = caseData[field];
@@ -150,7 +160,7 @@ function getSignatureCaseRules(caseData) {
 function getSignatureInstanceRules(inst) {
   const rules = {};
   [
-    ...CARGO_RULE_FIELDS,
+    ...CARGO_RULE_FIELDS.filter(field => field !== 'orientationLock'),
     'orientationLocked',
     'lockedRotation',
     'mustLoadLast',
@@ -159,7 +169,7 @@ function getSignatureInstanceRules(inst) {
     'keepTogetherGroup',
     'deliverySequence',
   ].forEach(field => {
-    if (hasOwn(inst, field)) rules[field] = inst[field];
+    if (hasOwn(inst, field)) rules[field] = field === 'lockedRotation' ? exactRuleSignatureValue(inst[field]) : inst[field];
   });
   return normalizeSignatureValue(rules);
 }
@@ -253,7 +263,7 @@ function hasOwn(value, key) {
 function getSolverCargoRules(inst = {}, caseData = {}) {
   const source = { ...caseData };
   for (const field of CARGO_RULE_FIELDS) {
-    if (hasOwn(inst, field) && inst[field] !== undefined) source[field] = inst[field];
+    if (field !== 'orientationLock' && hasOwn(inst, field) && inst[field] !== undefined) source[field] = inst[field];
   }
   return canonicalCargoForStorage(source);
 }
@@ -885,11 +895,12 @@ export function createAutoPackEngine({
       if (!obj || !pos) continue;
       const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
       if (obj.userData) {
-        if (inst.orientedDims) {
+        const actualDims = getActualPoseDimensions(CaseLibrary.getById(inst.caseId), inst).value;
+        if (actualDims) {
           obj.userData.halfWorld = {
-            x: SceneManager.toWorld(inst.orientedDims.length) / 2,
-            y: SceneManager.toWorld(inst.orientedDims.height) / 2,
-            z: SceneManager.toWorld(inst.orientedDims.width) / 2,
+            x: SceneManager.toWorld(actualDims.length) / 2,
+            y: SceneManager.toWorld(actualDims.height) / 2,
+            z: SceneManager.toWorld(actualDims.width) / 2,
           };
         } else if (obj.userData.baseHalfWorld) {
           obj.userData.halfWorld = { ...obj.userData.baseHalfWorld };
@@ -1095,10 +1106,6 @@ export function createAutoPackEngine({
         instances: packData.cases || [],
         getCaseById: caseId => CaseLibrary.getById(caseId),
         volumeInCubicInches: Utils.volumeInCubicInches,
-        orientationTools: {
-          normalizeRightAngleRotation: PackLibrary.normalizeRightAngleRotation,
-          getOrientedDimsForRotation: PackLibrary.getOrientedDimsForRotation,
-        },
       });
 
       if (physicalContext.unresolvedStagedCount > 0) {
@@ -1168,7 +1175,6 @@ export function createAutoPackEngine({
             dims: { l: d.length, w: d.width, h: d.height },
             shape: rules.shape,
             weight: caseData.weight,
-            canFlip: rules.canFlip,
             orientationLock: rules.orientationLock,
             orientationLocked: inst.orientationLocked,
             lockedRotation: inst.lockedRotation,

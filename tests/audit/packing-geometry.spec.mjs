@@ -60,10 +60,10 @@ test('KEYBOARD-DUPLICATE-SAFE multi-select paste preserves group spacing without
     title: 'Keyboard Multi Paste',
     truck: { length: 96, width: 60, height: 48 },
     cases: [
-      makePackImportInstance(caseData.id, { id: 'source-a', transform: { position: { x: 6, y: 6, z: -18 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'source-b', transform: { position: { x: 18, y: 6, z: -18 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'occupied-a', transform: { position: { x: 30, y: 6, z: -18 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'occupied-b', transform: { position: { x: 42, y: 6, z: -18 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'source-a', transform: { position: { x: 6, y: 6, z: -18 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'source-b', transform: { position: { x: 18, y: 6, z: -18 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'occupied-a', transform: { position: { x: 30, y: 6, z: -18 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'occupied-b', transform: { position: { x: 42, y: 6, z: -18 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
     ],
   };
   const clipboard = pack.cases.slice(0, 2).map(inst => JSON.parse(JSON.stringify(inst)));
@@ -99,12 +99,12 @@ test('KEYBOARD-DUPLICATE-SAFE duplicate and paste respect Wheel Wells blocked bo
     title: 'Keyboard Wheel Well',
     truck,
     cases: [
-      makePackImportInstance(caseData.id, { id: 'source', transform: { position: { x: 30, y: 5, z: 30 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'block-x-plus', transform: { position: { x: 40, y: 5, z: 30 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'block-x-minus', transform: { position: { x: 20, y: 5, z: 30 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'block-z-minus', transform: { position: { x: 30, y: 5, z: 20 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'block-diag-plus', transform: { position: { x: 40, y: 5, z: 20 } }, placement: 'packed' }),
-      makePackImportInstance(caseData.id, { id: 'block-diag-minus', transform: { position: { x: 20, y: 5, z: 20 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'source', transform: { position: { x: 30, y: 5, z: 30 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-x-plus', transform: { position: { x: 40, y: 5, z: 30 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-x-minus', transform: { position: { x: 20, y: 5, z: 30 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-z-minus', transform: { position: { x: 30, y: 5, z: 20 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-diag-plus', transform: { position: { x: 40, y: 5, z: 20 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { id: 'block-diag-minus', transform: { position: { x: 20, y: 5, z: 20 }, rotation: { x: 0, y: 0, z: 0 } }, placement: 'packed' }),
     ],
   };
 
@@ -222,7 +222,7 @@ test('M01 Case Browser explicit truck drop rejects occupied and hidden cargo wit
       packLibrary: [{ id: packId, title: 'Drop', truck, lastEdited: 1, cases: [
         makePackImportInstance(caseData.id, {
           id: 'obstacle', hidden, placement: 'packed',
-          transform: { position: { x: 20, y: 5, z: 0 } },
+          transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
         }),
       ] }],
       folderLibrary: [], preferences: {},
@@ -250,7 +250,7 @@ test('M01 Case Browser explicit staging drop reuses safe non-overlapping staging
   const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
   const existing = makePackImportInstance(caseData.id, {
     id: 'staged-obstacle', placement: 'staged',
-    transform: { position: { x: 20, y: 5, z: 60 } },
+    transform: { position: { x: 20, y: 5, z: 60 }, rotation: { x: 0, y: 0, z: 0 } },
   });
   StateStore.init({
     caseLibrary: [caseData],
@@ -273,7 +273,7 @@ test('M01 staging drop reserves trusted unresolved staged geometry without inven
     packLibrary: [{ id: packId, truck, cases: [
       { id: 'missing-staged', caseId: 'missing', placement: 'staged',
         orientedDims: { length: 10, width: 10, height: 10 },
-        transform: { position: { x: 20, y: 5, z: 60 } } },
+        transform: { position: { x: 20, y: 5, z: 60 }, rotation: { x: 0, y: 0, z: 0 } } },
     ] }],
     folderLibrary: [], preferences: {},
   });
@@ -292,7 +292,7 @@ test('M03 Case Browser truck drop respects trusted unresolved packed geometry', 
     packLibrary: [{ id: packId, truck: { length: 120, width: 60, height: 60, shapeMode: 'rect' }, cases: [
       { id: 'unresolved-packed', caseId: 'missing', placement: 'packed', hidden: true,
         orientedDims: { length: 10, width: 10, height: 10 },
-        transform: { position: { x: 20, y: 5, z: 0 } } },
+        transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } },
     ] }],
     folderLibrary: [], preferences: {},
   });
@@ -554,7 +554,7 @@ test('PLACEMENT-STATE-S2 normalizer keeps old packs without a placement field lo
           {
             id: 'inst-legacy-no-placement',
             caseId: 'case-legacy-placement',
-            transform: { position: { x: 10, y: 12, z: 0 } },
+            transform: { position: { x: 10, y: 12, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
           },
         ],
       },
@@ -1180,7 +1180,7 @@ test('WHEELWELL-SUPPORT generic shelf candidates enforce real support and overha
     'the solver must not fake a full-width raised floor over the wheel-well channel');
 });
 
-test('WHEELWELL-SUPPORT two-step build-up+bridge adds safe, deterministic placements on geometry that allows it; default OFF unchanged', async () => {
+test('WHEELWELL-SUPPORT build-up+bridge adds safe deterministic placements within Case-permitted Max search', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = {
@@ -1188,15 +1188,17 @@ test('WHEELWELL-SUPPORT two-step build-up+bridge adds safe, deterministic placem
     shapeConfig: { wellHeight: 16, wellWidth: 12, wellLength: 60, wellOffsetFromRear: 60 },
   };
   const zones = PackLib.getTrailerUsableZones(truck);
-  const spec = { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', canFlip: true, weight: 30 };
+  const spec = { caseId: 'A', dims: { l: 24, w: 18, h: 16 }, orientationLock: 'any', weight: 30 };
   const items = Array.from({ length: 300 }, (_, i) => ({ ...spec, instanceId: `i${i}` }));
 
-  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, enableWheelWellFloorChannelCompaction: false });
+  // This positive-control fixture needs side-face search, now supplied by Max
+  // inside Case permission instead of the retired canFlip preference.
+  const off = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, maxCapacityMode: true, enableWheelWellFloorChannelCompaction: false });
   const on = Solver.solveAutoPack({
-    truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true, enableWheelWellFloorChannelCompaction: false,
+    truck, zones, loadFrontFirst: true, items, maxCapacityMode: true, enableWheelWellBridge: true, enableWheelWellFloorChannelCompaction: false,
   });
   const onAgain = Solver.solveAutoPack({
-    truck, zones, loadFrontFirst: true, items, enableWheelWellBridge: true, enableWheelWellFloorChannelCompaction: false,
+    truck, zones, loadFrontFirst: true, items, maxCapacityMode: true, enableWheelWellBridge: true, enableWheelWellFloorChannelCompaction: false,
   });
   assert.ok(on.placements.size > off.placements.size, 'the two-step strategy packs strictly more when the geometry permits safe well-top use');
   assert.equal(JSON.stringify([...on.placements]), JSON.stringify([...onAgain.placements]), 'ON output is deterministic');
@@ -1792,7 +1794,7 @@ test('G2-SHAPE-CONTRACT computeStats does not flag a properly placed item in the
         caseId: caseData.id,
         hidden: false,
         // Resting on the raised overhang deck: y = bonusHeight + height/2 = 36 + 10 = 46.
-        transform: { position: { x: 270, y: 46, z: 0 } },
+        transform: { position: { x: 270, y: 46, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
       },
     ],
   };
@@ -1942,7 +1944,7 @@ test('3B-GEOMETRY-TOLERANCE stats, packed state, and AutoPack final validation s
     id,
     caseId: caseData.id,
     hidden: false,
-    transform: { position: { x, y: 5, z: 0 } },
+    transform: { position: { x, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
   });
   const pack = {
     truck,
@@ -2331,9 +2333,9 @@ test('G2.2-CAB-OVERHANG AutoPack uses the raised overhang deck only when an item
   const EPS = 0.06;
 
   const items = [
-    { instanceId: 'short-1', dims: { l: 24, w: 18, h: 16 }, canFlip: true, orientationLock: 'any', stackable: true, maxStackCount: 2 },
-    { instanceId: 'short-2', dims: { l: 24, w: 18, h: 16 }, canFlip: true, orientationLock: 'any', stackable: true, maxStackCount: 2 },
-    { instanceId: 'tall-1', dims: { l: 24, w: 18, h: 60 }, canFlip: false, orientationLock: 'upright', stackable: true, maxStackCount: 1 },
+    { instanceId: 'short-1', weight: 30, dims: { l: 24, w: 18, h: 16 }, canFlip: true, orientationLock: 'any', stackable: true, maxStackCount: 2 },
+    { instanceId: 'short-2', weight: 30, dims: { l: 24, w: 18, h: 16 }, canFlip: true, orientationLock: 'any', stackable: true, maxStackCount: 2 },
+    { instanceId: 'tall-1', weight: 100, dims: { l: 24, w: 18, h: 60 }, canFlip: false, orientationLock: 'upright', stackable: true, maxStackCount: 1 },
   ];
 
   const result = solveAutoPack({
@@ -2420,7 +2422,7 @@ test('G2.2-CLEANUP frontBonus item past raw truck.length but within the overhang
       hidden: false,
       // x:250..290 (past truck.length=240, within the overhang extent 240..300),
       // y:0..50 (straddles the cab void 0..36 and the deck zone 36..72).
-      transform: { position: { x: 270, y: 25, z: 0 } },
+      transform: { position: { x: 270, y: 25, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
     }],
   };
 
@@ -2455,7 +2457,7 @@ test('G2.2-CLEANUP frontBonus item past truck.length+bonusLength receives protru
       caseId: caseData.id,
       hidden: false,
       // x:290..330 (max.x=330 > truck.length+bonusLength=300), y:36..72 (on the deck), z:0.
-      transform: { position: { x: 310, y: 54, z: 0 } },
+      transform: { position: { x: 310, y: 54, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
     }],
   };
 
@@ -2483,7 +2485,7 @@ test('G2.2-CLEANUP rect and wheelWells front-protrusion warnings remain based on
       caseId: caseData.id,
       hidden: false,
       // x:90..130, max.x=130 > truck.length=100.
-      transform: { position: { x: 110, y: 10, z: 0 } },
+      transform: { position: { x: 110, y: 10, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
     }],
   };
   const rectWarnings = PackLibrary.computeStats(rectPack, [caseData]).oogWarnings;
@@ -2505,7 +2507,7 @@ test('G2.2-CLEANUP rect and wheelWells front-protrusion warnings remain based on
       caseId: caseData.id,
       hidden: false,
       // x:90..130, max.x=130 > truck.length=100.
-      transform: { position: { x: 110, y: 10, z: 0 } },
+      transform: { position: { x: 110, y: 10, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
     }],
   };
   const wheelWarnings = PackLibrary.computeStats(wheelPack, [caseData]).oogWarnings;

@@ -174,23 +174,19 @@ test('STRATEGY-AUDIT Floor first remains a truthful no-stacking strategy', () =>
   assert.equal(strategy(fixture('identical-over-demand'), 'default').packedCount, 60);
 });
 
-test('STRATEGY-AUDIT Max Capacity is distinct, non-monotonic, and never auto-applied', () => {
+test('STRATEGY-AUDIT C3 Max search is independent, Case-constrained, and never auto-applied', () => {
   const relaxedWin = fixture('fragile-no-stack');
-  assert.equal(strategy(relaxedWin, 'max-capacity').packedCount, 24);
-  assert.equal(strategy(relaxedWin, 'default').packedCount, 8);
+  assert.ok(strategy(relaxedWin, 'max-capacity').packedCount > strategy(relaxedWin, 'default').packedCount,
+    'remaining stacking preferences can distinguish the independent Max result');
   assert.equal(relaxedWin.adaptivePortfolio.selectedStrategyId, 'default');
-
-  const relaxedLoss = fixture('identical-over-demand');
-  assert.equal(strategy(relaxedLoss, 'max-capacity').packedCount, 48);
-  assert.equal(
-    strategy(relaxedLoss, 'default').packedCount,
-    60,
-    'the current Max Capacity label is not a promise of a monotonic maximum'
-  );
-
+  const identical = fixture('identical-over-demand');
+  assert.equal(strategy(identical, 'max-capacity').packedCount, 60,
+    'canonical mass and signed orientation coverage characterize this C3 fixture');
+  assert.equal(strategy(identical, 'default').packedCount, 60);
   const locked = fixture('orientation-locked-tight');
   assert.equal(strategy(locked, 'default').packedCount, 0);
-  assert.equal(strategy(locked, 'max-capacity').packedCount, 3);
+  assert.equal(strategy(locked, 'max-capacity').packedCount, 0,
+    'Max cannot clear an exact target to fit a different face');
   assert.equal(locked.adaptivePortfolio.selectedStrategyId, 'default');
 });
 

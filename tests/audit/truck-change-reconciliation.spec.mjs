@@ -211,8 +211,8 @@ test('RECON Truck Change Contract B preserves semantic counts and commits its ex
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
   const caseLibrary = [
-    { id: 'A', name: 'Large', dimensions: { length: 30, width: 20, height: 10 } },
-    { id: 'B', name: 'Small', dimensions: { length: 20, width: 14, height: 12 } },
+    { id: 'A', name: 'Large', orientationLock: 'any', dimensions: { length: 30, width: 20, height: 10 }, weight: 20 },
+    { id: 'B', name: 'Small', orientationLock: 'any', dimensions: { length: 20, width: 14, height: 12 }, weight: 20 },
   ];
   const identity = { x: 0, y: 0, z: 0 };
   const make = (id, caseId, position, placement = 'packed') => ({
@@ -338,7 +338,7 @@ test('RECON Truck Change Apply commits the grouped stagedAdjusted preview withou
 
 test('RECON grouped staging expands 521 genuine corrections beyond the preferred work area safely', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseData = { id: 'bulk', name: 'Bulk carton', orientationLock: 'any', dimensions: { length: 20, width: 14, height: 12 }, weight: 20 };
   const caseLibrary = [caseData];
   const standard = { length: 636, width: 102, height: 110, shapeMode: 'rect' };
   const wheelWells = {
@@ -420,7 +420,7 @@ test('RECON grouped staging expands 521 genuine corrections beyond the preferred
 
 test('RECON truck-width expansion repairs only the intersecting row without cascading into safe staging', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseData = { id: 'bulk', name: 'Bulk carton', orientationLock: 'any', dimensions: { length: 20, width: 14, height: 12 }, weight: 20 };
   const caseLibrary = [caseData];
   const narrow = { length: 636, width: 70, height: 110, shapeMode: 'rect' };
   const expanded = { ...narrow, width: 102 };
@@ -468,7 +468,7 @@ test('RECON truck-width expansion repairs only the intersecting row without casc
 
 test('RECON preserve mode reserves safe staged poses before grounding a floating repair', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseData = { id: 'bulk', name: 'Bulk carton', orientationLock: 'any', dimensions: { length: 20, width: 14, height: 12 }, weight: 20 };
   const caseLibrary = [caseData];
   const truck = { length: 240, width: 70, height: 96, shapeMode: 'rect' };
   const safeCases = buildLargeReconStagingRows(30, truck, caseData, { prefix: 'preserve-safe' });
@@ -503,9 +503,9 @@ test('RECON preserve mode reserves safe staged poses before grounding a floating
   );
 });
 
-test('RECON large staging adjusts only physical hazards, stale pose dimensions, and unsupported drift', async () => {
+test('RECON large staging adjusts physical hazards and unsupported drift using actual pose dimensions', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseData = { id: 'bulk', name: 'Bulk carton', orientationLock: 'any', dimensions: { length: 20, width: 14, height: 12 }, weight: 20 };
   const caseLibrary = [caseData];
   const standard = { length: 636, width: 102, height: 110, shapeMode: 'rect' };
   const wheelWells = {
@@ -557,12 +557,12 @@ test('RECON large staging adjusts only physical hazards, stale pose dimensions, 
     caseLibrary
   );
 
-  assert.equal(recon.summary.stagedUnchanged, safeCases.length,
-    'every safe organized row remains in the unchanged category');
-  assert.equal(recon.summary.stagedAdjusted, hazards.length,
-    'only the explicit physical/data hazards enter stagedAdjusted');
+  assert.equal(recon.summary.stagedUnchanged, safeCases.length + 1,
+    'safe organized rows and actual-safe stale-cache pose remain unchanged');
+  assert.equal(recon.summary.stagedAdjusted, hazards.length - 1,
+    'only actual physical hazards enter stagedAdjusted');
   assert.equal(recon.summary.unresolved, 1);
-  assert.deepEqual(new Set(recon.stagedAdjusted), new Set(hazards.map(inst => inst.id)));
+  assert.deepEqual(new Set(recon.stagedAdjusted), new Set(hazards.filter(inst => inst.id !== 'stale-dims-hazard').map(inst => inst.id)));
   for (const safe of safeCases) {
     assert.deepEqual(recon.nextPack.cases.find(inst => inst.id === safe.id), safe,
       `${safe.id} remains byte-equivalent`);
@@ -731,7 +731,7 @@ test('RECON CaseScene sync removes an existing mesh when its case definition bec
 test('RECON repack reports partial failure and requires a second explicit staging decision', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const cubeLib = [{ id: 'cube', name: 'Cube', dimensions: { length: 20, width: 20, height: 20 }, weight: 10 }];
+  const cubeLib = [{ id: 'cube', name: 'Cube', orientationLock: 'any', dimensions: { length: 20, width: 20, height: 20 }, weight: 10 }];
   const failedId = '5585711a-785a-4605-ba77-782525d00819';
   const packedRotation = { x: 0, y: Math.PI / 2, z: 0 };
   const cube = (id, x) => ({
@@ -807,7 +807,7 @@ test('RECON repack reports partial failure and requires a second explicit stagin
 
 test('RECON repack complete failure returns explicit metadata and never stages implicitly', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const oversizedLib = [{ id: 'oversized', name: 'Oversized', dimensions: { length: 40, width: 30, height: 30 }, weight: 20 }];
+  const oversizedLib = [{ id: 'oversized', name: 'Oversized', orientationLock: 'any', dimensions: { length: 40, width: 30, height: 30 }, weight: 20 }];
   const cases = [
     { ...reconInst('too-big-a', 100, 15, 0), caseId: 'oversized' },
     { ...reconInst('too-big-b', 150, 15, 0), caseId: 'oversized' },
@@ -826,7 +826,7 @@ test('RECON repack complete failure returns explicit metadata and never stages i
 test('RECON canonical dimensions use the shared rotation helper and THREE-backed bounds', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const THREE = await import(`${vendorThreePath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseData = { id: 'beam', name: 'Beam', dimensions: { length: 40, width: 10, height: 6 }, weight: 20 };
+  const caseData = { id: 'beam', name: 'Beam', orientationLock: 'any', dimensions: { length: 40, width: 10, height: 6 }, weight: 20 };
   const rotation = { x: 0, y: Math.PI / 2, z: 0 };
   const inst = {
     id: 'beam-1', caseId: 'beam', placement: 'packed',
@@ -853,7 +853,7 @@ test('RECON canonical dimensions use the shared rotation helper and THREE-backed
   assert.deepEqual(recon.nextPack.cases[0].orientedDims, canonical.dims, 'confirmed result repairs stale orientedDims');
   assert.equal(recon.summary.kept, 1);
   const lockMismatch = { ...inst, lockedRotation: { x: 0, y: 0, z: 0 } };
-  assert.deepEqual(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [lockMismatch] }, { ...RECON_RECT, width: 95 }, [caseData]).invalid, ['beam-1']);
+  assert.deepEqual(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [lockMismatch] }, { ...RECON_RECT, width: 95 }, [caseData]).invalid, [], 'planning target mismatch is not physical invalidity');
   const uprightOnly = { ...caseData, orientationLock: 'upright' };
   const tippedRotation = { x: Math.PI / 2, y: 0, z: 0 };
   const tipped = {
@@ -861,15 +861,18 @@ test('RECON canonical dimensions use the shared rotation helper and THREE-backed
     lockedRotation: tippedRotation,
     transform: { ...inst.transform, rotation: tippedRotation },
   };
-  assert.deepEqual(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [tipped] }, { ...RECON_RECT, width: 95 }, [uprightOnly]).invalid, ['beam-1']);
+  const preserved = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: [tipped] }, { ...RECON_RECT, width: 95 }, [uprightOnly]);
+  assert.deepEqual(preserved.invalid, []);
+  assert.equal(preserved.unresolved.length, 1);
+  assert.deepEqual(preserved.nextPack.cases[0], tipped, 'saved forbidden pose remains unchanged until assessment');
 });
 
 test('RECON enforces physical hidden cargo, support rules, unresolved references, and exact staging floor', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const supportLib = [
-    { id: 'base', name: 'Base', dimensions: { length: 40, width: 40, height: 10 }, weight: 100, maxStackCount: 1 },
-    { id: 'child', name: 'Child', dimensions: { length: 10, width: 10, height: 10 }, weight: 10 },
-    { id: 'thin', name: 'Thin', dimensions: { length: 12, width: 12, height: 1 }, weight: 1 },
+    { id: 'base', name: 'Base', orientationLock: 'any', dimensions: { length: 40, width: 40, height: 10 }, weight: 100, maxStackCount: 1 },
+    { id: 'child', name: 'Child', orientationLock: 'any', dimensions: { length: 10, width: 10, height: 10 }, weight: 10 },
+    { id: 'thin', name: 'Thin', orientationLock: 'any', dimensions: { length: 12, width: 12, height: 1 }, weight: 1 },
   ];
   const make = (id, caseId, x, y, z, extra = {}) => ({ ...reconInst(id, x, y, z), caseId, ...extra });
   const cases = [
@@ -913,14 +916,14 @@ test('RECON existing staged cargo stays fixed only when safe; malformed and long
     'safe existing staging pose is untouched');
   assertCanonicalReconLayoutSafe(PackLib, recon.nextPack.cases, recon.nextPack.truck, RECON_CASE_LIB, 'existing staging');
 
-  const badLib = [{ id: 'bad', name: 'Bad', dimensions: { length: 0, width: 10, height: 10 } }];
+  const badLib = [{ id: 'bad', name: 'Bad', orientationLock: 'any', dimensions: { length: 0, width: 10, height: 10 }, weight: 20 }];
   const malformed = PackLib.reconcilePlacementsForTruck(
     { id: 'p', truck: RECON_RECT, cases: [{ ...reconInst('bad-1', 20, 5, 0), caseId: 'bad' }] },
     { ...RECON_RECT, width: 95 }, badLib
   );
   assert.equal(malformed.summary.malformed, 1, 'bad dimensions are reported rather than replaced with fake geometry');
 
-  const beamLib = [{ id: 'long', name: 'Long beam', dimensions: { length: 300, width: 8, height: 8 }, weight: 40 }];
+  const beamLib = [{ id: 'long', name: 'Long beam', orientationLock: 'any', dimensions: { length: 300, width: 8, height: 8 }, weight: 40 }];
   const beam = { ...reconInst('long-1', 150, 4, 0), caseId: 'long' };
   const beamRecon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: { ...RECON_RECT, length: 320 }, cases: [beam] }, RECON_RECT, beamLib);
   assert.deepEqual(beamRecon.invalid, ['long-1']);

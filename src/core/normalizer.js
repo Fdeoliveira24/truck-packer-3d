@@ -15,15 +15,13 @@ import * as CoreUtils from './utils/index.js';
 import * as CoreDefaults from './defaults.js';
 import { uuid } from './browser.js';
 import {
-  normalizeRightAngleRotation,
-  getOrientedDimsForRotation,
+  getActualPoseDimensions,
 } from './oriented-dims.js';
 import {
   canonicalCargoForStorage,
   pickSafeExtensions,
   CANONICAL_CASE_KEYS,
   DIMENSION_MAX_INCHES,
-  WEIGHT_MAX_LBS,
   parseCargoNotes,
 } from './cargo-canonical.js';
 import {
@@ -319,7 +317,7 @@ export function normalizeCase(c, now = Date.now()) {
     manufacturer: safeString(c && c.manufacturer, ''),
     category,
     dimensions: { length, width, height },
-    weight: Math.min(WEIGHT_MAX_LBS, Math.max(0, finiteNumber(c && c.weight, 0))),
+    weight: cargo.weight,
     volume: CoreUtils.volumeInCubicInches({ length, width, height }),
     shape: cargo.shape,
     stackable: cargo.stackable,
@@ -335,7 +333,6 @@ export function normalizeCase(c, now = Date.now()) {
     mustUnloadFirst: cargo.mustUnloadFirst,
     stopGroup: safeString(c && c.stopGroup, ''),
     keepTogetherGroup: safeString(c && c.keepTogetherGroup, ''),
-    canFlip: cargo.canFlip,
     notes: cargo.notes,
     color,
     createdAt,
@@ -377,40 +374,19 @@ export function normalizeInstance(inst, caseMap) {
     placement === 'packed' && inst && inst.packedProfile === 'max-capacity'
       ? 'max-capacity'
       : null;
-  const sourceLockedRotation =
-    inst && inst.lockedRotation && typeof inst.lockedRotation === 'object' ? inst.lockedRotation : rot;
-  const lockedRotation = orientationLocked ? normalizeRightAngleRotation(sourceLockedRotation) : null;
-  // Effective right-angle rotation for dimension purposes: the locked rotation
-  // when locked, otherwise the instance's own rotation (e.g. an AutoPack-applied
-  // tip on an unlocked item).
-  const effectiveRotation = packedProfile
-    ? normalizeRightAngleRotation(rot)
-    : (lockedRotation || normalizeRightAngleRotation(rot));
-  const isIdentityRotation =
-    effectiveRotation.x === 0 && effectiveRotation.y === 0 && effectiveRotation.z === 0;
-  // orientedDims is the case's effective size under its ACTUAL rotation and must
-  // not be tied to orientationLocked — an AutoPacked rotated item is unlocked but
-  // still physically rotated. Recompute authoritatively from the case dimensions
-  // + rotation (never stale); fall back to the stored value only when the case
-  // definition is unavailable (recomputation lacks context).
-  let orientedDims = null;
-  if (!isIdentityRotation) {
-    if (caseData && caseData.dimensions) {
-      // Case definition is authoritative: recompute from case dims + the actual
-      // (effective) rotation. Never trust a stale stored value when we can derive it.
-      orientedDims = normalizeOrientedDims(
-        getOrientedDimsForRotation(caseData.dimensions, effectiveRotation)
-      );
-    } else {
-      // Case definition missing: preserve valid stored orientedDims for diagnosis
-      // and export; use null when invalid/missing. Never invent dimensions.
-      orientedDims = normalizeOrientedDims(inst && inst.orientedDims);
-    }
-  } else if (!caseData) {
-    // With no Case definition, even the identity pose cannot be reconstructed
-    // from base dimensions. Keep only explicitly saved, valid physical bounds.
-    orientedDims = normalizeOrientedDims(inst && inst.orientedDims);
-  }
+  // Exact AutoPack intent is preserved independently of the actual pose. Never
+  // fabricate a missing target or quantize malformed planning data into one.
+  const target = inst && inst.lockedRotation;
+  const lockedRotation = orientationLocked
+    ? (Array.isArray(target) ? [...target] : target && typeof target === 'object' ? { ...target } : (target ?? null))
+    : null;
+  const actualDims = getActualPoseDimensions(caseData, { transform: { rotation: rot } });
+  const isIdentityRotation = rot.x === 0 && rot.y === 0 && rot.z === 0;
+  // The cache follows actual Case geometry only. Missing definitions retain a
+  // valid saved cache for diagnosis; targets and solver provenance never drive it.
+  const orientedDims = caseData
+    ? (actualDims.valid && !isIdentityRotation ? actualDims.value : null)
+    : normalizeOrientedDims(inst && inst.orientedDims);
   const deliverySequence = normalizeDeliverySequence(inst && inst.deliverySequence);
   return {
     id: safeId(inst && inst.id),

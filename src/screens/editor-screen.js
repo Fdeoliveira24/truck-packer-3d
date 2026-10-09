@@ -23,6 +23,9 @@ import { editorViewSignature, normalizeEditorView } from '../core/normalizer.js'
 import { buildAutoPackCaseRuleSignature, buildAutoPackLayoutSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
 import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
+import { isCasePhysicalOrientationAllowed } from '../core/orientation.js';
+import { getActualPoseDimensions, getPhysicalOrientationAxes } from '../core/oriented-dims.js';
+import { formatWeight } from '../core/utils/index.js';
 
 // Editor screen + 3D interaction helpers (extracted from src/app.js; behavior preserved)
 
@@ -31,9 +34,7 @@ function caseCountText(count) {
 }
 
 function formatEditorCaseWeightLabel(weight, unit) {
-  const value = Number(weight);
-  if (!Number.isFinite(value)) return '—';
-  return unit === 'kg' ? `${(value * 0.453592).toFixed(2)} kg` : `${value.toFixed(2)} lb`;
+  return formatWeight(weight, unit, 2);
 }
 
 export function resetEditorCaseQtyDrafts(caseQtyDrafts) {
@@ -432,17 +433,6 @@ export function getSweptAabbCollisionTime(startAabb, endAabb, obstacleAabb, epsi
   }
 
   return exit >= 0 && entry <= 1 ? Math.max(0, entry) : null;
-}
-
-function createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rotation) {
-  const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
-  if (caseData && caseData.dimensions && typeof PackLibrary.createOrientationLockPatch === 'function') {
-    return PackLibrary.createOrientationLockPatch(rotation, caseData.dimensions);
-  }
-  const lockedRotation = typeof PackLibrary.normalizeRightAngleRotation === 'function'
-    ? PackLibrary.normalizeRightAngleRotation(rotation)
-    : rotation;
-  return { orientationLocked: true, lockedRotation };
 }
 
 /**
@@ -924,8 +914,8 @@ export function createCaseScene({
         const name = caseData.name || (isPallet ? 'Pallet' : 'Case');
         ctx.fillText(name.substring(0, 16), w / 2, h * 0.4);
         ctx.font = `${Math.floor(h * 0.08)}px Arial, sans-serif`;
-        ctx.fillText(`${caseData.weight || 0} lb`, w / 2, h * 0.6);
-        if (!caseData.canFlip && !isPallet) {
+        ctx.fillText(formatWeight(caseData.weight, 'lb'), w / 2, h * 0.6);
+        if (caseData.orientationLock === 'upright' && !isPallet) {
           ctx.font = `${Math.floor(h * 0.1)}px Arial`;
           ctx.fillText('⇧⇧', w / 2, h * 0.8);
         }
@@ -1046,8 +1036,8 @@ export function createCaseScene({
       const shape = rawShape === 'cylinder' || rawShape === 'drum' ? 'cylinder' : 'box';
       const name = caseData.name || (isPallet ? 'Pallet' : 'Case');
       const labelName = name.substring(0, 16);
-      const weightLabel = `${caseData.weight || 0} lb`;
-      const showHandlingArrows = !caseData.canFlip && !isPallet;
+      const weightLabel = formatWeight(caseData.weight, 'lb');
+      const showHandlingArrows = caseData.orientationLock === 'upright' && !isPallet;
       const palletWarning = isPallet && caseData.maxPalletWeight > 0
         ? `Warning limit: ${caseData.maxPalletWeight} lb`
         : '';
@@ -1083,11 +1073,11 @@ export function createCaseScene({
         hasHiddenCargo ||= Boolean(inst.hidden);
         const pos = inst.transform?.position || {};
         const rot = inst.transform?.rotation || {};
-        const dims = inst.orientedDims || data.dimensions || {};
+        const dims = getActualPoseDimensions(data, inst).value;
         return [[inst.id, inst.caseId, buildSignature(inst, data),
           [Number(pos.x) || 0, Number(pos.y) || 0, Number(pos.z) || 0],
           [Number(rot.x) || 0, Number(rot.y) || 0, Number(rot.z) || 0],
-          [dims.length, dims.width, dims.height], Boolean(inst.hidden), inst.placement === 'staged']];
+          [dims?.length, dims?.width, dims?.height], Boolean(inst.hidden), inst.placement === 'staged']];
       }).sort((a, b) => String(a[0]) < String(b[0]) ? -1 : String(a[0]) > String(b[0]) ? 1 : 0);
       // Scale is not applied by applyTransform; it is not rendered geometry.
       return JSON.stringify(['preview-v1', truck.length, truck.width, truck.height,
@@ -1203,15 +1193,14 @@ export function createCaseScene({
       const rot = inst.transform.rotation || { x: 0, y: 0, z: 0 };
       const worldPos = SceneManager.vecInchesToWorld(pos);
 
-      // Always set halfWorld from current effective dimensions so stale values
-      // from a previous rotation, AutoPack run, or import cannot persist on a
-      // reused THREE.Group. Uses orientedDims when present (rotated/AutoPacked),
-      // otherwise resets to the base case dimensions stored at group creation.
-      if (inst.orientedDims) {
+      // Actual pose alone determines physical extents, including saved poses
+      // currently forbidden by Case permission. Planning targets are unrelated.
+      const dims = getActualPoseDimensions(CaseLibrary.getById(inst.caseId), inst).value;
+      if (dims) {
         group.userData.halfWorld = {
-          x: SceneManager.toWorld(inst.orientedDims.length) / 2,
-          y: SceneManager.toWorld(inst.orientedDims.height) / 2,
-          z: SceneManager.toWorld(inst.orientedDims.width) / 2,
+          x: SceneManager.toWorld(dims.length) / 2,
+          y: SceneManager.toWorld(dims.height) / 2,
+          z: SceneManager.toWorld(dims.width) / 2,
         };
       } else if (group.userData.baseHalfWorld) {
         group.userData.halfWorld = { ...group.userData.baseHalfWorld };
@@ -2208,7 +2197,7 @@ export function createInteractionManager({
 
     function getInstanceDimsInches(inst) {
       const caseData = inst ? CaseLibrary.getById(inst.caseId) : null;
-      return (inst && inst.orientedDims) || (caseData && caseData.dimensions) || null;
+      return getActualPoseDimensions(caseData, inst).value || null;
     }
 
     function makeInstanceAabbInches(position, dims) {
@@ -2474,9 +2463,43 @@ export function createInteractionManager({
     // placed or cancelled: a transform or nudge must not commit a second
     // authoritative pose around it.
     function provisionalPoseOwnsSelection() {
-      if (draggingId || gizmoDragging) return true;
+      if (draggingId || gizmoDragging || revertHolds > 0) return true;
       if (!gizmoPending) return false;
       UIComponents.showToast('Place or cancel the held case first (Drop, Enter, or Esc).', 'info');
+      return true;
+    }
+
+    // Exact orientation is AutoPack planning intent. Read only the committed
+    // single selection after the same strict refusal gates used by rotation.
+    function setSelectionOrientationConstraint(active, expectedId = null) {
+      if (operationsBusy()) {
+        showOperationsBusyToast();
+        return false;
+      }
+      if (provisionalPoseOwnsSelection()) return false;
+      const ids = getSelection();
+      if (ids.length !== 1 || (expectedId && ids[0] !== expectedId)) return false;
+      const packId = StateStore.get('currentPackId');
+      const pack = PackLibrary.getById(packId);
+      const inst = pack?.cases?.find(item => item.id === ids[0]);
+      if (!inst || (inst.orientationLocked === true) === active) return false;
+      let patch;
+      if (active) {
+        const caseData = CaseLibrary.getById(inst.caseId);
+        const rotation = inst.transform?.rotation;
+        if (!isCasePhysicalOrientationAllowed(caseData, rotation)) {
+          UIComponents.showToast('Cannot fix AutoPack orientation: the committed pose is unsupported or not permitted by this Case.', 'error');
+          return false;
+        }
+        patch = PackLibrary.createOrientationLockPatch(rotation);
+        if (!patch) return false;
+      } else {
+        // Release is always possible, even for a malformed or conflicting target.
+        patch = PackLibrary.clearOrientationLockPatch();
+      }
+      PackLibrary.update(packId, {
+        cases: pack.cases.map(item => item.id === inst.id ? { ...item, ...patch } : item),
+      });
       return true;
     }
 
@@ -2503,13 +2526,17 @@ export function createInteractionManager({
         if (!inst) { return; }
         const rot = { ...(inst.transform.rotation || { x: 0, y: 0, z: 0 }) };
         rot[axis] = ((Number(rot[axis]) || 0) + delta) % (2 * Math.PI);
-        const lockPatch = createManualOrientationLockPatch(PackLibrary, CaseLibrary, inst, rot);
-        const lockedRotation = lockPatch.lockedRotation || rot;
+        const rotation = PackLibrary.normalizeRightAngleRotation(rot);
         const caseData = CaseLibrary.getById(inst.caseId);
-        if (!caseData || !PackLibrary.isOrientationAllowedByCasePolicy(caseData, lockedRotation)) {
+        if (!isCasePhysicalOrientationAllowed(caseData, rotation)) {
           policyBlockedCount += 1;
           return;
         }
+        const dims = getActualPoseDimensions(caseData, { transform: { rotation } }).value;
+        const rotationPatch = {
+          ...(inst.orientationLocked === true ? PackLibrary.createOrientationLockPatch(rotation) : {}),
+          orientedDims: dims,
+        };
         const obj = CaseScene.getObject(id);
         if (obj) {
           const originalWorld = obj.position.clone();
@@ -2519,17 +2546,17 @@ export function createInteractionManager({
             : null;
           const ignoreSet = new Set([id]);
           const originalInsideTruck = CaseScene.checkCollision(id, obj.position, ignoreSet).insideTruck;
-          if (lockPatch.orientedDims && obj.userData) {
+          if (dims && obj.userData) {
             obj.userData.halfWorld = {
-              x: SceneManager.toWorld(lockPatch.orientedDims.length) / 2,
-              y: SceneManager.toWorld(lockPatch.orientedDims.height) / 2,
-              z: SceneManager.toWorld(lockPatch.orientedDims.width) / 2,
+              x: SceneManager.toWorld(dims.length) / 2,
+              y: SceneManager.toWorld(dims.height) / 2,
+              z: SceneManager.toWorld(dims.width) / 2,
             };
           }
           obj.rotation.set(
-            Number(lockedRotation.x) || 0,
-            Number(lockedRotation.y) || 0,
-            Number(lockedRotation.z) || 0
+            rotation.x,
+            rotation.y,
+            rotation.z
           );
           const settledY = CaseScene.settleY(id);
           if (settledY !== null) {
@@ -2549,16 +2576,16 @@ export function createInteractionManager({
           }
           CaseScene.setCollision(id, false);
           patchById.set(id, {
-            ...lockPatch,
-            transform: { ...inst.transform, rotation: lockedRotation, position: posInches },
+            ...rotationPatch,
+            transform: { ...inst.transform, rotation, position: posInches },
             placement: check.insideTruck ? 'packed' : 'staged',
           });
           rotatedCount += 1;
           return;
         }
         patchById.set(id, {
-          ...lockPatch,
-          transform: { ...inst.transform, rotation: lockedRotation },
+          ...rotationPatch,
+          transform: { ...inst.transform, rotation },
         });
         rotatedCount += 1;
       });
@@ -3710,10 +3737,8 @@ export function createInteractionManager({
         const inst = (pack.cases || []).find(i => i.id === id);
         if (!inst) return;
         const c = CaseLibrary.getById(inst.caseId);
-        // Never fabricate physical dimensions for an unresolved (dangling) item.
-        // Without a real case definition or stored oriented dims we cannot classify
-        // its placement, so leave it as-is rather than invent a 24in cube.
-        const dims = inst.orientedDims || (c && c.dimensions) || null;
+        // Unresolved Cases or unsupported actual rotations supply no geometry.
+        const dims = getActualPoseDimensions(c, inst).value;
         if (!dims) return;
         const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
         const aabb = {
@@ -3829,6 +3854,7 @@ export function createInteractionManager({
 
     return {
       init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical,
+      setSelectionOrientationConstraint,
       hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending || revertHolds > 0),
     };
   })();
@@ -7741,7 +7767,6 @@ export function createEditorScreen({
       rotCard.classList.add('tp3d-editor-card-grid-gap-12');
       const rotateFlipHelp = 'Turn: Y axis. Tip: X axis. Roll: Z axis. Flip: 180°.';
       rotCard.appendChild(cardHeaderWithInfo('Rotate / Flip', rotateFlipHelp));
-      // TODO(AUTO-PACK-A0): when reset-orientation UI is added, apply PackLibrary.clearOrientationLockPatch().
 
       const halfPI = Math.PI / 2;
       const rotRow = document.createElement('div');
@@ -7762,6 +7787,34 @@ export function createEditorScreen({
         rotRow.appendChild(btn);
       });
       rotCard.appendChild(rotRow);
+      const orientationActive = inst.orientationLocked === true;
+      const targetAxes = getPhysicalOrientationAxes(inst.lockedRotation);
+      const actualAxes = getPhysicalOrientationAxes(inst.transform?.rotation);
+      const orientationStatus = document.createElement('div');
+      orientationStatus.className = 'muted tp3d-editor-sub-sm';
+      orientationStatus.dataset.role = 'autopack-orientation-status';
+      if (!orientationActive) {
+        orientationStatus.textContent = 'AutoPack may choose an orientation permitted by this Case.';
+      } else if (!targetAxes.valid) {
+        orientationStatus.textContent = 'AutoPack orientation fixed for this item. The saved target is unsupported.';
+      } else if (!isCasePhysicalOrientationAllowed(caseData, inst.lockedRotation)) {
+        orientationStatus.textContent = 'AutoPack orientation fixed for this item. The target conflicts with this Case’s orientation rule.';
+      } else {
+        const matchesPose = actualAxes.valid && JSON.stringify(targetAxes.value) === JSON.stringify(actualAxes.value);
+        orientationStatus.textContent = `AutoPack orientation fixed for this item. The target ${matchesPose ? 'matches' : 'differs from'} the current pose.`;
+      }
+      rotCard.appendChild(orientationStatus);
+      const orientationAction = makeActionButton({
+        label: orientationActive ? 'Release AutoPack orientation' : 'Fix AutoPack to current orientation',
+        iconClass: orientationActive ? 'fa-solid fa-unlock' : 'fa-solid fa-lock',
+        onClick: () => InteractionManager.setSelectionOrientationConstraint(!orientationActive, inst.id),
+      });
+      orientationAction.dataset.focusKey = 'action-autopack-orientation';
+      rotCard.appendChild(orientationAction);
+      const orientationHelp = document.createElement('div');
+      orientationHelp.className = 'muted tp3d-editor-sub-sm';
+      orientationHelp.textContent = 'Manual rotation remains available and updates an active AutoPack target. Releasing restores AutoPack’s Case-permitted choices.';
+      rotCard.appendChild(orientationHelp);
       inspectorEl.appendChild(rotCard);
 
       // === Actions Card ===

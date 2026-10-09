@@ -532,7 +532,7 @@ test('RECON Truck Change stages identity poses with preview/commit, mode, profil
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
   const caseData = {
     id: 'beam', name: 'Beam', dimensions: { length: 30, width: 20, height: 10 },
-    orientationLock: 'onSide', canFlip: true, weight: 10,
+    orientationLock: 'any', weight: 10,
   };
   const identity = { x: 0, y: 0, z: 0 };
   const rotatedY = { x: 0, y: Math.PI / 2, z: 0 };
@@ -592,6 +592,8 @@ test('RECON Truck Change stages identity poses with preview/commit, mode, profil
     'valid packed survivor remains byte-equivalent, including Max Capacity profile');
   assert.deepEqual(previewCases.find(inst => inst.id === 'existing-stage'), existingStaged,
     'safe existing deterministic staging remains unchanged');
+  assert.deepEqual(previewCases.find(inst => inst.id === 'invalid-yaw').lockedRotation, rotatedY,
+    'staging changes actual pose without rewriting the exact planning target');
   assertCanonicalReconLayoutSafe(PackLib, previewCases, nextTruck, [caseData], 'Truck Change identity preview');
 
   applied.harness.click(0, 'Move to staging');

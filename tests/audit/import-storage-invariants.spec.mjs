@@ -668,7 +668,7 @@ test('CARGO-RULE-V1 existing dangling instance: stats expose it, export preserve
   assert.equal(stats.totalCases, 1, 'the stored instance is still counted');
   assert.equal(stats.packedCases, 0, 'unresolved item is not counted as packed');
   assert.equal(stats.unresolvedInstances, 1, 'stats expose the unresolved instance count');
-  assert.equal(stats.totalWeight, 0, 'no invented weight for the unresolved item');
+  assert.equal(stats.totalWeight, null, 'complete mass is unknown for the unresolved item');
   assert.equal(stats.totalsComplete, false, 'totals are flagged incomplete when an instance is unresolved');
   assert.equal(stats.weightComplete, false, 'weight completeness flag is false');
   assert.equal(stats.volumeComplete, false, 'volume completeness flag is false');
@@ -720,7 +720,7 @@ test('CARGO-RULE-V1 pack import creates a renamed case on cargo conflict, remaps
   // but differs in one cargo-defining field. Each must NOT reuse the local case.
   const scenarios = [
     { label: 'different dimensions (same name)', local: { id: 'L1', name: 'Box A' }, bundled: { id: 'B1', name: 'Box A', dimensions: { length: 99, width: 10, height: 10 } } },
-    { label: 'different canFlip (same name)', local: { id: 'L2', name: 'Box B', canFlip: true }, bundled: { id: 'B2', name: 'Box B', canFlip: false } },
+    { label: 'different maximum stack count (same name)', local: { id: 'L2', name: 'Box B', maxStackCount: 1 }, bundled: { id: 'B2', name: 'Box B', maxStackCount: 2 } },
     { label: 'different orientationLock (same name)', local: { id: 'L3', name: 'Box C' }, bundled: { id: 'B3', name: 'Box C', orientationLock: 'upright' } },
     { label: 'different stacking rule (same name)', local: { id: 'L4', name: 'Box D' }, bundled: { id: 'B4', name: 'Box D', noStackOnTop: true } },
     { label: 'same id, different cargo', local: { id: 'SAME', name: 'Box E' }, bundled: { id: 'SAME', name: 'Box E', weight: 777 } },
@@ -997,11 +997,12 @@ test('CARGO-RULE-V1 workspace restore is exposed only in Settings; pack-batch gu
 test('CARGO-RULE-V1 spreadsheet handling-cell parsers normalize and warn correctly', async () => {
   const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
   // Orientation
-  assert.deepEqual(IE.parseOrientationLockCell(''), { value: 'any', warning: null });
-  assert.deepEqual(IE.parseOrientationLockCell('UPRIGHT'), { value: 'upright', warning: null });
-  assert.deepEqual(IE.parseOrientationLockCell('on-side'), { value: 'onSide', warning: null });
-  assert.deepEqual(IE.parseOrientationLockCell('on side'), { value: 'onSide', warning: null });
-  assert.equal(IE.parseOrientationLockCell('sideways').value, 'any');
+  assert.deepEqual(IE.parseOrientationLockCell(''), { value: 'any', valid: true, warning: null });
+  assert.deepEqual(IE.parseOrientationLockCell('UPRIGHT'), { value: 'upright', valid: true, warning: null });
+  assert.deepEqual(IE.parseOrientationLockCell('on-side'), { value: 'onSide', valid: true, warning: null });
+  assert.deepEqual(IE.parseOrientationLockCell('on side'), { value: 'onSide', valid: true, warning: null });
+  assert.equal(IE.parseOrientationLockCell('sideways').value, undefined);
+  assert.equal(IE.parseOrientationLockCell('sideways').valid, false);
   assert.ok(IE.parseOrientationLockCell('sideways').warning, 'invalid orientation warns');
   // Non-neg int (maxStackCount)
   assert.deepEqual(IE.parseNonNegIntCell('', 'max'), { value: 0, warning: null });
@@ -1035,7 +1036,7 @@ test('CARGO-RULE-V1 CSV template columns all map through the parser (template/pa
   const headerLine = template.split('\n')[0];
   const normalized = headerLine.split(',').map(h => String(h || '').toLowerCase().replace(/[^a-z0-9]+/g, ''));
   const idx = IE.indexMap(normalized);
-  for (const f of ['name', 'length', 'width', 'height', 'weight', 'canFlip', 'orientationLock', 'noStackOnTop', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority', 'notes']) {
+  for (const f of ['name', 'length', 'width', 'height', 'weight', 'orientationLock', 'noStackOnTop', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority', 'notes']) {
     assert.ok(idx[f] != null, `template column for ${f} must be recognized by the parser`);
   }
 });
@@ -1055,7 +1056,7 @@ test('CARGO-RULE-V1 importCaseRows carries handling fields and defaults missing 
 
   const noRules = IE.importCaseRows([{ name: 'Bare', length: 48, width: 24, height: 24, weight: 10 }], []);
   const bare = noRules.nextCaseLibrary.find(c => c.name === 'Bare');
-  assert.equal(bare.canFlip, false);
+  assert.equal(bare.canFlip, undefined);
   assert.equal(bare.orientationLock, 'any');
   assert.equal(bare.noStackOnTop, false);
   assert.equal(bare.maxStackCount, 0);
@@ -1094,6 +1095,29 @@ test('CARGO-RULE-V1 normalizeInstance keeps oriented dims for unlocked rotated i
   assert.deepEqual(od({ x: HALF, y: 0, z: 0 }, false, { length: 99, width: 99, height: 99 }), { length: 30, width: 10, height: 20 }, 'stale stored dims recomputed');
   // Missing case → preserve the stored oriented dims (recomputation lacks context).
   assert.deepEqual(Normalizer.normalizeInstance(mk({ x: HALF, y: 0, z: 0 }, false, { length: 7, width: 8, height: 9 }), new Map()).orientedDims, { length: 7, width: 8, height: 9 }, 'missing case preserves stored');
+});
+
+test('C3 normalization preserves actual pose and exact intent independently without inventing targets', async () => {
+  const Normalizer = await import(normalizerPath.href);
+  const rotation = { x: Math.PI / 2, y: 0, z: 0 };
+  const caseData = { id: 'c', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'upright', weight: null };
+  const caseMap = new Map([['c', caseData]]);
+  for (const lockedRotation of [null, undefined, { x: 0, y: Math.PI / 2, z: 0 }, { x: 0.35, y: 0, z: 0 }, { x: 0 }]) {
+    const original = { id: 'i', caseId: 'c', orientationLocked: true, lockedRotation,
+      canFlip: true, orientationLock: 'any', placement: 'packed', hidden: true, packedProfile: 'max-capacity',
+      transform: { position: { x: 20, y: 10, z: 0 }, rotation }, orientedDims: { length: 99, width: 99, height: 99 } };
+    const result = Normalizer.normalizeInstance(original, caseMap);
+    assert.equal(result.orientationLocked, true);
+    assert.deepEqual(result.lockedRotation, lockedRotation ?? null);
+    assert.deepEqual(result.transform.rotation, rotation, 'saved forbidden pose is preserved');
+    assert.deepEqual(result.transform.position, original.transform.position);
+    assert.equal(result.placement, 'packed');
+    assert.equal(result.hidden, true);
+    assert.equal(result.packedProfile, 'max-capacity');
+    assert.deepEqual(result.orientedDims, { length: 30, width: 10, height: 20 });
+    assert.equal(Object.hasOwn(result, 'orientationLock'), false);
+    assert.equal(Object.hasOwn(result, 'canFlip'), false);
+  }
 });
 
 test('CARGO-RULE-V1 App Backup round-trip preserves an unlocked rotated instance physical size', async () => {
@@ -1201,19 +1225,12 @@ test('CARGO-RULE-V1 spreadsheet invalid boolean and lane cells produce warnings 
 test('CARGO-RULE-V6 real CSV import produces structured per-row warnings (field/value/fallback/reason)', async () => {
   installWindowXLSX();
   const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
-  const csv = `${CARGO_HEADER}\n${CARGO_BAD_ROW}`;
+  const csv = `${CARGO_HEADER}\n${CARGO_BAD_ROW.replace('sideways', 'any')}`;
   const result = await IE.parseAndValidateSpreadsheet(makeCsvFile(csv), []);
   assert.equal(result.valid.length, 1, 'the row still imports with fallbacks');
   const rec = result.valid[0];
-  // canFlip "maybe" -> No
-  const cf = findRowWarning(rec, 'canFlip');
-  assert.ok(cf, 'canFlip warning present');
-  assert.equal(cf.value, 'maybe');
-  assert.equal(cf.fallback, 'No');
-  assert.match(cf.message, /canFlip: "maybe" is invalid; using No/);
-  // orientationLock "sideways" -> Any
-  const ol = findRowWarning(rec, 'orientationLock');
-  assert.match(ol.message, /orientationLock: "sideways" is invalid; using Any/);
+  assert.equal(findRowWarning(rec, 'canFlip'), null, 'retired canFlip is ignored');
+  assert.equal(rec.orientationLock, 'any');
   // laneItem "sometimes" -> Automatic
   const lane = findRowWarning(rec, 'laneItem');
   assert.match(lane.message, /laneItem: "sometimes" is invalid; using Automatic/);
@@ -1222,7 +1239,7 @@ test('CARGO-RULE-V6 real CSV import produces structured per-row warnings (field/
   assert.ok(msc, 'maxStackCount warning present');
   assert.equal(msc.fallback, '2');
   // The aggregate/report warnings match the per-row messages exactly.
-  assert.ok(result.warnings.some(w => w.includes('canFlip: "maybe" is invalid; using No')),
+  assert.ok(result.warnings.some(w => w.includes('laneItem: "sometimes" is invalid; using Automatic')),
     'downloadable report warnings match the preview row messages');
 });
 
@@ -1231,10 +1248,10 @@ test('CARGO-RULE-V6 real XLSX import yields identical structured warnings to CSV
   const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
   const aoa = [
     CARGO_HEADER.split(','),
-    CARGO_BAD_ROW.split(',').map((v, i) => (i >= 1 && i <= 4) ? Number(v) : v),
+    CARGO_BAD_ROW.replace('sideways', 'any').split(',').map((v, i) => (i >= 1 && i <= 4) ? Number(v) : v),
   ];
   const xlsxResult = await IE.parseAndValidateSpreadsheet(makeXlsxFile(aoa), []);
-  const csvResult = await IE.parseAndValidateSpreadsheet(makeCsvFile(`${CARGO_HEADER}\n${CARGO_BAD_ROW}`), []);
+  const csvResult = await IE.parseAndValidateSpreadsheet(makeCsvFile(`${CARGO_HEADER}\n${CARGO_BAD_ROW.replace('sideways', 'any')}`), []);
   // CSV and XLSX must produce identical structured warnings (same fields/messages).
   const norm = res => (res.valid[0].warnings || []).map(w => `${w.field}|${w.value}|${w.fallback}`).sort();
   assert.deepEqual(norm(xlsxResult), norm(csvResult), 'XLSX and CSV warning sets are identical');
@@ -1265,7 +1282,7 @@ test('CARGO-RULE-V8 matrix: CSV import sink (importCaseRows) canonicalizes hosti
   const c = nextCaseLibrary[0];
   // CSV has no stackable column (it is derived from no-top-load), so only assert the
   // fields the CSV path actually maps.
-  assert.equal(c.canFlip, false); assert.equal(c.isPallet, true);
+  assert.equal(c.canFlip, undefined); assert.equal(c.isPallet, true);
   assert.equal(c.maxPalletWeight, 0, 'malformed pallet weight -> 0'); assert.equal(c.laneItem, true);
   assert.ok(Number.isFinite(c.volume), 'volume finite');
 });
@@ -1331,26 +1348,23 @@ test('CARGO-RULE-V8 matrix: compound-rotation instance + unresolved instance sur
   assert.equal(ghost.caseId, 'missing', 'unresolved caseId preserved for repair');
 });
 
-test('CARGO-RULE-V1 canFlip defaults to false across normalizer/import; explicit values preserved', async () => {
-  const Normalizer = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const ImportExport = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
-  const baseCase = { id: 'cf-1', name: 'Flip Default', dimensions: { length: 48, width: 24, height: 24 } };
-
-  // Missing canFlip → false
-  assert.equal(Normalizer.normalizeCase({ ...baseCase }, Date.now()).canFlip, false, 'core normalizer: missing canFlip must default to false');
-  // Explicit values preserved
-  assert.equal(Normalizer.normalizeCase({ ...baseCase, canFlip: true }, Date.now()).canFlip, true, 'explicit canFlip:true preserved');
-  assert.equal(Normalizer.normalizeCase({ ...baseCase, canFlip: false }, Date.now()).canFlip, false, 'explicit canFlip:false preserved');
-
-  // CSV/spreadsheet import: missing column, blank, and explicit values
-  const row = (extra = {}) => ({ name: extra.name || 'Row', length: 48, width: 24, height: 24, weight: 10, ...extra });
-  const noCol = ImportExport.importCaseRows([row({ name: 'NoFlipCol' })], []);
-  const added = noCol.nextCaseLibrary.find(c => c.name === 'NoFlipCol');
-  assert.equal(added.canFlip, false, 'import with no canFlip column must default to false');
-  const explicitFalse = ImportExport.importCaseRows([row({ name: 'FlipFalse', canFlip: false })], []);
-  assert.equal(explicitFalse.nextCaseLibrary.find(c => c.name === 'FlipFalse').canFlip, false, 'import canFlip:false stays false');
-  const explicitTrue = ImportExport.importCaseRows([row({ name: 'FlipTrue', canFlip: true })], []);
-  assert.equal(explicitTrue.nextCaseLibrary.find(c => c.name === 'FlipTrue').canFlip, true, 'import canFlip:true stays true');
+test('C3 retired canFlip is stripped without changing physical permission or safe metadata', async () => {
+  const Normalizer = await import(normalizerPath.href);
+  const ImportExport = await import(importExportPath.href);
+  const baseCase = { id: 'cf-1', name: 'Flip retired', dimensions: { length: 48, width: 24, height: 24 } };
+  for (const canFlip of [undefined, true, false, 'maybe']) {
+    for (const orientationLock of ['any', 'upright', 'onSide']) {
+      const normalized = Normalizer.normalizeCase({ ...baseCase, canFlip, orientationLock,
+        extension: { canFlip, keep: 'yes' } });
+      assert.equal(normalized.canFlip, undefined);
+      assert.equal(normalized.orientationLock, orientationLock);
+      assert.deepEqual(normalized.extension, { keep: 'yes' });
+      const imported = ImportExport.importCaseRows([{ name: 'Row', length: 48, width: 24, height: 24,
+        weight: null, canFlip, orientationLock }], []);
+      assert.equal(imported.nextCaseLibrary[0].canFlip, undefined);
+      assert.equal(imported.nextCaseLibrary[0].orientationLock, orientationLock);
+    }
+  }
 });
 
 test('EDITOR movement paths reject collisions before persisting moved positions', async () => {
@@ -1396,7 +1410,7 @@ test('EDITOR rotate and flip paths reject unsafe candidates before persistence',
   const patchIndex = rotateBlock.indexOf('patchById.set(id, {', rejectIndex);
   const persistIndex = rotateBlock.indexOf('commitCasesWithManualRevalidation(packId, applyInstancePatches(pack, patchById))', patchIndex);
 
-  assert.match(rotateBlock, /lockPatch\.orientedDims[\s\S]*obj\.userData\.halfWorld/,
+  assert.match(rotateBlock, /getActualPoseDimensions[\s\S]*obj\.userData\.halfWorld/,
     'manual rotate/flip validation must update the temporary oriented footprint before collision checks');
   assert.ok(checkIndex >= 0 && rejectIndex > checkIndex && patchIndex > rejectIndex && persistIndex > patchIndex,
     'manual rotate/flip must check collision and truck containment before support-revalidating PackLibrary persistence');
@@ -1819,8 +1833,8 @@ test('phase 0.7A-1 exportAppJSON data keys include sanitized local backup librar
   const fn = start >= 0 && end > start ? src.slice(start, end) : '';
 
   assert.ok(fn, 'exportAppJSON must be extractable');
-  assert.match(fn, /caseLibrary:\s*state\.caseLibrary/,
-    'exportAppJSON data must include caseLibrary');
+  assert.match(fn, /caseLibrary:\s*\(state\.caseLibrary \|\| \[\]\)\.map\(projectPortableCase\)/,
+    'exportAppJSON data must include canonical portable Case records');
   assert.match(fn, /sanitizeLegacyPackQuantityLibrary\(state\.packLibrary\)\.packLibrary/,
     'exportAppJSON must sanitize obsolete Pack quantity metadata');
   assert.match(fn, /packLibrary:\s*sanitizedPacks/,

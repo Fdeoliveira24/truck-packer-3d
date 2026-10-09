@@ -433,14 +433,15 @@ test('MILESTONE-C-13 a legacy spreadsheet with no unit columns still imports as 
   }
 });
 
-test('MILESTONE-C-14 extreme dimension/weight values are clamped with a warning that matches what is actually stored', async () => {
+test('MILESTONE-C-14 dimension clamping remains explicit while out-of-range mass rejects its row', async () => {
   const rt = await createRuntime('csv-extreme-values');
   try {
     const { StateStore, ImportExport } = rt;
     StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
     const rows = [
       ['name', 'length', 'width', 'height', 'weight'],
-      ['Huge Case', 1e12, 24, 32, 1e12],
+      ['Huge Case', 1e12, 24, 32, 125],
+      ['Invalid Mass', 48, 24, 32, 1e12],
     ];
     globalThis.window.XLSX = {
       read: () => ({ SheetNames: ['Sheet1'], Sheets: { Sheet1: {} } }),
@@ -451,6 +452,8 @@ test('MILESTONE-C-14 extreme dimension/weight values are clamped with a warning 
       []
     );
     assert.equal(parsed.valid.length, 1);
+    assert.equal(parsed.invalidRows.length, 1);
+    assert.match(parsed.invalidRows[0].reasons.join(' '), /weight/i);
     const rowWarnings = parsed.valid[0].warnings;
     const lengthWarning = rowWarnings.find(w => w.field === 'length');
     assert.ok(lengthWarning, 'an extreme length must produce a warning');
@@ -470,13 +473,152 @@ test('MILESTONE-C-15 negative dimensions are rejected, never silently stored as 
   try {
     const { CaseLibrary } = rt;
     const stored = CaseLibrary.buildStorableCase({
-      id: 'neg-1', name: 'Negative Case', dimensions: { length: -10, width: 10, height: 10 }, weight: -5,
+      id: 'neg-1', name: 'Negative Case', dimensions: { length: -10, width: 10, height: 10 }, weight: null,
     });
     assert.equal(stored.dimensions.length, 0, 'a negative dimension must never be stored as negative');
-    assert.equal(stored.weight, 0, 'a negative weight must never be stored as negative');
+    assert.equal(stored.weight, null, 'unknown mass remains unknown');
+    assert.throws(() => CaseLibrary.buildStorableCase({ ...stored, weight: -5 }), /weight/);
   } finally {
     rt.cleanup();
   }
+});
+
+test('C3 storage preserves unknown mass and rejects explicit invalid mass before mutation', async () => {
+  const rt = await createRuntime('c3-mass-storage');
+  try {
+    const { CaseLibrary, StateStore } = rt;
+    const Normalizer = await import('../../src/core/normalizer.js');
+    const Canonical = await import('../../src/core/cargo-canonical.js');
+    StateStore.init({ caseLibrary: [], packLibrary: [], preferences: {} });
+    for (const weight of [null, undefined, '', '   ', 0.0000001, 125.125]) {
+      const stored = CaseLibrary.buildStorableCase(baseCase({ weight }));
+      const expected = typeof weight === 'number' ? weight : null;
+      assert.equal(stored.weight, expected);
+      assert.equal(Normalizer.normalizeCase(baseCase({ weight })).weight, expected);
+    }
+    CaseLibrary.upsert(baseCase({ weight: null }));
+    const copy = CaseLibrary.duplicate('case-1');
+    assert.equal(copy.weight, null);
+    assert.equal(CaseLibrary.getById(copy.id).weight, null);
+    const before = JSON.stringify(StateStore.get('caseLibrary'));
+    for (const weight of [0, -0, -1, NaN, Infinity, 10000001, 'bad', true, [], {}]) {
+      assert.throws(() => CaseLibrary.upsert(baseCase({ weight })), /weight/i);
+      assert.throws(() => Normalizer.normalizeCase(baseCase({ weight })), /weight/i);
+      assert.equal(JSON.stringify(StateStore.get('caseLibrary')), before);
+    }
+    assert.equal(Canonical.caseSafeReuseEqual(baseCase({ canFlip: true }), baseCase({ canFlip: false })), true);
+    assert.equal(Canonical.caseSafeReuseEqual(baseCase({ weight: null }), baseCase({ weight: 0 })), false);
+    assert.equal(Canonical.caseSafeReuseEqual(baseCase({ orientationLock: 'bad' }), baseCase({ orientationLock: 'any' })), false);
+  } finally { rt.cleanup(); }
+});
+
+test('C3 real CSV and XLSX distinguish blank mass from invalid mass and orientation', async () => {
+  const rt = await createRuntime('c3-spreadsheet-mass');
+  try {
+    const { ImportExport } = rt;
+    const rows = [
+      ['name', 'length', 'width', 'height', 'weight', 'weightUnit', 'orientationLock', 'canFlip'],
+      ['Unknown', 12, 10, 8, '', 'kg', '', 'true'],
+      ['Known kg', 12, 10, 8, 10, 'kg', 'on side', 'false'],
+      ['Zero', 12, 10, 8, 0, 'lb', 'any', 'true'],
+      ['Negative', 12, 10, 8, -5, 'lb', 'any', 'false'],
+      ['Malformed', 12, 10, 8, 'not mass', 'lb', 'any', 'false'],
+      ['Infinite', 12, 10, 8, 'Infinity', 'lb', 'any', 'false'],
+      ['Range', 12, 10, 8, 10000001, 'lb', 'any', 'false'],
+      ['Bad orientation', 12, 10, 8, 5, 'lb', 'sideways', 'true'],
+    ];
+    const book = RealXLSX.utils.book_new();
+    RealXLSX.utils.book_append_sheet(book, RealXLSX.utils.aoa_to_sheet(rows), 'Cases');
+    for (const format of ['csv', 'xlsx']) {
+      const data = RealXLSX.write(book, { bookType: format, type: format === 'csv' ? 'string' : 'array' });
+      const file = { name: `cases.${format}`, size: data.length || data.byteLength,
+        async text() { return data; }, async arrayBuffer() { return data; } };
+      const result = await ImportExport.parseAndValidateSpreadsheet(file, []);
+      assert.equal(result.valid.length, 2, format);
+      assert.equal(result.invalidRows.length, 6, format);
+      assert.equal(result.valid[0].weight, null);
+      assert.equal(result.valid[0].orientationLock, 'any');
+      assert.equal(result.valid[0].canFlip, undefined);
+      assert.ok(Math.abs(result.valid[1].weight - 22.0462262) < 0.000001);
+      assert.equal(result.valid[1].orientationLock, 'onSide');
+      assert.equal(ImportExport.importCaseRows(result.valid, []).added, 2);
+    }
+    const exported = ImportExport.buildCaseSpreadsheetRows([baseCase({ weight: null, canFlip: true })]);
+    assert.equal(exported[0].weight, '');
+    assert.equal(Object.hasOwn(exported[0], 'canFlip'), false);
+    assert.doesNotMatch(ImportExport.buildCasesTemplateCSV().split('\n')[0], /canFlip/);
+    for (const weight of [0, -1, 'bad', 10000001]) {
+      assert.equal(ImportExport.importCaseRows([{ name: 'bad', length: 1, width: 1, height: 1, weight }], []).added, 0);
+    }
+  } finally { rt.cleanup(); }
+});
+
+test('C3 machine formats round-trip null and reject explicit malformed mass or orientation atomically', async () => {
+  const rt = await createRuntime('c3-machine-mass');
+  try {
+    const { StateStore, ImportExport } = rt;
+    const item = baseCase({ weight: null, canFlip: true, custom: { canFlip: true, keep: 'value' } });
+    StateStore.init({ caseLibrary: [item], packLibrary: [], folderLibrary: [], preferences: {} });
+    const pack = basePack({ cases: [instanceFor(item.id)] });
+    const catalog = ImportExport.buildCaseCatalogExportJSON([item]);
+    const single = ImportExport.buildPackExportJSON(pack);
+    const batch = ImportExport.buildPackBatchExportJSON([pack]);
+    const app = ImportExport.buildAppExportJSON();
+    const Schema = await import('../../src/core/import-schema.js');
+    const versionedApp = Schema.buildEnvelopeJSON({ kind: Schema.IMPORT_KIND.ACTIVE_WORKSPACE_BACKUP,
+      data: JSON.parse(app).data });
+    const workspace = ImportExport.buildWorkspaceExportJSON('C3');
+    const formats = [
+      [catalog, ImportExport.parseCaseCatalogImportJSON, x => x.data.caseLibrary[0]],
+      [single, ImportExport.parsePackImportJSON, x => x.data.bundledCases[0]],
+      [versionedApp, ImportExport.parseAppImportJSON, x => x.data.caseLibrary[0]],
+      [workspace, ImportExport.parseWorkspaceImportJSON, x => x.data.caseLibrary[0]],
+    ];
+    const before = JSON.stringify(StateStore.get('caseLibrary'));
+    for (const [json, parse, getCase] of formats) {
+      const exported = getCase(JSON.parse(json));
+      assert.equal(exported.weight, null);
+      assert.equal(exported.orientationLock, 'upright');
+      assert.equal(Object.hasOwn(exported, 'canFlip'), false);
+      assert.deepEqual(exported.custom, { keep: 'value' });
+      assert.doesNotThrow(() => parse(json));
+      assert.throws(() => parse(json.replace('"weight": null', '"weight": 1e999')), /weight|non-finite/i);
+      for (const weight of [0, -1, 10000001, '5', 'bad', '', true, {}]) {
+        const bad = JSON.parse(json); getCase(bad).weight = weight;
+        assert.throws(() => parse(JSON.stringify(bad)), /weight/i);
+      }
+      for (const orientationLock of [null, '', 'sideways', true]) {
+        const bad = JSON.parse(json); getCase(bad).orientationLock = orientationLock;
+        assert.throws(() => parse(JSON.stringify(bad)), /orientationLock/i);
+      }
+      assert.equal(JSON.stringify(StateStore.get('caseLibrary')), before);
+    }
+    for (const invalid of [{ weight: 0 }, { weight: '5' }, { weight: 'bad' }, { orientationLock: 'sideways' }]) {
+      const twoPacks = JSON.parse(batch);
+      const good = structuredClone(twoPacks.data.packs[0]);
+      Object.assign(twoPacks.data.packs[0].bundledCases[0], invalid);
+      twoPacks.data.packs.push(good);
+      const entries = ImportExport.parsePackBatchImportJSON(JSON.stringify(twoPacks));
+      assert.equal(entries[0], null, 'the malformed Pack entry is rejected');
+      assert.equal(entries[1].bundledCases[0].weight, null, 'valid sibling remains importable');
+      assert.equal(entries[1].bundledCases[0].canFlip, undefined);
+      assert.throws(() => rt.PackLibrary.importPackPayload(entries[0]), /Invalid pack format/);
+      assert.equal(JSON.stringify(StateStore.get('caseLibrary')), before, 'rejected entry publishes no Cases');
+      assert.equal(StateStore.get('packLibrary').length, 0, 'rejected entry publishes no Pack');
+      assert.doesNotThrow(() => rt.PackLibrary.planPackImport(entries[1]));
+    }
+    // The existing raw App envelope has always used version 1.0.0. Its supported
+    // legacy numeric-string compatibility remains; new exports emit canonical data.
+    const raw = JSON.parse(app);
+    assert.equal(raw.data.caseLibrary[0].weight, null);
+    assert.equal(raw.data.caseLibrary[0].canFlip, undefined);
+    raw.data.caseLibrary[0].weight = '5';
+    assert.equal(ImportExport.parseAppImportJSON(JSON.stringify(raw)).caseLibrary[0].weight, 5);
+    for (const weight of [0, -1, 'bad', '', 10000001]) {
+      raw.data.caseLibrary[0].weight = weight;
+      assert.throws(() => ImportExport.parseAppImportJSON(JSON.stringify(raw)), /weight/);
+    }
+  } finally { rt.cleanup(); }
 });
 
 test('MILESTONE-C-16 duplicate Item Codes in a spreadsheet import are skipped, not silently duplicated', async () => {

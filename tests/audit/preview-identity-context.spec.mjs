@@ -1532,9 +1532,17 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         const modified = edit => { const pack = structuredClone(base); edit(pack); return signature(pack); };
         const changed = [
           p => { p.truck.width += 1; }, p => { p.truck.shapeMode = 'wheelWells'; p.truck.shapeConfig = { wellHeight: 20 }; },
-          p => { p.cases[0].transform.rotation.y = 1; }, p => { p.cases[0].hidden = true; },
-          p => { p.cases[0].placement = 'packed'; }, p => { p.cases[0].orientedDims = { length: 8, width: 10, height: 12 }; },
+          p => { p.cases[0].transform.rotation.y = Math.PI / 2; }, p => { p.cases[0].hidden = true; },
+          p => { p.cases[0].placement = 'packed'; },
         ].every(edit => modified(edit) !== original);
+        const ignoredCache = modified(p => {
+          p.cases[0].orientedDims = { length: 8, width: 10, height: 12 };
+        }) === original;
+        const caseData = q.CaseLibrary.getById(base.cases[0].caseId);
+        const originalDimensions = caseData.dimensions;
+        caseData.dimensions = { ...originalDimensions, length: originalDimensions.length + 1 };
+        const dimensionsChanged = signature(base) !== original;
+        caseData.dimensions = originalDimensions;
         const ignored = modified(p => {
           p.notes = 'n'; p.client = 'c'; p.title = 't'; p.projectName = 'p'; p.drawnBy = 'd'; p.lastEdited = 999999;
           p.thumbnail = 'data:irrelevant'; p.thumbnailVisualSignature = 'irrelevant'; p.customerReference = 'r';
@@ -1543,9 +1551,9 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         }) === original;
         const a = { ...base, truck: { ...base.truck, shapeMode: 'wheelWells', shapeConfig: { wellWidth: 10, wellHeight: 20 } } };
         const b = { ...a, truck: { ...a.truck, shapeConfig: { wellHeight: 20, wellWidth: 10 } } };
-        return { changed, ignored, ordered: signature(a) === signature(b) };
+        return { changed, dimensionsChanged, ignoredCache, ignored, ordered: signature(a) === signature(b) };
       });
-      assert.deepEqual(proof, { changed: true, ignored: true, ordered: true });
+      assert.deepEqual(proof, { changed: true, dimensionsChanged: true, ignoredCache: true, ignored: true, ordered: true });
     });
 
     await t.test('PR-B legacy future-clock Pack settles once and stays fresh after reload', async () => {

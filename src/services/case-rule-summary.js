@@ -6,8 +6,8 @@
  * Inspector, and import previews — must use this so the rules a user sees match
  * the Case modal and what the active solver actually honors.
  *
- * Default/inactive rules are intentionally omitted (Any orientation, canFlip
- * false, unlimited stack, automatic lane, normal priority). maxPalletWeight is
+ * Default/inactive rules are intentionally omitted (Any orientation,
+ * unlimited stack, automatic lane, normal priority). maxPalletWeight is
  * shown only as a warning, never as an enforced cap.
  * @module services/case-rule-summary
  */
@@ -26,8 +26,6 @@ export function getCaseHandlingSummary(caseData = {}) {
   const lock = canonicalOrientationLock(c.orientationLock);
   if (lock === 'upright') out.push('Upright');
   else if (lock === 'onSide') out.push('On side');
-
-  if (c.canFlip === true && lock === 'any') out.push('Flipping allowed');
 
   if (c.noStackOnTop === true || c.stackable === false) out.push('No top load');
 
@@ -52,15 +50,13 @@ export function getCaseHandlingSummary(caseData = {}) {
 }
 
 /**
- * Per-instance handling note. Currently only the manual exact-orientation lock
- * is an instance-level override; it is shown separately from case-level rules so
- * users can tell "this case's policy" from "this placed item is locked".
+ * Per-instance AutoPack planning note, shown separately from Case physical rules.
  * @param {Record<string, any>} instance
  * @returns {string[]}
  */
 export function getInstanceHandlingSummary(instance = {}) {
   const inst = instance && typeof instance === 'object' ? instance : {};
   const out = [];
-  if (inst.orientationLocked === true) out.push('Orientation locked (this item)');
+  if (inst.orientationLocked === true) out.push('AutoPack orientation fixed for this item');
   return out;
 }

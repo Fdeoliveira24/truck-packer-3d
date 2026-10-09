@@ -646,7 +646,7 @@ export function createImportCasesDialog({
         // Weight cell
         const wtTd = doc.createElement('td');
         wtTd.className = 'tp3d-ic-td-weight';
-        const wt = Number(record.weight);
+        const wt = record.weight;
         wtTd.textContent = Number.isFinite(wt) && wt > 0 ? wt + ' lb' : '—';
 
         // Category cell — color dot + label

@@ -32,6 +32,7 @@ import {
   isCargoPlannerEnvelope,
   parseCargoPlannerEnvelope,
   validateWorkspaceGraph,
+  validatePortableCasePhysicalFields,
   buildEnvelopeJSON,
   projectPortableCase,
   projectPortableWorkspacePack,
@@ -843,14 +844,19 @@ export function exportAppJSON() {
   const state = StateStore.get();
   const sanitizedPacks = sanitizeLegacyPackQuantityLibrary(state.packLibrary).packLibrary.map(pack => {
     const truck = pack && stripInternalTruckFields(pack.truck);
-    return pack && truck !== pack.truck ? { ...pack, truck } : pack;
+    if (!pack) return pack;
+    const cases = Array.isArray(pack.cases) ? pack.cases.map(instance => {
+      const { canFlip: _canFlip, orientationLock: _orientationLock, ...physicalInstance } = instance;
+      return physicalInstance;
+    }) : pack.cases;
+    return { ...pack, truck, cases };
   });
   const payload = {
     app: 'Truck Packer 3D',
     version: APP_VERSION,
     exportedAt: Date.now(),
     data: {
-      caseLibrary: state.caseLibrary,
+      caseLibrary: (state.caseLibrary || []).map(projectPortableCase),
       packLibrary: sanitizedPacks,
       folderLibrary: Array.isArray(state.folderLibrary) ? state.folderLibrary : [],
       preferences: state.preferences,
@@ -948,6 +954,9 @@ export function preflightAppBackupJSON(jsonText) {
     data = hasEnvelope ? parsed.data : parsed;
   }
   const { cases, packs, folders } = validateWorkspaceGraph(data, { requirePreferences: true });
+  cases.forEach((caseData, index) => validatePortableCasePhysicalFields(caseData, {
+    legacy: !isCargoPlannerEnvelope(parsed), label: `caseLibrary[${index}]`,
+  }));
   const normalized = normalizeAppData({
     caseLibrary: cases,
     packLibrary: packs,

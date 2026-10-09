@@ -19,7 +19,7 @@ import * as AppStateStore from '../core/state-store.js';
 import * as CaseLibrary from './case-library.js';
 import * as PackLibrary from './pack-library.js';
 import { APP_VERSION } from '../core/version.js';
-import { canonicalOrientationLock } from '../core/orientation.js';
+import { parseCaseOrientationLock } from '../core/orientation.js';
 import { getCaseHandlingSummary } from './case-rule-summary.js';
 import {
   assertBusinessIdentityValue,
@@ -33,12 +33,14 @@ import {
   parseCargoPlannerEnvelope,
   validateWorkspaceGraph,
   validateCaseCatalogGraph,
+  validatePortableCasePhysicalFields,
   buildEnvelopeJSON,
   projectPortableCategories,
   projectPortableCase,
   projectPortablePack,
 } from '../core/import-schema.js';
 import {
+  parseCaseMass,
   parseCargoBoolean,
   parseCargoLane,
   parseCargoCount,
@@ -49,12 +51,9 @@ import {
   applyCanonicalCargoFields,
   PALLET_WEIGHT_MAX_LBS,
   DIMENSION_MAX_INCHES,
-  WEIGHT_MAX_LBS,
 } from '../core/cargo-canonical.js';
 
 // Human-readable fallback labels for structured preview warnings.
-const ORIENTATION_LABELS = { any: 'Any', upright: 'Upright', onSide: 'On side' };
-function orientationLabel(v) { return ORIENTATION_LABELS[v] || 'Any'; }
 function laneLabel(v) { return v === true ? 'Always' : v === false ? 'Never' : 'Automatic'; }
 function priorityLabel(v) { return v > 0 ? 'High' : v < 0 ? 'Low' : 'Normal'; }
 function boolLabel(v) { return v ? 'Yes' : 'No'; }
@@ -124,7 +123,6 @@ const FIELD_CANDIDATES = {
   lengthUnit: ['lengthunit', 'dimunit', 'dimensionunit'],
   weight: ['weight', 'wt'],
   weightUnit: ['weightunit', 'massunit'],
-  canFlip: ['canflip', 'flippable', 'canrotate', 'flip'],
   orientationLock: ['orientationlock', 'orientation', 'orient'],
   noStackOnTop: ['nostackontop', 'notopload', 'notop', 'donotstackontop'],
   maxStackCount: ['maxstackcount', 'maxontop', 'maxstack'],
@@ -211,15 +209,9 @@ export function parseLaneCellWarned(raw) {
 // Handling-rule cell parsers. Each returns the canonical value; the *Warned
 // variants also return a human-readable warning string when the cell was
 // present but invalid (the value falls back to the canonical default).
-const KNOWN_ORIENTATION_SPELLINGS = new Set(['any', 'upright', 'onside', 'on-side', 'on side', 'on_side']);
 export function parseOrientationLockCell(raw) {
-  const s = String(raw || '').trim();
-  if (!s) return { value: 'any', warning: null };
-  const value = canonicalOrientationLock(s);
-  if (value === 'any' && !KNOWN_ORIENTATION_SPELLINGS.has(s.toLowerCase())) {
-    return { value: 'any', warning: `invalid orientation "${raw}" (used Any)` };
-  }
-  return { value, warning: null };
+  const parsed = parseCaseOrientationLock(raw, { allowDefault: true });
+  return { ...parsed, warning: parsed.valid ? null : `invalid orientation "${raw}"` };
 }
 
 export function parseNonNegIntCell(raw, fieldLabel) {
@@ -255,10 +247,10 @@ export function parseLoadPriorityCell(raw) {
 
 export function buildCasesTemplateCSV() {
   return [
-    'name,itemCode,manufacturer,category,length,width,height,lengthUnit,weight,weightUnit,canFlip,orientationLock,noStackOnTop,maxStackCount,isPallet,maxPalletWeight,laneItem,loadPriority,notes',
-    'Line Array Case,,L-Acoustics,audio,48,24,32,in,125,lb,false,upright,true,0,false,0,auto,normal,',
-    'Truss Section,,Global Truss,lighting,120,12,12,in,45,lb,true,any,false,0,false,0,always,normal,',
-    'Equipment Pallet,,Generic,default,48,40,6,in,60,lb,false,any,false,0,true,2000,never,low,',
+    'name,itemCode,manufacturer,category,length,width,height,lengthUnit,weight,weightUnit,orientationLock,noStackOnTop,maxStackCount,isPallet,maxPalletWeight,laneItem,loadPriority,notes',
+    'Line Array Case,,L-Acoustics,audio,48,24,32,in,125,lb,upright,true,0,false,0,auto,normal,',
+    'Truss Section,,Global Truss,lighting,120,12,12,in,45,lb,any,false,0,false,0,always,normal,',
+    'Equipment Pallet,,Generic,default,48,40,6,in,60,lb,any,false,0,true,2000,never,low,',
   ].join('\n');
 }
 
@@ -361,7 +353,6 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     const maxStackParsed = parseNonNegIntCell(getField(row, idx.maxStackCount), 'max items on top');
     const palletWeightParsed = parseNonNegNumCell(getField(row, idx.maxPalletWeight), 'max load');
     const priorityParsed = parseLoadPriorityCell(getField(row, idx.loadPriority));
-    const canFlipParsed = parseBoolCell(getField(row, idx.canFlip), 'allow flipping');
     const noTopParsed = parseBoolCell(getField(row, idx.noStackOnTop), 'no top load');
     const palletParsed = parseBoolCell(getField(row, idx.isPallet), 'pallet');
     const shapeParsed = parseShapeCell(getField(row, idx.shape));
@@ -379,7 +370,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     const rawLength = Number(getField(row, idx.length));
     const rawWidth = Number(getField(row, idx.width));
     const rawHeight = Number(getField(row, idx.height));
-    const rawWeight = Number(getField(row, idx.weight));
+    const weightParsed = parseCaseMass(getField(row, idx.weight), { unit: weightUnitParsed.unit });
     const record = {
       name: String(getField(row, idx.name)).trim(),
       itemCode: String(getField(row, idx.itemCode)).trim(),
@@ -388,9 +379,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       length: lengthUnitParsed.valid ? Utils.unitToInches(rawLength, lengthUnitParsed.unit) : rawLength,
       width: lengthUnitParsed.valid ? Utils.unitToInches(rawWidth, lengthUnitParsed.unit) : rawWidth,
       height: lengthUnitParsed.valid ? Utils.unitToInches(rawHeight, lengthUnitParsed.unit) : rawHeight,
-      weight: weightUnitParsed.valid ? Utils.unitToPounds(rawWeight, weightUnitParsed.unit) : rawWeight,
-      // Handling rules (Cargo-Rule V1). canFlip only meaningful when policy is 'any'.
-      canFlip: orientationParsed.value === 'any' && canFlipParsed.value,
+      weight: weightParsed.value,
       orientationLock: orientationParsed.value,
       noStackOnTop: noTopParsed.value,
       maxStackCount: maxStackParsed.value,
@@ -413,11 +402,9 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
     // the preview can show exactly what was adjusted and why. Only fields whose
     // parser flagged the supplied value contribute a warning.
     const rowWarningSpecs = [
-      { field: 'orientationLock', parsed: orientationParsed, raw: getField(row, idx.orientationLock), fallback: orientationLabel(orientationParsed.value) },
       { field: 'maxStackCount', parsed: maxStackParsed, raw: getField(row, idx.maxStackCount), fallback: String(maxStackParsed.value) },
       { field: 'maxPalletWeight', parsed: palletWeightParsed, raw: getField(row, idx.maxPalletWeight), fallback: String(palletWeightParsed.value) },
       { field: 'loadPriority', parsed: priorityParsed, raw: getField(row, idx.loadPriority), fallback: priorityLabel(priorityParsed.value) },
-      { field: 'canFlip', parsed: canFlipParsed, raw: getField(row, idx.canFlip), fallback: boolLabel(canFlipParsed.value) },
       { field: 'noStackOnTop', parsed: noTopParsed, raw: getField(row, idx.noStackOnTop), fallback: boolLabel(noTopParsed.value) },
       { field: 'isPallet', parsed: palletParsed, raw: getField(row, idx.isPallet), fallback: boolLabel(palletParsed.value) },
       { field: 'laneItem', parsed: laneParsed, raw: getField(row, idx.laneItem), fallback: laneLabel(laneParsed.value) },
@@ -431,7 +418,7 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       if (!spec.parsed.warning) continue;
       rowWarnings.push(buildRowWarning(rowNum, spec.field, spec.raw, spec.fallback));
     }
-    // Data-sanity limits (Phase 3): warn on extreme dimensions/weight that would
+    // Data-sanity limits (Phase 3): warn on extreme dimensions that would
     // be clamped at storage. Driven by the SAME typed parsers CaseLibrary.
     // buildStorableCase uses at commit time (core/cargo-canonical.js), so the
     // warning text can never drift from what is actually stored. Only the
@@ -452,18 +439,12 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
         });
       }
     }
-    const weightSanity = parseCargoNonNegNumber(record.weight, { max: WEIGHT_MAX_LBS });
-    if (!weightSanity.valid && Number.isFinite(record.weight) && record.weight > WEIGHT_MAX_LBS) {
-      rowWarnings.push({
-        rowNum, field: 'weight', value: String(record.weight), fallback: String(weightSanity.value),
-        reason: `exceeds the maximum; using ${weightSanity.value}`,
-        message: `weight: "${record.weight}" exceeds the maximum; using ${weightSanity.value}`,
-      });
-    }
     record.warnings = rowWarnings;
     rowWarnings.forEach(w => warnings.push(`Row ${rowNum}: ${w.message}`));
 
     const rowErrors = [];
+    if (!weightParsed.valid) rowErrors.push(`Row ${rowNum}: Invalid weight; enter a positive mass or leave it blank.`);
+    if (!orientationParsed.valid) rowErrors.push(`Row ${rowNum}: Invalid orientationLock.`);
     if (!record.name) rowErrors.push(`Row ${rowNum}: Missing required field 'name'`);
     if (!lengthUnitParsed.valid) {
       rowErrors.push(
@@ -485,6 +466,11 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       rowErrors.push(`Row ${rowNum}: Invalid number for 'height'`);
     }
 
+    if (rowErrors.length) {
+      errors.push(...rowErrors);
+      invalidRows.push({ rowNum, record, reasons: rowErrors.map(e => e.replace(`Row ${rowNum}: `, '')) });
+      continue;
+    }
     const nameKey = record.name.toLowerCase();
     if (record.name && seenNames.has(nameKey)) {
       duplicates.push(`Row ${rowNum}: Duplicate name "${record.name}" (skipped)`);
@@ -498,11 +484,6 @@ export async function parseAndValidateSpreadsheet(file, existingCases = CaseLibr
       continue;
     }
 
-    if (rowErrors.length) {
-      errors.push(...rowErrors);
-      invalidRows.push({ rowNum, record, reasons: rowErrors.map(e => e.replace(`Row ${rowNum}: `, '')) });
-      continue;
-    }
     seenNames.add(nameKey);
     if (itemCodeKey) seenItemCodes.add(itemCodeKey);
     valid.push(record);
@@ -551,7 +532,9 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
     const length = parseCargoDimension(rawLength).value;
     const width = parseCargoDimension(rawWidth).value;
     const height = parseCargoDimension(rawHeight).value;
-    const safeWeight = parseCargoNonNegNumber(Number(r.weight), { max: WEIGHT_MAX_LBS }).value;
+    const mass = parseCaseMass(r.weight);
+    const orientation = parseCaseOrientationLock(r.orientationLock, { allowDefault: true });
+    if (!mass.valid || !orientation.valid) return;
     existingNames.add(nameKey);
     if (itemCodeKey) existingItemCodes.add(itemCodeKey);
     // Route the handling-rule fields through the single typed canonical
@@ -567,14 +550,13 @@ export function importCaseRows(rows, existingCases = CaseLibrary.getCases()) {
             .trim()
             .toLowerCase() || 'default',
         dimensions: { length, width, height },
-        weight: safeWeight,
+        weight: mass.value,
         volume: Utils.volumeInCubicInches({
           length,
           width,
           height,
         }),
-        canFlip: r.canFlip,
-        orientationLock: r.orientationLock || 'any',
+        orientationLock: orientation.value,
         noStackOnTop: r.noStackOnTop,
         maxStackCount: r.maxStackCount,
         isPallet: r.isPallet,
@@ -649,6 +631,7 @@ export function parseCaseCatalogImportPayloadJSON(jsonText) {
   }
   const envelope = parseCargoPlannerEnvelope(parsed, { expectedKinds: [IMPORT_KIND.CASE_CATALOG] });
   const { cases } = validateCaseCatalogGraph(envelope.data);
+  cases.forEach((caseData, index) => validatePortableCasePhysicalFields(caseData, { label: `caseLibrary[${index}]` }));
   return {
     cases,
     categories: Array.isArray(envelope.data.categories) ? envelope.data.categories : [],
@@ -674,7 +657,7 @@ export function parseCaseCatalogImportJSON(jsonText) {
 const CASE_SPREADSHEET_COLUMNS = [
   'name', 'itemCode', 'manufacturer', 'category',
   'length', 'width', 'height', 'lengthUnit', 'weight', 'weightUnit',
-  'shape', 'canFlip', 'orientationLock', 'stackable', 'noStackOnTop', 'maxStackCount',
+  'shape', 'orientationLock', 'stackable', 'noStackOnTop', 'maxStackCount',
   'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority',
   'hazmatClass', 'mustLoadLast', 'mustUnloadFirst', 'stopGroup', 'keepTogetherGroup',
   'color', 'notes',
@@ -694,6 +677,7 @@ function sanitizeSpreadsheetText(value) {
 }
 
 function caseToSpreadsheetRow(c) {
+  const physical = validatePortableCasePhysicalFields(c, { legacy: true });
   const d = (c && c.dimensions) || {};
   return {
     name: sanitizeSpreadsheetText(c.name),
@@ -704,11 +688,10 @@ function caseToSpreadsheetRow(c) {
     width: Number(d.width) || 0,
     height: Number(d.height) || 0,
     lengthUnit: 'in',
-    weight: Number(c.weight) || 0,
+    weight: physical.weight === null ? '' : physical.weight,
     weightUnit: 'lb',
     shape: sanitizeSpreadsheetText(c.shape || 'box'),
-    canFlip: Boolean(c.canFlip),
-    orientationLock: sanitizeSpreadsheetText(c.orientationLock || 'any'),
+    orientationLock: physical.orientationLock,
     stackable: c.stackable !== false,
     noStackOnTop: Boolean(c.noStackOnTop),
     maxStackCount: Number(c.maxStackCount) || 0,
@@ -1061,7 +1044,7 @@ export function buildLoadPlanReport(pack, {
     { label: 'Staged (outside the truck)', value: String(population.staged) },
     { label: 'Hidden from view', value: String(population.hidden) },
     { label: 'Unresolved', value: String(population.unresolved) },
-    { label: 'Loaded weight (in truck)', value: `${Utils.formatWeight(Number(stats.totalWeight) || 0, weightUnit)}${incomplete}` },
+    { label: 'Loaded weight (in truck)', value: `${Utils.formatWeight(stats.totalWeight, weightUnit)}${incomplete}` },
   ];
   const optionalStats = [
     {
@@ -1131,8 +1114,10 @@ export function buildLoadPlanReport(pack, {
     review.push({
       title: 'Pallet load warnings',
       items: pallets.map(warning => `${instanceLabel(warning.palletInstanceId, warning.palletName)}: ` +
-        `${Utils.formatWeight(Number(warning.actualWeight) || 0, weightUnit)} on top exceeds its ` +
-        `${Utils.formatWeight(Number(warning.maxWeight) || 0, weightUnit)} max load warning.`),
+        (warning.massComplete === false
+          ? 'load on top is unavailable because cargo mass is unknown.'
+          : `${Utils.formatWeight(warning.actualWeight, weightUnit)} on top exceeds its ` +
+            `${Utils.formatWeight(warning.maxWeight, weightUnit)} max load warning.`)),
     });
   }
 
@@ -1166,7 +1151,7 @@ export function buildLoadPlanReport(pack, {
       identityKey: row.identityKey, qty: row.qty, counts, name, itemCode,
       category: getCategoryName(c.category),
       baseDims: validDims ? Utils.formatDims(d, lengthUnit) : '—',
-      unitWeight: Utils.formatWeight(Number(c.weight) || 0, weightUnit),
+      unitWeight: Utils.formatWeight(c.weight, weightUnit),
     };
   });
 
@@ -1302,6 +1287,8 @@ export function parsePackImportJSON(jsonText) {
     if (!isPlainRecord(envelope.data) || !isPlainRecord(envelope.data.pack)) {
       throw new Error('Invalid load plan envelope: missing pack.');
     }
+    (envelope.data.bundledCases || []).forEach((caseData, index) =>
+      validatePortableCasePhysicalFields(caseData, { label: `bundledCases[${index}]` }));
     return {
       ...envelope.data,
       pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(envelope.data.pack),
@@ -1479,9 +1466,19 @@ export function parsePackBatchImportJSON(jsonText) {
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
     throw new Error('Invalid JSON');
   }
-  const normalizeBatchEntries = packs => packs.map(entry => {
+  const normalizeBatchEntries = (packs, strictPhysicalFields = false) => packs.map(entry => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return null;
     const payload = entry.pack ? entry : { pack: entry };
+    if (strictPhysicalFields) {
+      try {
+        (payload.bundledCases || []).forEach((caseData, index) =>
+          validatePortableCasePhysicalFields(caseData, { label: `bundledCases[${index}]` }));
+      } catch {
+        // A batch retains its established per-Pack rejection boundary. The
+        // preview already represents malformed entries as null and skips them.
+        return null;
+      }
+    }
     return {
       ...payload,
       pack: CoreNormalizer.sanitizeLegacyPackQuantityFields(payload.pack),
@@ -1493,7 +1490,7 @@ export function parsePackBatchImportJSON(jsonText) {
     if (!Array.isArray(packs) || packs.length === 0) {
       throw new Error('Load plan batch file must contain a non-empty packs array.');
     }
-    return normalizeBatchEntries(packs);
+    return normalizeBatchEntries(packs, true);
   }
   // Guard: reject App JSON mistakenly used here.
   if (Array.isArray(parsed.packLibrary) || Array.isArray(parsed.caseLibrary) || parsed.preferences) {
@@ -1784,12 +1781,7 @@ function validateWorkspaceCase(caseData, index, { legacy }) {
       throw workspaceBackupError(`Invalid ${label}.dimensions.${axis}: expected a positive canonical dimension.`);
     }
   });
-  if (!legacy || caseData.weight != null) {
-    const parsedWeight = parseCargoNonNegNumber(caseData.weight, { max: WEIGHT_MAX_LBS });
-    if (!parsedWeight.valid || (!legacy && typeof caseData.weight !== 'number')) {
-      throw workspaceBackupError(`Invalid ${label}.weight: expected a canonical non-negative weight.`);
-    }
-  }
+  validatePortableCasePhysicalFields(caseData, { legacy, label });
   if (caseData.maxPalletWeight != null) {
     const parsed = parseCargoNonNegNumber(caseData.maxPalletWeight, { max: PALLET_WEIGHT_MAX_LBS });
     if (!parsed.valid || (!legacy && typeof caseData.maxPalletWeight !== 'number')) {
@@ -1812,7 +1804,7 @@ function validateWorkspaceCase(caseData, index, { legacy }) {
       throw workspaceBackupError(`Invalid ${label}.loadPriority.`);
     }
   }
-  ['canFlip', 'noStackOnTop', 'isPallet', 'stackable', 'mustLoadLast', 'mustUnloadFirst'].forEach(field => {
+  ['noStackOnTop', 'isPallet', 'stackable', 'mustLoadLast', 'mustUnloadFirst'].forEach(field => {
     if (caseData[field] != null) {
       if (
         !parseCargoBoolean(caseData[field], field === 'stackable').valid ||
@@ -1831,13 +1823,6 @@ function validateWorkspaceCase(caseData, index, { legacy }) {
     if (!parseCargoShape(caseData.shape).valid || (!legacy && typeof caseData.shape !== 'string')) {
       throw workspaceBackupError(`Invalid ${label}.shape.`);
     }
-  }
-  if (
-    !legacy &&
-    caseData.orientationLock != null &&
-    (typeof caseData.orientationLock !== 'string' || !['any', 'upright', 'onSide'].includes(caseData.orientationLock))
-  ) {
-    throw workspaceBackupError(`Invalid ${label}.orientationLock.`);
   }
   ['createdAt', 'updatedAt'].forEach(field => {
     if (caseData[field] != null) {

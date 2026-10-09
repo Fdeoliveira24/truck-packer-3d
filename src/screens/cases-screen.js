@@ -1008,8 +1008,12 @@ export function createCasesScreen({
             valB = (b.dimensions && b.dimensions.height) || 0;
             break;
           case 'weight':
-            valA = a.weight || 0;
-            valB = b.weight || 0;
+            // Unknown mass sorts after declared values in either direction.
+            if (a.weight === null || b.weight === null) {
+              return a.weight === b.weight ? 0 : a.weight === null ? 1 : -1;
+            }
+            valA = a.weight;
+            valB = b.weight;
             break;
           case 'category':
             valA = CategoryService.meta(a.category).name.toLowerCase();
@@ -1147,10 +1151,7 @@ export function createCasesScreen({
         tr.appendChild(tdVol);
 
         const tdW = document.createElement('td');
-        const weight = Number(c.weight) || 0;
-        const formattedWeight =
-          prefs.units.weight === 'kg' ? `${(weight * 0.453592).toFixed(2)} kg` : `${weight.toFixed(2)} lb`;
-        tdW.textContent = formattedWeight;
+        tdW.textContent = Utils.formatWeight(c.weight, prefs.units.weight, 2);
         if (prefs.gridCardBadges && prefs.gridCardBadges.cases && prefs.gridCardBadges.cases.showWeight === false) {
           tdW.style.display = 'none';
         }

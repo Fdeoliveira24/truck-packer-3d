@@ -3,6 +3,7 @@
  */
 
 import { canonicalOrientationLock } from '../../core/orientation.js';
+import { caseMassToUnit, parseCaseMass } from '../../core/cargo-canonical.js';
 import { checkItemCodeAvailability } from '../../core/business-identity.js';
 import { formatCaseModalNumber, formatCaseModalWeightNumber } from '../../core/utils/index.js';
 
@@ -202,8 +203,7 @@ export function openCaseModal({
         manufacturer: '',
         category: 'default',
         dimensions: { length: 48, width: 24, height: 24 },
-        weight: 0,
-        canFlip: false,
+        weight: null,
         notes: '',
         color: CategoryService.meta('default').color,
         createdAt: now,
@@ -404,9 +404,11 @@ export function openCaseModal({
   fH.input.value = formatCaseModalNumber(Utils.inchesToUnit(initial.dimensions.height, lengthUnit), lengthUnit);
 
   const fWeight = createField(doc, `Weight (${weightUnit})`, 'number', '', false);
-  fWeight.input.step = '0.1';
-  const weightValue = Utils.poundsToUnit(Number(initial.weight) || 0, weightUnit);
-  fWeight.input.value = formatCaseModalWeightNumber(weightValue);
+  fWeight.input.step = 'any';
+  const weightValue = caseMassToUnit(initial.weight, weightUnit);
+  fWeight.input.value = weightValue.valid
+    ? formatCaseModalWeightNumber(weightValue.value)
+    : String(initial.weight ?? '');
 
   // ── Handling Rules (collapsed) ──────────────────────────────────────────
   // Only rules the active AutoPack solver honors exactly (Cargo-Rule V1).
@@ -422,13 +424,8 @@ export function openCaseModal({
     ['onSide', 'Place on side'],
   ], canonicalOrientationLock(initial.orientationLock),
     'Limits which orientations AutoPack and manual rotation may use. ' +
-    'Upright keeps the saved height axis vertical (a long item stays lying down); ' +
-    'On side tips the case so its height axis is no longer vertical.');
-
-  const flipRow = createCheckRow(doc, 'Allow flipping',
-    canonicalOrientationLock(initial.orientationLock) === 'any' && Boolean(initial.canFlip),
-    'Lets AutoPack place this item on another face when orientation rules allow it.');
-  const flip = flipRow.input;
+    'Upright keeps the authored top facing up and allows turns. ' +
+    'On side requires a side face down, never the authored top or bottom.');
 
   const noTopRow = createCheckRow(doc, 'Do not place cargo on top',
     initial.noStackOnTop === true || initial.stackable === false,
@@ -480,11 +477,6 @@ export function openCaseModal({
   ], String(Number(initial.loadPriority) > 0 ? 1 : Number(initial.loadPriority) < 0 ? -1 : 0), 'Nudges the order among similar items. Fit and hard rules still win.');
 
   // Dependencies
-  const applyOrientationDep = () => {
-    const isAny = orient.select.value === 'any';
-    flip.disabled = !isAny;
-    if (!isAny) flip.checked = false;
-  };
   const applyNoTopDep = () => {
     fMaxStack.input.disabled = noTop.checked;
     maxStackNote.style.display = noTop.checked ? '' : 'none';
@@ -497,15 +489,12 @@ export function openCaseModal({
     fPalletWarn.wrap.style.display = pallet.checked ? '' : 'none';
     palletNoTopNote.style.display = noTop.checked && pallet.checked ? '' : 'none';
   };
-  orient.select.addEventListener('change', applyOrientationDep);
   noTop.addEventListener('change', applyNoTopDep);
   pallet.addEventListener('change', applyPalletDep);
-  applyOrientationDep();
   applyNoTopDep();
   applyPalletDep();
 
   handling.appendChild(orient.wrap);
-  handling.appendChild(flipRow.row);
   handling.appendChild(noTopRow.row);
   handling.appendChild(fMaxStack.wrap);
   handling.appendChild(palletRow.row);
@@ -579,7 +568,12 @@ export function openCaseModal({
             invalid.input.focus();
             return false;
           }
-          const weightLb = Utils.unitToPounds(Number(fWeight.input.value) || 0, weightUnit);
+          const mass = parseCaseMass(fWeight.input.value, { unit: weightUnit });
+          if (fWeight.input.validity?.badInput || !mass.valid) {
+            setFieldError(fWeight, 'Weight must be positive and within the supported range, or left blank.');
+            fWeight.input.focus();
+            return false;
+          }
           const categoryKey = String(catSelect.value || 'default');
           const catMeta = catOptions.find(c => c.key === categoryKey) || CategoryService.meta(categoryKey);
           const categoryColor = normalizeCaseModalColor(catColorInput.value, catMeta.color || '#ff9f1c');
@@ -594,9 +588,7 @@ export function openCaseModal({
             manufacturer: String(fMfg.input.value || '').trim(),
             category: categoryKey,
             dimensions: { length, width, height },
-            weight: weightLb,
-            // Handling rules (Cargo-Rule V1). canFlip only meaningful when policy is 'any'.
-            canFlip: orientationLock === 'any' && Boolean(flip.checked),
+            weight: mass.value,
             orientationLock,
             noStackOnTop: noTopChecked,
             // Legacy stackable:false is a synonym of no-top-load. Keep it when the
@@ -615,6 +607,7 @@ export function openCaseModal({
             notes: String(notes.value || '').trim(),
             color: categoryColor,
           };
+          delete caseData.canFlip;
           if (typeof beforeMutate === 'function' && beforeMutate() === false) return false;
           // One atomic commit: the Case, its category, and (when the edit changes
           // placement-affecting Handling Rules) the actively-displayed Editor

@@ -20,7 +20,6 @@ function makeCase(id, overrides = {}) {
     dimensions,
     volume: dimensions.length * dimensions.width * dimensions.height,
     weight: overrides.weight ?? 10,
-    canFlip: overrides.canFlip ?? true,
     stackable: overrides.stackable ?? true,
     noStackOnTop: overrides.noStackOnTop ?? false,
     maxStackCount: overrides.maxStackCount ?? 0,
@@ -64,7 +63,7 @@ async function loadPackLibrary(cases, instances, truck = RECT_TRUCK, packId = 'p
 async function importRotatedMarkedPack(suffix, overrides = {}) {
   const caseData = makeCase(`import-rotated-${suffix}`, {
     dimensions: { length: 20, width: 10, height: 10 },
-    orientationLock: 'onSide',
+    orientationLock: overrides.orientationLock || 'any',
   });
   const instance = marked(makeInstance(
     `import-rotated-inst-${suffix}`,
@@ -219,7 +218,7 @@ test('MAX-CAPACITY-B5A marked-to-marked support may exceed the normal direct-chi
   assert.deepEqual(result.kept, ['support', 'child-a', 'child-b']);
 });
 
-test('MAX-CAPACITY-B6 marked orientation bypass preserves real rotation dimensions but not containment', async () => {
+test('C3 Max provenance never authorizes forbidden orientation; saved pose remains unresolved', async () => {
   const caseData = makeCase('locked', {
     dimensions: { length: 20, width: 10, height: 5 },
     orientationLock: 'upright',
@@ -237,11 +236,15 @@ test('MAX-CAPACITY-B6 marked orientation bypass preserves real rotation dimensio
   const valid = PackLibrary.reconcilePlacementsForTruck(
     { id: 'orientation', truck: RECT_TRUCK, cases: [rotated] }, RECT_TRUCK, [caseData]);
   assert.deepEqual(valid.invalid, []);
-  assert.deepEqual(valid.nextPack.cases[0].orientedDims, { length: 20, width: 5, height: 10 });
+  assert.deepEqual(valid.nextPack.cases[0], rotated, 'saved forbidden pose is preserved without cache repair');
+  assert.equal(valid.unresolved.length, 1);
+  const canonical = PackLibrary.getCanonicalInstanceEffectiveDims(rotated, caseData);
+  assert.equal(canonical.orientationAllowed, false, 'Max marker grants no permission');
+  assert.deepEqual(canonical.dims, { length: 20, width: 5, height: 10 });
 
   const outside = { ...rotated, transform: { ...rotated.transform, position: { x: 118, y: 5, z: 0 } } };
   const invalid = PackLibrary.reconcilePlacementsForTruck(
-    { id: 'outside', truck: RECT_TRUCK, cases: [outside] }, RECT_TRUCK, [caseData]);
+    { id: 'outside', truck: RECT_TRUCK, cases: [outside] }, RECT_TRUCK, [{ ...caseData, orientationLock: 'any' }]);
   assert.deepEqual(invalid.invalid, ['rotated'], 'profile must not bypass real containment');
 });
 

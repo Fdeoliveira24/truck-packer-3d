@@ -10,19 +10,20 @@
  *   Design rules (Cargo-Rule V1, Phase 3):
  *   - Booleans never use general JS truthiness. "false"/"no"/"0"/0 are FALSE;
  *     unknown strings are INVALID (fall back to the field default).
- *   - Numbers reject malformed strings, NaN and Infinity. Out-of-bounds values
- *     are clamped to practical data-sanity limits (so e.g. 1e300 can never yield
+ *   - Physical mass/orientation reject explicit invalid values. Unknown mass
+ *     is null; canFlip is retired and cannot survive as an extension.
+ *   - Other numbers retain practical data-sanity limits (so 1e300 cannot yield
  *     an infinite volume). Invalid inputs are NOT silently treated as a valid 0
  *     in COMPARISON — they get a distinct sentinel so an invalid value never
  *     equals a valid default.
- *   - One field list, two thin assemblers: canonicalCargoForStorage (invalid ->
- *     safe default) and cargoComparisonKey (invalid -> distinct sentinel).
+ *   - Storage rejects invalid physical values; comparison gives invalid values
+ *     a distinct sentinel instead of comparing them equal to a valid default.
  *
  * @module core/cargo-canonical
  * @author Truck Packer 3D Team
  */
 
-import { canonicalOrientationLock } from './orientation.js';
+import { parseCaseOrientationLock } from './orientation.js';
 import { poundsToUnit, unitToPounds } from './utils.js';
 
 // Practical application data limits (NOT vehicle legality limits). They exist so
@@ -33,8 +34,7 @@ export const PALLET_WEIGHT_MAX_LBS = 10000000;
 export const STACK_COUNT_MAX = 100000;
 export const LOAD_PRIORITY_ABS_MAX = 1000000;
 
-// C1 strict mass boundary. Existing storage/comparison callers below retain
-// their legacy non-negative parser until the coordinated C3 runtime cutover.
+// Strict mass boundary shared by live storage, comparison and imports.
 // Invalid explicit input has no value; it must never become unknown or zero.
 const DECIMAL_MASS = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
 
@@ -170,13 +170,17 @@ export function parseCargoNotes(raw) {
   return trimmed ? trimmed : null;
 }
 
-// Storage-safe canonical cargo fields. Invalid inputs become the documented safe
-// default/clamp. Used by case model normalization, app/workspace normalization,
+// Canonical cargo fields. Invalid physical mass/orientation is rejected; other
+// handling fields retain their documented default/clamp. Used by normalization
 // and CaseLibrary.upsert so storage is always typed and consistent.
 export function canonicalCargoForStorage(raw) {
   const c = raw && typeof raw === 'object' ? raw : {};
+  const mass = parseCaseMass(c.weight);
+  if (!mass.valid) throw new Error('Invalid Case weight: enter a positive mass or leave it blank.');
+  const orientation = parseCaseOrientationLock(c.orientationLock, { allowDefault: c.orientationLock === undefined });
+  if (!orientation.valid) throw new Error('Invalid Case orientationLock.');
   return {
-    canFlip: parseCargoBoolean(c.canFlip, false).value,
+    weight: mass.value,
     noStackOnTop: parseCargoBoolean(c.noStackOnTop, false).value,
     isPallet: parseCargoBoolean(c.isPallet, false).value,
     stackable: parseCargoBoolean(c.stackable, true).value,
@@ -186,7 +190,7 @@ export function canonicalCargoForStorage(raw) {
     loadPriority: parseCargoLoadPriority(c.loadPriority).value,
     mustLoadLast: parseCargoBoolean(c.mustLoadLast, false).value,
     mustUnloadFirst: parseCargoBoolean(c.mustUnloadFirst, false).value,
-    orientationLock: canonicalOrientationLock(c.orientationLock),
+    orientationLock: orientation.value,
     shape: parseCargoShape(c.shape).value,
     notes: parseCargoNotes(c.notes),
   };
@@ -194,12 +198,16 @@ export function canonicalCargoForStorage(raw) {
 
 // Apply canonical cargo fields onto a full case object IN PLACE-ish (returns a
 // shallow copy), preserving every other field (incl. safe extensions). Dimensions
-// and weight are handled by the storage layer (buildStorableCase) which already
-// coerces them; this only governs the handling-rule fields.
+// are handled by the storage layer. Mass and physical orientation use the
+// strict shared parsers alongside the handling-rule fields.
 /** @returns {Record<string, any>} */
 export function applyCanonicalCargoFields(c) {
-  const src = stripForbiddenCaseQuantityFields(c);
-  return { ...src, ...canonicalCargoForStorage(src) };
+  const { canFlip: _canFlip, ...src } = stripForbiddenCaseQuantityFields(c);
+  return {
+    ...Object.fromEntries(Object.entries(src).filter(([key]) => CANONICAL_CASE_KEYS.has(key))),
+    ...pickSafeExtensions(src, CANONICAL_CASE_KEYS),
+    ...canonicalCargoForStorage(src),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -228,10 +236,9 @@ export function cargoComparisonKey(raw) {
     sentinel(parseCargoDimension(d.length), d.length),
     sentinel(parseCargoDimension(d.width), d.width),
     sentinel(parseCargoDimension(d.height), d.height),
-    sentinel(parseCargoNonNegNumber(c.weight, { max: WEIGHT_MAX_LBS }), c.weight),
+    sentinel(parseCaseMass(c.weight), c.weight),
     sentinel(parseCargoShape(c.shape), c.shape),
-    sentinel(parseCargoBoolean(c.canFlip, false), c.canFlip),
-    canonicalOrientationLock(c.orientationLock),
+    sentinel(parseCaseOrientationLock(c.orientationLock, { allowDefault: c.orientationLock === undefined }), c.orientationLock),
     sentinel(parseCargoBoolean(c.noStackOnTop, false), c.noStackOnTop),
     sentinel(parseCargoBoolean(c.stackable, true), c.stackable),
     sentinel(parseCargoCount(c.maxStackCount), c.maxStackCount),
@@ -296,7 +303,7 @@ export function caseSafeReuseEqual(a, b) {
 //   upsert/autosave/App-Backup/Workspace/Pack round-trips, but prototype keys,
 //   functions, symbols, and non-finite numbers are never preserved.
 // ---------------------------------------------------------------------------
-const UNSAFE_EXTENSION_KEYS = new Set(['__proto__', 'prototype', 'constructor']);
+const UNSAFE_EXTENSION_KEYS = new Set(['__proto__', 'prototype', 'constructor', 'canFlip']);
 const MAX_EXTENSION_DEPTH = 6;
 
 function isSafeScalar(v) {
@@ -388,6 +395,6 @@ export const CANONICAL_CASE_KEYS = new Set([
   'id', 'name', 'itemCode', 'manufacturer', 'category', 'dimensions', 'weight', 'volume',
   'shape', 'stackable', 'maxStackCount', 'orientationLock', 'noStackOnTop',
   'isPallet', 'maxPalletWeight', 'hazmatClass', 'laneItem', 'loadPriority',
-  'mustLoadLast', 'mustUnloadFirst', 'stopGroup', 'keepTogetherGroup', 'canFlip',
+  'mustLoadLast', 'mustUnloadFirst', 'stopGroup', 'keepTogetherGroup',
   'notes', 'color', 'createdAt', 'updatedAt',
 ]);

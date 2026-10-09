@@ -1874,6 +1874,10 @@ class CategoryUiTestElement {
     return this.attributes.has(name) ? this.attributes.get(name) : null;
   }
 
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
   addEventListener(type, handler) {
     const handlers = this.listeners.get(type) || [];
     handlers.push(handler);
@@ -1919,8 +1923,13 @@ class CategoryUiTestElement {
 function makeCaseModalHarness() {
   const toasts = [];
   let modalConfig = null;
+  const doc = { createElement: tag => {
+    const element = new CategoryUiTestElement(tag);
+    element.ownerDocument = doc;
+    return element;
+  } };
   return {
-    doc: { createElement: tag => new CategoryUiTestElement(tag) },
+    doc,
     toasts,
     UIComponents: {
       createSelect({ label, options, value, className = '' }) {
@@ -1976,6 +1985,66 @@ function findInputByAriaLabel(root, label) {
 function categoryCreatorRow(config) {
   return config.content.querySelectorAll('.tp3d-cases-new-category-row')[0];
 }
+
+test('C3 Case modal blank mass saves null, stays blank in either unit, and contains no flipping control', () => {
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const harness = makeCaseModalHarness();
+  let config = openTestCaseModal(harness);
+  const input = label => config.content.querySelectorAll('.field')
+    .find(el => el.children[0]?.textContent.startsWith(label))?.querySelector('input');
+  assert.equal(input('Weight').value, '');
+  assert.doesNotMatch(config.content.textContent, /Allow flipping/);
+  input('Name').value = 'Unknown mass';
+  assert.equal(config.actions.find(action => action.label === 'Save').onClick(), true);
+  const saved = CaseLibrary.getCases()[0];
+  assert.equal(saved.weight, null);
+  for (const unit of ['kg', 'lb']) {
+    harness.PreferencesManager.get = () => ({ units: { length: 'in', weight: unit } });
+    config = openTestCaseModal(harness, { existing: saved });
+    assert.equal(input('Weight').value, '', `${unit} keeps unknown blank`);
+    assert.equal(config.actions.find(action => action.label === 'Save').onClick(), true);
+    assert.equal(CaseLibrary.getById(saved.id).weight, null);
+  }
+});
+
+test('C3 Case modal positive masses save canonically and existing mass can be cleared', () => {
+  for (const [unit, value, expected] of [['lb', '17.125', 17.125], ['kg', '4', 4 / 0.45359237], ['lb', '1e-8', 1e-8]]) {
+    StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+    const harness = makeCaseModalHarness();
+    harness.PreferencesManager.get = () => ({ units: { length: 'in', weight: unit } });
+    let config = openTestCaseModal(harness);
+    const input = label => config.content.querySelectorAll('.field')
+      .find(el => el.children[0]?.textContent.startsWith(label))?.querySelector('input');
+    input('Name').value = 'Known mass';
+    input('Weight').value = value;
+    assert.equal(config.actions.find(action => action.label === 'Save').onClick(), true);
+    const saved = CaseLibrary.getCases()[0];
+    assert.equal(saved.weight, expected);
+    config = openTestCaseModal(harness, { existing: saved });
+    assert.ok(Number(input('Weight').value) > 0, 'positive mass never rounds to zero on reopen');
+    input('Weight').value = '';
+    assert.equal(config.actions.find(action => action.label === 'Save').onClick(), true);
+    assert.equal(CaseLibrary.getById(saved.id).weight, null);
+  }
+});
+
+test('C3 Case modal rejects zero, negative, malformed, nonfinite and out-of-range mass with field feedback', () => {
+  for (const value of ['0', '-0', '-1', 'garbage', 'Infinity', '1e20']) {
+    StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+    const harness = makeCaseModalHarness();
+    const config = openTestCaseModal(harness);
+    const field = label => config.content.querySelectorAll('.field')
+      .find(el => el.children[0]?.textContent.startsWith(label));
+    field('Name').querySelector('input').value = 'Invalid mass';
+    const weight = field('Weight').querySelector('input');
+    weight.value = value;
+    assert.equal(config.actions.find(action => action.label === 'Save').onClick(), false, value);
+    assert.equal(weight.getAttribute('aria-invalid'), 'true');
+    assert.match(field('Weight').querySelector('.tp3d-field-error').textContent, /positive.*blank/);
+    assert.equal(weight.focusCount, 1);
+    assert.equal(CaseLibrary.getCases().length, 0);
+  }
+});
 
 test('F01 shared Case modal metric metadata Save keeps canonical cargo and active Pack unchanged', async () => {
   const caseData = baseCase({

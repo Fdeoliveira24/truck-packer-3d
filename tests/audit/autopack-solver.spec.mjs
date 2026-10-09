@@ -162,7 +162,7 @@ test('A3 fixed support uses normal no-stack, direct-child cap, weight, and Max C
   }
   const hiddenInst = { id: 'hidden-base', caseId: 'base', hidden: true, placement: 'packed', packedProfile: 'max-capacity',
     transform: { position: basePos, rotation: { x: 0, y: 0, z: 0 } }, orientedDims: { length: 20, width: 20, height: 10 } };
-  const blockedCase = { id: 'base', dimensions: { length: 20, width: 20, height: 10 }, weight: 30, noStackOnTop: true };
+  const blockedCase = { id: 'base', dimensions: { length: 20, width: 20, height: 10 }, weight: 30, orientationLock: 'any', noStackOnTop: true };
   const canonicalContext = Engine.buildAutoPackPhysicalContext(
     { truck, cases: [hiddenInst] }, () => blockedCase, PackLib.getCanonicalInstanceEffectiveDims, zones
   );
@@ -185,8 +185,8 @@ test('A3 fixed support uses normal no-stack, direct-child cap, weight, and Max C
 test('F03 committed Max support survives fixed preflight without relaxing new movable cargo', async () => {
   const { Solver, PackLib } = await phbSolverModules();
   const Engine = await import(autoPackEnginePath.href);
-  const baseCase = { id: 'base', dimensions: { length: 20, width: 20, height: 10 }, weight: 30, noStackOnTop: true };
-  const childCase = { id: 'child', dimensions: { length: 20, width: 20, height: 10 }, weight: 20 };
+  const baseCase = { id: 'base', dimensions: { length: 20, width: 20, height: 10 }, weight: 30, orientationLock: 'any', noStackOnTop: true };
+  const childCase = { id: 'child', dimensions: { length: 20, width: 20, height: 10 }, weight: 20, orientationLock: 'any' };
   const cases = [baseCase, childCase];
   const byId = id => cases.find(item => item.id === id) || null;
   const packed = (id, caseId, y, profile = 'max-capacity') => ({
@@ -590,7 +590,7 @@ test('AUTO-PACK-A1-R1 solver scaffold is pure and returns the expected output sh
   assert.equal(
     Solver.classifyAutoPackItem({
       orientationLocked: true,
-      lockedRotation: { z: Math.PI / 2 },
+      lockedRotation: { x: 0, y: 0, z: Math.PI / 2 },
       dimensions: { length: 120, width: 12, height: 12 },
     }),
     'STANDARD',
@@ -723,7 +723,7 @@ test('AUTO-PACK-A1-R4 stack phase runs only after floor positions are exhausted'
   const truck = { length: 48, width: 48, height: 48 };
   const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 48, y: 48, z: 24 } }];
   const items = Array.from({ length: 6 }, (_, index) => ({
-    instanceId: `cube-${index + 1}`,
+    weight: 20, instanceId: `cube-${index + 1}`,
     dims: { l: 24, w: 24, h: 24 },
   }));
 
@@ -757,8 +757,8 @@ test('AUTO-PACK-A1-R4 stack phase requires meaningful support area', async () =>
   const truck = { length: 24, width: 24, height: 48 };
   const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 48, z: 12 } }];
   const items = [
-    { instanceId: 'small-support', laneItem: true, dims: { l: 16, w: 16, h: 24 } },
-    { instanceId: 'large-top', loadPriority: 1, dims: { l: 24, w: 24, h: 12 } },
+    { weight: 20, instanceId: 'small-support', laneItem: true, dims: { l: 16, w: 16, h: 24 } },
+    { weight: 20, instanceId: 'large-top', loadPriority: 1, dims: { l: 24, w: 24, h: 12 } },
   ];
 
   const output = Solver.solveAutoPack({ truck, zones, items });
@@ -773,9 +773,9 @@ test('AUTO-PACK-A1-R4 stack phase enforces maxStackCount for direct support chil
   const truck = { length: 48, width: 24, height: 48 };
   const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 48, y: 48, z: 12 } }];
   const items = [
-    { instanceId: 'wide-base', loadPriority: 3, maxStackCount: 1, dims: { l: 48, w: 24, h: 24 } },
-    { instanceId: 'top-a', loadPriority: 2, stackable: false, dims: { l: 24, w: 24, h: 24 } },
-    { instanceId: 'top-b', loadPriority: 1, stackable: false, dims: { l: 24, w: 24, h: 24 } },
+    { weight: 20, instanceId: 'wide-base', loadPriority: 3, maxStackCount: 1, dims: { l: 48, w: 24, h: 24 } },
+    { weight: 20, instanceId: 'top-a', loadPriority: 2, stackable: false, dims: { l: 24, w: 24, h: 24 } },
+    { weight: 20, instanceId: 'top-b', loadPriority: 1, stackable: false, dims: { l: 24, w: 24, h: 24 } },
   ];
 
   const output = Solver.solveAutoPack({ truck, zones, items });
@@ -1074,7 +1074,7 @@ test('AUTO-PACK-A1-R6.1 stack scoring fills lower layers before higher layers', 
   const truck = { length: 24, width: 24, height: 72 };
   const zones = [{ min: { x: 0, y: 0, z: -12 }, max: { x: 24, y: 72, z: 12 } }];
   const items = Array.from({ length: 3 }, (_, index) => ({
-    instanceId: `layer-${index + 1}`,
+    weight: 20, instanceId: `layer-${index + 1}`,
     dims: { l: 24, w: 24, h: 24 },
   }));
 
@@ -1219,10 +1219,10 @@ test('AUTO-PACK-A1-R6.2 free-space floor pass does not stage an item that fits a
   const truck = { length: 72, width: 48, height: 48 };
   const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 72, y: 48, z: 24 } }];
   const items = [
-    { instanceId: 'wide-left', orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 30, h: 24 } },
-    { instanceId: 'side-void-fit', orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 18, h: 24 } },
-    { instanceId: 'front-a', orientationLocked: true, lockedRotation: {}, dims: { l: 24, w: 24, h: 24 } },
-    { instanceId: 'front-b', orientationLocked: true, lockedRotation: {}, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'wide-left', orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, dims: { l: 48, w: 30, h: 24 } },
+    { instanceId: 'side-void-fit', orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, dims: { l: 48, w: 18, h: 24 } },
+    { instanceId: 'front-a', orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'front-b', orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, dims: { l: 24, w: 24, h: 24 } },
   ];
 
   const output = Solver.solveAutoPack({ truck, zones, items });
@@ -1261,9 +1261,9 @@ test('AUTO-PACK-A1-R6.2 Basic Fit keeps footprint compactness ahead of loadPrior
   const truck = { length: 96, width: 48, height: 48 };
   const zones = [{ min: { x: 0, y: 0, z: -24 }, max: { x: 96, y: 48, z: 24 } }];
   const items = [
-    { instanceId: 'large-a', loadPriority: 0, orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 24, h: 24 } },
-    { instanceId: 'large-b', loadPriority: 0, orientationLocked: true, lockedRotation: {}, dims: { l: 48, w: 24, h: 24 } },
-    { instanceId: 'priority-small', loadPriority: 999, orientationLocked: true, lockedRotation: {}, dims: { l: 24, w: 24, h: 24 } },
+    { instanceId: 'large-a', loadPriority: 0, orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, dims: { l: 48, w: 24, h: 24 } },
+    { instanceId: 'large-b', loadPriority: 0, orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, dims: { l: 48, w: 24, h: 24 } },
+    { instanceId: 'priority-small', loadPriority: 999, orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 }, dims: { l: 24, w: 24, h: 24 } },
   ];
 
   const output = Solver.solveAutoPack({ truck, zones, items });
@@ -1377,7 +1377,7 @@ test('AUTO-PACK-A1-R6.3 floor allocator keeps placeable mixed cases out of stagi
   const items = dims.map(([l, w, h], index) => ({
     instanceId: `gap-regression-${index + 1}`,
     orientationLocked: true,
-    lockedRotation: {},
+    lockedRotation: { x: 0, y: 0, z: 0 },
     dims: { l, w, h },
     weight: 20,
   }));
@@ -1629,7 +1629,7 @@ test('AUTO-PACK-A1-CLEAN-1 app keeps legacy scanner isolated outside app.js', as
     'app.js must not keep the legacy X-anchor scanner inline');
   assert.doesNotMatch(appSrc, /const X_TIGHTNESS_WEIGHT = 0\.8;/,
     'app.js must not carry the legacy scoring constant inline');
-  assert.match(itemBuilderSrc, /function buildOrientations\(dims, caseData, inst, orientationTools\)/,
+  assert.match(itemBuilderSrc, /function buildOrientations\(dims, caseData, inst\)/,
     'the live item builder must own orientation candidate preparation');
 });
 
@@ -1657,7 +1657,7 @@ test('AUTO-PACK-A1-CLEAN-2 app delegates AutoPack runtime without carrying orche
     'the runtime module must preserve pack persistence');
 });
 
-test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute oriented dimensions', async () => {
+test('C3 exact lock helpers are planning-only and reject malformed activation', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const dims = { length: 48, width: 24, height: 30 };
 
@@ -1675,61 +1675,30 @@ test('AUTO-PACK-A0 orientation lock helpers normalize rotation and compute orien
   const patch = PackLibrary.createOrientationLockPatch({ x: 0, y: Math.PI / 2, z: 0 }, dims);
   assert.equal(patch.orientationLocked, true);
   assert.deepEqual(patch.lockedRotation, { x: 0, y: Math.PI / 2, z: 0 });
-  assert.deepEqual(patch.orientedDims, { length: 24, width: 48, height: 30 });
+  assert.equal(Object.hasOwn(patch, 'orientedDims'), false);
+  assert.equal(PackLibrary.createOrientationLockPatch({ x: 0 }), null);
   assert.deepEqual(
     PackLibrary.clearOrientationLockPatch(),
-    { orientationLocked: false, lockedRotation: null, orientedDims: null },
+    { orientationLocked: false, lockedRotation: null },
     'reset data support must clear the orientation lock contract'
   );
 });
 
-test('AUTO-PACK-A0 manual editor rotate and flip paths set per-instance orientation locks', async () => {
-  const src = await fs.readFile(editorScreenPath, 'utf8');
-  const rotateStart = src.indexOf('function rotateSelection(axis, delta)');
-  const rotateEnd = src.indexOf('/**\n     * Nudge selected instances', rotateStart);
-  const rotateBlock = rotateStart >= 0 && rotateEnd > rotateStart ? src.slice(rotateStart, rotateEnd) : '';
-  const multiStart = src.indexOf('function renderMultiInspector(pack, selected)');
-  const multiEnd = src.indexOf('// === Actions Card ===', multiStart);
-  const multiBlock = multiStart >= 0 && multiEnd > multiStart ? src.slice(multiStart, multiEnd) : '';
-  const singleStart = src.indexOf('function renderSingleInspector(pack, inst, caseData, prefs)');
-  const singleEnd = src.indexOf('\n    /**\n     * Creates a card header row', singleStart);
-  const singleBlock = singleStart >= 0 && singleEnd > singleStart ? src.slice(singleStart, singleEnd) : '';
-
-  assert.match(src, /function createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, rotation\)/,
-    'editor must have a narrow helper for manual orientation locks');
-  assert.match(rotateBlock, /createManualOrientationLockPatch\(PackLibrary, CaseLibrary, inst, rot\)/,
-    'keyboard rotate/flip path must lock manual orientation');
-  assert.match(multiBlock, /rotateSelection\(axis,\s*delta\)/,
-    'multi-select Rotate All must route through rotateSelection (not direct PackLibrary.updateInstance per item)');
-  assert.match(singleBlock, /rotateSelection\(axis,\s*delta\)/,
-    'single inspector Rotate/Flip must route through rotateSelection (not a deferred rAF+direct-persist path)');
-  assert.match(singleBlock, /TODO\(AUTO-PACK-A0\): when reset-orientation UI is added, apply PackLibrary\.clearOrientationLockPatch\(\)/,
-    'no reset UI exists yet, so reset support must remain documented without broad UI changes');
-});
-
-test('AUTO-PACK-A0 AutoPack respects locked orientation and keeps unlocked orientation generation', async () => {
-  const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
-  const src = await fs.readFile(autoPackItemBuilderPath, 'utf8');
-  const lockedStart = src.indexOf('function buildLockedOrientation(dims, inst, orientationTools)');
-  const buildEnd = src.indexOf('\nexport function buildLegacyAutoPackItems', lockedStart);
-  const block = lockedStart >= 0
-    ? src.slice(lockedStart, buildEnd > lockedStart ? buildEnd : src.length)
-    : '';
-
-  assert.match(block, /inst\.orientationLocked !== true/,
-    'locked orientation path must be gated by the per-instance orientationLocked flag');
-  assert.match(block, /inst\.lockedRotation[\s\S]*inst\.transform && inst\.transform\.rotation/,
-    'AutoPack must prefer the stored lockedRotation and fall back to the current instance rotation');
-  assert.match(block, /orientationTools\.normalizeRightAngleRotation\(sourceRotation\)/,
-    'locked rotations must be normalized to right-angle editor rotations');
-  assert.match(block, /orientationTools\.getOrientedDimsForRotation\(dims, lockedRotation\)/,
-    'locked orientation dimensions must come from the shared geometry helper');
-  assert.match(block, /if \(lockedOrientation\) return \[lockedOrientation\];[\s\S]*tryOri\(0, 0, 0\)/,
-    'locked items must test only one orientation while unlocked items keep normal orientation candidates (rotation-derived dims)');
-  assert.match(src, /const orientations = buildOrientations\(d, caseData, inst, orientationTools\)/,
-    'AutoPack item setup must pass the instance into orientation generation');
-  assert.match(engineSrc, /buildLegacyAutoPackItems\(\{[\s\S]*orientationTools:/,
-    'AutoPack runtime orchestration must supply orientation helpers to the item builder');
+test('C3 item builder uses Case permission and exact targets without instance overrides', async () => {
+  const { buildLegacyAutoPackItems } = await import(autoPackItemBuilderPath.href);
+  const dimensions = { length: 30, width: 20, height: 10 };
+  const caseData = { id: 'c', dimensions, weight: null, orientationLock: 'upright' };
+  const instance = { id: 'i', caseId: 'c', orientationLock: 'any', canFlip: true,
+    orientationLocked: true, lockedRotation: { x: Math.PI / 2, y: 0, z: 0 } };
+  const build = inst => buildLegacyAutoPackItems({ instances: [inst], getCaseById: () => caseData,
+    volumeInCubicInches: d => d.length * d.width * d.height })[0];
+  assert.deepEqual(build(instance).orientations, [], 'conflicting target yields no candidate');
+  assert.equal(build(instance).caseData.orientationLock, 'upright');
+  assert.equal(build(instance).caseData.weight, null);
+  const unlocked = build({ ...instance, orientationLocked: false });
+  assert.equal(unlocked.orientations.length, 2);
+  assert.ok(unlocked.orientations.every(candidate => candidate.h === dimensions.height));
+  assert.deepEqual(build({ ...instance, lockedRotation: null }).orientations, []);
 });
 
 test('REPAIR-1 A: every production AutoPack candidate dimension matches a real THREE Box3', async () => {
@@ -1785,7 +1754,7 @@ test('REPAIR-1 B: 30x20x10 compound regression — no mis-sized geometry is acce
 
   // The exact defect: the X90+Z90 candidate must report the THREE size 10x30x20,
   // NOT the historical hardcoded 20x10x30 (which rendered 30in wide).
-  const cands = Solver.buildOrientationCandidates({ l: 30, w: 20, h: 10 }, { orientationLock: 'any', canFlip: true });
+  const cands = Solver.buildOrientationCandidates({ l: 30, w: 20, h: 10 }, { orientationLock: 'any' }, { fullSearch: true });
   const xz = cands.find(c => Math.abs(c.rotation.x - R1_HALF) < 1e-9 && Math.abs(c.rotation.z - R1_HALF) < 1e-9 && Math.abs(c.rotation.y) < 1e-9);
   assert.ok(xz, 'the X+Z compound candidate exists');
   assert.deepEqual({ l: xz.l, w: xz.w, h: xz.h }, { l: 10, w: 30, h: 20 }, 'X+Z candidate is THREE-correct 10x30x20');
@@ -1807,14 +1776,14 @@ test('REPAIR-1 B: 30x20x10 compound regression — no mis-sized geometry is acce
   // (1) Tight truck exactly matching the rendered X+Z size (10x30x20) must accept
   // the item by an honest, in-bounds orientation — never by the old wrong dims.
   const tight = { length: 20, width: 10, height: 30 };
-  const r1 = Solver.solveAutoPack({ truck: tight, zones: PackLib.getTrailerUsableZones(tight), loadFrontFirst: true,
+  const r1 = Solver.solveAutoPack({ maxCapacityMode: true, truck: tight, zones: PackLib.getTrailerUsableZones(tight), loadFrontFirst: true,
     items: [{ instanceId: 'i1', caseId: 'c', dims: { l: 30, w: 20, h: 10 }, canFlip: true, orientationLock: 'any' }] });
   assertInBoundsAndConsistent(r1, tight);
 
   // (2) A truck that ONLY the correct X+Y orientation (20x10x30) fits — the item
   // must pack, and its rendered geometry must be in-bounds.
   const roomy = { length: 22, width: 12, height: 32 };
-  const r2 = Solver.solveAutoPack({ truck: roomy, zones: PackLib.getTrailerUsableZones(roomy), loadFrontFirst: true,
+  const r2 = Solver.solveAutoPack({ maxCapacityMode: true, truck: roomy, zones: PackLib.getTrailerUsableZones(roomy), loadFrontFirst: true,
     items: [{ instanceId: 'i1', caseId: 'c', dims: { l: 30, w: 20, h: 10 }, canFlip: true, orientationLock: 'any' }] });
   assert.equal(r2.placements.size, 1, 'the item packs via the correct orientation');
   assertInBoundsAndConsistent(r2, roomy);
@@ -1907,20 +1876,24 @@ test('REPAIR-1 D: active solver and live item-prep agree; upright+canFlip never 
     'active locked compound candidate matches THREE (10x30x20)');
 });
 
-test('REPAIR-1 E: candidate deduplication is by derived dimensions (cube => 1, asymmetric => distinct)', async () => {
-  const stamp = `?t=${Date.now()}-${Math.random()}`;
-  const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
-  // Documented rule: two rotations that yield the SAME effective box are ONE
-  // physical packing candidate. A cube collapses to a single candidate.
-  const cube = Solver.buildOrientationCandidates({ l: 10, w: 10, h: 10 }, { orientationLock: 'any', canFlip: true });
-  assert.equal(cube.length, 1, 'a cube yields exactly one physical candidate');
-  // Square cross-section (l=w): upright yaw rotations are identical footprints.
-  const square = Solver.buildOrientationCandidates({ l: 10, w: 10, h: 30 }, { orientationLock: 'any', canFlip: false });
-  assert.equal(square.length, 1, 'a square upright footprint dedups its two yaw candidates to one');
-  // Fully asymmetric: each generated face is a distinct physical candidate.
-  const asym = Solver.buildOrientationCandidates({ l: 30, w: 20, h: 10 }, { orientationLock: 'any', canFlip: true });
-  const keys = asym.map(c => `${c.l}|${c.w}|${c.h}`);
-  assert.equal(new Set(keys).size, keys.length, 'no duplicate physical candidates among asymmetric faces');
+test('C3 search coverage deduplicates signed physical axes without inferring Case symmetry', async () => {
+  const Solver = await import(autoPackSolverPath.href);
+  const { getPhysicalOrientationAxes } = await import(orientedDimsPath.href);
+  for (const dims of [{ l: 30, w: 20, h: 10 }, { l: 24, w: 24, h: 24 }]) {
+    for (const [orientationLock, count] of [['any', 24], ['upright', 4], ['onSide', 16]]) {
+      const standard = Solver.buildOrientationCandidates(dims, { orientationLock, canFlip: true });
+      assert.equal(standard.length, 2, `${orientationLock}: deliberately narrow Standard search`);
+      const max = Solver.buildOrientationCandidates(dims, { orientationLock }, { fullSearch: true });
+      assert.equal(max.length, count);
+      assert.equal(new Set(max.map(c => JSON.stringify(getPhysicalOrientationAxes(c.rotation).value))).size, count);
+      for (const c of max) {
+        const axes = getPhysicalOrientationAxes(c.rotation).value;
+        if (orientationLock === 'upright') assert.equal(axes.y.y, 1);
+        if (orientationLock === 'onSide') assert.equal(axes.y.y, 0);
+      }
+      assert.deepEqual(standard, Solver.buildOrientationCandidates(dims, { orientationLock, canFlip: false }));
+    }
+  }
 });
 
 test('REPAIR-1B A: a staged unpacked item uses the deterministic identity pose on the staging floor', async () => {
@@ -3609,7 +3582,7 @@ test('AUTO-PACK-A0C computeStats OOG warnings use oriented dimensions and shape-
   const blockedWarnings = PackLibrary.computeStats(blockedWheelPack, [shortCase]).oogWarnings;
   assert.equal(blockedWarnings.length, 1,
     'items inside blocked wheel-well volume must still be reported as outside usable geometry');
-  assert.deepEqual(blockedWarnings[0].issues, ['outsideUsableZone']);
+  assert.deepEqual(blockedWarnings[0].issues, ['belowFloor', 'protrudesRight'], 'actual Case envelope wins over the stale 10-inch cache');
 });
 
 test('AUTO-PACK-A0 trailer geometry helpers block wheel wells and preserve front bonus shape awareness', async () => {
@@ -4179,8 +4152,8 @@ test('PACKING-CORE-P6 support-side stacking rules agree between AutoPack and man
   }
 
   const caseLib = [
-    { id: 'B', name: 'Base', dimensions: { length: 48, width: 48, height: 12 }, weight: 100, noStackOnTop: true },
-    { id: 'C', name: 'Child', dimensions: { length: 24, width: 24, height: 12 }, weight: 10 },
+    { id: 'B', name: 'Base', orientationLock: 'any', dimensions: { length: 48, width: 48, height: 12 }, weight: 100, noStackOnTop: true },
+    { id: 'C', name: 'Child', orientationLock: 'any', dimensions: { length: 24, width: 24, height: 12 }, weight: 10 },
   ];
   const pack = {
     truck,
@@ -4519,7 +4492,7 @@ test('AUTOPACK-MAX-A neutralizes lane and load-priority handling', async () => {
   assert.deepEqual([...maxPriority.placements.keys()], ['a-low'], 'Max neutralizes priority and falls back to deterministic id order');
 });
 
-test('AUTOPACK-MAX-A relaxes case orientation policy and per-instance orientation locks', async () => {
+test('AUTOPACK-MAX-A C3 obeys Case permission and exact instance targets', async () => {
   const { Solver, PackLib } = await p5Modules();
   const truck = { length: 12, width: 24, height: 48, shapeMode: 'rect' };
   const zones = PackLib.getTrailerUsableZones(truck);
@@ -4541,10 +4514,8 @@ test('AUTOPACK-MAX-A relaxes case orientation policy and per-instance orientatio
     const normal = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [item] });
     const max = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items: [item], maxCapacityMode: true });
     assert.equal(normal.placements.size, 0, `${label}: stored orientation cannot fit the narrow floor`);
-    assert.equal(max.placements.size, 1, `${label}: Max may choose a physically valid tipped orientation`);
-    assert.deepEqual(max.orientedDims.get(item.instanceId), { length: 12, width: 24, height: 48 },
-      `${label}: the fitting pose uses the real rotated dimensions`);
-    assert.equal(max.rotations.get(item.instanceId).z, Math.PI / 2, `${label}: the fitting pose is a canonical quarter turn`);
+    assert.equal(max.placements.size, 0, `${label}: Max cannot expand physical or exact permission`);
+    assert.deepEqual(max.unpacked, [item.instanceId]);
   }
 });
 
@@ -4616,4 +4587,123 @@ test('AUTOPACK-MAX-A preserves physical geometry, support, blocked bodies, stabi
     truck: frontTruck, zones: frontZones, items: frontItems, label: 'Max/Front Overhang',
     fixedPlacements: [retainingWall],
   });
+});
+
+test('C3 nullable mass never passes required cargo support and Max retains source mass', async () => {
+  const { Solver, PackLib } = await p5Modules();
+  const Validation = await import(packingCoreValidationPath.href);
+  for (const [child, support] of [[null, 20], [20, null], [null, null]]) {
+    assert.equal(Validation.weightAllowsSupport(child, support, false), false);
+    assert.equal(Validation.weightAllowsSupport(child, support, true), false);
+    assert.equal(Validation.weightAllowsSupport(child, support, false, true), false);
+  }
+  assert.equal(Validation.weightAllowsSupport(21, 20, false), false);
+  assert.equal(Validation.weightAllowsSupport(21, 20, false, true), true);
+  const truck = { length: 20, width: 20, height: 20, shapeMode: 'rect' };
+  const zones = PackLib.getTrailerUsableZones(truck);
+  for (const weight of [null, 20]) {
+    const item = { instanceId: 'i', dims: { l: 20, w: 20, h: 10 }, weight, orientationLock: 'upright' };
+    const before = JSON.stringify(item);
+    const result = Solver.solveAutoPack({ truck, zones, items: [item], maxCapacityMode: true });
+    assert.equal(result.placements.size, 1, 'unknown mass can rest on the rigid floor');
+    assert.equal(JSON.stringify(item), before);
+    const normalizedPlacement = { item: { weight, item: { weight, relaxWeightComparison: true } } };
+    assert.equal(Validation.getPlacementWeight(normalizedPlacement), weight);
+  }
+  for (const maxCapacityMode of [false, true]) {
+    const result = Solver.solveAutoPack({ truck, zones, maxCapacityMode, items: [
+      { instanceId: 'base', dims: { l: 20, w: 20, h: 10 }, weight: null, orientationLock: 'upright' },
+      { instanceId: 'child', dims: { l: 20, w: 20, h: 10 }, weight: null, orientationLock: 'upright' },
+    ] });
+    assert.equal(result.placements.size, 1, 'unknown support does not become a passing zero-mass stack');
+  }
+});
+
+test('C3 exact planning conflicts and stale dimension caches never control actual geometry', async () => {
+  const { PackLib } = await p5Modules();
+  const truck = { length: 100, width: 50, height: 50, shapeMode: 'rect' };
+  const caseData = { id: 'c', dimensions: { length: 30, width: 20, height: 10 }, weight: 20, orientationLock: 'upright' };
+  const instance = { id: 'i', caseId: 'c', placement: 'packed', orientationLocked: true,
+    lockedRotation: { x: Math.PI / 2, y: 0, z: 0 }, orientedDims: { length: 99, width: 99, height: 99 },
+    transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } };
+  const geometry = PackLib.getCanonicalInstanceEffectiveDims(instance, caseData);
+  assert.deepEqual(geometry.dims, caseData.dimensions);
+  assert.equal(geometry.orientationAllowed, true);
+  const result = PackLib.revalidateManualPlacements({ truck, cases: [instance] }, [caseData]);
+  assert.deepEqual(result.stagedIds, []);
+  assert.equal(result.pack.cases[0].orientationLocked, true);
+  assert.deepEqual(result.pack.cases[0].lockedRotation, instance.lockedRotation);
+  const forbidden = { ...instance, transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: Math.PI, y: 0, z: 0 } } };
+  const saved = PackLib.revalidateManualPlacements({ truck, cases: [forbidden] }, [caseData]);
+  assert.deepEqual(saved.pack.cases[0], forbidden, 'saved forbidden pose and exact target preserved');
+  assert.equal(saved.validationComplete, false, 'preservation never claims physical validity');
+  const stagedForbidden = { ...forbidden, placement: 'staged', hidden: true, packedProfile: 'max-capacity' };
+  const staged = PackLib.revalidateManualPlacements({ truck, cases: [stagedForbidden] }, [caseData]);
+  assert.deepEqual(staged.pack.cases[0], stagedForbidden, 'forbidden staged pose and stale cache stay byte-equivalent');
+  const released = { ...forbidden, ...PackLib.clearOrientationLockPatch() };
+  assert.deepEqual(released.transform, forbidden.transform);
+  assert.deepEqual(released.orientedDims, forbidden.orientedDims);
+});
+
+test('C3 unknown saved support is preserved incomplete while new placement remains conservative', async () => {
+  const { PackLib } = await p5Modules();
+  const truck = { length: 20, width: 20, height: 30, shapeMode: 'rect' };
+  const caseData = { id: 'c', dimensions: { length: 20, width: 20, height: 10 }, weight: null, orientationLock: 'any' };
+  const instances = [5, 15].map((y, index) => ({ id: `i${index}`, caseId: 'c', placement: 'packed',
+    transform: { position: { x: 10, y, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }));
+  const pack = { truck, cases: instances };
+  const existing = PackLib.revalidateManualPlacements(pack, [caseData]);
+  assert.deepEqual(existing.pack.cases[1], instances[1]);
+  assert.equal(existing.validationComplete, false);
+  assert.deepEqual(existing.stagedIds, []);
+  const proposal = PackLib.findManualVerticalPlacement(pack, [caseData], 'i1', {
+    mode: 'resolve', desiredPosition: instances[1].transform.position,
+  });
+  assert.equal(proposal.ok, false, 'unknown required support mass cannot authorize a new placement');
+});
+
+test('C3 pallet payload preserves incomplete mass and uses actual rotated envelopes', async () => {
+  const { computePalletWarnings } = await import('../../src/services/oog-service.js');
+  const pallet = { id: 'p', dimensions: { length: 20, width: 30, height: 4 }, weight: 10,
+    orientationLock: 'any', isPallet: true, maxPalletWeight: 100 };
+  const cargo = { id: 'c', dimensions: { length: 10, width: 10, height: 10 }, weight: null, orientationLock: 'any' };
+  const pose = (id, caseId, y) => ({ id, caseId, placement: 'packed',
+    transform: { position: { x: 20, y, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } });
+  const pack = { cases: [pose('p1', 'p', 2), pose('c1', 'c', 9)] };
+  const [unknown] = computePalletWarnings(pack, [pallet, cargo]);
+  assert.equal(unknown.actualWeight, null);
+  assert.equal(unknown.overloadPercent, null);
+  assert.equal(unknown.massComplete, false);
+  assert.deepEqual(computePalletWarnings(pack, [pallet, { ...cargo, weight: 20 }]), []);
+  const unresolved = { cases: [...pack.cases.slice(0, 1), pose('missing', 'missing-case', 9)] };
+  assert.equal(computePalletWarnings(unresolved, [pallet], new Set(['p1']))[0].massComplete, false);
+  const knownLibrary = [pallet, { ...cargo, weight: 20 }];
+  for (const position of [undefined, { x: 20, z: 0 }, { x: NaN, y: 9, z: 0 }, { x: 20, y: 9, z: Infinity }]) {
+    const malformed = { cases: [pack.cases[0], { ...pack.cases[1],
+      transform: { ...pack.cases[1].transform, position } }] };
+    for (const loadedIds of [null, new Set(['p1'])]) {
+      const [warning] = computePalletWarnings(malformed, knownLibrary, loadedIds);
+      assert.equal(warning.massComplete, false, 'unresolved position cannot silently exclude cargo mass');
+      assert.equal(warning.actualWeight, null);
+    }
+  }
+  const malformedPallet = { cases: [{ ...pack.cases[0],
+    transform: { ...pack.cases[0].transform, position: undefined } }, pack.cases[1]] };
+  assert.equal(computePalletWarnings(malformedPallet, knownLibrary)[0].massComplete, false);
+});
+
+test('C3 Results signatures retain tiny mass and exact target changes for packed and staged cargo', async () => {
+  const Engine = await import(autoPackEnginePath.href);
+  const rotation = { x: 0, y: 0, z: 0 };
+  const caseData = { id: 'c', dimensions: { length: 20, width: 20, height: 10 }, weight: null, orientationLock: 'any' };
+  for (const placement of ['packed', 'staged']) {
+    const pack = { truck: { length: 100, width: 50, height: 50 }, cases: [{ id: 'i', caseId: 'c', placement,
+      orientationLocked: true, lockedRotation: rotation,
+      transform: { position: { x: 20, y: 5, z: 0 }, rotation } }] };
+    const targetChanged = { ...pack, cases: [{ ...pack.cases[0], lockedRotation: { x: 0.0001, y: 0, z: 0 } }] };
+    assert.notEqual(Engine.buildAutoPackResultSignature(pack), Engine.buildAutoPackResultSignature(targetChanged));
+    const sig = weight => Engine.buildAutoPackCaseRuleSignature(pack, () => ({ ...caseData, weight }));
+    assert.notEqual(sig(null), sig(0.00001));
+    assert.notEqual(sig(0.00001), sig(0.00002));
+  }
 });

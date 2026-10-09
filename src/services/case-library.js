@@ -20,8 +20,6 @@ import {
   pickSafeExtensions,
   CANONICAL_CASE_KEYS,
   parseCargoDimension,
-  parseCargoNonNegNumber,
-  WEIGHT_MAX_LBS,
   caseSafeReuseEqual,
 } from '../core/cargo-canonical.js';
 import {
@@ -81,7 +79,7 @@ export function buildStorableCase(caseData) {
   });
   next.updatedAt = now;
   if (!next.createdAt) next.createdAt = now;
-  // Route dimensions/weight through the same typed canonical parsers used for
+  // Route dimensions through the same typed canonical parsers used for
   // every other cargo field (cargo-canonical.js) rather than a bare Number()
   // coercion: negative/non-finite input becomes a safe 0 instead of silently
   // storing a negative dimension, and absurd input is clamped to the same
@@ -93,7 +91,6 @@ export function buildStorableCase(caseData) {
     width: parseCargoDimension(dims.width).value,
     height: parseCargoDimension(dims.height).value,
   };
-  next.weight = parseCargoNonNegNumber(next.weight, { max: WEIGHT_MAX_LBS }).value;
   next.volume = Utils.volumeInCubicInches(next.dimensions);
   // Sanitize unknown extension fields at the storage boundary: keep approved safe
   // metadata, but drop functions, prototype keys, symbols and non-finite values so
@@ -199,7 +196,7 @@ export function duplicate(caseId) {
     updatedAt: now,
   };
   upsert(copy);
-  return copy;
+  return getById(copy.id);
 }
 
 export function search(query, categoryKeys) {

@@ -300,9 +300,10 @@ function makePackImportSafeCase(overrides = {}) {
     category: overrides.category || 'Default',
     color: overrides.color || '#9ca3af',
     dimensions,
-    weight: overrides.weight || 10,
+    weight: overrides.weight === undefined ? 10 : overrides.weight,
     volume: dimensions.length * dimensions.width * dimensions.height,
-    canFlip: overrides.canFlip ?? true,
+    shape: 'box',
+    orientationLock: 'any',
     stackable: overrides.stackable ?? true,
     ...overrides,
   };
@@ -312,10 +313,10 @@ function makePackImportInstance(caseId, overrides = {}) {
   return {
     id: overrides.id || `inst-${Math.random().toString(36).slice(2)}`,
     caseId,
-    transform: overrides.transform,
     hidden: false,
     groupId: null,
     ...overrides,
+    transform: { rotation: { x: 0, y: 0, z: 0 }, ...overrides.transform },
   };
 }
 
@@ -605,12 +606,12 @@ function wwStagedRaisedOverhangOpportunity(Solver, result, truck, zones, items) 
   return null;
 }
 
-const HANDLING_FIELDS = ['canFlip', 'orientationLock', 'noStackOnTop', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority'];
+const HANDLING_FIELDS = ['orientationLock', 'noStackOnTop', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority'];
 
 const RULED_CASE = {
   id: 'rt-case', name: 'Ruled Case', category: 'default',
   dimensions: { length: 36, width: 24, height: 18 }, weight: 120,
-  canFlip: false, orientationLock: 'onSide', noStackOnTop: true, stackable: false,
+  orientationLock: 'onSide', noStackOnTop: true, stackable: false,
   maxStackCount: 3, isPallet: true, maxPalletWeight: 1800, laneItem: false, loadPriority: 1,
 };
 
@@ -653,7 +654,7 @@ function hostileRawCase(overrides = {}) {
 }
 
 function assertHostileCanonical(c, { extensions = true } = {}) {
-  assert.equal(c.canFlip, false, '"false" -> canFlip false');
+  assert.equal(c.canFlip, undefined, 'retired canFlip is stripped, including safe extensions');
   assert.equal(c.stackable, false, '"no" -> stackable false');
   assert.equal(c.noStackOnTop, false, '"maybe" invalid -> noStackOnTop default false');
   assert.equal(c.isPallet, true, '"1" -> isPallet true');
@@ -889,7 +890,8 @@ function r1eOverlapXZ(a, b) {
          Math.abs(a.pos.z - b.pos.z) < (a.od.width / 2 + b.od.width / 2) - 0.01;
 }
 
-const RECON_CASE_LIB = [{ id: 'c', name: 'Carton', dimensions: { length: 24, width: 18, height: 16 } }];
+const RECON_CASE_LIB = [{ id: 'c', name: 'Carton', dimensions: { length: 24, width: 18, height: 16 },
+  weight: 20, orientationLock: 'any' }];
 
 const RECON_DIMS = { length: 24, width: 18, height: 16 };
 
@@ -1875,7 +1877,7 @@ function maxAAssertPhysicalSafety({ Solver, PackLib, Oriented, result, truck, zo
           noStackOnTop: false,
           stackable: true,
           maxStackCount: 0,
-          weight: 0,
+          relaxWeightComparison: true,
         });
         const packedWithout = placed.filter(other => other !== placement).map(other => ({
           instanceId: other.id,
@@ -2910,9 +2912,10 @@ function handlingRulesP0cCase(overrides = {}) {
     category: 'Default',
     color: '#9ca3af',
     dimensions,
-    weight: overrides.weight || 10,
+    weight: overrides.weight === undefined ? 10 : overrides.weight,
     volume: dimensions.length * dimensions.width * dimensions.height,
-    canFlip: true,
+    shape: 'box',
+    orientationLock: 'any',
     stackable: true,
     ...overrides,
   };

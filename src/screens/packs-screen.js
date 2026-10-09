@@ -1508,9 +1508,16 @@ export function createPacksScreen({
       const compareVolume = (a, b) =>
         ((a.stats && Number.isFinite(a.stats.volumePercent) ? a.stats.volumePercent : 0) || 0) -
         ((b.stats && Number.isFinite(b.stats.volumePercent) ? b.stats.volumePercent : 0) || 0);
-      const compareWeight = (a, b) =>
-        ((a.stats && Number.isFinite(a.stats.totalWeight) ? a.stats.totalWeight : 0) || 0) -
-        ((b.stats && Number.isFinite(b.stats.totalWeight) ? b.stats.totalWeight : 0) || 0);
+      const weightsByPack = new Map();
+      const currentWeight = pack => {
+        if (!weightsByPack.has(pack)) weightsByPack.set(pack, PackLibrary.computeStats(pack)?.totalWeight ?? null);
+        return weightsByPack.get(pack);
+      };
+      const compareWeight = (a, b, direction) => {
+        const left = currentWeight(a), right = currentWeight(b);
+        if (left === null || right === null) return left === right ? 0 : left === null ? 1 : -1;
+        return direction === 'desc' ? right - left : left - right;
+      };
       const compareLoadPlanNumber = (a, b, direction) =>
         compareBusinessIdentityValues(a.loadPlanNumber, b.loadPlanNumber, { direction }) ||
         (sourceOrder.get(a) ?? 0) - (sourceOrder.get(b) ?? 0);
@@ -1535,8 +1542,8 @@ export function createPacksScreen({
         'mode-desc': (a, b) => compareMode(b, a),
         'volume-asc': (a, b) => compareVolume(a, b),
         'volume-desc': (a, b) => compareVolume(b, a),
-        'weight-asc': (a, b) => compareWeight(a, b),
-        'weight-desc': (a, b) => compareWeight(b, a),
+        'weight-asc': (a, b) => compareWeight(a, b, 'asc'),
+        'weight-desc': (a, b) => compareWeight(a, b, 'desc'),
       };
       renderFoldersButton(allPacks);
       updateStatusFilterChips(allPacks);

@@ -25,7 +25,7 @@ export function canonicalOrientationLock(value) {
 /**
  * Strict C1 interpretation. Human boundaries may explicitly permit the blank
  * default; malformed explicit values never become 'any'. The permissive helper
- * above remains wired only until the coordinated C3 runtime cutover.
+ * above is only for already-validated aliases and supported historical defaults.
  */
 export function parseCaseOrientationLock(raw, { allowDefault = false } = {}) {
   if (raw == null || (typeof raw === 'string' && raw.trim() === '')) {
@@ -42,7 +42,7 @@ export function parseCaseOrientationLock(raw, { allowDefault = false } = {}) {
  * Case physical permission, independent of canFlip, profiles and instance
  * planning targets. Upright requires authored +Y to map to world +Y; onSide
  * requires one of the four authored side faces to face down. Only supported
- * right-angle poses are considered. Live callers switch to this in C3.
+ * right-angle poses are considered. Live manual and solver permission use this authority.
  */
 export function isCasePhysicalOrientationAllowed(caseData, rotation) {
   const permission = parseCaseOrientationLock(caseData?.orientationLock);

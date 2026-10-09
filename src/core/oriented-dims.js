@@ -92,8 +92,8 @@ const VERTICAL_AXIS_EPSILON = 1e-6;
 /**
  * Whether a Case's saved local height axis (+Y) is still parallel to world Y
  * after a right-angle rotation. Both +Y and -Y (an inverted, upside-down
- * pose) count as vertical. This unsigned geometry predicate remains used by
- * legacy runtime orientation policy until C3. New physical permission uses the
+ * pose) count as vertical. This unsigned geometry predicate is not physical
+ * permission. Physical permission uses the
  * signed axes below so an inverted pose cannot pass the upright contract.
  * @param {{x?:number,y?:number,z?:number}} rotation radians
  * @returns {boolean}

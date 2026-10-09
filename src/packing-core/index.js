@@ -7,7 +7,15 @@
  * @module packing-core
  */
 
-export { SURFACE_KINDS, BLOCKED_KINDS, makeSurface, makeBlockedVolume } from './domain.js';
+export {
+  SURFACE_KINDS,
+  BLOCKED_KINDS,
+  makeSurface,
+  makeBlockedVolume,
+  projectCasePhysicalSource,
+  projectInstancePhysicalSource,
+  projectTargetSpaceSource,
+} from './domain.js';
 export { buildSpaceModel, getConstrainedZones } from './space-model.js';
 export {
   CONTAINMENT_EPS_INCHES,

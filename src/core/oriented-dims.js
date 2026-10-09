@@ -92,10 +92,9 @@ const VERTICAL_AXIS_EPSILON = 1e-6;
 /**
  * Whether a Case's saved local height axis (+Y) is still parallel to world Y
  * after a right-angle rotation. Both +Y and -Y (an inverted, upside-down
- * pose) count as vertical — this is the physical-axis test that Handling
- * Rule orientation policy (upright/onSide) is defined on, as opposed to
- * checking raw Euler-component values, which can misclassify a pose that
- * inverts the case without tipping its height axis off-vertical.
+ * pose) count as vertical. This unsigned geometry predicate remains used by
+ * legacy runtime orientation policy until C3. New physical permission uses the
+ * signed axes below so an inverted pose cannot pass the upright contract.
  * @param {{x?:number,y?:number,z?:number}} rotation radians
  * @returns {boolean}
  */
@@ -136,5 +135,55 @@ export function getOrientedDimsForRotation(dimensions = {}, rotation = {}) {
     length: Math.round(out.length * 1e6) / 1e6,
     width: Math.round(out.width * 1e6) / 1e6,
     height: Math.round(out.height * 1e6) / 1e6,
+  };
+}
+
+/**
+ * Strict C1 orientation representation: authored axes mapped to world axes.
+ * Accept only complete finite right-angle poses (within floating point noise).
+ * Unlike the legacy normalizer, this never invents identity or rounds an
+ * unsupported pose into a supported one. Equivalent XYZ Euler encodings yield
+ * the same signed axes, including on equal-sided Cases.
+ */
+export function getPhysicalOrientationAxes(rotation) {
+  if (!rotation || typeof rotation !== 'object' || Array.isArray(rotation) ||
+      !['x', 'y', 'z'].every(axis => {
+        const value = rotation[axis];
+        return typeof value === 'number' && Number.isFinite(value) &&
+          Math.abs(value - Math.round(value / RIGHT_ANGLE_RAD) * RIGHT_ANGLE_RAD) <= VERTICAL_AXIS_EPSILON;
+      })) {
+    return { value: undefined, valid: false };
+  }
+  const exactAxis = vector => {
+    const axis = rotateVectorXYZ(vector, rotation);
+    return { x: Math.round(axis.x) || 0, y: Math.round(axis.y) || 0, z: Math.round(axis.z) || 0 };
+  };
+  return {
+    value: {
+      x: exactAxis({ x: 1, y: 0, z: 0 }),
+      y: exactAxis({ x: 0, y: 1, z: 0 }),
+      z: exactAxis({ x: 0, y: 0, z: 1 }),
+    },
+    valid: true,
+  };
+}
+
+/**
+ * Physical dimensions use only Case dimensions and ACTUAL rotation. Planning
+ * locks/profiles and persisted orientedDims have no authority here. No source
+ * writes and no fallback geometry. The signed-axis permutation preserves the
+ * source dimension precision without applying display rounding.
+ */
+export function getActualPoseDimensions(caseData, instance) {
+  const dimensions = caseData?.dimensions;
+  const axes = getPhysicalOrientationAxes(instance?.transform?.rotation);
+  if (!dimensions || !['length', 'width', 'height'].every(key =>
+    typeof dimensions[key] === 'number' && Number.isFinite(dimensions[key]) && dimensions[key] > 0
+  ) || !axes.valid) return { value: undefined, valid: false };
+  const extent = axis => Math.abs(axes.value.x[axis]) * dimensions.length +
+    Math.abs(axes.value.y[axis]) * dimensions.height + Math.abs(axes.value.z[axis]) * dimensions.width;
+  return {
+    value: { length: extent('x'), width: extent('z'), height: extent('y') },
+    valid: true,
   };
 }

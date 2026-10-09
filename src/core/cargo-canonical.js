@@ -23,6 +23,7 @@
  */
 
 import { canonicalOrientationLock } from './orientation.js';
+import { poundsToUnit, unitToPounds } from './utils.js';
 
 // Practical application data limits (NOT vehicle legality limits). They exist so
 // absurd values cannot produce infinite volume or break comparison/storage.
@@ -31,6 +32,55 @@ export const WEIGHT_MAX_LBS = 10000000;         // 10 million lb
 export const PALLET_WEIGHT_MAX_LBS = 10000000;
 export const STACK_COUNT_MAX = 100000;
 export const LOAD_PRIORITY_ABS_MAX = 1000000;
+
+// C1 strict mass boundary. Existing storage/comparison callers below retain
+// their legacy non-negative parser until the coordinated C3 runtime cutover.
+// Invalid explicit input has no value; it must never become unknown or zero.
+const DECIMAL_MASS = /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i;
+
+/** Canonical Case mass is nullable, otherwise positive finite pounds. */
+export function isCanonicalCaseMass(value) {
+  return value === null || (
+    typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= WEIGHT_MAX_LBS
+  );
+}
+
+/**
+ * Interpret a human-entered mass into canonical pounds. Blank/missing is
+ * unknown only when this boundary permits it. No clamping or display rounding.
+ * @returns {{value: number|null|undefined, valid: boolean}}
+ */
+export function parseCaseMass(raw, { unit = 'lb', allowUnknown = true } = {}) {
+  const invalid = { value: undefined, valid: false };
+  if (unit !== 'lb' && unit !== 'kg') return invalid;
+  if (raw == null || (typeof raw === 'string' && raw.trim() === '')) {
+    return allowUnknown ? { value: null, valid: true } : invalid;
+  }
+  if (typeof raw !== 'number' && (typeof raw !== 'string' || !DECIMAL_MASS.test(raw.trim()))) {
+    return invalid;
+  }
+  const numeric = typeof raw === 'number' ? raw : Number(raw.trim());
+  const pounds = unitToPounds(numeric, unit);
+  return isCanonicalCaseMass(pounds)
+    ? { value: pounds, valid: true }
+    : invalid;
+}
+
+/**
+ * Convert canonical Case mass for a boundary that needs another unit. Unknown
+ * stays null; even numeric underflow is rejected instead of producing zero.
+ * @returns {{value: number|null|undefined, valid: boolean}}
+ */
+export function caseMassToUnit(weight, unit) {
+  if (!isCanonicalCaseMass(weight) || (unit !== 'lb' && unit !== 'kg')) {
+    return { value: undefined, valid: false };
+  }
+  if (weight === null) return { value: null, valid: true };
+  const value = poundsToUnit(weight, unit);
+  return Number.isFinite(value) && value > 0
+    ? { value, valid: true }
+    : { value: undefined, valid: false };
+}
 
 const BOOL_TRUE_TOKENS = new Set(['true', '1', 'yes', 'y', 'on']);
 const BOOL_FALSE_TOKENS = new Set(['false', '0', 'no', 'n', 'off']);

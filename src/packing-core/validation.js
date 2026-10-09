@@ -197,3 +197,177 @@ export function hasStackCapacity(placement, packed) {
   const maxStackCount = getMaxStackCount(placement);
   return !maxStackCount || countDirectStackChildren(placement, packed) < maxStackCount;
 }
+
+// C2 measurements. 1e-9 is the existing zone-degeneracy numerical precision,
+// in inches for distances (not a physical clearance or stability allowance).
+// Legacy CONTACT_EPS permits visible gaps and must not manufacture C2 contact.
+export const MEASUREMENT_EPS = 1e-9;
+
+/** Exact interval union; never close a real gap between intervals. */
+export function measureIntervalUnion(intervals) {
+  const merged = [];
+  for (const interval of intervals.filter(i => i.max > i.min).map(i => ({ ...i }))
+    .sort((a, b) => a.min - b.min || a.max - b.max)) {
+    const last = merged[merged.length - 1];
+    if (!last || interval.min > last.max) merged.push(interval);
+    else last.max = Math.max(last.max, interval.max);
+  }
+  return { intervals: merged, length: merged.reduce((sum, i) => sum + i.max - i.min, 0) };
+}
+
+/** Axis-aligned rectangle union by disjoint X slabs, without double counting. */
+export function measureContactUnion(patches) {
+  const rectangles = patches.filter(p => p.maxX > p.minX && p.maxZ > p.minZ);
+  const xs = [...new Set(rectangles.flatMap(p => [p.minX, p.maxX]))].sort((a, b) => a - b);
+  let area = 0;
+  for (let i = 1; i < xs.length; i++) {
+    const intervals = rectangles.filter(p => p.minX < xs[i] && p.maxX > xs[i - 1])
+      .map(p => ({ min: p.minZ, max: p.maxZ }));
+    area += (xs[i] - xs[i - 1]) * measureIntervalUnion(intervals).length;
+  }
+  return area;
+}
+
+const crossXZ = (a, b, c) => (b.x - a.x) * (c.z - a.z) - (b.z - a.z) * (c.x - a.x);
+
+/** Counterclockwise horizontal hull; degenerate input stays degenerate. */
+export function supportConvexHull(points) {
+  const unique = [...new Map(points.map(p => [`${p.x}|${p.z}`, { x: p.x, z: p.z }])).values()]
+    .sort((a, b) => a.x - b.x || a.z - b.z);
+  if (unique.length < 3) return unique;
+  const half = list => {
+    const out = [];
+    for (const p of list) {
+      while (out.length > 1 && crossXZ(out[out.length - 2], out[out.length - 1], p) <= 0) out.pop();
+      out.push(p);
+    }
+    return out;
+  };
+  return [...half(unique).slice(0, -1), ...half([...unique].reverse()).slice(0, -1)];
+}
+
+export function contactPatchCorners(patch) {
+  return [
+    { x: patch.minX, z: patch.minZ }, { x: patch.maxX, z: patch.minZ },
+    { x: patch.maxX, z: patch.maxZ }, { x: patch.minX, z: patch.maxZ },
+  ];
+}
+
+/** Signed distance from a resultant to the closest CCW hull edge, in inches. */
+export function supportHullMargin(hull, point) {
+  if (hull.length < 3) return { margin: null, inside: false };
+  let margin = Infinity;
+  hull.forEach((a, i) => {
+    const b = hull[(i + 1) % hull.length];
+    margin = Math.min(margin, crossXZ(a, b, point) / Math.hypot(b.x - a.x, b.z - a.z));
+  });
+  return { margin, inside: margin > MEASUREMENT_EPS };
+}
+
+/** Surfaces carry {supportId, y, minX,maxX,minZ,maxZ}; input is resolved geometry. */
+export function measureSupportContacts(aabb, surfaces) {
+  const bearingPlane = aabb.min.y;
+  const patches = [];
+  for (const surface of surfaces) {
+    if (Math.abs(surface.y - bearingPlane) > MEASUREMENT_EPS) continue;
+    const patch = { supportId: surface.supportId, y: bearingPlane,
+      minX: Math.max(aabb.min.x, surface.minX), maxX: Math.min(aabb.max.x, surface.maxX),
+      minZ: Math.max(aabb.min.z, surface.minZ), maxZ: Math.min(aabb.max.z, surface.maxZ) };
+    if (patch.maxX > patch.minX && patch.maxZ > patch.minZ) patches.push(patch);
+  }
+  patches.sort((a, b) => a.supportId.localeCompare(b.supportId) || a.minX - b.minX || a.minZ - b.minZ);
+  const area = measureContactUnion(patches);
+  const length = aabb.max.x - aabb.min.x, width = aabb.max.z - aabb.min.z;
+  const hull = supportConvexHull(patches.flatMap(contactPatchCorners));
+  const extension = patches.length ? {
+    rear: Math.max(0, Math.min(...patches.map(p => p.minX)) - aabb.min.x),
+    front: Math.max(0, aabb.max.x - Math.max(...patches.map(p => p.maxX))),
+    left: Math.max(0, Math.min(...patches.map(p => p.minZ)) - aabb.min.z),
+    right: Math.max(0, aabb.max.z - Math.max(...patches.map(p => p.maxZ))),
+  } : null;
+  return { bearingPlane, patches, area, footprintArea: length * width,
+    coverage: area / (length * width), hull, extension,
+    extensionFraction: extension ? Math.max(extension.rear / length, extension.front / length,
+      extension.left / width, extension.right / width) : null,
+    units: { distance: 'in', area: 'in2' } };
+}
+
+/**
+ * Nonnegative vertical statics over point contacts. Rectangular patches are
+ * exactly represented by their corners: every admissible patch wrench is a
+ * convex combination of corner forces. Three balance equations (F, F*x, F*z)
+ * have extreme solutions on at most three points. Enumerate those vertices,
+ * retaining per-support wrench bounds rather than selecting an arbitrary split.
+ * Coordinate residuals use numerical inch precision; wrench uniqueness uses
+ * relative numerical precision. Force values are gravity-equivalent lb loads.
+ */
+export function solveContactReactions(force, resultant, contacts) {
+  if (!(typeof force === 'number' && Number.isFinite(force) && force > 0) ||
+      !resultant || !Number.isFinite(resultant.x) || !Number.isFinite(resultant.z)) {
+    return { outcome: 'UNRESOLVED', reason: 'missing-demand', reactions: [] };
+  }
+  const points = [...new Map(contacts.map(p => [`${p.supportId}|${p.x}|${p.z}`, p])).values()];
+  if (points.some(p => typeof p.supportId !== 'string' || !Number.isFinite(p.x) || !Number.isFinite(p.z) ||
+      !Number.isFinite(force * p.x) || !Number.isFinite(force * p.z))) {
+    return { outcome: 'UNRESOLVED', reason: 'unresolved-contact-geometry', reactions: [] };
+  }
+  // A truthful computational limit, not a physical rule or a fallback split.
+  if (points.length > 64) return { outcome: 'UNRESOLVED', reason: 'reaction-enumeration-limit', reactions: [] };
+  const ids = [...new Set(points.map(p => p.supportId))].sort();
+  const extrema = new Map(ids.map(id => [id, {
+    force: { min: Infinity, max: -Infinity },
+    momentX: { min: Infinity, max: -Infinity }, momentZ: { min: Infinity, max: -Infinity },
+  }]));
+  let vertices = 0;
+  const accept = (indices, weights) => {
+    if (weights.some(w => !Number.isFinite(w) || w < -MEASUREMENT_EPS)) return;
+    const sum = weights.reduce((s, w) => s + Math.max(0, w), 0);
+    if (!(sum > 0)) return;
+    const normalized = weights.map(w => Math.max(0, w) / sum);
+    const x = indices.reduce((s, index, i) => s + points[index].x * normalized[i], 0);
+    const z = indices.reduce((s, index, i) => s + points[index].z * normalized[i], 0);
+    if (Math.abs(x - resultant.x) > MEASUREMENT_EPS || Math.abs(z - resultant.z) > MEASUREMENT_EPS) return;
+    const byId = new Map(ids.map(id => [id, { force: 0, momentX: 0, momentZ: 0 }]));
+    indices.forEach((index, i) => {
+      const p = points[index], f = force * normalized[i], wrench = byId.get(p.supportId);
+      wrench.force += f; wrench.momentX += f * p.x; wrench.momentZ += f * p.z;
+    });
+    byId.forEach((wrench, id) => {
+      for (const key of ['force', 'momentX', 'momentZ']) {
+        extrema.get(id)[key].min = Math.min(extrema.get(id)[key].min, wrench[key]);
+        extrema.get(id)[key].max = Math.max(extrema.get(id)[key].max, wrench[key]);
+      }
+    });
+    vertices++;
+  };
+  for (let i = 0; i < points.length; i++) {
+    accept([i], [1]);
+    for (let j = i + 1; j < points.length; j++) {
+      const a = points[i], b = points[j], dx = b.x - a.x, dz = b.z - a.z;
+      const length2 = dx * dx + dz * dz;
+      if (length2 > 0) {
+        const t = ((resultant.x - a.x) * dx + (resultant.z - a.z) * dz) / length2;
+        accept([i, j], [1 - t, t]);
+      }
+      for (let k = j + 1; k < points.length; k++) {
+        const c = points[k], determinant = crossXZ(a, b, c);
+        if (determinant === 0) continue;
+        const u = crossXZ(resultant, b, c) / determinant;
+        const v = crossXZ(a, resultant, c) / determinant;
+        accept([i, j, k], [u, v, 1 - u - v]);
+      }
+    }
+  }
+  if (!vertices) return { outcome: 'FAIL', reason: 'no-nonnegative-equilibrium', reactions: [] };
+  const reactions = ids.map(supportId => {
+    const bounds = extrema.get(supportId);
+    const determined = Object.values(bounds).every(b =>
+      b.max - b.min <= MEASUREMENT_EPS * Math.max(1, Math.abs(b.min), Math.abs(b.max)));
+    return { supportId, bounds, determined,
+      force: determined ? bounds.force.min : null,
+      momentX: determined ? bounds.momentX.min : null,
+      momentZ: determined ? bounds.momentZ.min : null };
+  });
+  return { outcome: 'PASS', determined: reactions.every(r => r.determined), reactions,
+    vertices, conservation: 'force-and-moments', units: { force: 'lb', moment: 'lb-in' } };
+}

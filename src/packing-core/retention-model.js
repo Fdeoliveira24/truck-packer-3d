@@ -16,7 +16,9 @@
  * @module packing-core/retention-model
  */
 
-import { CONTAINMENT_EPS_INCHES, isAabbContainedInZone } from './validation.js';
+import {
+  CONTAINMENT_EPS_INCHES, isAabbContainedInZone, MEASUREMENT_EPS, measureIntervalUnion,
+} from './validation.js';
 
 /**
  * Maximum accepted gap between a retainer's front face and the overhang step.
@@ -88,4 +90,38 @@ export function computeDeckRetentionCoverage(geometry, placements) {
   if (spanMax - cursor > EPS) uncovered.push({ minZ: cursor, maxZ: spanMax });
 
   return { covered, uncovered };
+}
+
+/**
+ * C2 per-body rearward blocking measurement. Callers supply physically loaded
+ * blockers with geometry/support qualification, never visibility-filtered rows.
+ * Keep the established step-adjacency allowance, but measure actual Z union
+ * and true positive vertical overlap with THIS body (including upper cargo).
+ * A geometric pass says nothing about restraint strength or anchorage.
+ */
+export function measureRearBlocking(aabb, blockers, geometry) {
+  if (!geometry || aabb.max.x <= geometry.stepX + MEASUREMENT_EPS) {
+    return { applicable: false, outcome: 'NOT_APPLICABLE' };
+  }
+  const contacts = [];
+  const uncertain = [];
+  for (const blocker of blockers) {
+    const b = blocker.aabb;
+    if (!b || b.min.x >= geometry.stepX || b.max.x > aabb.min.x + MEASUREMENT_EPS) continue;
+    const stepGap = geometry.stepX - b.max.x;
+    if (stepGap < -MEASUREMENT_EPS || stepGap > RETENTION_MAX_STEP_GAP + MEASUREMENT_EPS) continue;
+    const verticalOverlap = Math.min(aabb.max.y, b.max.y) - Math.max(aabb.min.y, b.min.y);
+    const min = Math.max(aabb.min.z, b.min.z), max = Math.min(aabb.max.z, b.max.z);
+    if (verticalOverlap <= MEASUREMENT_EPS || max <= min) continue;
+    const patch = { id: blocker.id, min, max, verticalOverlap, stepGap };
+    if (blocker.qualification === 'PASS') contacts.push(patch);
+    else if (blocker.qualification === 'UNRESOLVED') uncertain.push(patch);
+  }
+  const union = measureIntervalUnion(contacts);
+  const requiredWidth = aabb.max.z - aabb.min.z;
+  const complete = union.length >= requiredWidth - MEASUREMENT_EPS;
+  const possible = measureIntervalUnion([...contacts, ...uncertain]).length >= requiredWidth - MEASUREMENT_EPS;
+  return { applicable: true, outcome: complete ? 'PASS' : possible ? 'UNRESOLVED' : 'FAIL',
+    requiredWidth, coveredWidth: union.length, intervals: union.intervals, contacts, uncertain,
+    path: { stepX: geometry.stepX, bodyRearX: aabb.min.x, minZ: aabb.min.z, maxZ: aabb.max.z }, units: 'in' };
 }

@@ -2,6 +2,14 @@
 
 import { TrailerPresets } from '../../src/data/trailer-presets.js';
 import {
+  assessPhysicalSubject, assessSupportPaths, assessResultantBounds,
+  aggregatePhysicalAssessment, assessOperationalEligibility, ROAD_PLANNING_REFERENCE_G,
+} from '../../src/packing-core/assessment.js';
+import {
+  measureContactUnion, measureSupportContacts, supportHullMargin, supportConvexHull, solveContactReactions,
+} from '../../src/packing-core/validation.js';
+import { measureRearBlocking } from '../../src/packing-core/retention-model.js';
+import {
   WW_SUPPORT_TRUCK,
   assert,
   assertPackImportNoOverlaps,
@@ -3153,4 +3161,573 @@ test('placement-settle-1 rotate/flip paths still call settleY before saving posi
   assert.ok(savePos >= 0, 'rotateSelection must commit through manual support revalidation');
   assert.ok(settlePos < savePos,
     'rotateSelection must call settleY before support-revalidating persistence');
+});
+
+// C2 final-state assessment: pure inputs, independent of legacy workflow policy.
+const c2Truck = { length: 100, width: 100, height: 100, shapeMode: 'rect' };
+const c2Case = (id, dims = [20, 20, 10], weight = 10, extra = {}) => ({
+  id, dimensions: { length: dims[0], width: dims[1], height: dims[2] },
+  weight, shape: 'box', orientationLock: 'any', ...extra,
+});
+const c2Instance = (id, caseId, x = 50, y = 5, z = 0, extra = {}) => ({
+  id, caseId, placement: 'packed',
+  transform: { position: { x, y, z }, rotation: { x: 0, y: 0, z: 0 } }, ...extra,
+});
+const c2Subject = (cases, instances, extra = {}) => ({ cases, instances, targetSpace: c2Truck, ...extra });
+const c2Floor = (extra = {}) => c2Subject([c2Case('box')], [c2Instance('box-1', 'box')], extra);
+const c2Body = (result, id) => result.measurements.bodies.find(b => b.id === id);
+const c2Hard = (result, property, id) => result.hard.find(f => f.property === property && (id === undefined || f.subject === id));
+const c2Gate = (result, property, id) => result.gates.find(f => f.property === property && (id === undefined || f.subject === id));
+const c2Near = (actual, expected, tolerance = 1e-8) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} ≈ ${expected}`);
+const c2Stack = (baseExtra = {}, childWeight = 10) => c2Subject([
+  c2Case('base', [20, 20, 10], 100, baseExtra), c2Case('child', [10, 10, 10], childWeight),
+], [c2Instance('base-1', 'base'), c2Instance('child-1', 'child', 50, 15)]);
+const c2Shifted = (upperX, upperWeight) => c2Subject([
+  c2Case('pedestal', [12, 20, 10], 1000), c2Case('beam', [20, 20, 10], 10), c2Case('upper', [4, 10, 10], upperWeight),
+], [c2Instance('pedestal-1', 'pedestal', 45), c2Instance('beam-1', 'beam', 50, 15), c2Instance('upper-1', 'upper', upperX, 25)]);
+const c2Wells = { length: 110, width: 40, height: 40, shapeMode: 'wheelWells',
+  shapeConfig: { wellOffsetFromRear: 30, wellLength: 30, wellWidth: 10, wellHeight: 5 } };
+const c2Front = { length: 100, width: 40, height: 60, shapeMode: 'frontBonus',
+  shapeConfig: { bonusLength: 40, bonusHeight: 20 } };
+const c2Retained = (height = 30, gap = 0) => c2Subject([
+  c2Case('retainer', [20, 10, height], 100), c2Case('deck', [20, 20, 10], 10),
+], [c2Instance('left', 'retainer', 90, height / 2, -5 - gap),
+  c2Instance('right', 'retainer', 90, height / 2, 5 + gap), c2Instance('deck-1', 'deck', 120, 25)], { targetSpace: c2Front });
+const c2Freeze = value => {
+  if (value && typeof value === 'object') { Object.values(value).forEach(c2Freeze); Object.freeze(value); }
+  return value;
+};
+
+test('C2 floor contact is fully measured, centered and VALID', () => {
+  const result = assessPhysicalSubject(c2Floor());
+  assert.equal(result.primary, 'VALID');
+  const body = c2Body(result, 'box-1');
+  assert.equal(body.support.area, 400);
+  assert.equal(body.support.coverage, 1);
+  assert.equal(body.support.bearingPlane, 0);
+  assert.equal(body.own.margin, 10);
+  assert.equal(body.pathOutcome, 'PASS');
+  assert.equal(result.eligibility.state, 'eligible');
+});
+
+test('C2 own-centered support outside the actual hull is HARD failure', () => {
+  const subject = c2Stack();
+  subject.instances[1].transform.position.x = 64;
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Hard(result, 'support.own-centered-hull', 'child-1').outcome, 'FAIL');
+  assert.equal(result.primary, 'INVALID');
+});
+
+test('C2 hull boundary requires a strictly positive numerical margin', () => {
+  const hull = supportConvexHull([{ x: 0, z: 0 }, { x: 10, z: 0 }, { x: 10, z: 10 }, { x: 0, z: 10 }]);
+  assert.deepEqual(supportHullMargin(hull, { x: 0, z: 5 }), { margin: 0, inside: false });
+  assert.equal(supportHullMargin(hull, { x: 0.5e-9, z: 5 }).inside, false);
+  assert.equal(supportHullMargin(hull, { x: 2e-9, z: 5 }).inside, true);
+  const subject = c2Stack();
+  subject.instances[1].transform.position.x = 60;
+  assert.equal(c2Hard(assessPhysicalSubject(subject), 'support.own-centered-hull', 'child-1').outcome, 'FAIL');
+});
+
+test('C2 overlapping and duplicate patches use exact union rather than summed area', () => {
+  const patches = [{ minX: 0, maxX: 10, minZ: 0, maxZ: 10 }, { minX: 5, maxX: 15, minZ: 0, maxZ: 10 }];
+  assert.equal(measureContactUnion([...patches, patches[0]]), 150);
+  assert.equal(measureContactUnion([{ minX: 0, maxX: 0, minZ: 0, maxZ: 10 }]), 0);
+  assert.equal(supportHullMargin(supportConvexHull([{ x: 0, z: 0 }, { x: 1, z: 0 }, { x: 2, z: 0 }]), { x: 1, z: 0 }).inside, false);
+});
+
+test('C2 a bridge spans separate contacts while its union remains sparse', () => {
+  const subject = c2Subject([c2Case('support', [4, 20, 10], 1000), c2Case('beam', [30, 20, 10], 10)], [
+    c2Instance('left', 'support', 42), c2Instance('right', 'support', 58), c2Instance('beam-1', 'beam', 50, 15),
+  ]);
+  const result = assessPhysicalSubject(subject), beam = c2Body(result, 'beam-1');
+  assert.equal(c2Hard(result, 'support.own-centered-hull', 'beam-1').outcome, 'PASS');
+  c2Near(beam.support.coverage, 8 / 30);
+  assert.equal(beam.support.patches.length, 2);
+  assert.equal(beam.own.inside, true);
+  assert.ok(result.unverified.some(f => f.property === 'bridge-cantilever-strength' && f.subject === 'beam-1'));
+});
+
+test('C2 below 50 percent can be physically VALID but operationally blocked', () => {
+  const result = assessPhysicalSubject(c2Subject([c2Case('base', [12, 20, 10], 100), c2Case('beam', [30, 20, 10])], [
+    c2Instance('base-1', 'base'), c2Instance('beam-1', 'beam', 50, 15),
+  ]));
+  assert.equal(c2Body(result, 'beam-1').support.coverage, 0.4);
+  assert.equal(result.primary, 'VALID');
+  assert.equal(c2Gate(result, 'support50', 'beam-1').outcome, 'FAIL');
+  assert.equal(result.eligibility.state, 'blocked');
+});
+
+test('C2 above 50 percent does not rescue a failing combined loaded hull', () => {
+  // A centered rectangle cannot have >50% contact entirely on one side of its
+  // center. Descendant eccentric load gives the independent failing-hull case.
+  const result = assessPhysicalSubject(c2Shifted(58, 100));
+  assert.equal(c2Body(result, 'beam-1').support.coverage, 0.55);
+  assert.equal(c2Gate(result, 'support50', 'beam-1').outcome, 'PASS');
+  assert.equal(c2Hard(result, 'support.own-centered-hull', 'beam-1').outcome, 'PASS');
+  assert.equal(c2Hard(result, 'support.loaded-resultant', 'beam-1').outcome, 'FAIL');
+  assert.equal(result.primary, 'INVALID');
+});
+
+test('C2 different bearing planes and a real vertical gap never combine contacts', () => {
+  const box = { min: { x: 0, y: 10, z: 0 }, max: { x: 10, y: 20, z: 10 } };
+  const support = measureSupportContacts(box, [
+    { supportId: 'same', y: 10, minX: 0, maxX: 2, minZ: 0, maxZ: 10 },
+    { supportId: 'low', y: 9.99, minX: 2, maxX: 8, minZ: 0, maxZ: 10 },
+    { supportId: 'high', y: 10.01, minX: 8, maxX: 10, minZ: 0, maxZ: 10 },
+  ]);
+  assert.equal(support.area, 20);
+  assert.deepEqual(support.patches.map(p => p.supportId), ['same']);
+  const subject = c2Stack();
+  subject.instances[1].transform.position.y += 0.001;
+  assert.equal(c2Hard(assessPhysicalSubject(subject), 'support.path', 'child-1').outcome, 'FAIL');
+});
+
+test('C2 a multi-level support path reaches a real rigid surface', () => {
+  const subject = c2Stack();
+  subject.cases.push(c2Case('top', [5, 5, 10], 1));
+  subject.instances.push(c2Instance('top-1', 'top', 50, 25));
+  const result = assessPhysicalSubject(subject);
+  assert.equal(result.primary, 'VALID');
+  assert.ok(result.measurements.supportGraph.paths.every(p => p.outcome === 'PASS'));
+  assert.equal(c2Body(result, 'base-1').load.demand, 111);
+});
+
+test('C2 a floating support cannot establish a path for its child', () => {
+  const subject = c2Stack();
+  subject.instances.forEach(i => { i.transform.position.y += 10; });
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Hard(result, 'support.path', 'base-1').outcome, 'FAIL');
+  assert.equal(c2Hard(result, 'support.path', 'child-1').outcome, 'FAIL');
+});
+
+test('C2 unresolved support geometry stays incomplete instead of proving empty space', () => {
+  const subject = c2Stack();
+  subject.cases[0].dimensions.height = null;
+  const result = assessPhysicalSubject(subject);
+  assert.equal(result.primary, 'INCOMPLETE');
+  assert.equal(c2Hard(result, 'support.path', 'child-1').outcome, 'UNRESOLVED');
+  assert.equal(result.measurements.mass.total, 110, 'known mass is independent of missing geometry');
+  assert.equal(result.measurements.cog.complete, false);
+  assert.equal(result.identity, null);
+});
+
+test('C2 cycles cannot qualify as support and only actual cycle members are labeled', () => {
+  const graph = assessSupportPaths(['ancestor', 'a', 'b'].map(id => ({ id, supportOutcome: 'PASS' })), [
+    { from: 'ancestor', to: 'a', area: 1 }, { from: 'a', to: 'b', area: 1 }, { from: 'b', to: 'a', area: 1 },
+  ]);
+  assert.deepEqual(graph.cycles, ['a', 'b']);
+  assert.ok(graph.paths.every(p => p.outcome === 'FAIL'));
+});
+
+test('C2 cargo identity cannot collide with generated rigid-support identity', () => {
+  const subject = c2Floor(); subject.instances[0].id = 'rigid:0';
+  const result = assessPhysicalSubject(subject), graph = result.measurements.supportGraph;
+  assert.equal(result.primary, 'VALID');
+  assert.equal(new Set(graph.nodes.map(n => n.id)).size, graph.nodes.length);
+  assert.notEqual(c2Body(result, 'rigid:0').load.reactions[0].supportId, 'rigid:0');
+});
+
+for (const restriction of [{ noStackOnTop: true }, { stackable: false }]) {
+  test(`C2 actual positive child contact honors ${Object.keys(restriction)[0]}`, () => {
+    const result = assessPhysicalSubject(c2Stack(restriction));
+    assert.equal(c2Hard(result, 'handling.no-top', 'base-1').outcome, 'FAIL');
+    assert.equal(result.primary, 'INVALID');
+  });
+}
+
+test('C2 vertical proximity without contact does not create a no-top violation', () => {
+  const subject = c2Stack({ noStackOnTop: true }); subject.instances[1].transform.position.y += 0.01;
+  assert.equal(c2Hard(assessPhysicalSubject(subject), 'handling.no-top', 'base-1'), undefined);
+});
+
+test('C2 maxStackCount counts direct children, not total tower levels', () => {
+  const subject = c2Stack({ maxStackCount: 1 });
+  subject.cases.push(c2Case('top', [5, 5, 10], 1)); subject.instances.push(c2Instance('top-1', 'top', 50, 25));
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Hard(result, 'handling.direct-child-count', 'base-1').outcome, 'PASS');
+  assert.equal(c2Hard(result, 'handling.direct-child-count', 'base-1').evidence.directCount, 1);
+});
+
+test('C2 two actual direct children exceed one while zero remains unrestricted', () => {
+  const subject = c2Stack({ maxStackCount: 1 });
+  subject.instances[1].transform.position.x = 45;
+  subject.instances.push(c2Instance('child-2', 'child', 55, 15));
+  assert.equal(c2Hard(assessPhysicalSubject(subject), 'handling.direct-child-count', 'base-1').outcome, 'FAIL');
+  subject.cases[0].maxStackCount = 0;
+  assert.equal(c2Hard(assessPhysicalSubject(subject), 'handling.direct-child-count', 'base-1').outcome, 'PASS');
+});
+
+test('C2 all known mass yields complete total, CoG and transmitted load', () => {
+  const result = assessPhysicalSubject(c2Stack());
+  assert.deepEqual(result.measurements.mass, { complete: true, knownSubtotal: 110, total: 110, units: 'lb' });
+  assert.equal(result.measurements.cog.complete, true);
+  c2Near(result.measurements.cog.value.y, 650 / 110);
+  assert.equal(c2Body(result, 'base-1').load.massComplete, true);
+  assert.equal(c2Body(result, 'base-1').load.demand, 110);
+});
+
+test('C2 one null contributor leaves subtotal separate and never substitutes zero', () => {
+  const result = assessPhysicalSubject(c2Stack({}, null));
+  assert.equal(result.primary, 'INCOMPLETE');
+  assert.deepEqual(result.measurements.mass, { complete: false, knownSubtotal: 100, total: null, units: 'lb' });
+  assert.equal(result.measurements.cog.value, null);
+  assert.equal(c2Body(result, 'base-1').load.demand, null);
+  assert.equal(c2Body(result, 'base-1').load.payload, null);
+  assert.equal(c2Hard(result, 'support.own-centered-hull', 'base-1').outcome, 'PASS');
+  assert.equal(c2Hard(result, 'support.loaded-resultant', 'base-1').outcome, 'UNRESOLVED');
+});
+
+test('C2 a single support receives the full known load and both moments', () => {
+  const result = assessPhysicalSubject(c2Stack()), load = c2Body(result, 'base-1').load;
+  assert.equal(load.reactions.length, 1);
+  assert.equal(load.reactions[0].force, 110);
+  c2Near(load.reactions[0].momentX, 5500);
+  c2Near(load.reactions[0].momentZ, 0);
+});
+
+test('C2 two determinate supports conserve force and moments without an equal split assumption', () => {
+  const result = solveContactReactions(100, { x: 2, z: 0 }, [{ supportId: 'left', x: 0, z: 0 }, { supportId: 'right', x: 10, z: 0 }]);
+  assert.equal(result.outcome, 'PASS'); assert.equal(result.determined, true);
+  c2Near(result.reactions[0].force, 80); c2Near(result.reactions[1].force, 20);
+  c2Near(result.reactions.reduce((s, r) => s + r.force, 0), 100);
+  c2Near(result.reactions.reduce((s, r) => s + r.momentX, 0), 200);
+});
+
+test('C2 three noncollinear point supports have a determined balanced solution', () => {
+  const result = solveContactReactions(100, { x: 2, z: 3 }, [
+    { supportId: 'a', x: 0, z: 0 }, { supportId: 'b', x: 10, z: 0 }, { supportId: 'c', x: 0, z: 10 },
+  ]);
+  assert.equal(result.determined, true);
+  result.reactions.forEach((r, i) => c2Near(r.force, [50, 20, 30][i]));
+  c2Near(result.reactions.reduce((s, r) => s + r.momentZ, 0), 300);
+});
+
+test('C2 three collinear supports preserve indeterminate ranges and never invent equal loads', () => {
+  const result = solveContactReactions(90, { x: 5, z: 0 }, [
+    { supportId: 'a', x: 0, z: 0 }, { supportId: 'b', x: 5, z: 0 }, { supportId: 'c', x: 10, z: 0 },
+  ]);
+  assert.equal(result.outcome, 'PASS'); assert.equal(result.determined, false);
+  assert.ok(result.reactions.every(r => r.force === null));
+  assert.deepEqual(result.reactions[1].bounds.force, { min: 0, max: 90 });
+  assert.deepEqual(result.reactions[0].bounds.force, { min: 0, max: 45 });
+});
+
+test('C2 finite patches return admissible per-support ranges, not area-proportional loads', () => {
+  const result = solveContactReactions(100, { x: 5, z: 0 }, [
+    { supportId: 'a', x: 0, z: -1 }, { supportId: 'a', x: 2, z: 1 },
+    { supportId: 'a', x: 0, z: 1 }, { supportId: 'a', x: 2, z: -1 },
+    { supportId: 'b', x: 8, z: -1 }, { supportId: 'b', x: 10, z: 1 },
+    { supportId: 'b', x: 8, z: 1 }, { supportId: 'b', x: 10, z: -1 },
+  ]);
+  assert.equal(result.outcome, 'PASS'); assert.equal(result.determined, false);
+  assert.ok(result.reactions.every(r => r.force === null && r.bounds.force.min < r.bounds.force.max));
+});
+
+test('C2 indeterminate descendant reactions propagate uncertainty despite complete source mass', () => {
+  const result = assessPhysicalSubject(c2Subject([c2Case('support', [4, 20, 10], 1), c2Case('beam', [30, 20, 10], 10)], [
+    c2Instance('left', 'support', 42), c2Instance('right', 'support', 58), c2Instance('beam-1', 'beam', 50, 15),
+  ]));
+  assert.equal(result.measurements.mass.total, 12);
+  assert.equal(result.primary, 'INCOMPLETE');
+  const reactions = c2Body(result, 'beam-1').load.reactions;
+  assert.ok(reactions.every(r => r.force === null && r.bounds.force.max < 10), 'do not duplicate full load onto both supports');
+  assert.equal(c2Body(result, 'left').load.resultant, null);
+  assert.equal(c2Hard(result, 'support.loaded-resultant', 'left').outcome, 'UNRESOLVED');
+  assert.equal(c2Hard(result, 'support.own-centered-hull', 'left').outcome, 'PASS');
+});
+
+test('C2 impossible nonnegative equilibrium fails instead of assigning negative reactions', () => {
+  assert.equal(solveContactReactions(100, { x: -1, z: 0 }, [
+    { supportId: 'a', x: 0, z: 0 }, { supportId: 'b', x: 10, z: 0 },
+  ]).outcome, 'FAIL');
+});
+
+test('C2 unresolved demand and bounded computational limits do not fabricate reactions', () => {
+  assert.equal(solveContactReactions(null, { x: 0, z: 0 }, []).outcome, 'UNRESOLVED');
+  assert.equal(solveContactReactions(1, { x: 0, z: 0 }, [{ supportId: 'a', x: NaN, z: 0 }]).outcome, 'UNRESOLVED');
+  const result = solveContactReactions(1, { x: 0, z: 0 }, Array.from({ length: 65 }, (_, x) => ({ supportId: `s${x}`, x, z: 0 })));
+  assert.equal(result.outcome, 'UNRESOLVED'); assert.deepEqual(result.reactions, []);
+});
+
+test('C2 a descendant shifts the combined resultant while remaining inside the lower hull', () => {
+  const result = assessPhysicalSubject(c2Shifted(51, 10)), load = c2Body(result, 'beam-1').load;
+  assert.equal(c2Hard(result, 'support.loaded-resultant', 'beam-1').outcome, 'PASS');
+  c2Near(load.resultant.x, 50.5); assert.equal(load.demand, 20);
+  assert.equal(c2Body(result, 'pedestal-1').load.demand, 1020);
+});
+
+test('C2 admissible bounds distinguish all-pass, all-fail and mixed dependent outcomes', () => {
+  const hull = supportConvexHull([{ x: 0, z: -5 }, { x: 10, z: -5 }, { x: 10, z: 5 }, { x: 0, z: 5 }]);
+  const bounds = { force: { min: 10, max: 10 }, momentX: { min: 40, max: 60 }, momentZ: { min: -1, max: 1 } };
+  assert.equal(assessResultantBounds(hull, bounds).outcome, 'PASS');
+  bounds.momentX = { min: 110, max: 120 };
+  assert.equal(assessResultantBounds(hull, bounds).outcome, 'FAIL');
+  bounds.momentX = { min: 90, max: 110 };
+  assert.equal(assessResultantBounds(hull, bounds).outcome, 'UNRESOLVED');
+  assert.equal(assessResultantBounds(hull, null).outcome, 'UNRESOLVED');
+});
+
+test('C2 pallet payload plus tare flows down, with advisory-only maxPalletWeight', () => {
+  const subject = c2Stack({ isPallet: true, maxPalletWeight: 5 }); subject.cases[0].weight = 2;
+  const result = assessPhysicalSubject(subject), load = c2Body(result, 'base-1').load;
+  assert.equal(load.payload, 10); assert.equal(load.demand, 12); assert.equal(load.reactions[0].force, 12);
+  assert.equal(result.primary, 'VALID');
+  assert.ok(result.advisory.some(f => f.property === 'pallet.payload-threshold'));
+  assert.equal(c2Gate(result, 'supportWeight').outcome, 'NOT_APPLICABLE');
+  assert.ok(result.unverified.some(f => f.property === 'structural-top-load-capacity'));
+});
+
+test('C2 unknown pallet payload leaves its dependent downward load incomplete', () => {
+  const result = assessPhysicalSubject(c2Stack({ isPallet: true, maxPalletWeight: 5 }, null));
+  assert.equal(c2Body(result, 'base-1').load.payload, null);
+  assert.equal(c2Body(result, 'base-1').load.demand, null);
+  assert.equal(result.primary, 'INCOMPLETE');
+  assert.equal(result.advisory.some(f => f.property === 'pallet.payload-threshold'), false);
+});
+
+test('C2 immediate 1:1 own-weight gate blocks a physically valid heavier child', () => {
+  const subject = c2Stack(); subject.cases[0].weight = 1;
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Gate(result, 'supportWeight').outcome, 'FAIL');
+  assert.equal(result.primary, 'VALID'); assert.equal(result.eligibility.state, 'blocked');
+});
+
+test('C2 1:1 uses immediate own weight, not the descendants total', () => {
+  const subject = c2Stack(); subject.cases[0].weight = 10;
+  subject.cases.push(c2Case('top', [5, 5, 10], 10)); subject.instances.push(c2Instance('top-1', 'top', 50, 25));
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Body(result, 'base-1').load.payload, 20);
+  assert.ok(result.gates.filter(g => g.property === 'supportWeight').every(g => g.outcome === 'PASS'));
+});
+
+test('C2 unknown child or supporter mass makes the active weight gate unresolved', () => {
+  for (const index of [0, 1]) {
+    const subject = c2Stack(); subject.cases[index].weight = null;
+    const result = assessPhysicalSubject(subject);
+    assert.equal(c2Gate(result, 'supportWeight').outcome, 'UNRESOLVED');
+    assert.equal(result.eligibility.state, 'blocked');
+  }
+});
+
+test('C2 Wheel Well one-third extension is a compatibility gate only', () => {
+  const subject = c2Subject([c2Case('cantilever', [30, 8, 10])], [c2Instance('cantilever-1', 'cantilever', 56, 10, 15)], { targetSpace: c2Wells });
+  const result = assessPhysicalSubject(subject);
+  c2Near(c2Body(result, 'cantilever-1').support.extensionFraction, 11 / 30);
+  assert.equal(c2Gate(result, 'wheelWellThird').outcome, 'FAIL');
+  assert.equal(result.primary, 'VALID'); assert.equal(result.eligibility.state, 'blocked');
+  assert.equal(c2Gate(assessPhysicalSubject(c2Floor()), 'wheelWellThird').outcome, 'NOT_APPLICABLE');
+});
+
+test('C2 compatibility flags can disable every known temporary gate without changing physical findings', () => {
+  const subject = c2Stack(); subject.cases[0].weight = 1;
+  const on = assessPhysicalSubject(subject);
+  const off = assessPhysicalSubject({ ...subject, compatibility: { support50: false, supportWeight: false, wheelWellThird: false } });
+  assert.deepEqual(off.hard, on.hard);
+  assert.ok(off.gates.every(g => !g.active && g.outcome === 'NOT_APPLICABLE'));
+  assert.equal(off.eligibility.state, 'eligible'); assert.notEqual(off.identity, on.identity);
+  assert.throws(() => assessPhysicalSubject({ ...subject, compatibility: { support50: 'false' } }), TypeError);
+});
+
+test('C2 actual forbidden signed orientation is HARD invalid', () => {
+  const subject = c2Floor(); subject.cases[0].orientationLock = 'upright';
+  subject.instances[0].transform.rotation.x = Math.PI;
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Hard(result, 'orientation.permission', 'box-1').outcome, 'FAIL');
+  assert.equal(result.primary, 'INVALID');
+});
+
+test('C2 planning locks, profiles, cached dimensions and strategy are not physical authority', () => {
+  const subject = c2Floor(), baseline = assessPhysicalSubject(subject);
+  Object.assign(subject.instances[0], { lockedRotation: { x: 90, y: 90, z: 0 }, rotationLocked: true,
+    orientedDims: { length: 999, width: 999, height: 999 }, packedProfile: 'obsolete', strategy: 'max' });
+  subject.cases[0].canFlip = false;
+  assert.deepEqual(assessPhysicalSubject(subject), baseline);
+});
+
+test('C2 collisions are HARD invalid and collect useful independent unresolved evidence', () => {
+  const subject = c2Floor(); subject.cases.push(c2Case('unknown', [20, 20, 10], null));
+  subject.instances.push(c2Instance('overlap', 'unknown', 55));
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Hard(result, 'collision').outcome, 'FAIL');
+  assert.equal(c2Hard(result, 'support.loaded-resultant', 'overlap').outcome, 'UNRESOLVED');
+  assert.equal(result.primary, 'INVALID');
+});
+
+test('C2 out-of-bounds geometry and Wheel Well body penetration fail containment', () => {
+  const subject = c2Floor(); subject.instances[0].transform.position.x = -20;
+  assert.equal(c2Hard(assessPhysicalSubject(subject), 'containment', 'box-1').outcome, 'FAIL');
+  const well = c2Subject([c2Case('box', [10, 10, 10])], [c2Instance('box-1', 'box', 45, 5, 15)], { targetSpace: c2Wells });
+  assert.equal(c2Hard(assessPhysicalSubject(well), 'containment', 'box-1').outcome, 'FAIL');
+});
+
+test('C2 continuous center floor accepts a supplied pose spanning the computational Wheel Well seam', () => {
+  const subject = c2Subject([c2Case('box', [20, 20, 20])], [c2Instance('box-1', 'box', 60, 10)], { targetSpace: c2Wells });
+  const result = assessPhysicalSubject(subject);
+  assert.equal(result.primary, 'VALID');
+  assert.equal(c2Hard(result, 'containment', 'box-1').outcome, 'PASS');
+  assert.equal(c2Body(result, 'box-1').support.coverage, 1);
+  assert.ok(c2Body(result, 'box-1').support.patches.length > 1);
+});
+
+test('C2 raised Wheel Well contacts are real support with duplicate surfaces unioned once', () => {
+  const result = assessPhysicalSubject(c2Subject([c2Case('box', [20, 40, 10])], [c2Instance('box-1', 'box', 45, 10)], { targetSpace: c2Wells }));
+  assert.equal(c2Body(result, 'box-1').support.coverage, 0.5);
+  assert.equal(c2Hard(result, 'support.own-centered-hull', 'box-1').outcome, 'PASS');
+  assert.equal(result.primary, 'VALID');
+});
+
+test('C2 Front Overhang actual blocker union spans the assessed movement width', () => {
+  const result = assessPhysicalSubject(c2Retained()), blocking = c2Hard(result, 'front-overhang.rear-blocking', 'deck-1');
+  assert.equal(blocking.outcome, 'PASS');
+  assert.equal(blocking.evidence.coveredWidth, 20);
+  assert.equal(blocking.evidence.contacts.length, 2);
+  assert.equal(result.primary, 'VALID');
+});
+
+test('C2 Front Overhang horizontal gaps remain gaps', () => {
+  const result = assessPhysicalSubject(c2Retained(30, 0.1)), blocking = c2Hard(result, 'front-overhang.rear-blocking', 'deck-1');
+  assert.equal(blocking.outcome, 'FAIL'); c2Near(blocking.evidence.coveredWidth, 19.8);
+});
+
+test('C2 Front Overhang no positive vertical overlap fails', () => {
+  assert.equal(c2Hard(assessPhysicalSubject(c2Retained(20)), 'front-overhang.rear-blocking', 'deck-1').outcome, 'FAIL');
+});
+
+test('C2 tiny positive rear-blocker overlap establishes geometry while strength stays unverified', () => {
+  const result = assessPhysicalSubject(c2Retained(20.00001));
+  assert.equal(c2Hard(result, 'front-overhang.rear-blocking', 'deck-1').outcome, 'PASS');
+  const limitation = result.unverified.find(f => f.property === 'front-overhang-structural-restraint' && f.subject === 'deck-1');
+  assert.equal(limitation.evidence.geometryEstablished, true);
+  assert.deepEqual(limitation.evidence.properties, ['strength', 'anchorage', 'impact-capacity']);
+});
+
+test('C2 upper Front Overhang cargo cannot borrow a wall that ends at its bearing plane', () => {
+  const subject = c2Retained(30);
+  subject.cases.push(c2Case('upper', [10, 20, 10])); subject.instances.push(c2Instance('upper-1', 'upper', 120, 35));
+  const result = assessPhysicalSubject(subject);
+  assert.equal(c2Hard(result, 'front-overhang.rear-blocking', 'deck-1').outcome, 'PASS');
+  assert.equal(c2Hard(result, 'front-overhang.rear-blocking', 'upper-1').outcome, 'FAIL');
+});
+
+test('C2 staged or floating Front Overhang blockers do not qualify', () => {
+  const staged = c2Retained(); staged.instances[0].placement = 'staged';
+  assert.equal(c2Hard(assessPhysicalSubject(staged), 'front-overhang.rear-blocking', 'deck-1').outcome, 'FAIL');
+  const floating = c2Retained(); floating.instances[0].transform.position.y += 1;
+  assert.equal(c2Hard(assessPhysicalSubject(floating), 'front-overhang.rear-blocking', 'deck-1').outcome, 'FAIL');
+});
+
+test('C2 unresolved rear-blocker qualification remains unresolved rather than proven retention', () => {
+  const body = { min: { x: 110, y: 20, z: -10 }, max: { x: 130, y: 30, z: 10 } };
+  const blocker = { id: 'wall', aabb: { min: { x: 80, y: 0, z: -10 }, max: { x: 100, y: 30, z: 10 } }, qualification: 'UNRESOLVED' };
+  const result = measureRearBlocking(body, [blocker], { stepX: 100 });
+  assert.equal(result.outcome, 'UNRESOLVED'); assert.equal(result.coveredWidth, 0);
+});
+
+for (const shape of ['cylinder', 'drum']) {
+  test(`C2 ${shape} keeps rectangular-envelope results and scoped round limitations`, () => {
+    const subject = c2Floor(); subject.cases[0].shape = shape;
+    const result = assessPhysicalSubject(subject);
+    assert.equal(result.primary, 'VALID'); assert.equal(c2Body(result, 'box-1').support.area, 400);
+    assert.deepEqual(result.unverified.find(f => f.property === 'round-cargo-contact-and-restraint').evidence.properties,
+      ['rolling', 'chocking-cradle', 'real-contact', 'axis-restraint']);
+  });
+}
+
+test('C2 aggregation has exact HARD precedence and keeps all evidence', () => {
+  const pass = { property: 'a', outcome: 'PASS' }, unknown = { property: 'b', outcome: 'UNRESOLVED' }, fail = { property: 'c', outcome: 'FAIL' };
+  assert.equal(aggregatePhysicalAssessment([pass]), 'VALID');
+  assert.equal(aggregatePhysicalAssessment([pass, unknown]), 'INCOMPLETE');
+  const evidence = c2Freeze([pass, unknown, fail]);
+  assert.equal(aggregatePhysicalAssessment(evidence), 'INVALID'); assert.equal(evidence.length, 3);
+  const result = assessPhysicalSubject(c2Floor());
+  assert.ok(result.unverified.length > 0 && result.advisory.length > 0);
+  assert.equal(result.primary, 'VALID');
+});
+
+test('C2 primary INCOMPLETE can remain operationally eligible', () => {
+  const subject = c2Floor(); subject.cases[0].weight = null;
+  const result = assessPhysicalSubject(subject);
+  assert.equal(result.primary, 'INCOMPLETE'); assert.equal(result.eligibility.state, 'eligible');
+  assert.equal(assessOperationalEligibility([{ active: true, outcome: 'UNRESOLVED' }]).state, 'blocked');
+  assert.equal(assessOperationalEligibility([{ active: false, outcome: 'FAIL' }]).state, 'eligible');
+});
+
+test('C2 every independent road reference is a planning constant, never a HARD score', () => {
+  assert.deepEqual(ROAD_PLANNING_REFERENCE_G, { forward: 0.8, rear: 0.5, left: 0.5, right: 0.5 });
+  assert.equal(Object.isFrozen(ROAD_PLANNING_REFERENCE_G), true);
+  assert.ok(assessPhysicalSubject(c2Floor()).unverified.some(f => f.property === 'transport-securement'));
+});
+
+test('C2 assessment preserves frozen Cases, instances and target-space inputs', () => {
+  const subject = structuredClone(c2Retained()), before = structuredClone(subject);
+  c2Freeze(subject);
+  const result = assessPhysicalSubject(subject);
+  assert.equal(result.primary, 'VALID'); assert.deepEqual(subject, before);
+});
+
+test('C2 hidden packed cargo participates while staged source transforms are excluded and untouched', () => {
+  const subject = c2Stack(), baseline = assessPhysicalSubject(subject);
+  subject.instances[0].hidden = true;
+  subject.instances.push(c2Instance('staged', 'missing', 50, 5, 0, { placement: 'staged', transform: { arbitrary: 'planning source' } }));
+  c2Freeze(subject);
+  assert.deepEqual(assessPhysicalSubject(subject), baseline);
+});
+
+test('C2 equivalent order and display-only edits give deterministic results and reuse identity', () => {
+  const subject = c2Stack(), baseline = assessPhysicalSubject(subject);
+  subject.instances.reverse(); subject.cases.reverse();
+  Object.assign(subject.cases[0], { name: 'Renamed', color: '#ff0000', notes: 'Display only' });
+  subject.instances[0].hidden = true;
+  subject.targetSpace = { ...subject.targetSpace, name: 'Renamed truck', notes: 'Display only' };
+  assert.deepEqual(assessPhysicalSubject(subject), baseline);
+});
+
+test('C2 identity tracks consumed mass, actual pose, handling, target and policy', () => {
+  const baseline = assessPhysicalSubject(c2Floor()).identity;
+  for (const edit of [
+    s => { s.cases[0].weight = null; }, s => { s.instances[0].transform.position.x += 1; },
+    s => { s.cases[0].noStackOnTop = true; }, s => { s.targetSpace = { ...s.targetSpace, length: 110 }; },
+    s => { s.compatibility = { support50: false }; },
+  ]) { const subject = c2Floor(); edit(subject); assert.notEqual(assessPhysicalSubject(subject).identity, baseline); }
+});
+
+test('C2 equivalent signed axes yield identical identity without rounding Case dimensions', () => {
+  const subject = c2Floor(); subject.cases[0].dimensions.length = 20.123456789;
+  const baseline = assessPhysicalSubject(subject);
+  subject.instances[0].transform.rotation.y = 2 * Math.PI;
+  assert.deepEqual(assessPhysicalSubject(subject), baseline);
+  c2Near(c2Body(baseline, 'box-1').support.area, 20.123456789 * 20);
+});
+
+test('C2 strict malformed mass and orientation stay unresolved while known geometry remains useful', () => {
+  for (const field of ['weight', 'orientationLock']) {
+    const subject = c2Floor(); subject.cases[0][field] = field === 'weight' ? '10' : 'invalid';
+    const result = assessPhysicalSubject(subject);
+    assert.equal(result.primary, 'INCOMPLETE'); assert.equal(result.identity, null);
+    assert.equal(c2Hard(result, 'containment', 'box-1').outcome, 'PASS');
+    assert.equal(c2Body(result, 'box-1').support.coverage, 1);
+  }
+});
+
+test('C2 malformed pose, membership, identity and target never produce reusable complete assessment', () => {
+  for (const edit of [
+    s => { s.instances[0].transform.rotation.x = 17; },
+    s => { s.instances[0].id = null; },
+    s => { s.instances.push(structuredClone(s.instances[0])); },
+    s => { s.instances[0].placement = 'unknown'; },
+    s => { s.instances[0].caseId = 'missing'; },
+    s => { s.instances[0].transform.position.x = 1e308; },
+    s => { s.targetSpace = { ...s.targetSpace, length: null }; },
+  ]) {
+    const subject = c2Floor(); edit(subject); const result = assessPhysicalSubject(subject);
+    assert.equal(result.primary, 'INCOMPLETE'); assert.equal(result.identity, null);
+    assert.ok(result.hard.some(f => f.outcome === 'UNRESOLVED'));
+  }
+});
+
+test('C2 empty loaded subject preserves an empty known subtotal without inventing a CoG', () => {
+  const result = assessPhysicalSubject(c2Subject([], []));
+  assert.equal(result.primary, 'VALID'); assert.equal(result.measurements.mass.total, 0);
+  assert.equal(result.measurements.cog.value, null); assert.equal(result.measurements.cog.complete, false);
+  assert.throws(() => assessPhysicalSubject({ ...c2Floor(), context: { scope: 'selection' } }), TypeError);
 });

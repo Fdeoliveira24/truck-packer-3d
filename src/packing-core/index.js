@@ -18,6 +18,10 @@ export {
 } from './domain.js';
 export { buildSpaceModel, getConstrainedZones } from './space-model.js';
 export {
+  assessPhysicalSubject, aggregatePhysicalAssessment, assessOperationalEligibility,
+  assessSupportPaths, assessResultantBounds, ROAD_PLANNING_REFERENCE_G,
+} from './assessment.js';
+export {
   CONTAINMENT_EPS_INCHES,
   PLACEMENT_EPS,
   MIN_SUPPORT_FRACTION,
@@ -39,6 +43,14 @@ export {
   getMaxStackCount,
   countDirectStackChildren,
   hasStackCapacity,
+  MEASUREMENT_EPS,
+  measureIntervalUnion,
+  measureContactUnion,
+  supportConvexHull,
+  contactPatchCorners,
+  supportHullMargin,
+  measureSupportContacts,
+  solveContactReactions,
 } from './validation.js';
 export {
   MAX_WHEELWELL_OVERHANG_FRACTION,
@@ -55,6 +67,7 @@ export {
   RETENTION_MAX_STEP_GAP,
   isRetainerAtStep,
   computeDeckRetentionCoverage,
+  measureRearBlocking,
 } from './retention-model.js';
 export {
   REJECTION_CODES,

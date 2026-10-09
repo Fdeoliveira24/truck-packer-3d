@@ -479,14 +479,16 @@ export function createImportPackDialog({
 
       // Compute volume and weight from bundled cases + instances
       let totalWeightLb = 0;
+      let weightComplete = true;
       let totalVolIn3 = 0;
       const bundledById = new Map((bundledCases || []).map(c => [c.id, c]));
 
       (pack.cases || []).forEach(inst => {
         const def = bundledById.get(inst.caseId);
-        if (!def) return;
-        const w = Number(def.weight);
-        if (Number.isFinite(w) && w > 0) totalWeightLb += w;
+        if (!def) { weightComplete = false; return; }
+        const w = def.weight;
+        if (typeof w === 'number' && Number.isFinite(w) && w > 0) totalWeightLb += w;
+        else weightComplete = false;
         const dims = def.dimensions || {};
         const vol = Number(dims.length) * Number(dims.width) * Number(dims.height);
         if (Number.isFinite(vol) && vol > 0) totalVolIn3 += vol;
@@ -582,7 +584,7 @@ export function createImportPackDialog({
       [
         { value: String(statCaseCount), label: 'CASES READY' },
         {
-          value: (Utils && Utils.formatWeight)
+          value: !weightComplete ? '—' : (Utils && Utils.formatWeight)
             ? Utils.formatWeight(totalWeightLb, weightUnit, 0)
             : totalWeightLb + ' lb',
           label: 'TOTAL WEIGHT',
@@ -807,7 +809,7 @@ export function createImportPackDialog({
         const wtTd = doc.createElement('td');
         wtTd.className = 'tp3d-ic-td-weight';
         if (hasDef) {
-          const wt = Number(def.weight);
+          const wt = def.weight;
           wtTd.textContent = Number.isFinite(wt) && wt > 0
             ? ((Utils && Utils.formatWeight) ? Utils.formatWeight(wt, 'lb', 0) : wt + ' lb')
             : '—';

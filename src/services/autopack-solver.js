@@ -45,7 +45,7 @@ import {
 } from '../packing-core/explain.js';
 import { createSolveBudget } from '../packing-core/budget.js';
 import { computeDeckRetentionCoverage } from '../packing-core/retention-model.js';
-import { canonicalOrientationLock } from '../core/orientation.js';
+import { canonicalOrientationLock, isCasePhysicalOrientationAllowed, parseCaseOrientationLock } from '../core/orientation.js';
 import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
 
 export { aabbsOverlap, computeXzOverlapArea, isAabbContainedInAnyZone };
@@ -53,7 +53,7 @@ import {
   RIGHT_ANGLE_RAD,
   normalizeRightAngleRotation,
   getOrientedDimsForRotation as getOrientedDimsForRotationCanonical,
-  isHeightAxisVertical,
+  getPhysicalOrientationAxes,
 } from '../core/oriented-dims.js';
 
 const LONG_RATIO = 4;
@@ -133,86 +133,55 @@ function makeCandidate(l, w, h, rotation, locked = false) {
   };
 }
 
-export function buildOrientationCandidates(dims = {}, item = {}) {
+export function buildOrientationCandidates(dims = {}, item = {}, { fullSearch = false } = {}) {
   const d = readDims(dims);
   if (!d.l || !d.w || !d.h) return [];
+  const permission = parseCaseOrientationLock(item.orientationLock, { allowDefault: true });
+  if (!permission.valid) return [];
+  const physicalCase = { orientationLock: permission.value };
 
-  const lock = canonicalOrientationLock(item.orientationLock); // 'any' | 'upright' | 'onSide'
-
-  // Case orientation policy is authoritative even over an exact instance lock.
-  // A lock's pose was legal when created, but the Case may have been edited
-  // since — canFlip plays no part here (it only gates AutoPack's freedom to
-  // GENERATE alternative faces, not the validity of an already-chosen exact
-  // pose). An illegal locked pose yields no candidate at all: exact lock means
-  // exact lock, never a silent fallback to another orientation.
+  // An exact planning target only narrows Case permission. Missing/malformed
+  // targets never become the current pose or an invented identity rotation.
   if (item.orientationLocked === true) {
-    const lockedRotation = normalizeRightAngleRotation(
-      item.lockedRotation ||
-        (item.transform && item.transform.rotation) ||
-        item.rotation ||
-        {}
-    );
-    if (lock === 'upright' && !isHeightAxisVertical(lockedRotation)) return [];
-    if (lock === 'onSide' && isHeightAxisVertical(lockedRotation)) return [];
-    const oriented = getOrientedDimsForRotation(d, lockedRotation);
-    return [makeCandidate(oriented.l, oriented.w, oriented.h, lockedRotation, true)];
+    if (!isCasePhysicalOrientationAllowed(physicalCase, item.lockedRotation)) return [];
+    const rotation = normalizeRightAngleRotation(item.lockedRotation);
+    const oriented = getOrientedDimsForRotation(d, rotation);
+    return [makeCandidate(oriented.l, oriented.w, oriented.h, rotation, true)];
   }
 
-  const canFlip = item.canFlip === true;
   const seen = new Set();
   const candidates = [];
-
-  // Rotation is the single source of truth. A candidate stores its right-angle
-  // rotation and DERIVES its effective dimensions from that rotation through the
-  // shared THREE-compatible helper — never a separately handwritten permutation
-  // that can disagree with the rotation for compound right angles.
   function add(x, y, z) {
     const rotation = normalizeRightAngleRotation({ x, y, z });
-    const o = getOrientedDimsForRotation(d, rotation);
-    if (!(o.l > 0 && o.w > 0 && o.h > 0)) return;
-    // Deduplicate by the derived effective dimensions: two rotations that produce
-    // the same physical box are one packing candidate (e.g. a cube collapses to 1).
-    const key = `${o.l}|${o.w}|${o.h}`;
+    if (!isCasePhysicalOrientationAllowed(physicalCase, rotation)) return;
+    // Equal envelope dimensions do not prove physical Case symmetry. Only
+    // equivalent signed authored-axis mappings are the same physical pose.
+    const key = JSON.stringify(getPhysicalOrientationAxes(rotation).value);
     if (seen.has(key)) return;
     seen.add(key);
+    const o = getOrientedDimsForRotation(d, rotation);
     candidates.push(makeCandidate(o.l, o.w, o.h, rotation));
   }
 
-  // ROTATE vs FLIP product contract:
-  // - Rotating (footprint yaw: length/width swap, height axis unchanged) is
-  //   ALWAYS available when the orientation policy allows the face — it never
-  //   requires "Allow flipping". Both upright yaws are generated for
-  //   'any'/'upright'. The 'onSide' policy stays aligned with legacy item-prep:
-  //   two side-face candidates, no identity/horizontal yaw fallback.
-  // - Flipping/tipping (resting on another face, vertical height changes) is
-  //   generated only when the policy permits it: canFlip under 'any', or the
-  //   'onSide' policy itself. Scoring chooses among candidates, so a tipped
-  //   pose is used only when it genuinely fits/scores better.
-  if (lock === 'upright' || lock === 'any') {
+  // Standard/default-family search deliberately retains two predictable yaws,
+  // or its two selected side poses. This is search coverage, not permission.
+  if (permission.value === 'onSide') {
+    add(0, 0, RIGHT_ANGLE_RAD);
+    add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
+  } else {
     add(0, 0, 0);
     add(0, RIGHT_ANGLE_RAD, 0);
   }
-
-  if (lock === 'onSide') {
-    add(0, 0, RIGHT_ANGLE_RAD);
-    add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
+  // Max searches every supported physical orientation within Case permission.
+  if (fullSearch) {
+    for (let x = 0; x < 4; x++) {
+      for (let y = 0; y < 4; y++) {
+        for (let z = 0; z < 4; z++) {
+          add(x * RIGHT_ANGLE_RAD, y * RIGHT_ANGLE_RAD, z * RIGHT_ANGLE_RAD);
+        }
+      }
+    }
   }
-
-  // canFlip may only introduce tipped (non-upright) faces when the case policy
-  // is 'any'. 'upright' must keep the item upright even when canFlip is true,
-  // and 'onside' already produced its side faces above. This matches the manual
-  // rotate policy in pack-library.isOrientationAllowedByCasePolicy.
-  if (canFlip && lock === 'any') {
-    add(0, 0, RIGHT_ANGLE_RAD);
-    add(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD);
-    add(RIGHT_ANGLE_RAD, 0, 0);
-    add(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, 0);
-    // Complete the side-face yaw coverage (all 6 distinct face×yaw triples of
-    // a box). Appended last: pure dedupe no-ops for triples already covered.
-    add(0, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
-    add(RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD, RIGHT_ANGLE_RAD);
-  }
-
   return candidates;
 }
 
@@ -268,7 +237,7 @@ export function classifyAutoPackItem(item = {}) {
   if (item.laneItem === true) return 'LANE_ITEM';
   if (item.laneItem !== false && laneByDims) return 'LANE_ITEM';
   if (item.noStackOnTop || item.stackable === false) return 'FRAGILE_BASE';
-  if (finiteNumber(item.weight, 0) >= HEAVY_LBS) return 'HEAVY_BASE';
+  if (item.weight != null && item.weight >= HEAVY_LBS) return 'HEAVY_BASE';
   if (dims.l * dims.w * dims.h <= FILLER_IN3) return 'FILLER';
   return 'STANDARD';
 }
@@ -445,16 +414,13 @@ function createStackCapacityCache(packed) {
 function applyMaxCapacityRuleProfile(item = {}) {
   return {
     ...item,
-    actualWeight: item.weight,
     noStackOnTop: false,
     stackable: true,
     maxStackCount: 0,
-    weight: 0,
+    relaxWeightComparison: true,
     laneItem: false,
     loadPriority: 0,
-    orientationLock: 'any',
-    canFlip: true,
-    orientationLocked: false,
+    fullOrientationSearch: true,
   };
 }
 
@@ -463,7 +429,7 @@ function normalizeItem(item = {}, index = 0) {
   const source = { ...item, ...canonicalCargoForStorage(item) };
   const dims = readDims(source.dims || source.dimensions || source.orientedDims);
   const id = source.instanceId || source.id || `autopack-item-${index}`;
-  const candidates = buildOrientationCandidates(dims, source)
+  const candidates = buildOrientationCandidates(dims, source, { fullSearch: source.fullOrientationSearch === true })
     .filter(candidate => candidate.l > 0 && candidate.w > 0 && candidate.h > 0)
     .sort((a, b) => {
       const footprintDelta = (b.l * b.w) - (a.l * a.w);
@@ -483,8 +449,8 @@ function normalizeItem(item = {}, index = 0) {
     candidates,
     volume: dims.l * dims.w * dims.h,
     footprint: dims.l * dims.w,
-    weight: finiteNumber(source.weight, 0),
-    actualWeight: finiteNumber(source.actualWeight ?? source.weight, 0),
+    weight: source.weight,
+    actualWeight: source.weight,
     index,
     className: classifyAutoPackItem({ ...source, classificationDims }),
   };
@@ -518,7 +484,6 @@ function layoutGroupKey(value = {}) {
     dims.h,
     canonicalOrientationLock(source?.orientationLock),
     source?.orientationLocked === true ? 'locked' : 'unlocked',
-    source?.canFlip === true ? 'flip' : 'no-flip',
     source?.noStackOnTop === true ? 'no-top' : 'top-ok',
     source?.stackable === false ? 'no-stack' : 'stack-ok',
     finiteNumber(source?.maxStackCount, 0),
@@ -561,7 +526,7 @@ function sortItemsForFloor(items, layoutQualityEnabled = false, groupUniverse = 
   return [...items].sort((a, b) => {
     const footprintDelta = b.footprint - a.footprint;
     if (footprintDelta) return footprintDelta;
-    const weightDelta = b.weight - a.weight;
+    const weightDelta = compareMassDescending(a.weight, b.weight);
     if (weightDelta) return weightDelta;
     const volumeDelta = b.volume - a.volume;
     if (volumeDelta) return volumeDelta;
@@ -582,7 +547,7 @@ function sortItemsForFiller(items, layoutQualityEnabled = false, groupUniverse =
     if (volumeDelta) return volumeDelta;
     const priorityDelta = finiteNumber(b.item.loadPriority, 0) - finiteNumber(a.item.loadPriority, 0);
     if (priorityDelta) return priorityDelta;
-    const weightDelta = b.weight - a.weight;
+    const weightDelta = compareMassDescending(a.weight, b.weight);
     if (weightDelta) return weightDelta;
     const supportDelta = baseSupportRank(a) - baseSupportRank(b);
     if (supportDelta) return supportDelta;
@@ -593,7 +558,7 @@ function sortItemsForFiller(items, layoutQualityEnabled = false, groupUniverse =
 function sortItemsForStack(items, layoutQualityEnabled = false, groupUniverse = items) {
   const tieBreak = createLayoutGroupTieBreaker(items, layoutQualityEnabled, groupUniverse);
   return [...items].sort((a, b) => {
-    const weightDelta = b.weight - a.weight;
+    const weightDelta = compareMassDescending(a.weight, b.weight);
     if (weightDelta) return weightDelta;
     const footprintDelta = b.footprint - a.footprint;
     if (footprintDelta) return footprintDelta;
@@ -1242,14 +1207,13 @@ export function repeatedBatchKey(item) {
   if (!item || item.className === 'LANE_ITEM' || !item.candidates.length) return '';
   const source = item.item || {};
   const lockKey = source.orientationLocked === true
-    ? JSON.stringify(normalizeRightAngleRotation(source.lockedRotation || source.transform?.rotation || {}))
+    ? JSON.stringify(getPhysicalOrientationAxes(source.lockedRotation).value)
     : 'unlocked';
   return [
     source.caseId || '',
     item.dims.l,
     item.dims.w,
     item.dims.h,
-    source.canFlip === true ? 'flip' : 'no-flip',
     // Canonical orientation so aliases (onside/on-side/onSide) batch together and
     // an accepted spelling never changes the batch key.
     canonicalOrientationLock(source.orientationLock),
@@ -1257,7 +1221,7 @@ export function repeatedBatchKey(item) {
     source.noStackOnTop === true ? 'no-top' : 'top-ok',
     source.stackable === false ? 'no-stack' : 'stack-ok',
     finiteNumber(source.maxStackCount, 0),
-    finiteNumber(item.weight ?? source.weight, 0),
+    item.weight === null ? 'unknown' : item.weight,
   ].join('|');
 }
 
@@ -1278,7 +1242,7 @@ function buildRepeatedBatches(items, layoutQualityEnabled = false) {
     .sort((a, b) => {
       const footprintDelta = b[0].footprint - a[0].footprint;
       if (footprintDelta) return footprintDelta;
-      const weightDelta = repeatedGroupWeight(b) - repeatedGroupWeight(a);
+      const weightDelta = compareMassDescending(repeatedGroupWeight(a), repeatedGroupWeight(b));
       if (weightDelta) return weightDelta;
       const supportDelta = baseSupportRank(a[0]) - baseSupportRank(b[0]);
       if (supportDelta) return supportDelta;
@@ -1290,8 +1254,15 @@ function buildRepeatedBatches(items, layoutQualityEnabled = false) {
     });
 }
 
+function compareMassDescending(a, b) {
+  if (a == null) return b == null ? 0 : 1;
+  if (b == null) return -1;
+  return b - a;
+}
+
 function repeatedGroupWeight(group = []) {
-  return group.reduce((max, item) => Math.max(max, finiteNumber(item.weight, 0)), 0);
+  const known = group.map(item => item.weight).filter(weight => weight != null);
+  return known.length ? Math.max(...known) : null;
 }
 
 function scoreRepeatedOrientation(orientation, floorState, orderIndex, groupSize = 0) {
@@ -3456,7 +3427,6 @@ function buildRuleRejectionContext(item = {}) {
     rules: {
       orientationLock: canonicalOrientationLock(source.orientationLock),
       orientationLocked: source.orientationLocked === true,
-      canFlip: source.canFlip === true,
       noStackOnTop: source.noStackOnTop === true,
       stackable: source.stackable !== false,
       maxStackCount: finiteNumber(source.maxStackCount, 0),
@@ -3476,7 +3446,7 @@ function buildRuleRejectionContext(item = {}) {
 function diagnoseUnplacedItem(item, zones, wheelWell, fallbackDetail) {
   const ruleContext = buildRuleRejectionContext(item);
   if (!orientationsFitSomeZone(item.candidates, zones)) {
-    const unrestricted = buildOrientationCandidates(item.dims, { orientationLock: 'any', canFlip: true });
+    const unrestricted = buildOrientationCandidates(item.dims, { orientationLock: 'any' }, { fullSearch: true });
     if (orientationsFitSomeZone(unrestricted, zones)) {
       return makeRejectionReason(
         item.id,

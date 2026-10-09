@@ -532,8 +532,13 @@ test('AUTOPACK-STALE truck, case definitions, and instance handling rules remain
 
   const changedInstanceRule = structuredClone(pack);
   changedInstanceRule.cases[1].orientationLock = 'upright';
+  changedInstanceRule.cases[1].canFlip = true;
+  assert.equal(Engine.buildAutoPackResultSignature(changedInstanceRule), Engine.buildAutoPackResultSignature(pack),
+    'retired instance physical overrides have no permission or freshness authority');
+  changedInstanceRule.cases[1].orientationLocked = true;
+  changedInstanceRule.cases[1].lockedRotation = { x: 0, y: Math.PI / 2, z: 0 };
   assert.notEqual(Engine.buildAutoPackResultSignature(changedInstanceRule), Engine.buildAutoPackResultSignature(pack),
-    'instance handling rules remain protected even when the instance is staged');
+    'exact instance planning constraints invalidate Results even when the instance is staged');
 
   const caseData = {
     id: 'case-A',

@@ -174,8 +174,8 @@ test('RECON mode switches (Std↔WheelWells, Std↔FrontOverhang) keep valid ite
 test('RECON repack and organized staging produce safe, deterministic, type-grouped layouts', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const lib = [
-    { id: 'A', name: 'A', dimensions: { length: 24, width: 18, height: 16 } },
-    { id: 'B', name: 'B', dimensions: { length: 24, width: 18, height: 16 } },
+    { id: 'A', name: 'A', dimensions: { length: 24, width: 18, height: 16 }, weight: 10, orientationLock: 'any' },
+    { id: 'B', name: 'B', dimensions: { length: 24, width: 18, height: 16 }, weight: 10, orientationLock: 'any' },
   ];
   // Many items beyond a reduced length so most are invalid and must be resolved.
   const cases = [];
@@ -331,7 +331,8 @@ test('RECON grouped staging preserves obstacles and builds deterministic case ba
 test('RECON Truck Change preserves 521 organized staged cases across modes and smaller presets', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 } };
+  const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 },
+    weight: 10, orientationLock: 'any' };
   const caseLibrary = [caseData];
   const standard = { length: 636, width: 102, height: 110, shapeMode: 'rect' };
   const wheelWells = {

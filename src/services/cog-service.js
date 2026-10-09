@@ -6,12 +6,14 @@
  * @author Truck Packer 3D Team
  */
 
+import { isCanonicalCaseMass } from '../core/cargo-canonical.js';
+
 /**
  * Computes the center of gravity for a pack.
  * @param {{ truck?: { length?: number, width?: number }, cases?: Array<Record<string, any>> }} pack - Pack object with truck and cases
  * @param {Record<string, any>[]} caseLibrary - Array of case definitions
  * @param {Set<string|null>|null} [loadedInstanceIds=null] - Canonical loaded IDs when available; direct callers exclude explicitly staged instances
- * @returns {object|null} CoG data or null if no valid weight
+ * @returns {object|null} CoG data or null if any contributing mass/position is unresolved
  */
 export function computeCoG(pack, caseLibrary, loadedInstanceIds = null) {
     if (!pack || !pack.cases || !pack.truck) return null;
@@ -23,23 +25,23 @@ export function computeCoG(pack, caseLibrary, loadedInstanceIds = null) {
 
     const caseMap = new Map(caseLibrary.map(c => [c.id, c]));
 
-    pack.cases.forEach(inst => {
+    for (const inst of pack.cases) {
         if (!inst || (loadedInstanceIds
             ? !loadedInstanceIds.has(inst.id == null ? null : String(inst.id))
-            : inst.placement === 'staged')) return;
+            : inst.placement === 'staged')) continue;
         const caseData = caseMap.get(inst.caseId);
-        if (!caseData) return;
-        const w = Number(caseData.weight) || 0;
-        if (w <= 0) return;
+        if (!caseData || !isCanonicalCaseMass(caseData.weight) || caseData.weight === null) return null;
+        const w = caseData.weight;
 
-        const pos = inst.transform?.position || { x: 0, y: 0, z: 0 };
+        const pos = inst.transform?.position;
+        if (!pos || !['x', 'y', 'z'].every(axis => Number.isFinite(pos[axis]))) return null;
         totalWeight += w;
         weightedX += pos.x * w;
         weightedY += pos.y * w;
         weightedZ += pos.z * w;
-    });
+    }
 
-    if (totalWeight <= 0) return null;
+    if (totalWeight <= 0 || ![totalWeight, weightedX, weightedY, weightedZ].every(Number.isFinite)) return null;
 
     const cogX = weightedX / totalWeight;
     const cogY = weightedY / totalWeight;

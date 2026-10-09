@@ -36,6 +36,125 @@ import {
   vendorThreePath,
   vm,
 } from '../fixtures/security-invariants-support.mjs';
+import * as THREE from 'three';
+import { createInteractionManager } from '../../src/screens/editor-screen.js';
+import { buildAutoPackResultSignature } from '../../src/services/autopack-engine.js';
+
+async function c3Interaction(t, { permission = 'any', rotation = { x: 0, y: 0, z: 0 }, instance = {} } = {}) {
+  const previousThree = globalThis.THREE;
+  globalThis.THREE = THREE;
+  t.after(() => { globalThis.THREE = previousThree; });
+  const StateStore = await import(stateStorePath.href);
+  const PackLibrary = await import(packLibraryPath.href);
+  const CaseLibrary = await import(caseLibraryPath.href);
+  const caseData = makePackImportSafeCase({ id: 'c3-case', orientationLock: permission,
+    dimensions: { length: 20, width: 10, height: 6 }, weight: 12 });
+  const cargo = { id: 'c3-item', caseId: caseData.id, hidden: false, placement: 'staged',
+    orientationLocked: false, lockedRotation: null,
+    transform: { position: { x: -80, y: 3, z: 90 }, rotation },
+    orientedDims: { length: 20, width: 10, height: 6 }, ...instance };
+  StateStore.init({ currentScreen: 'editor', currentPackId: 'c3-pack', selectedInstanceIds: [cargo.id],
+    caseLibrary: [caseData], packLibrary: [{ id: 'c3-pack', truck: { length: 120, width: 80, height: 80 },
+      cases: [cargo], groups: [], lastEdited: 1 }], folderLibrary: [], preferences: {} });
+  let preview = false, busy = false;
+  const toasts = [];
+  const manager = createInteractionManager({ StateStore, PackLibrary, CaseLibrary,
+    SceneManager: {}, PreferencesManager: { get: () => ({}) },
+    CaseScene: { getObject: () => null, applyOOGHighlights() {}, isTransientPreview: () => preview },
+    UIComponents: { showToast: message => toasts.push(message) },
+    OperationLifecycle: { isBusy: () => busy },
+  });
+  return { manager, StateStore, PackLibrary, CaseLibrary, toasts,
+    current: () => PackLibrary.getById('c3-pack').cases[0],
+    setPreview: value => { preview = value; }, setBusy: value => { busy = value; } };
+}
+
+test('C3 manual rotation keeps unlocked planning inactive and derives dimensions from actual pose', async t => {
+  const h = await c3Interaction(t);
+  h.manager.rotateSelection('y', Math.PI / 2);
+  assert.deepEqual(h.current().transform.rotation, { x: 0, y: Math.PI / 2, z: 0 });
+  assert.equal(h.current().orientationLocked, false);
+  assert.equal(h.current().lockedRotation, null);
+  assert.deepEqual(h.current().orientedDims, { length: 10, width: 20, height: 6 });
+  h.manager.rotateSelection('x', Math.PI / 2);
+  assert.equal(h.current().orientationLocked, false, 'allowed tipping never activates AutoPack planning');
+  assert.equal(h.current().lockedRotation, null);
+});
+
+test('C3 locked manual rotation updates pose and target in one Undo action; forbidden rotation is inert', async t => {
+  const initial = { x: 0, y: 0, z: 0 };
+  const h = await c3Interaction(t, { permission: 'upright',
+    instance: { orientationLocked: true, lockedRotation: initial } });
+  const before = structuredClone(h.current());
+  h.manager.rotateSelection('x', Math.PI);
+  assert.deepEqual(h.current(), before, 'upside-down rotation is forbidden by signed upright permission');
+  h.manager.rotateSelection('y', Math.PI / 2);
+  const rotated = structuredClone(h.current());
+  assert.equal(rotated.orientationLocked, true);
+  assert.deepEqual(rotated.lockedRotation, rotated.transform.rotation);
+  assert.deepEqual(rotated.orientedDims, { length: 10, width: 20, height: 6 });
+  assert.equal(h.StateStore.undo(), true);
+  assert.deepEqual(h.current(), before);
+  assert.equal(h.StateStore.redo(), true);
+  assert.deepEqual(h.current(), rotated);
+  h.manager.rotateSelection('z', Math.PI / 2);
+  assert.deepEqual(h.current(), rotated, 'rejected locked rotation changes neither pose nor target');
+});
+
+test('C3 manual onSide accepts a side face and refuses authored top or bottom without repairing saved pose', async t => {
+  const h = await c3Interaction(t, { permission: 'onSide' });
+  const saved = structuredClone(h.current());
+  assert.equal(h.manager.setSelectionOrientationConstraint(true), false);
+  assert.deepEqual(h.current(), saved, 'forbidden saved pose is preserved');
+  h.manager.rotateSelection('x', Math.PI / 2);
+  const side = structuredClone(h.current());
+  assert.deepEqual(side.transform.rotation, { x: Math.PI / 2, y: 0, z: 0 });
+  assert.equal(side.orientationLocked, false);
+  assert.equal(side.lockedRotation, null);
+  h.manager.rotateSelection('x', Math.PI / 2);
+  assert.deepEqual(h.current(), side, 'top or bottom down is refused for onSide');
+});
+
+test('C3 UI01 captures only committed single-instance pose and changes planning fields only', async t => {
+  const h = await c3Interaction(t, { rotation: { x: 0, y: Math.PI / 2, z: 0 },
+    instance: { hidden: true, packedProfile: 'max-capacity',
+      orientedDims: { length: 97, width: 98, height: 99 } } });
+  const before = structuredClone(h.current());
+  const beforeSignature = buildAutoPackResultSignature(h.PackLibrary.getById('c3-pack'));
+  for (const guarded of ['preview', 'busy']) {
+    h[guarded === 'preview' ? 'setPreview' : 'setBusy'](true);
+    assert.equal(h.manager.setSelectionOrientationConstraint(true), false);
+    assert.deepEqual(h.current(), before);
+    h[guarded === 'preview' ? 'setPreview' : 'setBusy'](false);
+  }
+  h.StateStore.set({ selectedInstanceIds: ['c3-item', 'another'] }, { skipHistory: true });
+  assert.equal(h.manager.setSelectionOrientationConstraint(true), false, 'no bulk activation');
+  h.StateStore.set({ selectedInstanceIds: ['c3-item'] }, { skipHistory: true });
+  assert.equal(h.manager.setSelectionOrientationConstraint(true, 'stale-selection'), false);
+  assert.equal(h.manager.setSelectionOrientationConstraint(true, 'c3-item'), true);
+  assert.deepEqual(h.current(), { ...before, orientationLocked: true, lockedRotation: before.transform.rotation });
+  assert.notEqual(buildAutoPackResultSignature(h.PackLibrary.getById('c3-pack')), beforeSignature,
+    'exact target changes stale the Results signature for staged cargo');
+  assert.equal(h.manager.setSelectionOrientationConstraint(false), true);
+  assert.deepEqual(h.current(), before, 'release preserves staged position, hidden state, profile and even stored dimensions');
+});
+
+test('C3 UI01 refuses forbidden or malformed activation, but releases conflicting and malformed targets', async t => {
+  const h = await c3Interaction(t, { permission: 'upright', rotation: { x: Math.PI, y: 0, z: 0 } });
+  const before = structuredClone(h.current());
+  assert.equal(h.manager.setSelectionOrientationConstraint(true), false);
+  assert.deepEqual(h.current(), before);
+  for (const target of [{ x: Math.PI, y: 0, z: 0 }, { x: 'bad', y: 0, z: 0 }]) {
+    const active = { ...before, orientationLocked: true, lockedRotation: target, placement: 'packed', hidden: true };
+    h.PackLibrary.update('c3-pack', { cases: [active] });
+    assert.equal(h.manager.setSelectionOrientationConstraint(false), true);
+    assert.deepEqual(h.current(), { ...active, orientationLocked: false, lockedRotation: null });
+  }
+  const malformed = { ...before, transform: { ...before.transform, rotation: { x: 0.17, y: 0, z: 0 } } };
+  h.PackLibrary.update('c3-pack', { cases: [malformed] });
+  assert.equal(h.manager.setSelectionOrientationConstraint(true), false);
+  assert.deepEqual(h.current(), malformed);
+});
 
 test('KEYBOARD-DUPLICATE-SAFE Cmd/Ctrl+D duplicate near occupied packed cases does not overlap', async () => {
   const StateStore = await import(stateStorePath.href);
@@ -589,13 +708,15 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
   const previousDocument = globalThis.document;
   const THREE = await import(`${vendorThreePath.href}?t=${Date.now()}-${Math.random()}`);
   globalThis.THREE = THREE;
+  const drawnLabels = [];
   globalThis.document = {
     createElement() {
       return {
         width: 0,
         height: 0,
         getContext: () => ({
-          fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {}, fillText() {},
+          fillRect() {}, strokeRect() {}, beginPath() {}, moveTo() {}, lineTo() {}, stroke() {},
+          fillText(text) { drawnLabels.push(text); },
         }),
       };
     },
@@ -612,6 +733,7 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       color: '#8844aa',
       category: 'default',
       canFlip: true,
+      orientationLock: 'any',
       shape: 'box',
     };
     const categoryColors = { priority: '#2255aa' };
@@ -645,6 +767,21 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
     const second = makeInstance('instance-b', 40);
     CaseScene.sync({ id: 'pack', cases: [first] });
     const sharedTexture = textureFor(first.id);
+    assert.ok(!drawnLabels.includes('⇧⇧'), 'unrestricted Case has no upright arrows');
+    delete caseData.canFlip;
+    first.orientationLocked = true;
+    first.lockedRotation = { x: Math.PI / 2, y: 0, z: 0 };
+    first.orientedDims = { length: 999, width: 999, height: 999 };
+    first.packedProfile = 'max-capacity';
+    CaseScene.sync({ id: 'pack', cases: [first] });
+    assert.strictEqual(textureFor(first.id), sharedTexture,
+      'retired flipping, exact target and Max profile have no visual cue authority');
+    assert.deepEqual(CaseScene.getObject(first.id).userData.halfWorld, { x: 10, y: 8, z: 9 },
+      'geometry ignores planning targets and stale cached dimensions');
+    first.transform.rotation = { x: 0, y: Math.PI / 2, z: 0 };
+    CaseScene.sync({ id: 'pack', cases: [first] });
+    assert.deepEqual(CaseScene.getObject(first.id).userData.halfWorld, { x: 9, y: 8, z: 10 },
+      'geometry follows actual rotation');
     let sharedDisposeCount = 0;
     sharedTexture.addEventListener('dispose', () => { sharedDisposeCount += 1; });
 
@@ -682,7 +819,9 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
     activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });
     const identityChanges = [
       ['weight label', () => { caseData.weight = 11; }],
-      ['handling arrows', () => { caseData.canFlip = false; }],
+      ['unknown mass label', () => { caseData.weight = null; }],
+      ['handling arrows', () => { caseData.orientationLock = 'upright'; }],
+      ['side orientation', () => { caseData.orientationLock = 'onSide'; }],
       ['body color', () => { caseData.color = '#1188cc'; }],
       ['texture fallback color', () => { caseData.color = null; }],
       ['explicit default edge color', () => { caseData.color = '#ff9f1c'; }],
@@ -693,6 +832,7 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
       ['pallet warning label', () => { caseData.maxPalletWeight = 50; }],
     ];
     for (const [label, mutate] of identityChanges) {
+      drawnLabels.length = 0;
       mutate();
       CaseScene.sync({ id: 'pack', cases: [first] });
       const nextTexture = textureFor(first.id);
@@ -700,6 +840,12 @@ test('EDITOR-VISUAL-RESOURCE shared CanvasTextures live until the final CaseScen
         `${label} changes the current visual-resource signature`);
       assert.equal(activeDisposeCount, 1,
         `${label} releases the prior signature exactly once`);
+      if (label === 'unknown mass label') {
+        assert.ok(drawnLabels.includes('—'));
+        assert.ok(!drawnLabels.includes('0 lb'));
+      }
+      if (label === 'handling arrows') assert.ok(drawnLabels.includes('⇧⇧'));
+      if (label === 'side orientation') assert.ok(!drawnLabels.includes('⇧⇧'));
       activeTexture = nextTexture;
       activeDisposeCount = 0;
       activeTexture.addEventListener('dispose', () => { activeDisposeCount += 1; });

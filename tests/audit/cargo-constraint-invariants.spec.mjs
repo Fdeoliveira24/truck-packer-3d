@@ -128,7 +128,7 @@ test('CARGO-RULE-V3 same raw value canonicalizes identically across storage and 
     canFlip: 'false', stackable: 'false', noStackOnTop: 'no', isPallet: '0', maxStackCount: '2.7', laneItem: 'never' };
   CaseLibrary.upsert(raw);
   const stored = StateStore.get('caseLibrary')[0];
-  assert.equal(stored.canFlip, false, 'stored canFlip from "false" is false');
+  assert.equal(stored.canFlip, undefined, 'retired canFlip is stripped');
   assert.equal(stored.stackable, false, 'stored stackable from "false" is false');
   assert.equal(stored.maxStackCount, 2, 'decimal stack count floored at storage');
   assert.equal(stored.laneItem, false, '"never" lane stored as false');
@@ -142,9 +142,10 @@ test('CARGO-RULE-V3 comparison: invalid value never equals a valid default', asy
   const validZeroStack = { ...base, maxStackCount: 0 };
   const invalidStack = { ...base, maxStackCount: 'abc' };
   assert.ok(!C.cargoFieldsEqual(validZeroStack, invalidStack), 'invalid maxStackCount != valid 0');
-  const validWeight = { ...base, weight: 0 };
+  const validWeight = { ...base, weight: null };
   const invalidWeight = { ...base, weight: 'oops' };
-  assert.ok(!C.cargoFieldsEqual(validWeight, invalidWeight), 'invalid weight != valid 0 weight');
+  assert.ok(!C.cargoFieldsEqual(validWeight, invalidWeight), 'invalid weight differs from unknown mass');
+  assert.ok(!C.cargoFieldsEqual(validWeight, { ...base, weight: 0 }), 'zero mass is invalid, not unknown');
   // Two identical invalids DO match (deterministic sentinel).
   assert.ok(C.cargoFieldsEqual(invalidStack, { ...base, maxStackCount: 'abc' }), 'identical invalids match');
 });
@@ -159,18 +160,19 @@ test('CARGO-RULE-V3 comparison identity excludes manufacturer/category, includes
   const c = { ...a, weight: 50 };
   assert.ok(!C.cargoFieldsEqual(a, c), 'a physical (weight) difference is a different case');
   const d = { ...a, canFlip: false };
-  assert.ok(!C.cargoFieldsEqual(a, d), 'a handling (canFlip) difference is a different case');
+  assert.ok(C.cargoFieldsEqual(a, d), 'retired canFlip cannot fork a physical Case');
 });
 
 test('CARGO-RULE-V3 data-sanity: an absurd dimension never yields infinite volume after normalization', async () => {
   const stamp = `?t=${Date.now()}-${Math.random()}`;
   const Normalizer = await import(`${normalizerPath.href}${stamp}`);
   const out = Normalizer.normalizeCase(
-    { id: 'z', name: 'Z', dimensions: { length: 1e300, width: 1e300, height: 1e300 }, weight: 1e300 },
+    { id: 'z', name: 'Z', dimensions: { length: 1e300, width: 1e300, height: 1e300 }, weight: null },
     Date.now()
   );
   assert.ok(Number.isFinite(out.volume), 'volume is finite, not Infinity');
-  assert.ok(Number.isFinite(out.weight), 'weight is finite');
+  assert.equal(out.weight, null, 'unknown mass stays unknown');
+  assert.throws(() => Normalizer.normalizeCase({ ...out, weight: 1e300 }), /weight/);
   assert.ok(out.dimensions.length <= 100000 && out.dimensions.length > 0, 'dimension clamped to sane bound');
 });
 
@@ -209,9 +211,9 @@ test('CARGO-RULE-V5 computeStats defines totals: total/packed/staged/unresolved 
   ];
   const pack = { id: 'p', title: 'P', truck, cases: [
     // packed (inside truck, near floor/center)
-    { id: 'a', caseId: 'real', transform: { position: { x: 20, y: 10, z: 0 } } },
+    { id: 'a', caseId: 'real', transform: { position: { x: 20, y: 10, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } },
     // staged (far outside the truck in -X staging area)
-    { id: 'b', caseId: 'real', transform: { position: { x: -200, y: 10, z: 0 } } },
+    { id: 'b', caseId: 'real', transform: { position: { x: -200, y: 10, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } },
     // unresolved (no such case)
     { id: 'c', caseId: 'ghost', transform: { position: { x: 30, y: 10, z: 0 } } },
   ] };
@@ -284,7 +286,7 @@ test('CARGO-RULE-V1 case-rule-summary returns only active non-default rules', as
   // Each active rule
   assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'upright' }), ['Upright']);
   assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'onSide' }), ['On side']);
-  assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'any', canFlip: true }), ['Flipping allowed']);
+  assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'any', canFlip: true }), []);
   assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'upright', canFlip: true }), ['Upright'], 'canFlip not shown when policy is not any');
   assert.deepEqual(getCaseHandlingSummary({ noStackOnTop: true }), ['No top load']);
   assert.deepEqual(getCaseHandlingSummary({ stackable: false }), ['No top load']);
@@ -297,7 +299,7 @@ test('CARGO-RULE-V1 case-rule-summary returns only active non-default rules', as
   assert.deepEqual(getCaseHandlingSummary({ loadPriority: 1 }), ['Priority: High']);
   assert.deepEqual(getCaseHandlingSummary({ loadPriority: -1 }), ['Priority: Low']);
   // Instance lock shown separately
-  assert.deepEqual(getInstanceHandlingSummary({ orientationLocked: true }), ['Orientation locked (this item)']);
+  assert.deepEqual(getInstanceHandlingSummary({ orientationLocked: true }), ['AutoPack orientation fixed for this item']);
   assert.deepEqual(getInstanceHandlingSummary({ orientationLocked: false }), []);
 });
 
@@ -388,15 +390,15 @@ test('CARGO-RULE-V1 orientation aliases canonicalize consistently across every p
     // Normalizer / model store canonical onSide.
     assert.equal(Normalizer.normalizeCase({ id: 'o', name: 'O', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: a }, Date.now()).orientationLock, 'onSide', `normalizer canon: ${a}`);
     // Spreadsheet cell parser canonicalizes with no spurious warning.
-    assert.deepEqual(IE.parseOrientationLockCell(a), { value: 'onSide', warning: null }, `import cell: ${a}`);
+    assert.deepEqual(IE.parseOrientationLockCell(a), { value: 'onSide', valid: true, warning: null }, `import cell: ${a}`);
     // Manual rotation policy agrees with AutoPack: onSide permits a tipped rotation.
     assert.equal(PackLib.isOrientationAllowedByCasePolicy({ orientationLock: a }, { x: Math.PI / 2, y: 0, z: 0 }), true, `manual policy onSide: ${a}`);
   }
   for (const a of ['upright', 'UPRIGHT']) assert.equal(canonicalOrientationLock(a), 'upright');
   for (const a of ['any', 'ANY', '', null, undefined, 'sideways', 'garbage']) assert.equal(canonicalOrientationLock(a), 'any', `invalid->any: ${a}`);
-  // Invalid spreadsheet orientation warns and falls back to any.
-  assert.equal(IE.parseOrientationLockCell('sideways').value, 'any');
-  assert.ok(IE.parseOrientationLockCell('sideways').warning, 'invalid orientation warns');
+  // Invalid spreadsheet orientation is not converted into physical permission.
+  assert.equal(IE.parseOrientationLockCell('sideways').value, undefined);
+  assert.equal(IE.parseOrientationLockCell('sideways').valid, false);
 
   // Pack-import conflict comparator treats aliases as equivalent (no false conflict).
   const StateStore = await import(stateStorePath.href);
@@ -474,7 +476,7 @@ test('CARGO-RULE-V1 CaseLibrary.upsert canonicalizes cargo fields and preserves 
   assert.equal(c.maxStackCount, 2, 'decimal maxStackCount floored to integer');
   assert.equal(c.maxPalletWeight, 0, 'negative maxPalletWeight clamped');
   assert.equal(c.stackable, false, 'explicit stackable:false preserved');
-  assert.equal(c.canFlip, true, 'canFlip coerced to boolean');
+  assert.equal(c.canFlip, undefined, 'retired canFlip is stripped');
   assert.equal(c.isPallet, true, 'isPallet coerced to boolean');
   assert.equal(c.importSourceKey, 'keep-me', 'unknown idempotence field preserved');
   assert.equal(c.someExtensionField, 'preserve', 'unknown extension field preserved');
@@ -491,7 +493,7 @@ test('CARGO-RULE-V6 warnings (non-blocking) are distinct from blocking row error
   const IE = await import(`${importExportPath.href}?t=${Date.now()}-${Math.random()}`);
   // Row 1: valid dims but invalid handling cells -> warnings, still imports.
   // Row 2: invalid dimension (length 0) -> blocking error, excluded.
-  const csv = `${CARGO_HEADER}\nGoodDims,10,10,10,5,maybe,any,auto,1\nBadDims,0,10,10,5,yes,any,auto,1`;
+  const csv = `${CARGO_HEADER}\nGoodDims,10,10,10,5,maybe,any,sometimes,1\nBadDims,0,10,10,5,yes,any,auto,1`;
   const result = await IE.parseAndValidateSpreadsheet(makeCsvFile(csv), []);
   assert.equal(result.valid.length, 1, 'only the dimensionally-valid row imports');
   assert.ok(result.valid[0].warnings.length > 0, 'the imported row carries non-blocking warnings');
@@ -547,10 +549,11 @@ test('CARGO-RULE-V1 case duplicate preserves all handling rules', async () => {
   };
   StateStore.init({ caseLibrary: [src], packLibrary: [], folderLibrary: [], preferences: {} });
   const copy = CaseLibrary.duplicate('dup-src');
-  for (const f of ['canFlip', 'orientationLock', 'noStackOnTop', 'stackable', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority', 'hazmatClass', 'stopGroup']) {
+  for (const f of ['orientationLock', 'noStackOnTop', 'stackable', 'maxStackCount', 'isPallet', 'maxPalletWeight', 'laneItem', 'loadPriority', 'hazmatClass', 'stopGroup']) {
     assert.deepEqual(copy[f], src[f], `duplicate must preserve ${f}`);
   }
   assert.notEqual(copy.id, src.id, 'duplicate gets a new id');
+  assert.equal(copy.canFlip, undefined, 'duplicate returns the canonical Case');
 });
 
 test('CARGO-RULE-V1 case modal exposes only honest handling controls with canonical save mapping', async () => {
@@ -565,7 +568,7 @@ test('CARGO-RULE-V1 case modal exposes only honest handling controls with canoni
   assert.match(src, /does not block AutoPack/i, 'pallet weight help must say it does not block packing');
   assert.match(src, /Packing priority \(tie-breaker\)/, 'priority labeled as tie-breaker');
   // Canonical save mapping
-  assert.match(src, /canFlip:\s*orientationLock === 'any' && Boolean\(flip\.checked\)/, 'canFlip only when policy is any');
+  assert.doesNotMatch(src, /Allow flipping|canFlip:/, 'retired flipping control and stored field are absent');
   assert.match(src, /orientationLock,\n[\s\S]*noStackOnTop: noTopChecked/, 'save sets orientationLock + noStackOnTop');
   assert.match(src, /maxStackCount: Math\.max\(0, parseInt\(fMaxStack\.input\.value, 10\) \|\| 0\)/, 'maxStackCount preserved (not zeroed) under no-top-load; field disabled and solver ignores it');
   assert.match(src, /stackable: noTopChecked \? initial\.stackable !== false : true/, 'unchecking no-top-load clears the legacy stackable:false rule');
@@ -573,7 +576,7 @@ test('CARGO-RULE-V1 case modal exposes only honest handling controls with canoni
   assert.match(src, /loadPriority: priorityValue/, 'save sets loadPriority');
   assert.match(src, /\.\.\.initial,/, 'save must spread ...initial to preserve hidden/deferred fields');
   // Dependencies
-  assert.match(src, /flip\.disabled = !isAny/, 'flip disabled when orientation not any');
+  assert.doesNotMatch(src, /flip\.disabled/, 'physical permission has one existing orientation control');
   assert.match(src, /fMaxStack\.input\.disabled = noTop\.checked/, 'maxStackCount disabled under no-top-load');
   assert.match(src, /fPalletWarn\.wrap\.style\.display = pallet\.checked/, 'pallet warn shown only when pallet enabled');
   // No deferred/inert controls exposed
@@ -629,7 +632,7 @@ test('CARGO-RULE-V7 manual-rotation policy block uses accurate wording (not "ori
   assert.doesNotMatch(src, /this item is orientation-locked/, 'must not mislabel a policy block as an instance lock');
 });
 
-test('CARGO-RULE-V7 orientation distinction: canFlip governs AutoPack tipping; manual exact lock allowed under "any"', async () => {
+test('CARGO-RULE-V7 orientation distinction: Standard search is narrow; manual exact target follows Case permission', async () => {
   const stamp = `?t=${Date.now()}-${Math.random()}`;
   const Solver = await import(`${autoPackSolverPath.href}${stamp}`);
   const PackLib = await import(`${packLibraryPath.href}${stamp}`);
@@ -692,7 +695,7 @@ test('CARGO-RULE-V8 matrix: undo/redo restores canonical state after an edit', a
   assert.equal(StateStore.get('caseLibrary')[0].weight, 999, 'redo re-applies the edit');
 });
 
-test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instance lock overrides all', async () => {
+test('CARGO-RULE-V1 orientation truth table: Case permission ignores canFlip and exact targets narrow choices', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const dims = { l: 30, w: 20, h: 10 }; // all distinct so a tipped face has h !== 10
@@ -705,7 +708,7 @@ test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instan
   assert.equal(cs.length, 2); assert.equal(allUpright(cs), true, 'any+false must be upright only');
   // 2) any + true → tipped faces allowed
   cs = cand({ orientationLock: 'any', canFlip: true });
-  assert.equal(hasTipped(cs), true, 'any+true must allow tipped faces');
+  assert.equal(hasTipped(cs), false, 'retired canFlip does not expand Standard search');
   // 3) upright + false → upright only
   cs = cand({ orientationLock: 'upright', canFlip: false });
   assert.equal(allUpright(cs), true, 'upright+false must be upright only');
@@ -731,11 +734,10 @@ test('CARGO-RULE-V1 orientation truth table: upright/onSide beat canFlip; instan
     'manual policy: any allows tipped — matches AutoPack canFlip behavior');
 });
 
-test('CARGO-RULE-V1 new-case modal initial defaults canFlip to false', async () => {
+test('C3 new-case modal defaults to unknown mass and contains no flip preference', async () => {
   const src = await fs.readFile(caseModalPath, 'utf8');
-  // The new-case branch builds an inline initial object; assert canFlip:false and no canFlip:true new-case default.
-  assert.match(src, /canFlip:\s*false/, 'case modal new-case initial must default canFlip to false');
-  assert.ok(!/\n\s*canFlip:\s*true\s*,/.test(src), 'case modal must not default a new case to canFlip:true');
+  assert.match(src, /weight:\s*null/);
+  assert.doesNotMatch(src, /canFlip:\s*(true|false)|Allow flipping/);
 });
 
 test('AUTO-PACK-A1-R4 stack phase honors noStackOnTop and stackable false supports', async () => {
@@ -994,16 +996,16 @@ test('placement-safety-P1A isOrientationAllowedByCasePolicy allows Y-rotation fo
     'upright-locked case must allow Y-axis rotation (stays flat, just turns)');
 });
 
-test('placement-safety-P1A isOrientationAllowedByCasePolicy allows all rotations when lock is missing or "any"', async () => {
+test('placement-safety-P1A isOrientationAllowedByCasePolicy requires canonical Case permission and accepts supported any poses', async () => {
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const halfPI = Math.PI / 2;
   // No lock set — default 'any' — must not block TVs, mattresses, doors, flat panels
-  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: halfPI, y: 0, z: 0 }), true,
-    'no-lock case must allow X rotation');
-  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: 0, y: halfPI, z: 0 }), true,
-    'no-lock case must allow Y rotation');
-  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: 0, y: 0, z: halfPI }), true,
-    'no-lock case must allow Z rotation');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: halfPI, y: 0, z: 0 }), false,
+    'missing Case authority must fail closed');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: 0, y: halfPI, z: 0 }), false,
+    'missing Case authority must fail closed');
+  assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({}, { x: 0, y: 0, z: halfPI }), false,
+    'missing Case authority must fail closed');
   assert.strictEqual(PackLibrary.isOrientationAllowedByCasePolicy({ orientationLock: 'any' }, { x: halfPI, y: 0, z: 0 }), true,
     'explicit "any" lock must allow X rotation');
 });
@@ -1029,15 +1031,15 @@ test('placement-safety-P1A rotateSelection checks orientation policy before Case
   const fnEnd = src.indexOf('\n    /**', fnStart + 1);
   const fnBlock = fnStart >= 0 && fnEnd > fnStart ? src.slice(fnStart, fnEnd) : src.slice(fnStart, fnStart + 2000);
 
-  assert.match(fnBlock, /isOrientationAllowedByCasePolicy/,
-    'rotateSelection must call isOrientationAllowedByCasePolicy');
+  assert.match(fnBlock, /isCasePhysicalOrientationAllowed/,
+    'rotateSelection must call isCasePhysicalOrientationAllowed');
   assert.match(fnBlock, /policyBlockedCount\s*\+=\s*1/,
     'rotateSelection must track policy-blocked items separately from collision-blocked items');
   // Policy check must come before getObject so no scene mutation occurs for rejected items
-  const policyPos = fnBlock.indexOf('isOrientationAllowedByCasePolicy');
+  const policyPos = fnBlock.indexOf('isCasePhysicalOrientationAllowed');
   const getObjPos = fnBlock.indexOf('CaseScene.getObject(id)');
   assert.ok(policyPos >= 0 && getObjPos >= 0 && policyPos < getObjPos,
-    'isOrientationAllowedByCasePolicy check must appear before CaseScene.getObject in rotateSelection');
+    'isCasePhysicalOrientationAllowed check must appear before CaseScene.getObject in rotateSelection');
   // Confirm policy-blocked path cannot reach PackLibrary.updateInstance
   // The early return exits the forEach callback before any scene writes
   assert.doesNotMatch(
@@ -1176,8 +1178,7 @@ test('HANDLING-RULES-P0D legacy string-typed Case rules survive raw Storage.load
     const canonicalCases = loaded.caseLibrary.map(applyCanonicalCargoFields);
     const canon = canonicalCases.find(c => c.id === 'case-p0d-legacy');
 
-    assert.equal(canon.canFlip, false);
-    assert.equal(typeof canon.canFlip, 'boolean');
+    assert.equal(canon.canFlip, undefined, 'retired canFlip has no stored authority');
     assert.equal(canon.stackable, false);
     assert.equal(typeof canon.stackable, 'boolean');
     assert.equal(canon.noStackOnTop, true);
@@ -1322,7 +1323,7 @@ test('HANDLING-RULES-P0C 64-combination right-angle matrix agrees with an indepe
 
         const uprightAllowed = PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, rotation);
         const onSideAllowed = PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'onSide' }, rotation);
-        assert.equal(uprightAllowed, expectedVertical,
+        assert.equal(uprightAllowed, new THREE.Vector3(0, 1, 0).applyEuler(new THREE.Euler(x, y, z, 'XYZ')).y > 0.999999,
           `upright policy disagrees with oracle at x=${x} y=${y} z=${z}`);
         assert.equal(onSideAllowed, !expectedVertical,
           `onSide policy disagrees with oracle at x=${x} y=${y} z=${z}`);
@@ -1332,7 +1333,7 @@ test('HANDLING-RULES-P0C 64-combination right-angle matrix agrees with an indepe
           disagreementClassCovered.xPiOnSideFalse = true;
         }
         if (x === 0 && y === 0 && z === Math.PI) {
-          assert.equal(uprightAllowed, true, 'the mirror confirmed defect: z=π must be legal upright');
+          assert.equal(uprightAllowed, false, 'signed upright forbids inverted authored +Y');
           disagreementClassCovered.zPiUprightTrue = true;
         }
 
@@ -1358,7 +1359,7 @@ test('HANDLING-RULES-P0C required policy regressions A-F: the confirmed defects,
   // B: upright + z=π must ACCEPT (saved height axis remains vertical).
   assert.equal(
     PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, { x: 0, y: 0, z: Math.PI }),
-    true, 'B: upright policy must accept z=π — the height axis is still vertical, merely inverted'
+    false, 'B: upright policy rejects inverted authored +Y at z=π'
   );
 
   // C: onSide + x=π/2 must ACCEPT (genuine tip).
@@ -1393,12 +1394,12 @@ test('HANDLING-RULES-P0C required policy regressions A-F: the confirmed defects,
     );
     assert.equal(
       PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright', canFlip }, { x: 0, y: 0, z: Math.PI }),
-      true, `F: canFlip=${canFlip} must not change the upright/z=π acceptance`
+      false, `F: canFlip=${canFlip} must not change the upright/z=π rejection`
     );
   }
 });
 
-test('HANDLING-RULES-P0C manual revalidation rejects a packed onSide-policy instance at x=π through the real PackLibrary validation path', async () => {
+test('HANDLING-RULES-P0C C3 saved forbidden onSide pose remains preserved and unresolved', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
 
@@ -1408,15 +1409,13 @@ test('HANDLING-RULES-P0C manual revalidation rejects a packed onSide-policy inst
 
   const result = PackLib.revalidateManualPlacements(pack, [caseData]);
 
-  assert.deepEqual(result.invalidIds, ['inst-p0c-onside'],
-    'reproduces the original defect through the real production path: x=π must be invalid under an onSide policy');
-  assert.deepEqual(result.stagedIds, ['inst-p0c-onside'],
-    'the existing invalid-placement handling behavior (staging) must still apply — no new behavior invented');
-  const revalidated = result.pack.cases.find(c => c.id === 'inst-p0c-onside');
-  assert.equal(revalidated.placement, 'staged');
+  assert.deepEqual(result.invalidIds, []);
+  assert.deepEqual(result.stagedIds, []);
+  assert.equal(result.validationComplete, false);
+  assert.deepEqual(result.pack.cases[0], inst, 'saved forbidden pose is never silently repaired');
 });
 
-test('HANDLING-RULES-P0C manual revalidation does not reject a packed upright-policy instance at z=π on orientation grounds', async () => {
+test('HANDLING-RULES-P0C manual revalidation preserves a saved forbidden inverted-upright pose without claiming validity', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
 
@@ -1427,29 +1426,24 @@ test('HANDLING-RULES-P0C manual revalidation does not reject a packed upright-po
   const result = PackLib.revalidateManualPlacements(pack, [caseData]);
 
   assert.deepEqual(result.invalidIds, [],
-    'the mirror defect fix: z=π must not be rejected by orientation policy under an upright lock');
+    'saved incompatibility is preserved for later assessment');
   assert.deepEqual(result.stagedIds, []);
+  assert.equal(result.validationComplete, false);
   const revalidated = result.pack.cases.find(c => c.id === 'inst-p0c-upright');
-  assert.equal(revalidated.placement, 'packed', 'the valid pose must remain packed in place, untouched');
+  assert.equal(revalidated.placement, 'packed', 'the saved forbidden pose remains packed in place');
   assert.deepEqual(revalidated.transform.position, { x: 60, y: 5, z: 0 });
 });
 
-test('HANDLING-RULES-P0C isOrientationAllowedByCasePolicy delegates to the shared oriented-dims helper instead of reimplementing Euler-component checks', async () => {
-  const src = await fs.readFile(packLibraryPath, 'utf8');
-  const start = src.indexOf('export function isOrientationAllowedByCasePolicy(');
-  assert.ok(start >= 0, 'isOrientationAllowedByCasePolicy must be extractable');
-  const end = src.indexOf('\nfunction isFinitePositive(', start);
-  const body = src.slice(start, end);
-
-  assert.match(body, /isHeightAxisVertical\(rotation\)/,
-    'the policy predicate must delegate to isHeightAxisVertical, not reimplement axis math');
-  assert.doesNotMatch(body, /rx\s*===\s*0/,
-    'the old raw Euler-component check (rx === 0) must be removed');
-  assert.doesNotMatch(body, /rz\s*===\s*0/,
-    'the old raw Euler-component check (rz === 0) must be removed');
-
-  assert.match(src, /isHeightAxisVertical,?\s*\n?\s*\} from '\.\.\/core\/oriented-dims\.js'/,
-    'isHeightAxisVertical must be imported from the existing rotation authority, not redefined locally');
+test('C3 runtime manual permission delegates to the signed Case primitive', async () => {
+  const PackLib = await import(packLibraryPath.href);
+  const { isCasePhysicalOrientationAllowed } = await import('../../src/core/orientation.js');
+  for (const orientationLock of ['any', 'upright', 'onSide']) {
+    for (const x of RIGHT_ANGLES) for (const y of RIGHT_ANGLES) for (const z of RIGHT_ANGLES) {
+      const rotation = { x, y, z };
+      assert.equal(PackLib.isOrientationAllowedByCasePolicy({ orientationLock }, rotation),
+        isCasePhysicalOrientationAllowed({ orientationLock }, rotation));
+    }
+  }
 });
 
 test('HANDLING-RULES-P0B direct exact-lock matrix A-H against the real buildOrientationCandidates()', async () => {
@@ -1469,13 +1463,8 @@ test('HANDLING-RULES-P0B direct exact-lock matrix A-H against the real buildOrie
   assert.deepEqual(cs[0].rotation, { x: 0, y: 0, z: 0 }, 'B: rotation must be the normalized locked rotation');
   assert.deepEqual({ l: cs[0].l, w: cs[0].w, h: cs[0].h }, { l: 10, w: 20, h: 30 }, 'B: dims must match the unrotated case');
 
-  // C: upright + inverted upright (x=π) -> exactly one candidate. Proves P0-B consumes P0-C.
-  cs = cand('upright', { x: Math.PI, y: 0, z: 0 });
-  assert.equal(cs.length, 1, 'C: upright + an inverted-but-vertical lock must still yield exactly one candidate');
-  assert.equal(cs[0].locked, true);
-  assert.deepEqual(cs[0].rotation, { x: Math.PI, y: 0, z: 0 });
-  assert.deepEqual({ l: cs[0].l, w: cs[0].w, h: cs[0].h }, { l: 10, w: 20, h: 30 },
-    'C: a 180° inversion about X leaves l/w/h magnitudes unchanged');
+  // C: the unchanged envelope does not make an inverted upright pose permitted.
+  assert.deepEqual(cand('upright', { x: Math.PI, y: 0, z: 0 }), []);
 
   // D: onSide + upright -> no candidate.
   assert.deepEqual(cand('onSide', { x: 0, y: 0, z: 0 }), [],
@@ -1539,7 +1528,7 @@ test('HANDLING-RULES-P0B solver integration: AutoPack must not place an item usi
   assert.equal(legalResult.solveStatus.complete, true);
 });
 
-test('HANDLING-RULES-P0B manual validation and AutoPack now agree on the same stale-lock pose, and on its legal inverted-upright control', async () => {
+test('HANDLING-RULES-P0B manual permission and AutoPack agree on tips and signed upright inversion', async () => {
   const Solver = await import(`${autoPackSolverPath.href}?t=${Date.now()}-${Math.random()}`);
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const dims = { l: 10, w: 20, h: 30 };
@@ -1559,42 +1548,24 @@ test('HANDLING-RULES-P0B manual validation and AutoPack now agree on the same st
   const invertedRot = { x: Math.PI, y: 0, z: 0 };
   assert.equal(
     PackLib.isOrientationAllowedByCasePolicy({ orientationLock: 'upright' }, invertedRot),
-    true, 'manual policy: upright accepts an inverted-but-vertical rotation'
+    false, 'manual policy: upright rejects inverted authored +Y'
   );
   const invertedCands = Solver.buildOrientationCandidates(dims,
     { orientationLock: 'upright', orientationLocked: true, lockedRotation: invertedRot });
-  assert.equal(invertedCands.length, 1, 'AutoPack: upright + the identical inverted-upright exact lock must yield one candidate');
-  assert.equal(invertedCands[0].locked, true);
+  assert.deepEqual(invertedCands, [], 'exact target cannot authorize inverted upright');
 });
 
-test('HANDLING-RULES-P0B canFlip is not part of the exact-lock policy gate, and unlocked candidate generation is untouched', async () => {
-  const src = await fs.readFile(autoPackSolverPath, 'utf8');
-  const start = src.indexOf('export function buildOrientationCandidates(');
-  assert.ok(start >= 0, 'buildOrientationCandidates must be extractable');
-  const lockedBranchEnd = src.indexOf('\n  const canFlip = item.canFlip === true;', start);
-  assert.ok(lockedBranchEnd > start, 'the locked branch must be extractable');
-  const lockedBranch = src.slice(start, lockedBranchEnd);
-
-  assert.doesNotMatch(lockedBranch, /item\.canFlip/,
-    'the exact-lock branch must not read item.canFlip — it only gates AutoPack-generated alternatives, not an explicit exact lock');
-  assert.match(lockedBranch, /isHeightAxisVertical\(lockedRotation\)/,
-    'the exact-lock branch must delegate to the shared P0-C geometric helper');
-  assert.match(lockedBranch, /canonicalOrientationLock\(item\.orientationLock\)/,
-    'the exact-lock branch must use the canonical policy-value authority');
-
-  // The unlocked candidate-generation body (after the locked branch) must be
-  // byte-identical to before P0-B — this diff only touches the locked branch.
-  const unlockedBody = src.slice(lockedBranchEnd, src.indexOf('\n  return candidates;\n}', lockedBranchEnd));
-  assert.match(unlockedBody, /if \(lock === 'upright' \|\| lock === 'any'\) \{\s*\n\s*add\(0, 0, 0\);\s*\n\s*add\(0, RIGHT_ANGLE_RAD, 0\);/,
-    'unlocked upright/any candidate generation must be unchanged');
-  assert.match(unlockedBody, /if \(lock === 'onSide'\) \{\s*\n\s*add\(0, 0, RIGHT_ANGLE_RAD\);\s*\n\s*add\(RIGHT_ANGLE_RAD, 0, RIGHT_ANGLE_RAD\);/,
-    'unlocked onSide candidate generation must be unchanged');
-  assert.match(unlockedBody, /if \(canFlip && lock === 'any'\) \{/,
-    'canFlip-gated tipped-face generation for unlocked items must be unchanged');
+test('C3 malformed exact targets never acquire a fabricated fallback pose', async () => {
+  const Solver = await import(autoPackSolverPath.href);
+  for (const lockedRotation of [null, undefined, {}, { x: 0 }, { x: 0.1, y: 0, z: 0 }]) {
+    const item = { orientationLock: 'any', orientationLocked: true, lockedRotation,
+      transform: { rotation: { x: 0, y: 0, z: 0 } }, canFlip: true };
+    assert.deepEqual(Solver.buildOrientationCandidates({ l: 10, w: 20, h: 30 }, item), []);
+    assert.deepEqual(Solver.buildOrientationCandidates({ l: 10, w: 20, h: 30 }, item, { fullSearch: true }), []);
+  }
 });
 
-// Phase C1: pure foundations only. Existing runtime policy tests above stay
-// unchanged until the deliberate C3 mass/orientation cutover.
+// Phase C1 pure foundations, now shared with the C3 runtime paths above.
 const c1Cargo = await import('../../src/core/cargo-canonical.js');
 const c1Orientation = await import('../../src/core/orientation.js');
 const c1Dims = await import('../../src/core/oriented-dims.js');

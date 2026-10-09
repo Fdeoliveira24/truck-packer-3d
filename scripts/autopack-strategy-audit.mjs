@@ -104,7 +104,7 @@ const STRATEGY_INTERPRETATION = Object.freeze({
   }),
   'max-capacity': Object.freeze({
     behavior:
-      'Runs an isolated solve that clears no-stack/stackable/max-stack, weight, lane, priority, orientation, flip, and exact-lock preferences while retaining physical hard rules.',
+      'Runs an isolated solve with broader Case-permitted orientation search and known-mass comparison, stacking, lane, and priority relaxations; exact targets and actual mass are retained.',
     convergence:
       'Expected when no relaxed preference binds, for trivial/full-floor loads, and where physical dimensions make every strategy fail.',
     bestUse: 'A manual what-if estimate for the physical fit available after relaxing approved handling preferences.',
@@ -426,7 +426,7 @@ function makeCanonicalPack(fixture, solution, strategyId) {
     truck: clone(fixture.truck),
     cases: fixture.items.map((item, index) => {
       const packed = packedIds.has(item.instanceId);
-      const rotation = packed ? rotationOf(solution, item.instanceId) : { x: 0, y: 0, z: 0 };
+      const rotation = packed ? { ...solution.rotations.get(item.instanceId) } : { x: 0, y: 0, z: 0 };
       const orientedDims = packed
         ? dimsOf(solution, item)
         : {
@@ -451,15 +451,16 @@ function makeCanonicalPack(fixture, solution, strategyId) {
 }
 
 function balanceMetrics(records, truckCenterX) {
-  const weighted = records.filter(record => Number(record.item.weight) > 0);
-  const totalWeight = weighted.reduce((sum, record) => sum + Number(record.item.weight), 0);
+  if (records.some(record => record.item.weight == null || !(record.item.weight > 0))) return null;
+  const weighted = records;
+  const totalWeight = weighted.reduce((sum, record) => sum + record.item.weight, 0);
   if (!totalWeight) return null;
   const leftWeight = weighted
     .filter(record => record.position.z < 0)
-    .reduce((sum, record) => sum + Number(record.item.weight), 0);
+    .reduce((sum, record) => sum + record.item.weight, 0);
   const rearWeight = weighted
     .filter(record => record.position.x < truckCenterX)
-    .reduce((sum, record) => sum + Number(record.item.weight), 0);
+    .reduce((sum, record) => sum + record.item.weight, 0);
   return {
     leftPercent: round((leftWeight / totalWeight) * 100, 2),
     rightPercent: round(((totalWeight - leftWeight) / totalWeight) * 100, 2),
@@ -557,7 +558,7 @@ function solutionMetrics(fixture, solution, strategyId) {
     },
     geometricFloorSurfaceCount: validRecords.filter(record => isOnUsableSurface(record, zones)).length,
     ...supportDepth,
-    totalPackedWeight: round(canonical.totalWeight, 3),
+    totalPackedWeight: canonical.totalWeight === null ? null : round(canonical.totalWeight, 3),
     packedOnlyCog: packedOnlyCog
       ? {
           position: stableValue(packedOnlyCog.position),
@@ -817,11 +818,10 @@ export function runFixtureAudit(fixture, { repeats = 2 } = {}) {
       id: entry.id,
       count: entry.count,
       dimensions: stableValue(entry.dimensions),
-      weight: Number(entry.weight) || 0,
+      weight: entry.weight ?? null,
       rules: stableValue({
         orientationLock: entry.orientationLock || 'any',
         orientationLocked: entry.orientationLocked === true,
-        canFlip: entry.canFlip === true,
         noStackOnTop: entry.noStackOnTop === true,
         stackable: entry.stackable !== false,
         maxStackCount: Number(entry.maxStackCount) || 0,

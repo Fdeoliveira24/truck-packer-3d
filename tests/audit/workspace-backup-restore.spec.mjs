@@ -448,6 +448,34 @@ test('MILESTONE-D-4 placement preflight preserves valid poses and stages unsafe 
   }
 });
 
+test('C3 Workspace preflight preserves nullable mass and conflicting or malformed finite planning intent', async () => {
+  const runtime = await createRuntime('c3-planning-intent');
+  try {
+    const before = runtime.StateStore.snapshot();
+    for (const lockedRotation of [null, { x: Math.PI / 2, y: 0, z: 0 }, { x: 0.35, y: 0, z: 0 }]) {
+      const instance = portableInstance({ orientationLocked: true, lockedRotation, hidden: true });
+      const data = sourceWorkspaceData({
+        caseLibrary: [portableCase({ weight: null, orientationLock: 'upright', canFlip: true })],
+        packLibrary: [portablePack({ cases: [instance] })],
+      });
+      const plan = preparePlan(runtime, data);
+      const restored = plan.packLibrary[0].cases[0];
+      assert.equal(plan.caseLibrary[0].weight, null);
+      assert.equal(plan.caseLibrary[0].canFlip, undefined);
+      assert.equal(restored.orientationLocked, true);
+      assert.deepEqual(restored.lockedRotation, lockedRotation);
+      assert.deepEqual(restored.transform, instance.transform);
+      assert.equal(restored.placement, instance.placement);
+      assert.equal(restored.hidden, true);
+    }
+    const malformed = sourceWorkspaceData({ packLibrary: [portablePack({ cases: [portableInstance({
+      orientationLocked: true, lockedRotation: { x: 0 },
+    })] })] });
+    assert.throws(() => preparePlan(runtime, malformed), /lockedRotation/);
+    assert.deepEqual(runtime.StateStore.snapshot(), before, 'preflight failures and successes never publish state');
+  } finally { runtime.cleanup(); }
+});
+
 test('MILESTONE-D-5 authorization is owner/admin only and source metadata grants nothing', async () => {
   for (const role of ['owner', 'admin']) {
     const runtime = await createRuntime(`role-${role}`);

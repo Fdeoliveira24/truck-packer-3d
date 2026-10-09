@@ -38,9 +38,10 @@ function makeVerticalCase(overrides = {}) {
     category: 'Default',
     color: '#9ca3af',
     dimensions,
-    weight: overrides.weight || 10,
+    weight: overrides.weight === undefined ? 10 : overrides.weight,
     volume: dimensions.length * dimensions.width * dimensions.height,
-    canFlip: true,
+    orientationLock: 'any',
+    shape: 'box',
     stackable: true,
     ...overrides,
   };

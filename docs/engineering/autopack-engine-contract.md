@@ -44,13 +44,18 @@ Hard rules include:
 
 Max Capacity is a distinct, never-auto-selected AutoPack strategy (`src/packing-core/solution.js`, `applyMaxCapacityRuleProfile()` in `src/services/autopack-solver.js`) that may relax the following cargo-handling **preferences** — not physical rules — for every item in the solve, uniformly:
 
-- orientation lock and `canFlip` (all orientations become permitted);
 - `noStackOnTop` / `stackable:false` support-side behavior;
 - `maxStackCount` as a direct-child support cap (treated as unlimited);
 - load priority and lane (`loadPriority`, `laneItem`) solver ordering behavior;
-- the **child-vs-support weight comparison** used to decide whether a support can carry a candidate's weight. This is intentionally relaxed and is proven by a dedicated test (`AUTOPACK-MAX-A relaxes child-vs-support weight without weakening support geometry`), which also proves the support **footprint fraction** hard rule stays enforced for the same relaxed pair — Max Capacity relaxes whether a lighter item may carry a heavier one, never whether there is real geometric contact area.
+- the **child-vs-support weight comparison** for known canonical masses. The solver uses an explicit transient `relaxWeightComparison` flag; positive mass and unknown (`null`) mass remain unchanged. Unknown required cargo mass cannot pass the relationship. Fixed support rules remain strict for newly solved cargo. Support footprint and geometric stability remain enforced.
 
-Mechanism note: the solver neutralizes this comparison by evaluating each solved item with its weight temporarily set to 0 for the duration of the solve only (`applyMaxCapacityRuleProfile()`'s shallow clone). This never erases or overwrites the canonical stored case weight — case-library weight data, `computeStats()` totals, and final weight/PDF reporting always read the real, canonical case weight. The same relaxation, applied at reconciliation time (Truck Change, repair) rather than solve time, is implemented separately via `supportCanCarry()`'s `maxCapacitySupportRelationship()` check (both sides of a support pair must currently carry `packedProfile: 'max-capacity'`) and, for Wheel Wells support validation specifically, `projectMaxCapacitySupportRecords()`.
+Case physical orientation is always `orientationLock: any | upright | onSide`, enforced through the signed `isCasePhysicalOrientationAllowed` predicate. Upright means authored +Y remains world +Y, and onSide means an authored side face is down. `canFlip` is retired and has no runtime authority. Instance fields and `packedProfile` cannot expand Case permission.
+
+Standard and the default-family strategies deliberately search two upright yaws for `any`/`upright`, or the existing two selected side poses for `onSide`. Max Capacity searches all 24 distinct signed authored-axis orientations, filtered by Case permission (24 for `any`, 4 for `upright`, 16 for `onSide`). Equivalent signed-axis mappings deduplicate; equal envelope dimensions alone do not imply Case symmetry.
+
+An active exact instance target narrows either search to the intersection of Case permission and that target. Malformed or conflicting targets produce no candidate and remain stored. Actual Case geometry always follows authored dimensions plus actual rotation; the exact target is planning data only.
+
+Committed Max-to-Max support reconciliation uses the same explicit known-mass comparison relaxation through `projectMaxCapacitySupportRecords()`. It preserves actual cargo mass and pallet identity. The remaining stacking/count/order relaxations above intentionally remain until C5 candidate assessment and eligibility integration.
 
 `packedProfile: 'max-capacity'` is **mode-level metadata**: the solver relaxes preferences for every item in a Max Capacity solve uniformly, so an applied instance carrying this marker is not proof that its specific placement individually required any particular relaxed rule — only that it belongs to a Max Capacity result and is evaluated under that profile wherever relevant. See [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md) for the full contract.
 

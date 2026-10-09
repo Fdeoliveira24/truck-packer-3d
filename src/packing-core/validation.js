@@ -16,12 +16,13 @@
  * Moving it here would only add an import cycle risk without removing any
  * duplication.
  *
- * This module is deliberately dependency-free (no services/core imports) so it
- * can be imported from anywhere — including pack-library itself — without
- * cycles. Do not weaken any rule or tolerance here; scoring must never create
+ * The only source-data dependency is the pure canonical mass predicate, so this
+ * module can be imported by services without service cycles. Do not weaken any rule or tolerance here; scoring must never create
  * validity (see docs/engineering/autopack-engine-contract.md).
  * @module packing-core/validation
  */
+
+import { isCanonicalCaseMass } from '../core/cargo-canonical.js';
 
 /** Canonical trailer-containment tolerance shared by every placement path. */
 export const CONTAINMENT_EPS_INCHES = 0.05;
@@ -127,9 +128,10 @@ export function rulesMaxStackCount(rules = {}) {
  * Child-vs-support weight rule with the pallet bypass: a pallet support accepts
  * any child weight; otherwise the child must not out-weigh the support.
  */
-export function weightAllowsSupport(candidateWeight, supportWeight, supportIsPallet) {
-  if (supportIsPallet === true) return true;
-  return finiteNumber(candidateWeight, 0) <= finiteNumber(supportWeight, 0);
+export function weightAllowsSupport(candidateWeight, supportWeight, supportIsPallet, relaxComparison = false) {
+  if (candidateWeight == null || supportWeight == null ||
+      !isCanonicalCaseMass(candidateWeight) || !isCanonicalCaseMass(supportWeight)) return false;
+  return supportIsPallet === true || relaxComparison || candidateWeight <= supportWeight;
 }
 
 // ---------------------------------------------------------------------------
@@ -152,10 +154,8 @@ export function canSupportStack(placement = {}) {
 
 /** Weight carried by a placement-like value (normalized item weight wins). */
 export function getPlacementWeight(placement = {}) {
-  if (placement.item && Number.isFinite(Number(placement.item.weight))) {
-    return finiteNumber(placement.item.weight, 0);
-  }
-  return finiteNumber(getPlacementRules(placement).weight, 0);
+  if (placement.item && Object.hasOwn(placement.item, 'weight')) return placement.item.weight;
+  return getPlacementRules(placement).weight;
 }
 
 /** Whether a placement-like value acts as a pallet support. */
@@ -168,9 +168,11 @@ export function isPalletSupport(placement = {}) {
 export function canSupportCandidateWeight(candidateItem, support) {
   if (!candidateItem) return true;
   return weightAllowsSupport(
-    finiteNumber(support?.fixed === true ? candidateItem.actualWeight ?? candidateItem.weight : candidateItem.weight, 0),
+    candidateItem.weight,
     getPlacementWeight(support),
-    isPalletSupport(support)
+    isPalletSupport(support),
+    getPlacementRules(support).relaxWeightComparison === true &&
+      (getPlacementRules(candidateItem).relaxWeightComparison === true || support.relaxWeightComparison === true)
   );
 }
 

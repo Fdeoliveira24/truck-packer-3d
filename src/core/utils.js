@@ -70,6 +70,8 @@ export function unitToInches(value, unit) {
 }
 
 export function poundsToUnit(lb, unit) {
+  if (lb == null) return null;
+  if (typeof lb !== 'number' || !Number.isFinite(lb)) return NaN;
   switch (unit) {
     case 'lb':
       return lb;
@@ -81,6 +83,8 @@ export function poundsToUnit(lb, unit) {
 }
 
 export function unitToPounds(value, unit) {
+  if (value == null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) return NaN;
   switch (unit) {
     case 'lb':
       return value;
@@ -97,10 +101,12 @@ export function formatLength(inches, unit, digits = 1) {
   return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
 }
 
-export function formatWeight(lb, unit, digits = 1) {
+export function formatWeight(lb, unit, digits = unit === 'lb' ? 0 : 1) {
   const v = poundsToUnit(lb, unit);
-  const fixed = unit === 'lb' ? 0 : digits;
-  return `${Number.isFinite(v) ? v.toFixed(fixed) : '—'} ${unit}`;
+  if (v === null || !Number.isFinite(v) || v < 0 || (lb > 0 && v === 0)) return '—';
+  const rounded = v.toFixed(digits);
+  // Small declared masses must remain visible as positive values.
+  return `${v > 0 && Number(rounded) === 0 ? String(v) : rounded} ${unit}`;
 }
 
 export function formatDims(dimInches, lengthUnit) {

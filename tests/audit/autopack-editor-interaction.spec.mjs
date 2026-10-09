@@ -316,6 +316,189 @@ async function openEditor(browser) {
 
 const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 
+test('C3 browser Case mass uses blank unknown and rejects zero or negative input', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.locator('[data-role="editor-new-case"]').click();
+    await page.getByLabel('Name (required)', { exact: true }).fill('C3 unknown mass');
+    const weight = page.getByLabel('Weight (lb)', { exact: true });
+    assert.equal(await weight.inputValue(), '');
+    assert.equal(await page.getByText('Allow flipping', { exact: true }).count(), 0);
+    for (const invalid of ['0', '-1']) {
+      await weight.fill(invalid);
+      await page.locator('.modal-footer button').filter({ hasText: 'Save' }).click();
+      assert.equal(await weight.getAttribute('aria-invalid'), 'true');
+    }
+    await weight.fill('');
+    await page.locator('.modal-footer button').filter({ hasText: 'Save' }).click();
+    assert.equal(await page.locator('.modal-overlay').count(), 0);
+    const saved = await page.evaluate(() => window.probe.CaseLibrary.getCases().find(c => c.name === 'C3 unknown mass'));
+    assert.equal(saved.weight, null);
+    await page.evaluate(async id => {
+      const p = window.probe;
+      const { openCaseModal } = await import('/src/ui/overlays/case-modal.js');
+      const PreferencesManager = await import('/src/services/preferences-manager.js');
+      openCaseModal({ Utils: p.Utils, UIComponents: p.UIComponents, PreferencesManager,
+        CaseLibrary: p.CaseLibrary, CategoryService: p.CategoryService, PackLibrary: p.PackLibrary,
+        existing: p.CaseLibrary.getById(id) });
+    }, saved.id);
+    assert.equal(await weight.inputValue(), '');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('C3 browser Inspector fixes and releases committed orientation with focus, Undo and physical state preserved', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => {
+      const p = window.probe;
+      const pack = p.PackLibrary.getById('fixture-pack');
+      const c = { ...p.CaseLibrary.getCases()[0], id: 'c3-inspector-case', name: 'C3 orientation',
+        orientationLock: 'any', weight: null, dimensions: { length: 20, width: 10, height: 6 } };
+      const inst = { id: 'c3-inspector-item', caseId: c.id, placement: 'packed', hidden: false,
+        orientationLocked: false, lockedRotation: null, orientedDims: { length: 999, width: 999, height: 999 },
+        transform: { position: { x: 60, y: 3, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } };
+      p.StateStore.set({ caseLibrary: [c], packLibrary: [{ ...pack, cases: [inst] }] }, { skipHistory: true });
+      p.InteractionManager.setSelection([inst.id]);
+    });
+    const action = page.locator('[data-focus-key="action-autopack-orientation"]');
+    const status = page.locator('[data-role="autopack-orientation-status"]');
+    const current = () => page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').cases[0]);
+    const before = await current();
+    assert.equal(await action.count(), 1);
+    await action.focus();
+    await page.keyboard.press('Enter');
+    const active = await current();
+    assert.deepEqual(active, { ...before, orientationLocked: true, lockedRotation: before.transform.rotation });
+    assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'action-autopack-orientation');
+    assert.match(await status.textContent(), /matches the current pose/);
+    await page.locator('#viewport').focus();
+    await page.keyboard.press('ArrowRight');
+    assert.deepEqual((await current()).lockedRotation, active.lockedRotation, 'position-only nudge preserves the target');
+    const beforeRotation = await current();
+    await page.locator('#inspector-body button').filter({ hasText: /^Turn$/ }).click();
+    const rotated = await current();
+    assert.equal(rotated.orientationLocked, true);
+    assert.deepEqual(rotated.lockedRotation, rotated.transform.rotation);
+    assert.notDeepEqual(rotated.transform.rotation, beforeRotation.transform.rotation);
+    await page.evaluate(() => window.probe.StateStore.undo());
+    assert.deepEqual(await current(), beforeRotation, 'one Undo restores pose and target');
+    await action.click();
+    assert.deepEqual(await current(), { ...beforeRotation, orientationLocked: false, lockedRotation: null });
+    await page.locator('#inspector-body button').filter({ hasText: /^Turn$/ }).click();
+    assert.equal((await current()).orientationLocked, false, 'unlocked rotation stays unlocked');
+    assert.equal((await current()).lockedRotation, null);
+
+    // The same single-instance action is available for hidden and staged rows.
+    for (const placement of ['packed', 'staged']) {
+      await page.evaluate(placement => {
+        const p = window.probe, pack = p.PackLibrary.getById('fixture-pack');
+        const inst = pack.cases[0];
+        p.PackLibrary.update(pack.id, { cases: [{ ...inst, placement, hidden: true, packedProfile: 'max-capacity',
+          transform: { ...inst.transform, position: placement === 'staged' ? { x: -80, y: 3, z: 90 } : inst.transform.position } }] });
+      }, placement);
+      const unchanged = await current();
+      await action.click();
+      assert.deepEqual(await current(), { ...unchanged, orientationLocked: true, lockedRotation: unchanged.transform.rotation });
+      await action.click();
+      assert.deepEqual(await current(), unchanged);
+    }
+    await page.evaluate(() => {
+      const p = window.probe, pack = p.PackLibrary.getById('fixture-pack');
+      p.StateStore.set({ caseLibrary: p.CaseLibrary.getCases().map(c => ({ ...c, orientationLock: 'upright' })),
+        packLibrary: [{ ...pack, cases: [{ ...pack.cases[0], orientationLocked: true,
+          lockedRotation: { x: Math.PI, y: 0, z: 0 } }] }] }, { skipHistory: true });
+    });
+    assert.match(await status.textContent(), /conflicts with this Case/);
+    const conflict = await current();
+    await action.click();
+    assert.deepEqual(await current(), { ...conflict, orientationLocked: false, lockedRotation: null });
+    const beforeUprightTurn = await current();
+    await page.locator('#inspector-body button').filter({ hasText: /^Turn$/ }).click();
+    const upright = await current();
+    assert.notDeepEqual(upright.transform.rotation, beforeUprightTurn.transform.rotation, 'upright allows yaw');
+    assert.equal(upright.orientationLocked, false);
+    for (const label of ['Tip', 'Flip']) {
+      await page.locator('#inspector-body button').filter({ hasText: new RegExp(`^${label}$`) }).click();
+      assert.deepEqual(await current(), upright, `upright refuses ${label} without staging or rotation`);
+    }
+    await page.evaluate(() => {
+      const p = window.probe;
+      p.StateStore.set({ caseLibrary: p.CaseLibrary.getCases().map(c => ({ ...c, orientationLock: 'onSide' })) },
+        { skipHistory: true });
+    });
+    assert.deepEqual(await current(), upright, 'changing Case permission preserves the saved pose');
+    await page.locator('#inspector-body button').filter({ hasText: /^Tip$/ }).click();
+    const side = await current();
+    assert.notDeepEqual(side.transform.rotation, upright.transform.rotation, 'onSide accepts a side face');
+    assert.equal(side.orientationLocked, false);
+    await page.locator('#inspector-body button').filter({ hasText: /^Tip$/ }).click();
+    assert.deepEqual(await current(), side, 'onSide refuses authored top or bottom down');
+    await page.evaluate(() => window.probe.InteractionManager.setSelection(['c3-inspector-item', 'other']));
+    assert.equal(await action.count(), 0, 'bulk Inspector has no activation action');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('C3 browser Max Capacity preserves upright permission, exact target and known or unknown mass', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => {
+      const p = window.probe, pack = p.PackLibrary.getById('fixture-pack');
+      const base = p.CaseLibrary.getCases()[0];
+      const cases = [
+        { ...base, id: 'c3-max-upright', orientationLock: 'upright', noStackOnTop: true, weight: 21,
+          dimensions: { length: 20, width: 20, height: 10 } },
+        { ...base, id: 'c3-max-exact', orientationLock: 'any', noStackOnTop: true, weight: 13,
+          dimensions: { length: 20, width: 10, height: 20 } },
+        { ...base, id: 'c3-max-unknown', orientationLock: 'upright', noStackOnTop: true, weight: null,
+          dimensions: { length: 10, width: 20, height: 20 } },
+      ];
+      const instances = cases.map((c, index) => ({ id: `c3-max-item-${index}`, caseId: c.id,
+        hidden: false, placement: 'staged', orientationLocked: index === 1,
+        lockedRotation: index === 1 ? { x: Math.PI / 2, y: 0, z: 0 } : null,
+        transform: { position: { x: 10 + index * 25, y: 5, z: 100 },
+          rotation: { x: index === 1 ? Math.PI / 2 : 0, y: 0, z: 0 } } }));
+      p.StateStore.set({ selectedInstanceIds: [], autoPackResults: null, caseLibrary: cases,
+        packLibrary: [{ ...pack, truck: { length: 30, width: 20, height: 20, shapeMode: 'rect' }, cases: instances }] },
+      { skipHistory: true });
+    });
+    await page.locator('#btn-autopack').click();
+    await page.waitForFunction(() => window.probe.op() === 'idle' &&
+      window.probe.StateStore.get('autoPackResults')?.options?.some(option => option.id === 'max-capacity'));
+    if (await page.evaluate(() => window.probe.StateStore.get('autoPackResults').minimized)) {
+      await page.locator('[data-focus-key="results-toggle"]').click();
+    }
+    for (let index = 0; index < 3; index++) {
+      if ((await page.locator('.tp3d-autopack-results__option-title').textContent()) === 'Max Capacity') break;
+      await page.locator('[data-focus-key="results-next"]').click();
+    }
+    assert.equal(await page.locator('.tp3d-autopack-results__option-title').textContent(), 'Max Capacity');
+    await page.locator('[data-focus-key="results-apply"]').click();
+    const result = await page.evaluate(async () => {
+      const p = window.probe;
+      const { isCasePhysicalOrientationAllowed } = await import('/src/core/orientation.js');
+      const pack = p.PackLibrary.getById('fixture-pack');
+      return { cases: pack.cases, weights: p.CaseLibrary.getCases().map(c => c.weight), stats: p.PackLibrary.computeStats(pack),
+        allowed: pack.cases.every(inst => isCasePhysicalOrientationAllowed(p.CaseLibrary.getById(inst.caseId), inst.transform.rotation)) };
+    });
+    assert.equal(result.allowed, true);
+    assert.equal(result.cases.filter(inst => inst.placement === 'packed').length, 3);
+    const locked = result.cases.find(inst => inst.id === 'c3-max-item-1');
+    assert.equal(locked.orientationLocked, true);
+    assert.deepEqual(locked.lockedRotation, { x: Math.PI / 2, y: 0, z: 0 });
+    assert.deepEqual(locked.transform.rotation, locked.lockedRotation);
+    assert.deepEqual(result.weights, [21, 13, null]);
+    assert.equal(result.stats.totalWeight, null);
+    assert.equal(result.stats.weightComplete, false);
+    assert.equal(result.stats.cog, null);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 test('UI hotfix bounds document scrolling while both Editor panels and management content scroll', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
@@ -639,7 +822,7 @@ test('UI hotfix selected-case Inspector mirrors the Truck header with compact me
         { text: 'Priority: High', instance: false, size: caseRules.chips[0].size },
       ], 'case-level policy stays in its own set');
       assert.deepEqual(itemRules.chips.map(chip => [chip.text, chip.instance]),
-        [['Orientation locked (this item)', true]], 'instance-level lock stays in its own set');
+        [['AutoPack orientation fixed for this item', true]], 'instance planning stays in its own set');
       assert.ok(view.overflow <= 0, 'no horizontal overflow');
     }
     // A narrow Inspector wraps metadata and rules without colliding or overflowing.
@@ -690,6 +873,9 @@ test('hidden packed cargo keeps one physical pose through Hide, selection, drag,
       const inst = PackLibrary.getById(StateStore.get('currentPackId')).cases.find(item => item.id === id);
       const group = CaseScene.getObject(id);
       const mesh = group.userData.mesh;
+      // A snapshot can precede the next render after a synchronous fixture edit.
+      // Box3 updates the mesh, but not its parents; measure one current hierarchy.
+      group.updateWorldMatrix(true, true);
       const bounds = new window.THREE.Box3().setFromObject(mesh);
       const handle = CaseScene.getGizmoHandleMeshes()[0];
       const gizmo = handle ? handle.parent.parent : null;
@@ -2134,6 +2320,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
       const before = p.casesJson();
       const toastsBefore = p.toasts.length;
       p.InteractionManager.rotateSelection('y', Math.PI / 2);
+      p.InteractionManager.setSelectionOrientationConstraint(true);
       p.InteractionManager.deleteSelection();
       await new Promise(resolve => setTimeout(resolve, 0));
       const result = { unchanged: p.casesJson() === before, selected: p.selection(), toasts: p.toasts.slice(toastsBefore) };

@@ -237,14 +237,23 @@ test('EXPORT-B cargo populations and loaded weight reconcile with computeStats; 
     [stats.totalCases, stats.packedCases, stats.stagedCases, stats.hiddenCases, stats.unresolvedInstances].map(String));
   assert.deepEqual([stats.totalCases, stats.packedCases, stats.stagedCases, stats.hiddenCases, stats.unresolvedInstances],
     [6, 3, 1, 1, 2], 'hidden visibility overlaps the loaded population');
-  assert.equal(stats.totalWeight, 240, 'canonical loaded weight includes the hidden in-truck crate');
-  assert.equal(fieldValue(record, 'Loaded weight (in truck)'), '240 lb (incomplete)',
-    'loaded weight is the canonical loaded population and says it is incomplete');
+  assert.equal(stats.totalWeight, null, 'unresolved cargo makes the loaded total unavailable');
+  assert.equal(stats.weightComplete, false);
+  assert.equal(fieldValue(record, 'Loaded weight (in truck)'), '— (incomplete)',
+    'a partial known subtotal must not be presented as the loaded total');
   assert.match(fieldValue(record, 'Volume used (in truck)'), /^\d+\.\d% of usable truck volume \(incomplete\)$/);
   const text = allText(record);
   assert.doesNotMatch(text, /Cases loaded|Total weight|^Weight:/m, 'no legacy population or weight labels');
   assert.match(prose(record), /Staged cargo is not in the truck\. Cargo parked beside the truck may appear in the perspective view but is left out of the top and side views\./);
   assert.match(text, /Hidden is a visibility count\. Hidden cargo is not shown in PDF views; cargo in the truck still counts in loaded weight and volume\./);
+
+  const resolvedPack = mixedPack();
+  resolvedPack.cases = resolvedPack.cases.filter(inst => inst.caseId !== 'ghost');
+  const resolvedId = setup({ pack: resolvedPack });
+  const resolvedStats = PackLibrary.computeStats(PackLibrary.getById(resolvedId));
+  assert.equal(resolvedStats.totalWeight, 240, 'complete loaded mass includes the hidden crate and excludes staged cargo');
+  assert.equal(resolvedStats.weightComplete, true);
+  assert.equal(fieldValue(runPdf(resolvedId), 'Loaded weight (in truck)'), '240 lb');
 });
 
 test('EXPORT-B checklist rows carry reconciled status quantities; missing and same-name Cases stay explicit', () => {
@@ -296,11 +305,12 @@ test('EXPORT-B hidden unresolved cargo remains visible in both reporting dimensi
   assert.deepEqual(report.population, { total: 6, inTruck: 3, staged: 1, hidden: 2, unresolved: 2 });
   assert.deepEqual(report.rows.find(row => row.name.includes('ghost')).counts,
     { inTruck: 0, staged: 0, hidden: 1, unresolved: 2 });
-  assert.equal(stats.totalWeight, 240, 'a missing Case contributes no fabricated weight');
+  assert.equal(stats.totalWeight, null, 'a missing Case makes total weight unavailable rather than contributing zero');
   const record = runPdf(packId);
   assertInsidePage(record);
   assert.equal(fieldValue(record, 'Hidden from view'), '2');
   assert.equal(fieldValue(record, 'Unresolved'), '2');
+  assert.equal(fieldValue(record, 'Loaded weight (in truck)'), '— (incomplete)');
 });
 
 test('EXPORT-B status classification reconciles for duplicate ids and unusable truck geometry', () => {

@@ -14,21 +14,23 @@
 import * as StateStore from '../core/state-store.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
+import { validatePortableCasePhysicalFields } from '../core/import-schema.js';
 import * as CaseLibrary from './case-library.js';
 import * as CategoryService from './category-service.js';
 import { TrailerPresets } from '../data/trailer-presets.js';
-import { canonicalOrientationLock } from '../core/orientation.js';
+import { canonicalOrientationLock, isCasePhysicalOrientationAllowed } from '../core/orientation.js';
 import {
   normalizeRightAngleRotation,
   getOrientedDimsForRotation,
-  isHeightAxisVertical,
+  getActualPoseDimensions,
+  getPhysicalOrientationAxes,
 } from '../core/oriented-dims.js';
 import {
   caseSafeReuseKey,
   caseSafeReuseEqual,
   parseCargoDimension,
-  parseCargoNonNegNumber,
-  WEIGHT_MAX_LBS,
+  parseCaseMass,
+  isCanonicalCaseMass,
 } from '../core/cargo-canonical.js';
 // Hard-rule predicates and tolerances come from the single validation authority
 // shared with the AutoPack solver (packing-core/validation.js), so manual
@@ -424,42 +426,18 @@ export function evaluateFrontOverhangRearRetention(
  */
 const isAabbContainedInAnyZone = validationAabbContainedInAnyZone;
 
-export function createOrientationLockPatch(rotation = {}, dimensions = {}) {
-  const lockedRotation = normalizeRightAngleRotation(rotation);
-  return {
-    orientationLocked: true,
-    lockedRotation,
-    orientedDims: getOrientedDimsForRotation(dimensions, lockedRotation),
-  };
+export function createOrientationLockPatch(rotation) {
+  if (!getPhysicalOrientationAxes(rotation).valid) return null;
+  return { orientationLocked: true, lockedRotation: normalizeRightAngleRotation(rotation) };
 }
 
 export function clearOrientationLockPatch() {
-  return {
-    orientationLocked: false,
-    lockedRotation: null,
-    orientedDims: null,
-  };
+  return { orientationLocked: false, lockedRotation: null };
 }
 
-/**
- * Returns true if the given rotation is permitted by the case's orientation policy.
- * Mirrors the orientation gate AutoPack's Case-policy checks are meant to use, without
- * importing the solver.
- *
- * Upright/onSide are physical-axis facts, not Euler-representation facts: a pose is
- * upright when the case's saved local height axis (+Y) is still parallel to world Y
- * after the rotation (in either direction — an inverted, upside-down pose is still
- * upright), via the shared isHeightAxisVertical() helper.
- *
- * - 'upright'        : isHeightAxisVertical(rotation)
- * - 'onside'/'on-side': !isHeightAxisVertical(rotation)
- * - 'any' or missing : all rotations allowed (no restriction)
- */
-export function isOrientationAllowedByCasePolicy(caseData = {}, rotation = {}) {
-  const lock = canonicalOrientationLock(caseData.orientationLock);
-  if (lock === 'upright') return isHeightAxisVertical(rotation);
-  if (lock === 'onSide') return !isHeightAxisVertical(rotation);
-  return true;
+/** Signed physical Case permission; exact instance targets are planning only. */
+export function isOrientationAllowedByCasePolicy(caseData = {}, rotation) {
+  return isCasePhysicalOrientationAllowed(caseData, rotation);
 }
 
 function isFinitePositive(value) {
@@ -510,17 +488,7 @@ function normalizeDims(dims, fallback = { length: 24, width: 24, height: 24 }) {
 }
 
 function getInstanceEffectiveDims(inst, caseData) {
-  const baseDims = normalizeDims(caseData && caseData.dimensions);
-  const orientedDims = inst && inst.orientedDims;
-  if (
-    orientedDims &&
-    isFinitePositive(orientedDims.length) &&
-    isFinitePositive(orientedDims.width) &&
-    isFinitePositive(orientedDims.height)
-  ) {
-    return normalizeDims(orientedDims, baseDims);
-  }
-  return baseDims;
+  return getActualPoseDimensions(caseData, inst).value || null;
 }
 
 function hasPositiveFiniteDims(dims) {
@@ -532,13 +500,6 @@ function hasPositiveFiniteDims(dims) {
   );
 }
 
-function rotationsEqual(a, b, tolerance = 1e-6) {
-  const ar = normalizeRightAngleRotation(a || {});
-  const br = normalizeRightAngleRotation(b || {});
-  return Math.abs(ar.x - br.x) <= tolerance &&
-    Math.abs(ar.y - br.y) <= tolerance &&
-    Math.abs(ar.z - br.z) <= tolerance;
-}
 
 function dimensionsEqual(a, b, tolerance = 1e-6) {
   return hasPositiveFiniteDims(a) && hasPositiveFiniteDims(b) &&
@@ -553,38 +514,15 @@ function dimensionsEqual(a, b, tolerance = 1e-6) {
  * agree with the shared THREE-compatible right-angle helper.
  */
 export function getCanonicalInstanceEffectiveDims(inst, caseData) {
-  const base = caseData && caseData.dimensions;
-  if (!hasPositiveFiniteDims(base)) {
-    return { ok: false, reason: 'missing or malformed case dimensions' };
-  }
-
-  const transformRotation = normalizeRightAngleRotation(
-    inst && inst.transform && inst.transform.rotation ? inst.transform.rotation : {}
-  );
-  const lockedRotation = inst && inst.orientationLocked === true
-    ? normalizeRightAngleRotation(inst.lockedRotation || {})
-    : null;
-  const lockConsistent = inst && inst.orientationLocked === true
-    ? Boolean(inst.lockedRotation) && rotationsEqual(transformRotation, lockedRotation)
-    : true;
-  const rotation = transformRotation;
-  const dims = getOrientedDimsForRotation(base, rotation);
-  if (!hasPositiveFiniteDims(dims)) {
-    return { ok: false, reason: 'rotation produced invalid dimensions' };
-  }
-
-  const stored = inst && inst.orientedDims;
-  const storedValid = hasPositiveFiniteDims(stored);
-  const storedConsistent = storedValid && dimensionsEqual(stored, dims);
-  const orientationAllowed = isOrientationAllowedByCasePolicy(caseData, rotation);
-
+  const actual = getActualPoseDimensions(caseData, inst);
+  if (!actual.valid) return { ok: false, reason: 'missing or malformed Case dimensions or actual rotation' };
+  const rotation = { ...inst.transform.rotation };
   return {
     ok: true,
-    dims: { length: dims.length, width: dims.width, height: dims.height },
+    dims: actual.value,
     rotation,
-    orientationAllowed,
-    lockConsistent,
-    storedConsistent,
+    orientationAllowed: isOrientationAllowedByCasePolicy(caseData, rotation),
+    storedConsistent: dimensionsEqual(inst.orientedDims, actual.value),
   };
 }
 
@@ -637,6 +575,7 @@ function getSafeImportedPlacement(pack, inst, caseData, acceptedAabbs) {
   const position = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
   if (!position) return null;
   const dims = getInstanceEffectiveDims(inst, caseData);
+  if (!dims) return null;
   const aabb = makeAabb(position, dims);
   const zones = getTrailerUsableZones(pack && pack.truck);
   if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck) ||
@@ -1102,9 +1041,9 @@ function buildAcceptedAabbs(pack, instances, caseLibrary) {
     const position = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
     if (!position) return;
     if (caseData) {
-      // Staging layout reserves the same effective envelope as before,
-      // including an explicitly stored orientedDims on a resolved Case.
-      acceptedAabbs.push(makeAabb(position, getInstanceEffectiveDims(inst, caseData)));
+      // Resolved Cases reserve the envelope derived from their actual pose.
+      const dims = getInstanceEffectiveDims(inst, caseData);
+      if (dims) acceptedAabbs.push(makeAabb(position, dims));
     } else {
       const unresolved = getTrustedSavedAabb(inst);
       if (unresolved) acceptedAabbs.push(unresolved);
@@ -1138,6 +1077,13 @@ function repairPackInstancePlacements(pack, caseLibrary) {
   const acceptedAabbs = [];
   const nextCases = (pack.cases || []).map(inst => {
     const next = Utils.deepClone(inst);
+    const savedCase = caseMap.get(next.caseId);
+    const savedGeometry = getCanonicalInstanceEffectiveDims(next, savedCase);
+    if (savedGeometry.ok && !savedGeometry.orientationAllowed) {
+      const savedPosition = normalizeTransformPosition(next.transform?.position);
+      if (savedPosition) acceptedAabbs.push(makeAabb(savedPosition, savedGeometry.dims));
+      return next; // C3 never relocates a saved forbidden pose during import.
+    }
     if (next.placement !== 'packed' || next.packedProfile !== 'max-capacity') {
       delete next.packedProfile;
     }
@@ -1159,6 +1105,7 @@ function repairPackInstancePlacements(pack, caseLibrary) {
       : null;
     if (canonical && canonical.ok) next.orientedDims = { ...canonical.dims };
     const dims = canonical && canonical.ok ? canonical.dims : getInstanceEffectiveDims(next, caseData);
+    if (!dims) return next;
 
     const safeImported = getSafeImportedPlacement(pack, next, caseData, acceptedAabbs);
     if (safeImported) {
@@ -1224,19 +1171,20 @@ export function projectMaxCapacitySupportRecords(candidate, accepted) {
     if (!maxCapacitySupportRelationship(candidate, support)) return support;
     return {
       ...support,
+      relaxWeightComparison: true,
       caseData: {
         ...(support.caseData || {}),
         noStackOnTop: false,
         stackable: true,
         maxStackCount: 0,
-        isPallet: true,
+        relaxWeightComparison: true,
       },
       ...(support.item && { item: {
         ...support.item,
         noStackOnTop: false,
         stackable: true,
         maxStackCount: 0,
-        isPallet: true,
+        relaxWeightComparison: true,
       } }),
     };
   });
@@ -1266,7 +1214,8 @@ function directChildCount(support, accepted, tol = RECON_TOL) {
 }
 
 function supportCanCarry(candidate, support, accepted) {
-  if (maxCapacitySupportRelationship(candidate, support)) return true;
+  const relaxComparison = maxCapacitySupportRelationship(candidate, support);
+  if (relaxComparison) return weightAllowsSupport(candidate.caseData?.weight, support.caseData?.weight, false, true);
   const rules = support.caseData || {};
   if (!rulesAllowStackOnTop(rules)) return false;
   // Manual pipeline floors the cap at its boundary (canonicalization already
@@ -1274,8 +1223,8 @@ function supportCanCarry(candidate, support, accepted) {
   const limit = Math.max(0, Math.floor(rulesMaxStackCount(rules)));
   if (limit && directChildCount(support, accepted) >= limit) return false;
   return weightAllowsSupport(
-    Math.max(0, Number(candidate.caseData && candidate.caseData.weight) || 0),
-    Math.max(0, Number(rules.weight) || 0),
+    candidate.caseData?.weight,
+    rules.weight,
     rules.isPallet === true
   );
 }
@@ -1310,7 +1259,7 @@ function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_T
       aabb,
       physicalSupportRecords,
       wheelWell,
-      { weight: Number(candidate?.caseData?.weight) || 0 }
+      { weight: candidate?.caseData?.weight }
     )
     : aabbIsSupported(candidate, aabb, structural, zones, tol);
   return isAabbInsideTruckGeometry(aabb, zones, wheelWell) &&
@@ -1382,7 +1331,7 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
       aabb,
       physicalSupportRecords,
       wheelWell,
-      { weight: Number(node?.caseData?.weight) || 0 }
+      { weight: node?.caseData?.weight }
     )
     : aabbIsSupported(node, aabb, structural, zones, RECON_TOL);
   if (!physicallySupported) return manualVerticalFailure('support-rules');
@@ -1443,7 +1392,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
     else accepted.push({ ...node, aabb: node.curAabb, position: pos });
   }
   if (!target) return manualVerticalFailure('invalid-selection');
-  if (!target.canonical.orientationAllowed || !target.canonical.lockConsistent) {
+  if (!target.canonical.orientationAllowed) {
     return manualVerticalFailure('invalid-selection');
   }
 
@@ -1587,12 +1536,27 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
 
   for (const node of order) {
     const { inst, dims, curPos, canonical } = node;
-    if ((!canonical.orientationAllowed || !canonical.lockConsistent) &&
-        !instanceUsesMaxCapacityProfile(inst)) {
+    const proposed = options.changedInstanceIds instanceof Set && options.changedInstanceIds.has(inst.id);
+    const cargoSupports = accepted.filter(support => !support.collisionOnly &&
+      Math.abs(node.curAabb.min.y - support.aabb.max.y) <= RECON_TOL &&
+      reconXzOverlapArea(node.curAabb, support.aabb) > 0.05);
+    const rigidSupport = aabbRestsOnZoneFloor(node.curAabb, zones) ||
+      (wheelWell && isWheelWellSupportedAndStable(node.curAabb, [], wheelWell, { weight: node.caseData.weight }));
+    const incompleteSupportMass = !rigidSupport && cargoSupports.length > 0 &&
+      (node.caseData.weight == null || cargoSupports.some(support => support.caseData?.weight == null));
+    // C3 introduces stricter source semantics, not a new saved-layout repair.
+    // Preserve incompatible committed poses and mark reconciliation incomplete;
+    // a new manual proposal still goes through the conservative placement gate.
+    if (!proposed && (!canonical.orientationAllowed || incompleteSupportMass)) {
+      unresolved.push({ id: inst.id, caseId: inst.caseId,
+        reason: !canonical.orientationAllowed ? 'saved orientation requires assessment' : 'support mass is unknown' });
+      accepted.push({ ...node, aabb: node.curAabb, position: curPos });
+      resultByInst.set(inst, { status: 'preserved', position: curPos, node });
+      continue;
+    }
+    if (!canonical.orientationAllowed) {
       invalid.push(inst.id);
-      invalidReasons[inst.id] = canonical.orientationAllowed
-        ? 'exact instance lock does not match the stored rotation'
-        : 'orientation violates the case policy';
+      invalidReasons[inst.id] = 'orientation violates the case policy';
       resultByInst.set(inst, { status: 'invalid', position: curPos, node });
       continue;
     }
@@ -1639,13 +1603,19 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
   const stagedOrder = [...stagedNodes].sort((a, b) => indexById.get(a.inst) - indexById.get(b.inst));
   for (const node of stagedOrder) {
     const current = node.curAabb;
+    const proposed = options.changedInstanceIds instanceof Set && options.changedInstanceIds.has(node.inst.id);
+    if (!proposed && !node.canonical.orientationAllowed) {
+      unresolved.push({ id: node.inst.id, caseId: node.inst.caseId, reason: 'saved orientation requires assessment' });
+      stagingAccepted.push(current);
+      resultByInst.set(node.inst, { status: 'preserved', position: node.curPos, node });
+      continue;
+    }
     const insideTruck = overlapsAny(current, zones);
     const blockedBody = aabbIntersectsWheelWellBlockedBody(current, nextTruck) ||
       aabbIntersectsFrontBonusBlockedBody(current, nextTruck);
     const collidesStaged = overlapsAny(current, stagingAccepted);
     const collides = overlapsAny(current, [...packedAabbs, ...stagingAccepted]);
     const onFloor = Math.abs(current.min.y) <= RECON_TOL;
-    const storedPoseConsistent = node.inst.orientedDims == null || node.canonical.storedConsistent;
     const reachable = isAabbInSupportedStagingArea({ truck: basePack.truck }, current) ||
       isAabbInSupportedStagingArea({ truck: nextTruck }, current);
     if (preserveStagedPositions && !insideTruck && !blockedBody && !collidesStaged) {
@@ -1661,7 +1631,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
       });
       continue;
     }
-    if (!insideTruck && !blockedBody && !collides && onFloor && storedPoseConsistent && reachable) {
+    if (!insideTruck && !blockedBody && !collides && onFloor && reachable) {
       stagingAccepted.push(current);
       stagedUnchanged.push(node.inst.id);
       resultByInst.set(node.inst, { status: 'staged-unchanged', position: node.curPos, node });
@@ -1700,6 +1670,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
 
   const nextCases = allInstances.map(inst => {
     const r = resultByInst.get(inst);
+    if (r?.status === 'preserved') return inst;
     if (!r) {
       if (inst && inst.placement === 'staged' && inst.packedProfile !== undefined) {
         const next = Utils.deepClone(inst);
@@ -1929,9 +1900,8 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
       const caseData = caseMap.get(entry.inst.caseId);
       const canonical = getCanonicalInstanceEffectiveDims(entry.inst, caseData);
       const position = normalizeTransformPosition(entry.inst.transform && entry.inst.transform.position);
-      const relaxedHandling = instanceUsesMaxCapacityProfile(entry.inst);
       if (!caseData || !canonical.ok ||
-          ((!canonical.orientationAllowed || !canonical.lockConsistent) && !relaxedHandling) ||
+          !canonical.orientationAllowed ||
           !position) {
         return null;
       }
@@ -2008,7 +1978,7 @@ const HANDLING_RULES_SIGNATURE_VERSION = 'v1';
 // Two storage representations with identical hard-rule behavior (e.g. the
 // legacy stackable/noStackOnTop aliases) therefore always fingerprint
 // identically. Keep this v1 signature component unchanged for persisted Packs.
-// canFlip, maxPalletWeight, laneItem, loadPriority, and shape do not define
+// maxPalletWeight, laneItem, loadPriority, and shape do not define
 // existing manual packed-placement validity and are intentionally excluded.
 function handlingRuleSemanticFingerprint(caseData) {
   const lock = canonicalOrientationLock(caseData && caseData.orientationLock);
@@ -2029,7 +1999,7 @@ function placementAffectingCaseFingerprint(caseData) {
     parseCargoDimension(dims.length).value,
     parseCargoDimension(dims.width).value,
     parseCargoDimension(dims.height).value,
-    parseCargoNonNegNumber(caseData && caseData.weight, { max: WEIGHT_MAX_LBS }).value,
+    parseCaseMass(caseData && caseData.weight).value,
   ]);
 }
 
@@ -2061,10 +2031,11 @@ function preserveCaseModalRoundTrips(oldCase, newCase, modalUnits) {
   }
 
   if (Utils.weightUnits.includes(modalUnits.weightUnit)) {
-    const oldValue = parseCargoNonNegNumber(oldCase.weight, { max: WEIGHT_MAX_LBS }).value;
-    const proposedValue = parseCargoNonNegNumber(newCase.weight, { max: WEIGHT_MAX_LBS }).value;
+    const oldValue = parseCaseMass(oldCase.weight).value;
+    const proposedValue = parseCaseMass(newCase.weight).value;
     const display = value => Utils.formatCaseModalWeightNumber(Utils.poundsToUnit(value, modalUnits.weightUnit));
-    if (oldValue !== proposedValue && display(oldValue) === display(proposedValue)) {
+    if (oldValue != null && proposedValue != null &&
+        oldValue !== proposedValue && display(oldValue) === display(proposedValue)) {
       nextWeight = oldValue;
       changed = true;
     }
@@ -2414,6 +2385,7 @@ export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
   const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary, {
     preserveStagedPositions: options.preserveStagedPositions !== false,
+    changedInstanceIds: options.changedInstanceIds,
   });
   let nextPack = reconciliation.nextPack;
   let stagedIds = [];
@@ -2462,7 +2434,13 @@ export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary
   const pack = getById(packId);
   if (!pack) return null;
   const proposed = { ...pack, cases: Array.isArray(nextCases) ? nextCases : [] };
-  const result = revalidateManualPlacements(proposed, caseLibrary, options);
+  const beforeById = new Map((pack.cases || []).map(inst => [inst.id, inst]));
+  const changedInstanceIds = new Set(proposed.cases.filter(inst => {
+    const before = beforeById.get(inst.id);
+    return !before || before.placement !== inst.placement ||
+      JSON.stringify(before.transform) !== JSON.stringify(inst.transform);
+  }).map(inst => inst.id));
+  const result = revalidateManualPlacements(proposed, caseLibrary, { ...options, changedInstanceIds });
   const patch = { cases: result.pack.cases };
   // A fresh handling-rules signature may only be persisted once a path has
   // actually performed a complete, successful whole-Pack revalidation — never
@@ -2544,8 +2522,7 @@ export function repackInvalidPlacements(reconResult, nextTruck, caseLibrary) {
     const caseData = caseMap.get(inst.caseId);
     const canonical = getCanonicalInstanceEffectiveDims(inst, caseData);
     if (!canonical.ok ||
-        ((!canonical.orientationAllowed || !canonical.lockConsistent) &&
-          !instanceUsesMaxCapacityProfile(inst))) {
+        !canonical.orientationAllowed) {
       failedIds.push(inst.id);
       warnings.push(`Item ${inst.id} could not be repacked: ${canonical.reason || 'hard orientation rule failed'}.`);
       continue;
@@ -2997,6 +2974,7 @@ function createPhysicalPlacementClassifier(pack, caseLibrary) {
     const caseData = caseMap.get(inst && inst.caseId);
     if (!caseData) return null;
     const effDims = getInstanceEffectiveDims(inst, caseData);
+    if (!effDims) return null;
     const pos = inst && inst.transform && inst.transform.position
       ? inst.transform.position
       : { x: 0, y: 0, z: 0 };
@@ -3171,7 +3149,8 @@ function computeShapeAwareOOGWarnings(pack, caseLibrary, resolvedInstanceIds) {
         !resolvedInstanceIds.has(inst.id == null ? null : String(inst.id))) return;
     const caseData = caseMap.get(inst.caseId);
     if (!caseData) return;
-    const dims = inst.orientedDims || caseData.dimensions || { length: 0, width: 0, height: 0 };
+    const dims = getInstanceEffectiveDims(inst, caseData);
+    if (!dims) return;
     const pos = inst.transform && inst.transform.position ? inst.transform.position : { x: 0, y: 0, z: 0 };
     const half = { x: dims.length / 2, y: dims.height / 2, z: dims.width / 2 };
     const aabb = {
@@ -3215,6 +3194,7 @@ export function computeStats(pack, caseLibraryOverride) {
     },
   });
   let totalWeight = 0;
+  let massComplete = true;
   let maxCapacityProfileCount = 0;
   const loadedInstanceIds = new Set();
   const resolvedInstanceIds = new Set();
@@ -3233,7 +3213,8 @@ export function computeStats(pack, caseLibraryOverride) {
     // that a relaxed rule was individually required. See docs/audits/
     // max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md.
     if (instanceUsesMaxCapacityProfile(inst)) maxCapacityProfileCount++;
-    totalWeight += Number(c.weight) || 0;
+    if (c.weight == null || !isCanonicalCaseMass(c.weight)) massComplete = false;
+    else totalWeight += c.weight;
   });
   const cog = computeCoG(pack, caseLib, loadedInstanceIds);
   const oogWarnings = computeShapeAwareOOGWarnings(pack, caseLib, resolvedInstanceIds);
@@ -3252,12 +3233,12 @@ export function computeStats(pack, caseLibraryOverride) {
     maxCapacityProfileCount,
     volumeUsed: spaceUtilization.cargoCubeVolume,
     volumePercent: spaceUtilization.cargoCubePercent,
-    totalWeight,
-    cog,
+    totalWeight: massComplete && totalsComplete ? totalWeight : null,
+    cog: massComplete && totalsComplete ? cog : null,
     oogWarnings,
     palletWarnings,
     totalsComplete,
-    weightComplete: totalsComplete,
+    weightComplete: massComplete && totalsComplete,
     volumeComplete: totalsComplete,
     utilizationComplete: totalsComplete,
   };
@@ -3419,6 +3400,7 @@ export function validatePackImportPayload(payload, localCaseIds = new Set()) {
   // Validate every bundled case definition. A malformed bundled case (anywhere in
   // the list — first, middle, or last) blocks the entire import atomically.
   for (const c of bundled) {
+    validatePortableCasePhysicalFields(c, { legacy: true, label: `bundled case "${c?.id}"` });
     const err = validateBundledCaseDefinition(c);
     if (err) throw new Error(`Pack import blocked: ${err}.`);
   }

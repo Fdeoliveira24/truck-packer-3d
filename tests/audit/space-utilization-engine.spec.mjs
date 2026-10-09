@@ -5,6 +5,8 @@ import { computeSpaceUtilization } from '../../src/packing-core/space-utilizatio
 import * as PackLibrary from '../../src/services/pack-library.js';
 import { computeCoG } from '../../src/services/cog-service.js';
 import { computePalletWarnings } from '../../src/services/oog-service.js';
+import * as PureUtils from '../../src/core/utils.js';
+import * as UiUtils from '../../src/core/utils/index.js';
 import {
   buildSpaceUtilizationResult,
   createSpaceUtilizationGauge,
@@ -336,12 +338,12 @@ test('UTIL-ENGINE-13C hidden unresolved cargo stays unresolved without fabricate
   assert.equal(stats.hiddenCases, 1);
   assert.equal(stats.unresolvedInstances, 1);
   assert.equal(stats.packedCases, 0);
-  assert.equal(stats.totalWeight, 0);
+  assert.equal(stats.totalWeight, null);
   assert.equal(stats.volumeUsed, 0);
   assert.equal(stats.totalsComplete, false);
 });
 
-test('F02-COG-1 through 6: loaded visibility is orthogonal; staged and unresolved cargo do not move CoG', () => {
+test('F02-COG-1 through 6: visibility is orthogonal, staging excluded, unresolved mass makes CoG unavailable', () => {
   const light = makeCase('light', undefined, { weight: 20 });
   const heavy = makeCase('heavy', undefined, { weight: 80 });
   const visible = makeInstance('visible', light.id, { x: 20, y: 5, z: 0 }, { placement: 'packed' });
@@ -365,11 +367,11 @@ test('F02-COG-1 through 6: loaded visibility is orthogonal; staged and unresolve
   assert.equal(mixed.cog.totalWeight, mixed.totalWeight,
     'CoG and loaded statistics use the same resolved positive-weight population');
   const unresolved = stats([visible, loadedHidden, staged, missing]);
-  assert.deepEqual(unresolved.cog, mixed.cog);
+  assert.equal(unresolved.cog, null, 'a known subtotal is not a complete whole-load CoG');
   assert.equal(unresolved.unresolvedInstances, 1);
 });
 
-test('F02-PALLET-1 through 6: hidden loaded cargo counts; staged and unresolved cargo do not', () => {
+test('F02-PALLET-1 through 6: hidden cargo counts, staged is excluded, unresolved load is incomplete', () => {
   const pallet = makeCase('pallet', { length: 20, width: 20, height: 4 },
     { isPallet: true, maxPalletWeight: 100, weight: 10 });
   const cargo = makeCase('cargo', { length: 10, width: 10, height: 10 }, { weight: 150 });
@@ -398,9 +400,14 @@ test('F02-PALLET-1 through 6: hidden loaded cargo counts; staged and unresolved 
     { ...loadedPallet, transform: { position: { x: 50, y: 45, z: 0 } }, placement: 'staged', hidden: true },
     makeInstance('above-staged-pallet', cargo.id, { x: 50, y: 52, z: 0 }, { placement: 'staged' }),
   ]), [], 'hiding a staged pallet does not make it loaded');
-  assert.deepEqual(warnings([loadedPallet,
+  const incomplete = warnings([loadedPallet,
     makeInstance('bad-dims', malformed.id, { x: 50, y: 9, z: 0 }, { placement: 'packed' }),
-  ]), [], 'malformed Case dimensions cannot contribute fabricated pallet load');
+  ]);
+  assert.equal(incomplete.length, 1);
+  assert.equal(incomplete[0].massComplete, false);
+  assert.equal(incomplete[0].actualWeight, null, 'malformed geometry cannot imply a complete zero pallet load');
+  assert.equal(incomplete[0].overloadPercent, null);
+  assert.deepEqual(incomplete[0].loadedCaseIds, []);
 });
 
 test('F02-OOG-1 through 5: packed cargo keeps shape warnings when hidden; staged cargo does not', () => {
@@ -531,4 +538,54 @@ test('UTIL-ENGINE-17 calculated spatial utilization is not persisted', () => {
   assert.equal(Object.keys(stats).includes('spaceUtilization'), false);
   assert.doesNotMatch(JSON.stringify({ ...pack, stats }), /spaceUtilization|occupiedEnvelopeVolume|overlapVolume/);
   assert.deepEqual(pack, before);
+});
+
+for (const [name, utils] of [['pure', PureUtils], ['UI', UiUtils]]) {
+  test(`C3 ${name} mass conversion preserves unknown and formatting never invents zero`, () => {
+    for (const unit of ['lb', 'kg']) {
+      assert.equal(utils.poundsToUnit(null, unit), null);
+      assert.equal(utils.unitToPounds(null, unit), null);
+      assert.equal(utils.formatWeight(null, unit), '—');
+      assert.equal(utils.formatWeight(undefined, unit), '—');
+      assert.ok(!/^0(?:\.0+)? /.test(utils.formatWeight(0.00001, unit, 2)));
+    }
+    assert.equal(utils.formatWeight(12.345, 'lb', 2), '12.35 lb');
+    assert.equal(utils.formatWeight(Number.MIN_VALUE, 'kg'), '—', 'unrepresentable conversion is unavailable, not zero');
+    assert.equal(utils.poundsToUnit(10, 'kg'), 4.535923700000001);
+    assert.ok(Math.abs(utils.unitToPounds(10, 'kg') - 22.046226218487757) < 1e-12);
+    assert.ok(Number.isNaN(utils.unitToPounds('bad', 'kg')));
+  });
+}
+
+test('C3 Case Modal weight formatting keeps null blank and tiny declared values positive', () => {
+  assert.equal(UiUtils.formatCaseModalWeightNumber(null), '');
+  assert.equal(UiUtils.formatCaseModalWeightNumber(0.00001), '0.00001');
+  assert.equal(UiUtils.formatCaseModalWeightNumber(52.9109), '52.91');
+  assert.equal(UiUtils.formatCaseModalWeightNumber(0), '0', 'invalid zero stays visible for field rejection');
+});
+
+test('C3 CoG is unavailable for unknown or invalid contributing mass without excluding hidden cargo', () => {
+  const known = makeCase('known', undefined, { weight: 20 });
+  const other = makeCase('other', undefined, { weight: null });
+  const instances = [
+    makeInstance('known-1', 'known', { x: 20, y: 5, z: 0 }, { placement: 'packed' }),
+    makeInstance('other-1', 'other', { x: 80, y: 5, z: 0 }, { placement: 'packed', hidden: true }),
+  ];
+  const pack = { truck: STANDARD_TRUCK, cases: instances };
+  for (const weight of [null, undefined, 0, -1, NaN, Infinity, '10']) {
+    assert.equal(computeCoG(pack, [known, { ...other, weight }]), null);
+  }
+  other.weight = 80;
+  assert.deepEqual(computeCoG(pack, [known, other]).position, { x: 68, y: 5, z: 0 });
+  instances[1].placement = 'staged'; other.weight = null;
+  assert.deepEqual(computeCoG(pack, [known, other]).position, { x: 20, y: 5, z: 0 });
+});
+
+test('C3 CoG cannot invent a position or silently drop an unresolved loaded Case', () => {
+  const item = makeCase();
+  const packed = makeInstance('packed', item.id, { x: 20, y: 5, z: 0 }, { placement: 'packed' });
+  const subject = { truck: STANDARD_TRUCK, cases: [packed] };
+  assert.equal(computeCoG(subject, []), null);
+  delete packed.transform.position;
+  assert.equal(computeCoG(subject, [item]), null);
 });

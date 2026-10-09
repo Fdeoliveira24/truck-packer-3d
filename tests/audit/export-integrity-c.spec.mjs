@@ -202,7 +202,7 @@ const durablePack = pack => ({
   cases: pack.cases.map(durableInstance),
 });
 
-const HANDLING_FIELDS = ['name', 'itemCode', 'category', 'dimensions', 'weight', 'shape', 'canFlip', 'orientationLock',
+const HANDLING_FIELDS = ['name', 'itemCode', 'category', 'dimensions', 'weight', 'shape', 'orientationLock',
   'stackable', 'noStackOnTop', 'maxStackCount', 'isPallet', 'loadPriority', 'mustLoadLast', 'stopGroup', 'notes', 'color'];
 const durableCase = c => Object.fromEntries(['id', ...HANDLING_FIELDS].map(key => [key, c[key]]));
 
@@ -327,6 +327,8 @@ test('EXPORT-C-WS-2 representative Workspace Backup round-trips the durable cont
   const plan = ImportExport.planWorkspaceRestore(ImportExport.parseWorkspaceImportJSON(json), { currentState: {} });
   assert.deepEqual(plan.packLibrary.map(durablePack), state.packLibrary.map(durablePack), 'durable Pack contract round-trips');
   assert.deepEqual(plan.caseLibrary.map(durableCase), state.caseLibrary.map(durableCase), 'durable Case contract round-trips');
+  assert.equal(Object.hasOwn(parsed.data.caseLibrary[0], 'canFlip'), false, 'Workspace export strips retired canFlip');
+  assert.equal(Object.hasOwn(plan.caseLibrary[0], 'canFlip'), false, 'Workspace restore keeps Case orientation as the physical source');
   assert.deepEqual(plan.folderLibrary, state.folderLibrary);
   assert.deepEqual([plan.placementsRepaired, plan.placementsStaged], [0, 0], 'valid placements are kept exactly');
   assert.equal(plan.packLibrary[0].stats.totalCases, 4, 'stats are recomputed, not carried');
@@ -445,6 +447,8 @@ test('EXPORT-C-APP-1 App Backup passes its own importer preflight and round-trip
   const imported = ImportExport.parseAppImportJSON(json);
   assert.deepEqual(imported.packLibrary.map(durablePack), state.packLibrary.map(durablePack));
   assert.deepEqual(imported.caseLibrary.map(durableCase), state.caseLibrary.map(durableCase));
+  assert.equal(Object.hasOwn(parsed.data.caseLibrary[0], 'canFlip'), false, 'App export strips retired canFlip');
+  assert.equal(Object.hasOwn(imported.caseLibrary[0], 'canFlip'), false, 'App import keeps Case orientation as the physical source');
   assert.equal(imported.preferences.export.screenshotResolution, '2560x1440');
   assert.deepEqual(imported.importReport, { placementsRepaired: 0 });
 });

@@ -9,6 +9,7 @@ import { createHelpModal } from '../../src/ui/overlays/help-modal.js';
 import { openNotesOverlay } from '../../src/ui/overlays/notes-overlay.js';
 import { createKeyboardManager } from '../../src/ui/keyboard-manager.js';
 import { createInteractionManager } from '../../src/screens/editor-screen.js';
+import { normalizeRightAngleRotation } from '../../src/core/oriented-dims.js';
 import { createSettingsOverlay, getKeyboardShortcutReference } from '../../src/ui/overlays/settings-overlay.js';
 import { createAuthOverlay } from '../../src/ui/overlays/auth-overlay.js';
 import { createSystemOverlay } from '../../src/ui/system-overlay.js';
@@ -567,7 +568,7 @@ function installProvisionalEditor(t, dom) {
   const canvas = viewport.appendChild(dom.doc.createElement('canvas'));
   canvas.getBoundingClientRect = () => ({ left: 0, top: 0, width: 100, height: 100 });
   canvas.setPointerCapture = () => {};
-  createInteractionManager({
+  const interaction = createInteractionManager({
     UIComponents: { ...dom.UI, showToast: message => toasts.push(message) },
     StateStore: { get: key => state[key], set: patch => Object.assign(state, patch) },
     SceneManager: {
@@ -583,19 +584,37 @@ function installProvisionalEditor(t, dom) {
     },
     PackLibrary: {
       getById: () => pack,
+      normalizeRightAngleRotation,
       isOrientationAllowedByCasePolicy: () => true,
       findManualVerticalPlacement: (_pack, _cases, _id, options) => ({ ...placement, mode: options.mode }),
       updateCasesWithManualRevalidation: (...args) => { commits.push(args); return { pack, stagedIds: [] }; },
     },
-    CaseLibrary: { getById: () => ({ id: 'case', dimensions: { length: 1, width: 1, height: 1 } }), getCases: () => [] },
+    CaseLibrary: { getById: () => ({ id: 'case', orientationLock: 'any', dimensions: { length: 1, width: 1, height: 1 } }), getCases: () => [] },
     OperationLifecycle: { isBusy: () => false },
-  }).init(canvas);
+  });
+  interaction.init(canvas);
   const press = (key, extra) => dom.dispatch(dom.key(key, viewport, extra));
   const beginStroke = () => canvas.emit('pointerdown', { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
   const endStroke = () => dom.win.emit('pointerup', { button: 0, clientX: 50, clientY: 50, pointerId: 1 });
-  return { cargo, controls, commits, toasts, press, beginStroke, endStroke,
+  return { cargo, controls, commits, toasts, press, beginStroke, endStroke, interaction,
     allowPlacement: position => { placement = { ok: true, position }; } };
 }
+
+test('C3 UI01 refuses exact-constraint edits during live and held temporary poses', t => {
+  const dom = installDom(t);
+  const editor = installProvisionalEditor(t, dom);
+  editor.beginStroke();
+  assert.equal(editor.interaction.setSelectionOrientationConstraint(true), false);
+  assert.equal(editor.interaction.setSelectionOrientationConstraint(false), false);
+  editor.cargo.position.y = 3;
+  editor.endStroke();
+  assert.equal(editor.interaction.hasProvisionalPose(), true);
+  assert.equal(editor.interaction.setSelectionOrientationConstraint(true), false);
+  assert.equal(editor.interaction.setSelectionOrientationConstraint(false), false);
+  assert.equal(editor.commits.length, 0);
+  assert.equal(editor.cargo.position.y, 3, 'refusal preserves the held scene pose');
+  assert.match(editor.toasts.at(-1), /Place or cancel the held case first/);
+});
 
 test('Editor provisional pose owns R/T/E/F and arrow keys until it is placed or cancelled', t => {
   const dom = installDom(t);

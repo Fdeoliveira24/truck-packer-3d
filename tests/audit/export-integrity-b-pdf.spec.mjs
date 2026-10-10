@@ -65,7 +65,7 @@ function recordingJsPDF(record) {
 
 function baseCase(overrides = {}) {
   return {
-    id: 'case-a', name: 'Crate A', category: 'default',
+    id: 'case-a', name: 'Crate A', category: 'default', shape: 'box', orientationLock: 'any',
     dimensions: { length: 40, width: 30, height: 20 }, weight: 100, ...overrides,
   };
 }
@@ -540,7 +540,7 @@ const reviewSection = record => {
 test('EXPORT-B "Load plan needs review" prints with statistics on and off', () => {
   for (const pdfIncludeStats of [true, false]) {
     const record = runPdf(setup({ pdfIncludeStats, pack: basePack({
-      handlingRulesValidatedSignature: 'hr-v1:stale', cases: [instance('a1', 'case-a', { x: 30, y: 10, z: 0 })],
+      handlingRulesValidatedSignature: 'hr-v1:stale', cases: [instance('a1', 'case-a', { x: -30, y: 10, z: 0 })],
     }) }));
     assertInsidePage(record);
     assert.match((reviewSection(record) || '').replace(/\n/g, ' '), /Load plan needs review A case’s loading rules changed after this plan was last checked\. Review the plan to make sure the cargo still follows the latest rules\./);
@@ -549,7 +549,7 @@ test('EXPORT-B "Load plan needs review" prints with statistics on and off', () =
   const current = basePack({ cases: [instance('a1', 'case-a', { x: 30, y: 10, z: 0 })] });
   setup({ pack: current });
   current.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(current, CaseLibrary.getCases());
-  assert.equal(reviewSection(runPdf(current.id)), null, 'a current signature needs no review');
+  assert.equal(reviewSection(runPdf(current.id)), null, 'a physically valid eligible load needs no review');
 });
 
 test('EXPORT-B Max Capacity review notice is independent of statistics and claims no per-case relaxation', () => {

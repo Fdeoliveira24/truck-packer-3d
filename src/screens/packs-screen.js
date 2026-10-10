@@ -377,8 +377,7 @@ export function createPacksScreen({
       });
     }
 
-    // Load Plan "needs review" status (a stale Handling Rules check per
-    // PackLibrary.isHandlingRulesValidationRequired). Hover/focus shows ONE small shared
+    // Committed Load Plan assessment status. Hover/focus shows ONE small shared
     // floating card. It is position: fixed and appended to <body>, because the List's
     // scrolling table wrapper (overflow hidden) and the card edges would clip an
     // absolutely positioned child near the bottom row. Informational only: no button,
@@ -397,7 +396,7 @@ export function createPacksScreen({
       card.setAttribute('role', 'tooltip');
       card.innerHTML =
         '<span class="tp3d-status-card__title">Load plan needs review</span>' +
-        `<span class="tp3d-status-card__body" id="${PACK_STATUS_CARD_BODY_ID}">Loading rules have changed.</span>`;
+        `<span class="tp3d-status-card__body" id="${PACK_STATUS_CARD_BODY_ID}">Assessment uses current cargo source.</span>`;
       document.body.appendChild(card);
       return card;
     }
@@ -437,6 +436,8 @@ export function createPacksScreen({
     // Listeners exist only while the card is visible, so nothing accumulates across renders.
     function showPackStatusCard(anchor, align) {
       const card = ensurePackStatusCard();
+      card.querySelector('.tp3d-status-card__title').textContent = anchor.getAttribute('aria-label');
+      card.querySelector('.tp3d-status-card__body').textContent = anchor.dataset.assessmentMessage;
       const wasHidden = !packStatusCardAnchor;
       packStatusCardAnchor = anchor;
       packStatusCardAlign = align;
@@ -467,14 +468,15 @@ export function createPacksScreen({
     // validate, open the Load Plan, toggle selection, or open Notes/overflow — the same
     // click/keydown containment as the Notes button. Deliberately no generic
     // [data-tooltip]; the floating card above is its hover/focus message.
-    function createPackValidationStatus({ inline = false } = {}) {
+    function createPackValidationStatus({ inline = false, assessment }) {
       const status = document.createElement('span');
       status.className = inline
         ? 'tp3d-validation-status tp3d-validation-status--inline'
         : 'tp3d-validation-status';
       status.setAttribute('data-pack-status', 'validation');
       status.setAttribute('role', 'img');
-      status.setAttribute('aria-label', 'Load plan needs review');
+      status.setAttribute('aria-label', `Load plan: ${assessment.primary}`);
+      status.dataset.assessmentMessage = `Physical assessment: ${assessment.primary}. Operational eligibility: ${assessment.eligibility.state}.`;
       status.setAttribute('aria-describedby', PACK_STATUS_CARD_BODY_ID);
       status.tabIndex = 0;
       status.innerHTML = '<i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>';
@@ -1682,8 +1684,9 @@ export function createPacksScreen({
           showCustomerReference: badgePrefs.showCustomerReference !== false,
         });
 
-        if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
-          title.appendChild(createPackValidationStatus({ inline: true }));
+        const assessment = PackLibrary.assessCommittedPack(pack, CaseLibrary.getCases());
+        if (assessment.primary !== 'VALID' || assessment.eligibility.state === 'blocked') {
+          title.appendChild(createPackValidationStatus({ inline: true, assessment }));
         }
 
         const stats = PackLibrary.computeStats(pack);
@@ -1993,8 +1996,9 @@ export function createPacksScreen({
         // review), Notes and overflow trail.
         const actions = document.createElement('div');
         actions.className = 'card-head-actions tp3d-management-card-actions';
-        if (PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases())) {
-          actions.appendChild(createPackValidationStatus());
+        const assessment = PackLibrary.assessCommittedPack(pack, CaseLibrary.getCases());
+        if (assessment.primary !== 'VALID' || assessment.eligibility.state === 'blocked') {
+          actions.appendChild(createPackValidationStatus({ assessment }));
         }
         if (badgePrefs.showNotes !== false) actions.appendChild(createPackNotesButton(pack));
         actions.appendChild(kebabBtn);
@@ -2427,7 +2431,6 @@ export function createPacksScreen({
                   ...metadata,
                   truck: finalPack.truck,
                   cases: finalPack.cases,
-                  handlingRulesValidatedSignature: finalPack.handlingRulesValidatedSignature,
                 }),
                 onCommitted: () => editModalRef && editModalRef.close(),
               });

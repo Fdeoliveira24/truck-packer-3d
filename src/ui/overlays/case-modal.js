@@ -154,28 +154,6 @@ function normalizeCategoryKey(value) {
     .toLowerCase();
 }
 
-// Case Save toast wording for the actively-displayed Editor Pack's revalidation
-// impact, if any. Reuses the existing showToast(message, tone) pattern and the
-// exact "could not rest safely and was moved to staging" wording already used
-// elsewhere for this class of event — no new notification system.
-function caseSaveToastArgs(packImpact) {
-  if (!packImpact) return ['Case saved', 'success'];
-  const summary = packImpact.summary || {};
-  if (packImpact.validationComplete !== true) {
-    return ['Case saved, but the Load Plan still requires validation.', 'warning'];
-  }
-  const staged = Number(summary.staged) || 0;
-  const repaired = Number(summary.repaired) || 0;
-  const adjusted = Number(summary.adjusted) || 0;
-  if (staged > 0) {
-    return ['Case saved. Affected cargo could not rest safely and was moved to staging.', 'warning'];
-  }
-  if (repaired > 0 || adjusted > 0) {
-    return ['Case saved. The Load Plan was revalidated and cargo was adjusted.', 'info'];
-  }
-  return ['Case saved', 'success'];
-}
-
 export function openCaseModal({
   existing = null,
   Utils,
@@ -609,17 +587,14 @@ export function openCaseModal({
           };
           delete caseData.canFlip;
           if (typeof beforeMutate === 'function' && beforeMutate() === false) return false;
-          // One atomic commit: the Case, its category, and (when the edit changes
-          // placement-affecting Handling Rules) the actively-displayed Editor
-          // Pack's revalidation all publish together as a single significant
-          // history entry — one Undo/Redo always covers the whole Save.
-          const { packImpact } = PackLibrary.commitCaseHandlingRuleChange(
+          // Save shared Case source in one history step. Referenced Pack poses
+          // stay untouched; status derives from the new definition on render.
+          PackLibrary.commitCaseHandlingRuleChange(
             caseData,
             { key: categoryKey, name: catMeta.name, color: categoryColor },
             { lengthUnit, weightUnit }
           );
-          const [toastMessage, toastTone] = caseSaveToastArgs(packImpact);
-          UIComponents.showToast(toastMessage, toastTone);
+          UIComponents.showToast('Case saved', 'success');
           if (typeof onSaved === 'function') onSaved(caseData);
           return true;
         },

@@ -1540,9 +1540,12 @@ test('PHASE-C2 hidden retainers, rejected walls, deck-height changes, restore, a
 
   const unsafe = { id: 'unsafe', truck, cases: [deckInst] };
   const restored = PackLib.repairRestoredPackPlacements(unsafe, [deckCase]);
-  assert.equal(restored.cases[0].placement, 'staged', 'unsafe saved deck placement repairs to staging');
+  assert.deepEqual(restored.cases, unsafe.cases, 'C4 preserves saved physical failures');
+  assert.equal(PackLib.assessCommittedPack(restored, [deckCase]).primary, 'INVALID');
   const importPlan = PackLib.planPackImport({ pack: unsafe, bundledCases: [deckCase] });
-  assert.equal(importPlan.pack.cases[0].placement, 'staged', 'unsafe imported deck placement repairs to staging');
+  assert.deepEqual(importPlan.pack.cases[0].transform, unsafe.cases[0].transform, 'C4 preserves imported physical pose');
+  assert.equal(importPlan.pack.cases[0].placement, 'packed');
+  assert.equal(PackLib.assessCommittedPack(importPlan.pack, importPlan.newCases).primary, 'INVALID');
 
   const shortNoTopItems = [
     { instanceId: 'short-base', caseId: 'base', dims: { l: 24, w: 18, h: 24 }, orientationLock: 'upright', canFlip: false, weight: 100, noStackOnTop: true },

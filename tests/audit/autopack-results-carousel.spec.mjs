@@ -197,18 +197,14 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
   assert.match(apply, /const appliedCases = buildAppliedAutoPackCases\(option, cloneAutoPackCases, pack\.cases\);/,
     'apply must derive the applied option cases through the profile-aware builder');
   // Source-level production wiring coverage (not behavioral Apply execution).
-  assert.match(apply, /const appliedSignature = PackLibrary\.buildHandlingRulesValiditySignature\(\s*projectedPack,\s*CaseLibrary\.getCases\(\)\s*\);/,
-    'Apply must sign its post-apply cases against the current Case Library');
+  assert.doesNotMatch(apply, /handlingRulesValidatedSignature|buildHandlingRulesValiditySignature/,
+    'C4 Apply commits source without persisting a validation certificate');
   assert.match(apply, /getAppliedAutoPackOption\(projectedPack, results, caseId => CaseLibrary\.getById\(caseId\)\) !== option/,
     'Apply must refuse a proposal that cannot become the exact unambiguous applied option');
   assert.equal((apply.match(/PackLibrary\.update\(/g) || []).length, 1,
-    'Apply must publish cases and signature together, without a second Pack update');
-  // HANDLING-RULES-P0A: a successfully applied AutoPack solution has gone
-  // through the current packing validation path, so the same existing
-  // PackLibrary.update() call also stamps the fresh handling-rules signature
-  // — no second StateStore write.
-  assert.match(apply, /PackLibrary\.update\(pack\.id, \{\s*cases: appliedCases,\s*handlingRulesValidatedSignature: appliedSignature,\s*\}\)/,
-    'apply must commit the applied option AND the fresh handling-rules signature through one PackLibrary.update call');
+    'Apply must publish cases through one Pack update');
+  assert.match(apply, /PackLibrary\.update\(pack\.id, \{\s*cases: appliedCases,\s*\}\)/,
+    'apply must commit the applied source through one PackLibrary.update call');
   assert.match(apply, /StateStore\.set\(\{ selectedInstanceIds: \[\] \}, \{ skipHistory: true, skipNotify: true \}\)/,
     'apply must clear selection without a separate render');
   assert.equal(apply.includes('selectedId: option.id'), false, 'Apply must derive live authority without a Results write');

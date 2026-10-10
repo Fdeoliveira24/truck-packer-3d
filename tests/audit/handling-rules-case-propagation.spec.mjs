@@ -1,35 +1,31 @@
-// Handling Rules P0-A: Case-rule propagation / validation state.
-//
-// A Case is a shared definition; packed Load Plan instances reference it by
-// caseId. Editing a placement-affecting Handling Rule can make an
-// already-packed Load Plan illegal. This file behaviorally proves:
-//   - only the actively-displayed Editor Pack (currentScreen === 'editor' AND
-//     pack.id === currentPackId) may be automatically revalidated/repaired/
-//     staged as part of a Case Save;
-//   - every other affected Pack is left untouched except for a durable,
-//     semantic "handlingRulesValidatedSignature" that makes it report
-//     Validation required without moving any cargo;
-//   - the whole Case Save (Case + optional category + any active-Pack
-//     revalidation) publishes through exactly one StateStore.set(), so one
-//     Undo/Redo always covers the whole logical action.
-//
-// Deliberately NOT added to security-and-invariants.spec.mjs (scheduled for a
-// separate future decomposition project) — see project instructions.
+// C4 committed assessment lifecycle. Historical repair/certification assertions
+// are replaced below; UI containment and atomic deletion protections remain.
 import test from 'node:test';
+
 import assert from 'node:assert/strict';
+
 import { readFileSync } from 'node:fs';
+
 import { runInNewContext } from 'node:vm';
+
 import { buildOrganizedUnpackStagingCases } from '../../src/screens/editor-screen.js';
+
 import { createTruckChangeController } from '../../src/ui/truck-change-controller.js';
+
 import { formatCaseModalNumber } from '../../src/ui/overlays/case-modal.js';
+
 import {
   formatCaseModalWeightNumber, inchesToUnit, unitToInches, poundsToUnit, unitToPounds,
 } from '../../src/core/utils/index.js';
 
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
+
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
+
 const caseLibraryPath = new URL('../../src/services/case-library.js', import.meta.url);
+
 const normalizerPath = new URL('../../src/core/normalizer.js', import.meta.url);
+
 const appSource = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
 
 const RECT_TRUCK = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
@@ -46,7 +42,7 @@ function freshModules() {
 function mkCase(overrides = {}) {
   return {
     id: 'case-a', name: 'A', manufacturer: 'QA', category: 'Default', color: '#9ca3af',
-    dimensions: { length: 10, width: 10, height: 10 }, weight: 10, volume: 1000,
+    dimensions: { length: 10, width: 10, height: 10 }, weight: 10, volume: 1000, shape: 'box',
     canFlip: true, stackable: true, orientationLock: 'any', noStackOnTop: false,
     maxStackCount: 0, isPallet: false,
     ...overrides,
@@ -69,10 +65,6 @@ function caseModalPhysicalRoundTrip(caseData, { lengthUnit, weightUnit }, { leng
   return { ...caseData, dimensions, weight: unitToPounds(shownWeight + weightStep, weightUnit) };
 }
 
-// Base + child directly on top: becomes invalid once the base's Case gets
-// noStackOnTop:true. The base covers nearly the full floor so, once the
-// support is correctly disqualified, there is no other legal floor spot —
-// the outcome (repaired-elsewhere or staged) is geometry-deterministic.
 function activePackFixture(caseId = 'case-a') {
   const baseInst = mkInst('base', caseId, { x: 60, y: 5, z: 0 });
   const childInst = mkInst('child', caseId, { x: 60, y: 15, z: 0 });
@@ -161,556 +153,6 @@ test('F01-7/10 active metric metadata-only Case Save preserves Pack and canonica
   assert.deepEqual(StateStore.snapshot(), after);
 });
 
-test('F01-8/9 unseen metric no-op leaves Pack current, while a real cm edit marks it Validation required', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const units = { lengthUnit: 'cm', weightUnit: 'kg' };
-  const caseA = mkCase({ dimensions: { length: 47.3701, width: 20, height: 10 }, weight: 52.91 });
-  const pack = { id: 'pack-unseen', truck: RECT_TRUCK,
-    cases: [mkInst('A', caseA.id, { x: 60, y: 5, z: 0 })], lastEdited: 123, stats: {} };
-  pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
-  StateStore.init({ currentScreen: 'packs', currentPackId: pack.id, selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
-  const beforePacks = StateStore.get('packLibrary');
-
-  const noOp = PackLibrary.commitCaseHandlingRuleChange(
-    { ...caseModalPhysicalRoundTrip(caseA, units), notes: 'Unseen note' }, null, units);
-  assert.equal(noOp.packImpact, null);
-  assert.equal(StateStore.get('packLibrary'), beforePacks);
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(pack, StateStore.get('caseLibrary')), false);
-  assert.equal(StateStore.get('caseLibrary')[0].dimensions.length, caseA.dimensions.length);
-  assert.equal(pack.lastEdited, 123);
-
-  const edited = caseModalPhysicalRoundTrip(StateStore.get('caseLibrary')[0], units, { lengthStep: 0.01 });
-  PackLibrary.commitCaseHandlingRuleChange(edited, null, units);
-  const after = PackLibrary.getById(pack.id);
-  assert.notEqual(after, pack);
-  assert.deepEqual(after.cases, pack.cases, 'unseen cargo remains unmoved');
-  assert.equal(after.lastEdited, 123);
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
-});
-
-test('F01-9 active real cm and kg edits still run the A2 physical revalidation path', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const units = { lengthUnit: 'cm', weightUnit: 'kg' };
-  const caseA = mkCase({ dimensions: { length: 47.3701, width: 20, height: 10 }, weight: 52.91 });
-  for (const edit of [{ lengthStep: 0.01 }, { weightStep: 0.01 }]) {
-    const pack = { id: 'pack-active', truck: RECT_TRUCK,
-      cases: [mkInst('A', caseA.id, { x: 60, y: 5, z: 0 })], lastEdited: 123, stats: {} };
-    StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
-      caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
-    const changed = caseModalPhysicalRoundTrip(caseA, units, edit);
-    const result = PackLibrary.commitCaseHandlingRuleChange(changed, null, units);
-    const after = PackLibrary.getById(pack.id);
-    assert.equal(result.packImpact?.packId, pack.id, JSON.stringify(edit));
-    assert.notEqual(after, pack);
-    assert.notEqual(after.lastEdited, 123);
-    assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
-  }
-});
-
-test('A2 active Case dimension growth revalidates overlapping cargo in the same Save and Undo/Redo action', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', dimensions: { length: 20, width: 20, height: 10 } });
-  const caseB = mkCase({ id: 'case-b', dimensions: { length: 20, width: 20, height: 10 } });
-  const pack = {
-    id: 'pack-active', truck: { length: 60, width: 20, height: 20, shapeMode: 'rect' },
-    cases: [mkInst('A', 'case-a', { x: 20, y: 5, z: 0 }), mkInst('B', 'case-b', { x: 45, y: 5, z: 0 })],
-    lastEdited: 123, stats: {},
-  };
-  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
-    caseLibrary: [caseA, caseB], packLibrary: [pack], folderLibrary: [], preferences: {} });
-  const before = StateStore.snapshot();
-
-  const result = PackLibrary.commitCaseHandlingRuleChange({ ...caseA, dimensions: { ...caseA.dimensions, length: 40 } });
-  const after = StateStore.snapshot();
-  const next = after.packLibrary[0];
-  const a = next.cases.find(inst => inst.id === 'A');
-  const b = next.cases.find(inst => inst.id === 'B');
-  assert.equal(result.packImpact?.packId, pack.id, 'Case Save must run active-Pack revalidation');
-  assert.equal(after.caseLibrary.find(c => c.id === 'case-a').dimensions.length, 40);
-  assert.ok(a.placement !== 'packed' || b.placement !== 'packed' ||
-    Math.abs(a.transform.position.x - b.transform.position.x) >= 30,
-  'the two changed envelopes must not remain overlapping while both are packed');
-  assert.notDeepEqual(next.cases, pack.cases, 'the pre-edit invalid placement must be repaired or staged');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(next, after.caseLibrary), false);
-
-  assert.equal(StateStore.undo(), true);
-  assert.deepEqual(StateStore.snapshot(), before, 'one Undo restores both the Case definition and original Pack');
-  assert.equal(StateStore.undo(), false, 'Case Save added exactly one history action');
-  assert.equal(StateStore.redo(), true);
-  assert.deepEqual(StateStore.snapshot(), after, 'one Redo restores the Case and revalidated Pack together');
-});
-
-test('A2 active Case weight increase revalidates an overweight stacked child during Case Save', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const base = mkCase({ id: 'case-base', dimensions: { length: 20, width: 20, height: 10 }, weight: 100 });
-  const child = mkCase({ id: 'case-child', dimensions: { length: 20, width: 20, height: 10 }, weight: 50 });
-  const pack = {
-    id: 'pack-active', truck: { length: 20, width: 20, height: 20, shapeMode: 'rect' },
-    cases: [mkInst('base', base.id, { x: 10, y: 5, z: 0 }), mkInst('child', child.id, { x: 10, y: 15, z: 0 })],
-    lastEdited: 123, stats: {},
-  };
-  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
-    caseLibrary: [base, child], packLibrary: [pack], folderLibrary: [], preferences: {} });
-
-  const result = PackLibrary.commitCaseHandlingRuleChange({ ...child, weight: 150 });
-  const next = StateStore.get('packLibrary')[0];
-  assert.equal(result.packImpact?.packId, pack.id);
-  assert.equal(next.cases.find(inst => inst.id === 'base').placement, 'packed');
-  assert.equal(next.cases.find(inst => inst.id === 'child').placement, 'staged',
-    'the existing strict child-vs-support rule must reject the heavier child');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(next, StateStore.get('caseLibrary')), false);
-});
-
-for (const [kind, patch] of [
-  ['dimension', c => ({ ...c, dimensions: { ...c.dimensions, length: 30 } })],
-  ['weight', c => ({ ...c, weight: 75 })],
-]) {
-  for (const signed of [true, false]) {
-    test(`A2 unseen Pack becomes durably stale after ${kind} Case edit (${signed ? 'signed v1' : 'unsigned legacy'}) without moving cargo`, async () => {
-      const { StateStore, PackLibrary } = await freshModules();
-      const { normalizePack } = await import(normalizerPath.href);
-      const caseA = mkCase({ dimensions: { length: 20, width: 20, height: 10 }, weight: 50 });
-      const caseB = mkCase({ id: 'case-b' });
-      const pack = {
-        id: 'pack-unseen', truck: { length: 60, width: 20, height: 20, shapeMode: 'rect' },
-        cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 })], lastEdited: 123, stats: {},
-      };
-      const unrelated = { id: 'pack-unrelated', truck: RECT_TRUCK,
-        cases: [mkInst('B', caseB.id, { x: 20, y: 5, z: 0 })], lastEdited: 456, stats: {} };
-      if (signed) pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
-      StateStore.init({ currentScreen: 'packs', currentPackId: pack.id, selectedInstanceIds: [],
-        caseLibrary: [caseA, caseB], packLibrary: [pack, unrelated], folderLibrary: [], preferences: {} });
-      const before = StateStore.get('packLibrary')[0];
-      const beforeUnrelated = StateStore.get('packLibrary')[1];
-      assert.equal(PackLibrary.isHandlingRulesValidationRequired(before, [caseA]), false);
-
-      const result = PackLibrary.commitCaseHandlingRuleChange(patch(caseA));
-      const after = StateStore.get('packLibrary')[0];
-      assert.equal(result.packImpact, null, 'an unseen Pack must not be revalidated automatically');
-      assert.deepEqual(after.cases, before.cases, 'cargo transforms and placements must remain untouched');
-      assert.equal(after.lastEdited, before.lastEdited);
-      assert.equal(StateStore.get('packLibrary')[1], beforeUnrelated, 'an unrelated Pack remains untouched');
-      assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete',
-        'an effective physical change must not look current under the legacy rule-only signature');
-      assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
-      const reloaded = normalizePack(JSON.parse(JSON.stringify(after)));
-      assert.equal(PackLibrary.isHandlingRulesValidationRequired(reloaded, StateStore.get('caseLibrary')), true,
-        'Validation required remains visible after persistence normalization');
-    });
-  }
-
-  test(`A2 staged-only ${kind} Case reference leaves its Pack and signature untouched`, async () => {
-    const { StateStore, PackLibrary } = await freshModules();
-    const caseA = mkCase({ dimensions: { length: 20, width: 20, height: 10 }, weight: 50 });
-    const caseB = mkCase({ id: 'case-b' });
-    const pack = {
-      id: 'pack-staged-only', truck: RECT_TRUCK,
-      cases: [mkInst('staged', caseA.id, { x: 20, y: 5, z: 0 }, 'staged'),
-        mkInst('other', caseB.id, { x: 50, y: 5, z: 0 })],
-      lastEdited: 123, stats: {},
-    };
-    pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA, caseB]);
-    StateStore.init({ currentScreen: 'packs', currentPackId: pack.id, selectedInstanceIds: [],
-      caseLibrary: [caseA, caseB], packLibrary: [pack], folderLibrary: [], preferences: {} });
-    const before = StateStore.get('packLibrary');
-
-    PackLibrary.commitCaseHandlingRuleChange(patch(caseA));
-
-    assert.equal(StateStore.get('packLibrary'), before, 'staged-only references cannot invalidate a packed placement');
-    assert.equal(PackLibrary.isHandlingRulesValidationRequired(before[0], StateStore.get('caseLibrary')), false);
-  });
-}
-
-test('A2 an already-valid persisted v1 signature stays current with no Case edit', async () => {
-  const { PackLibrary } = await freshModules();
-  const caseA = mkCase({ dimensions: { length: 20, width: 15, height: 10 }, weight: 123 });
-  const pack = { id: 'pack-v1', truck: RECT_TRUCK,
-    cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 })],
-    handlingRulesValidatedSignature: 'v1:case-a:any:1:0:0' };
-  assert.equal(PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]), pack.handlingRulesValidatedSignature);
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(pack, [caseA]), false);
-});
-
-test('A2 Case notes and display metadata do not trigger placement revalidation', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase();
-  const pack = { id: 'pack-active', truck: RECT_TRUCK,
-    cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 })], lastEdited: 123, stats: {} };
-  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
-  const beforePacks = StateStore.get('packLibrary');
-
-  const result = PackLibrary.commitCaseHandlingRuleChange({
-    ...caseA, name: 'Renamed', notes: 'New note', manufacturer: 'Other', color: '#ff0000',
-  });
-
-  assert.equal(result.packImpact, null);
-  assert.equal(StateStore.get('packLibrary'), beforePacks);
-});
-
-test('A2 incomplete active revalidation after a physical Case edit cannot retain a current v1 signature', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase();
-  const pack = { id: 'pack-active', truck: RECT_TRUCK,
-    cases: [mkInst('A', caseA.id, { x: 20, y: 5, z: 0 }),
-      mkInst('unresolved', 'case-missing', { x: 50, y: 5, z: 0 })], lastEdited: 123, stats: {} };
-  pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
-  StateStore.init({ currentScreen: 'editor', currentPackId: pack.id, selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
-
-  const result = PackLibrary.commitCaseHandlingRuleChange({
-    ...caseA, dimensions: { ...caseA.dimensions, length: 11 },
-  });
-  const after = StateStore.get('packLibrary')[0];
-  assert.equal(result.packImpact?.validationComplete, false);
-  assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
-  assert.deepEqual(after.cases.find(inst => inst.id === 'unresolved'), pack.cases[1]);
-});
-
-test('HANDLING-RULES-P0A A: active Editor Pack + hard-rule Case edit publishes Case + repaired/staged Pack atomically', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false });
-  const pack = activePackFixture();
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'pack-active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-
-  const result = PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null);
-
-  assert.ok(result.packImpact, 'the active pack must be reported as impacted');
-  assert.equal(result.packImpact.packId, 'pack-active');
-  const after = StateStore.get('packLibrary').find(p => p.id === 'pack-active');
-  assert.notEqual(after.cases.find(c => c.id === 'child').placement === 'packed' &&
-    after.cases.find(c => c.id === 'child').transform.position.y === 15, true,
-    'the child must not remain silently packed directly on the now-disqualified support');
-  assert.ok(after.handlingRulesValidatedSignature, 'the active pack must receive a fresh signature');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false,
-    'the freshly revalidated active pack must not report Validation required');
-});
-
-test('HANDLING-RULES-P0A B/C: one Undo restores old Case + old Pack placement + old validation state; one Redo restores the post-Save state', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false });
-  const pack = activePackFixture();
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'pack-active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-  const beforeCaseLib = StateStore.get('caseLibrary');
-  const beforePackLib = StateStore.get('packLibrary');
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null);
-  const afterCaseLib = StateStore.get('caseLibrary');
-  const afterPackLib = StateStore.get('packLibrary');
-  assert.notDeepEqual(afterCaseLib, beforeCaseLib);
-  assert.notDeepEqual(afterPackLib, beforePackLib);
-
-  assert.equal(StateStore.undo(), true, 'Undo must succeed');
-  assert.deepEqual(StateStore.get('caseLibrary'), beforeCaseLib, 'Undo must restore the old Case rule');
-  assert.deepEqual(StateStore.get('packLibrary'), beforePackLib, 'Undo must restore the old Pack placement AND validation state together');
-
-  assert.equal(StateStore.redo(), true, 'Redo must succeed');
-  assert.deepEqual(StateStore.get('caseLibrary'), afterCaseLib, 'Redo must restore the new Case rule');
-  assert.deepEqual(StateStore.get('packLibrary'), afterPackLib, 'Redo must restore the new Pack result AND validation state together');
-});
-
-test('HANDLING-RULES-P0A D: Category + Case + active-Pack impact remains one history action', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false, category: 'default' });
-  const pack = activePackFixture();
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'pack-active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [],
-    preferences: { categories: [{ key: 'default', name: 'Default', color: '#9ca3af' }] },
-  });
-  const beforeState = {
-    caseLibrary: StateStore.get('caseLibrary'),
-    packLibrary: StateStore.get('packLibrary'),
-    preferences: StateStore.get('preferences'),
-  };
-
-  PackLibrary.commitCaseHandlingRuleChange(
-    { ...caseA, noStackOnTop: true, category: 'freight' },
-    { key: 'freight', name: 'Freight', color: '#3b82f6' }
-  );
-  const afterState = {
-    caseLibrary: StateStore.get('caseLibrary'),
-    packLibrary: StateStore.get('packLibrary'),
-    preferences: StateStore.get('preferences'),
-  };
-  assert.notDeepEqual(afterState.preferences, beforeState.preferences, 'category must have actually changed preferences');
-  assert.notDeepEqual(afterState.packLibrary, beforeState.packLibrary, 'active pack must have actually been revalidated');
-
-  assert.equal(StateStore.undo(), true);
-  assert.deepEqual(StateStore.get('caseLibrary'), beforeState.caseLibrary, 'one Undo restores the old Case');
-  assert.deepEqual(StateStore.get('preferences'), beforeState.preferences, 'the SAME Undo restores the old category/preferences');
-  assert.deepEqual(StateStore.get('packLibrary'), beforeState.packLibrary, 'the SAME Undo restores the old Pack impact');
-
-  assert.equal(StateStore.redo(), true);
-  assert.deepEqual(StateStore.get('caseLibrary'), afterState.caseLibrary);
-  assert.deepEqual(StateStore.get('preferences'), afterState.preferences);
-  assert.deepEqual(StateStore.get('packLibrary'), afterState.packLibrary);
-});
-
-test('HANDLING-RULES-P0A E/F: Case hard-rule edit while NOT on Editor does not move the last currentPackId cargo, and marks it Validation required', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false });
-  const pack = activePackFixture();
-  // currentPackId still points at this pack (as it may after navigating away),
-  // but currentScreen is 'packs', not 'editor' — this must be treated as unseen.
-  StateStore.init({
-    currentScreen: 'packs', currentPackId: 'pack-active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-
-  const result = PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null);
-  assert.equal(result.packImpact, null, 'a Pack that is not the actively-displayed Editor Pack must never be reported as revalidated');
-
-  const after = StateStore.get('packLibrary').find(p => p.id === 'pack-active');
-  assert.deepEqual(after.cases, pack.cases, 'cargo must not move even though currentPackId matches');
-  assert.equal(after.lastEdited, pack.lastEdited, 'unseen lastEdited must not change');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true,
-    'the unseen affected Pack must report Validation required');
-});
-
-test('HANDLING-RULES-P0A G: an affected Pack with only STAGED instances of the edited Case does not become stale', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false });
-  const stagedInst = mkInst('staged1', 'case-a', { x: -50, y: 5, z: 0 }, 'staged');
-  const pack = { id: 'pack-staged-only', title: 'StagedOnly', truck: RECT_TRUCK, cases: [stagedInst], stats: {} };
-  StateStore.init({
-    currentScreen: 'packs', currentPackId: null, selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null);
-  const after = StateStore.get('packLibrary').find(p => p.id === 'pack-staged-only');
-  assert.equal(after.handlingRulesValidatedSignature, undefined,
-    'a Pack referencing the edited Case only via staged instances must never be marked affected');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
-});
-
-test('HANDLING-RULES-P0A H: an unaffected Pack (different Case) is untouched', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false });
-  const caseB = mkCase({ id: 'case-b' });
-  const unrelatedInst = mkInst('u1', 'case-b', { x: 20, y: 5, z: 0 });
-  const pack = { id: 'pack-unrelated', title: 'Unrelated', truck: RECT_TRUCK, cases: [unrelatedInst], stats: {} };
-  StateStore.init({
-    currentScreen: 'packs', currentPackId: null, selectedInstanceIds: [],
-    caseLibrary: [caseA, caseB], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-  const before = StateStore.get('packLibrary').find(p => p.id === 'pack-unrelated');
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null);
-  const after = StateStore.get('packLibrary').find(p => p.id === 'pack-unrelated');
-  assert.deepEqual(after, before, 'a Pack referencing an unrelated Case must be byte-for-byte unchanged');
-});
-
-test('HANDLING-RULES-P0A I: a non-placement-affecting Case edit (name only) does not stale any Pack', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', name: 'Old Name' });
-  const pack = activePackFixture();
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'pack-active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-  const result = PackLibrary.commitCaseHandlingRuleChange({ ...caseA, name: 'New Name' }, null);
-  assert.equal(result.packImpact, null, 'a name-only edit must never trigger revalidation');
-  const after = StateStore.get('packLibrary').find(p => p.id === 'pack-active');
-  assert.equal(after.handlingRulesValidatedSignature, undefined, 'no signature must be introduced by a non-placement-affecting edit');
-});
-
-test('HANDLING-RULES-P0A J: editing a Case unused by any Pack does not touch packLibrary at all', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const caseB = mkCase({ id: 'case-b' });
-  const instB = mkInst('ib', 'case-b', { x: 20, y: 5, z: 0 });
-  const pack = { id: 'p1', title: 'P', truck: RECT_TRUCK, cases: [instB], stats: {} };
-  StateStore.init({
-    currentScreen: 'packs', currentPackId: null, selectedInstanceIds: [],
-    caseLibrary: [caseA, caseB], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-  const before = StateStore.get('packLibrary');
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null); // case-a is unused
-  assert.deepEqual(StateStore.get('packLibrary'), before, 'packLibrary must be byte-for-byte unchanged when the edited Case is unused');
-});
-
-test('HANDLING-RULES-P0A K: new Case creation does not stale any Pack', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  StateStore.init({
-    currentScreen: 'packs', currentPackId: null, selectedInstanceIds: [],
-    caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {},
-  });
-  const brandNew = mkCase({ id: 'case-new', orientationLock: 'upright' });
-  const result = PackLibrary.commitCaseHandlingRuleChange(brandNew, null);
-  assert.equal(result.packImpact, null, 'creating a Case has no existing "before" state to have invalidated anything');
-  assert.ok(StateStore.get('caseLibrary').some(c => c.id === 'case-new'), 'the new Case must still be saved');
-});
-
-test('HANDLING-RULES-P0A L: multiple affected Packs — only the actively-displayed Editor Pack is revalidated; others remain unmoved and stale', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false });
-  const mk = packId => ({ ...activePackFixture('case-a'), id: packId, title: packId });
-  const packActive = mk('active');
-  const packOther1 = mk('other1');
-  const packOther2 = mk('other2');
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [packActive, packOther1, packOther2], folderLibrary: [], preferences: {},
-  });
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null);
-  const libs = StateStore.get('packLibrary');
-  const active = libs.find(p => p.id === 'active');
-  const other1 = libs.find(p => p.id === 'other1');
-  const other2 = libs.find(p => p.id === 'other2');
-
-  assert.ok(active.handlingRulesValidatedSignature, 'active pack must be revalidated with a fresh signature');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(active, StateStore.get('caseLibrary')), false);
-  assert.deepEqual(other1.cases, packOther1.cases, 'other1 cargo must not move');
-  assert.deepEqual(other2.cases, packOther2.cases, 'other2 cargo must not move');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(other1, StateStore.get('caseLibrary')), true);
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(other2, StateStore.get('caseLibrary')), true);
-});
-
-test('HANDLING-RULES-P0A M: a legacy Pack with a missing signature is not stale before any edit; the first relevant Case edit baselines it and the new rule makes it stale', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: false });
-  const inst = mkInst('i1', 'case-a', { x: 20, y: 5, z: 0 });
-  const legacyPack = { id: 'legacy', title: 'Legacy', truck: RECT_TRUCK, cases: [inst], stats: {} }; // no signature field at all
-  StateStore.init({
-    currentScreen: 'packs', currentPackId: null, selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [legacyPack], folderLibrary: [], preferences: {},
-  });
-
-  assert.equal(
-    PackLibrary.isHandlingRulesValidationRequired(legacyPack, [caseA]),
-    false,
-    'a legacy Pack with no stored signature must never be rendered stale merely because the feature landed'
-  );
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true }, null);
-  const after = StateStore.get('packLibrary').find(p => p.id === 'legacy');
-  assert.ok(after.handlingRulesValidatedSignature, 'the first relevant edit must baseline a pre-change signature');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true,
-    'once baselined, the new rule must make it report Validation required');
-});
-
-test('HANDLING-RULES-P0A N: a successful explicit Validate Load Plan revalidates, updates cargo as needed, and clears stale status', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: true }); // already strict
-  const pack = { ...activePackFixture(), handlingRulesValidatedSignature: 'v1:STALE' };
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'pack-active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-
-  const before = StateStore.snapshot();
-  const result = PackLibrary.validateLoadPlan('pack-active');
-  assert.ok(result, 'validateLoadPlan must succeed');
-  const after = PackLibrary.getById('pack-active');
-  assert.notEqual(after.handlingRulesValidatedSignature, 'v1:STALE', 'a fresh signature must replace the stale one');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
-  const validated = StateStore.snapshot();
-  assert.equal(result.validationComplete, true);
-  assert.equal(StateStore.undo(), true);
-  assert.deepEqual(StateStore.snapshot(), before);
-  assert.equal(StateStore.undo(), false, 'exactly one history action');
-  assert.equal(StateStore.redo(), true);
-  assert.deepEqual(StateStore.snapshot(), validated);
-});
-
-test('HANDLING-RULES-P0A P: updateCasesWithManualRevalidation stamps a fresh signature only after a complete, successful whole-Pack revalidation', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: true });
-  const pack = { ...activePackFixture(), handlingRulesValidatedSignature: 'v1:OLD' };
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'pack-active', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-
-  const result = PackLibrary.updateCasesWithManualRevalidation('pack-active', pack.cases, [caseA], {
-    repairDependents: true,
-    preserveStagedPositions: true,
-  });
-  assert.ok(result, 'revalidation must succeed');
-  assert.equal(Array.isArray(result.failedIds) && result.failedIds.length, 0, 'this fixture has no unresolved failures');
-  const after = PackLibrary.getById('pack-active');
-  assert.notEqual(after.handlingRulesValidatedSignature, 'v1:OLD', 'a complete successful revalidation must stamp a fresh signature');
-  assert.equal(after.handlingRulesValidatedSignature,
-    PackLibrary.buildHandlingRulesValiditySignature(after, [caseA]),
-    'the stamped signature must match what buildHandlingRulesValiditySignature computes for the resulting Pack');
-});
-
-test('HANDLING-RULES-P0A Q: PackLibrary.update() persists cases and a caller-supplied handlingRulesValidatedSignature together in one write (service persistence only; Apply wiring is source-tested in the carousel suite)', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const inst = mkInst('i1', 'case-a', { x: 20, y: 5, z: 0 });
-  const pack = { id: 'p1', title: 'P', truck: RECT_TRUCK, cases: [], stats: {} };
-  StateStore.init({
-    currentScreen: 'editor', currentPackId: 'p1', selectedInstanceIds: [],
-    caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {},
-  });
-
-  const appliedCases = [inst];
-  const signature = PackLibrary.buildHandlingRulesValiditySignature({ ...pack, cases: appliedCases }, [caseA]);
-  const updated = PackLibrary.update('p1', { cases: appliedCases, handlingRulesValidatedSignature: signature });
-
-  assert.ok(updated, 'update must succeed');
-  assert.deepEqual(updated.cases, appliedCases);
-  assert.equal(updated.handlingRulesValidatedSignature, signature, 'the signature must be persisted in the SAME write as the applied cases');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(updated, [caseA]), false);
-});
-
-test('HANDLING-RULES-P0A R: normalizePack preserves handlingRulesValidatedSignature (typed passthrough, legacy-safe)', async () => {
-  const { normalizePack } = await import(`${normalizerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const withSignature = normalizePack({
-    id: 'p1', title: 'P', truck: RECT_TRUCK, cases: [],
-    handlingRulesValidatedSignature: 'v1:case-a:any:1:0:0',
-  });
-  assert.equal(withSignature.handlingRulesValidatedSignature, 'v1:case-a:any:1:0:0');
-
-  const legacyNoSignature = normalizePack({ id: 'p2', title: 'P2', truck: RECT_TRUCK, cases: [] });
-  assert.equal(legacyNoSignature.handlingRulesValidatedSignature, null, 'a missing signature must normalize to null, not undefined or a stale default');
-
-  const malformedSignature = normalizePack({ id: 'p3', title: 'P3', truck: RECT_TRUCK, cases: [], handlingRulesValidatedSignature: 12345 });
-  assert.equal(malformedSignature.handlingRulesValidatedSignature, null, 'a non-string stored value must not be trusted as a valid signature');
-});
-
-test('HANDLING-RULES-P0A S: the Pack signature is deterministic regardless of Case Library or instance ordering', async () => {
-  const { PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const caseB = mkCase({ id: 'case-b', noStackOnTop: true });
-  const i1 = mkInst('i1', 'case-a', { x: 10, y: 5, z: 0 });
-  const i2 = mkInst('i2', 'case-b', { x: 30, y: 5, z: 0 });
-  const packOrderA = { id: 'p1', truck: RECT_TRUCK, cases: [i1, i2] };
-  const packOrderB = { id: 'p1', truck: RECT_TRUCK, cases: [i2, i1] };
-
-  const sigA = PackLibrary.buildHandlingRulesValiditySignature(packOrderA, [caseA, caseB]);
-  const sigB = PackLibrary.buildHandlingRulesValiditySignature(packOrderB, [caseB, caseA]);
-  assert.equal(sigA, sigB, 'signature must not depend on instance or Case Library array ordering');
-});
-
-test('HANDLING-RULES-P0A T: raw stackable/noStackOnTop alias changes with identical effective semantics do not create false staleness', async () => {
-  const { PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a', noStackOnTop: true, stackable: true });
-
-  // Same effective "stacking forbidden" meaning with different raw aliases.
-  const aliasEquivalent = { ...caseA, noStackOnTop: false, stackable: false };
-  assert.notDeepEqual(caseA, aliasEquivalent);
-  assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(caseA, aliasEquivalent), false,
-    'identical effective allow-stack-on-top semantics must not register as a placement-affecting change');
-
-  // A genuine alias-driven semantic change (legacy stackable:false blocks stacking).
-  const trueAliasChange = { ...caseA, noStackOnTop: false, stackable: true };
-  assert.equal(PackLibrary.hasPlacementAffectingHandlingRuleChange(caseA, trueAliasChange), true,
-    'a legacy alias that actually changes the effective allow-stack-on-top meaning must register as a change');
-});
-
 function initFixture(StateStore, caseA, pack, currentScreen = 'editor') {
   StateStore.init({ currentScreen, currentPackId: pack.id, selectedInstanceIds: [],
     caseLibrary: [caseA], packLibrary: [pack], folderLibrary: [], preferences: {} });
@@ -722,116 +164,13 @@ function incompleteInstance(kind, placement = 'packed') {
   return inst;
 }
 
-for (const kind of ['missing', 'malformed']) {
-  test(`HANDLING-RULES-P0A O: packed ${kind} data cannot be certified by Validate`, async () => {
-    const { StateStore, PackLibrary } = await freshModules();
-    const caseA = mkCase();
-    for (const signature of ['v1:OLD', undefined]) {
-      const pack = { ...activePackFixture(), cases: [mkInst('valid', 'case-a', { x: 20, y: 5, z: 0 }), incompleteInstance(kind)],
-        handlingRulesValidatedSignature: signature };
-      initFixture(StateStore, caseA, pack);
-      const result = PackLibrary.validateLoadPlan(pack.id);
-      assert.equal(result.validationComplete, false);
-      assert.equal(result[kind === 'missing' ? 'packedUnresolved' : 'packedMalformed'].length, 1);
-      assert.deepEqual(result.pack.cases.find(i => i.id === 'incomplete'), pack.cases[1], 'no fallback geometry or repair');
-      assert.equal(PackLibrary.isHandlingRulesValidationRequired(result.pack, [caseA]), true);
-      if (signature) assert.equal(result.pack.handlingRulesValidatedSignature, signature);
-    }
-  });
-
-  test(`HANDLING-RULES-P0A O: active Case Save preserves stale state for packed ${kind} data`, async () => {
-    const { StateStore, PackLibrary } = await freshModules();
-    const caseA = mkCase();
-    for (const existingSignature of [false, true]) {
-      const pack = { ...activePackFixture(), cases: [mkInst('valid', 'case-a', { x: 20, y: 5, z: 0 }), incompleteInstance(kind)] };
-      const baseline = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
-      if (existingSignature) pack.handlingRulesValidatedSignature = baseline;
-      initFixture(StateStore, caseA, pack);
-      const result = PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-      assert.equal(StateStore.get('caseLibrary')[0].noStackOnTop, true);
-      assert.equal(result.packImpact.validationComplete, false);
-      const after = PackLibrary.getById(pack.id);
-      assert.equal(after.handlingRulesValidatedSignature, baseline);
-      assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
-      assert.deepEqual(after.cases.find(i => i.id === 'incomplete'), pack.cases[1]);
-    }
-  });
-
-  test(`HANDLING-RULES-P0A O: staged-only ${kind} data does not block packed certification`, async () => {
-    const { StateStore, PackLibrary } = await freshModules();
-    const caseA = mkCase();
-    const pack = { ...activePackFixture(), cases: [mkInst('valid', 'case-a', { x: 20, y: 5, z: 0 }), incompleteInstance(kind, 'staged')],
-      handlingRulesValidatedSignature: 'v1:OLD' };
-    initFixture(StateStore, caseA, pack);
-    const result = PackLibrary.validateLoadPlan(pack.id);
-    assert.equal(result.validationComplete, true);
-    assert.equal(result[kind === 'missing' ? 'unresolved' : 'malformed'].length, 1, 'integrity diagnostics remain available');
-    assert.equal(PackLibrary.isHandlingRulesValidationRequired(result.pack, [caseA]), false);
-    assert.deepEqual(result.pack.cases.find(i => i.id === 'incomplete'), pack.cases[1]);
-    const saved = PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-    assert.equal(saved.packImpact.validationComplete, true);
-    assert.equal(PackLibrary.isHandlingRulesValidationRequired(PackLibrary.getById(pack.id), StateStore.get('caseLibrary')), false);
-  });
-}
-
 const editorSource = readFileSync(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+
 function sourceFunction(source, start, end) {
   const from = source.indexOf(start);
   const to = source.indexOf(end, from);
   assert.ok(from >= 0 && to > from);
   return source.slice(from, to).trim();
-}
-
-test('HANDLING-RULES-P0A incomplete validation drives both warning toasts', async () => {
-  const modal = readFileSync(new URL('../../src/ui/overlays/case-modal.js', import.meta.url), 'utf8');
-  const toast = runInNewContext(`(${sourceFunction(modal, 'function caseSaveToastArgs(', 'export function openCaseModal(')})`);
-  const args = toast({ validationComplete: false, failedIds: [], summary: {} });
-  assert.equal(args[1], 'warning');
-  assert.match(args[0], /still requires validation/);
-  const handler = sourceFunction(editorSource, "handlingRulesValidateBtn.addEventListener('click', () => {", '\n    // Swap a button');
-  assert.match(handler, /if \(result.validationComplete !== true\)/);
-  assert.match(handler, /tone = 'warning'/);
-});
-
-// Execute the exact production map callbacks from both private load functions.
-// The surrounding auth/storage shell is outside this focused persistence test.
-function ordinaryLoadMapper(name, PackLibrary, storedCases) {
-  const app = readFileSync(new URL('../../src/app.js', import.meta.url), 'utf8');
-  const start = app.indexOf(`function ${name}(`);
-  assert.ok(start >= 0);
-  const end = app.indexOf('const storedPrefs', start);
-  assert.ok(end > start);
-  const block = app.slice(start, end);
-  assert.match(block, /\.map\(applyCanonicalCargoFields\)/);
-  const match = block.match(/stored\.packLibrary\.map\((pack =>[\s\S]*?)\n        \);/);
-  assert.ok(match, 'production load mapper must be found');
-  assert.match(match[1], /isHandlingRulesValidationRequired\(pack, storedCases\)/);
-  assert.match(match[1], /\? pack\s*: PackLibrary\.repairRestoredPackPlacements\(pack, storedCases\)/);
-  return runInNewContext(`(${match[1]})`, { PackLibrary, storedCases });
-}
-
-for (const name of ['seedIfEmpty', 'loadScopedStateOrSeed']) {
-  test(`HANDLING-RULES-P0A ${name}: persisted stale cargo survives reload; current and legacy cargo still repair`, async () => {
-    const { StateStore, PackLibrary } = await freshModules();
-    const caseA = mkCase();
-    const pack = activePackFixture();
-    initFixture(StateStore, caseA, pack, 'packs');
-    PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-    const saved = JSON.parse(JSON.stringify(StateStore.snapshot()));
-    assert.deepEqual(saved.packLibrary[0].cases, pack.cases);
-    assert.equal(saved.packLibrary[0].lastEdited, pack.lastEdited);
-    const load = ordinaryLoadMapper(name, PackLibrary, saved.caseLibrary);
-    const reloaded = load(saved.packLibrary[0]);
-    assert.deepEqual(reloaded, saved.packLibrary[0]);
-    assert.equal(PackLibrary.isHandlingRulesValidationRequired(reloaded, saved.caseLibrary), true);
-    for (const legacy of [false, true]) {
-      const candidate = { ...pack };
-      if (!legacy) candidate.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(candidate, saved.caseLibrary);
-      const repaired = load(candidate);
-      assert.deepEqual(repaired, PackLibrary.repairRestoredPackPlacements(candidate, saved.caseLibrary));
-      assert.notDeepEqual(repaired.cases, candidate.cases, 'ordinary repair remains active');
-    }
-  });
 }
 
 async function runProductionUnpack(StateStore, PackLibrary, CaseLibrary) {
@@ -852,7 +191,7 @@ test('HANDLING-RULES-P0A production Unpack commits staged cargo + empty signatur
   await runProductionUnpack(StateStore, PackLibrary, CaseLibrary);
   const after = StateStore.snapshot();
   assert.ok(after.packLibrary[0].cases.every(i => i.placement === 'staged'));
-  assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, 'v1:');
+  assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after.packLibrary[0], [caseA]), false);
   assert.equal(StateStore.undo(), true);
   assert.deepEqual(StateStore.snapshot(), before);
@@ -870,30 +209,11 @@ test('HANDLING-RULES-P0A partial production Unpack preserves signature and unres
     await runProductionUnpack(StateStore, PackLibrary, CaseLibrary);
     const after = PackLibrary.getById(pack.id);
     assert.deepEqual(after.cases.find(i => i.id === 'incomplete'), pack.cases[2]);
-    assert.equal(after.handlingRulesValidatedSignature, signature);
+    assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
     assert.ok(after.cases.filter(i => i.id !== 'incomplete').every(i => i.placement === 'staged'));
   }
 });
 
-test('HANDLING-RULES-P0A R: remapped import discards foreign signature after local repair without publishing', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ noStackOnTop: true });
-  const pack = activePackFixture();
-  initFixture(StateStore, caseA, pack, 'packs');
-  const before = StateStore.snapshot();
-  const incoming = { ...pack, id: 'imported', handlingRulesValidatedSignature: 'v1:FOREIGN',
-    cases: pack.cases.map(i => ({ ...i, caseId: 'foreign-case' })) };
-  const plan = PackLibrary.planPackImport({ pack: incoming, bundledCases: [{ ...caseA, id: 'foreign-case' }] });
-  assert.deepEqual(StateStore.snapshot(), before);
-  assert.ok(plan.pack.cases.every(i => i.caseId === caseA.id));
-  assert.ok(plan.pack.cases.some(i => i.placement === 'staged'), 'illegal imported stack is repaired before certification');
-  assert.equal(plan.pack.handlingRulesValidatedSignature,
-    PackLibrary.buildHandlingRulesValiditySignature(plan.pack, [...before.caseLibrary, ...plan.newCases]));
-  assert.notEqual(plan.pack.handlingRulesValidatedSignature, 'v1:FOREIGN');
-});
-
-// Minimal controller UI fixture: production reconciliation/commit functions run;
-// modal rendering and button selection are represented without a browser.
 function truckHarness(PackLibrary, CaseLibrary) {
   const modals = [];
   const element = () => ({ appendChild() {}, querySelectorAll: () => [] });
@@ -926,7 +246,7 @@ for (const customCommit of [false, true]) {
     assert.equal(modals[0].actions.find(a => a.label === 'Move to staging').onClick(), true);
     const after = StateStore.snapshot();
     assert.equal(after.packLibrary[0].cases[0].placement, 'staged');
-    assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, 'v1:');
+    assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
     assert.equal(PackLibrary.isHandlingRulesValidationRequired(after.packLibrary[0], [caseA]), false);
     assert.equal(StateStore.undo(), true);
     assert.deepEqual(StateStore.snapshot(), before);
@@ -958,8 +278,8 @@ test('HANDLING-RULES-P0A unchanged truck metadata save does not certify stale ca
     commit: finalPack => PackLibrary.update(pack.id, { title: 'Metadata only', cases: finalPack.cases,
       handlingRulesValidatedSignature: finalPack.handlingRulesValidatedSignature }) });
   assert.equal(result.status, 'committed');
-  assert.equal(PackLibrary.getById(pack.id).handlingRulesValidatedSignature, 'v1:OLD');
-  assert.equal(PackLibrary.isHandlingRulesValidationRequired(PackLibrary.getById(pack.id), CaseLibrary.getCases()), true);
+  assert.equal(PackLibrary.getById(pack.id).handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
+  assert.equal(PackLibrary.isHandlingRulesValidationRequired(PackLibrary.getById(pack.id), CaseLibrary.getCases()), false);
 });
 
 test('HANDLING-RULES-P0A Truck Change staging failure cannot publish a signature or partial cargo', async () => {
@@ -976,34 +296,12 @@ test('HANDLING-RULES-P0A Truck Change staging failure cannot publish a signature
   assert.deepEqual(StateStore.snapshot(), before);
 });
 
-test('HANDLING-RULES-P0A Truck Change final certification uses current Case definitions', async () => {
-  const { StateStore, PackLibrary, CaseLibrary } = await freshModules();
-  const caseA = mkCase();
-  const pack = { ...activePackFixture(), handlingRulesValidatedSignature: 'v1:OLD' };
-  initFixture(StateStore, caseA, pack);
-  const { controller, modals } = truckHarness(PackLibrary, CaseLibrary);
-  controller.request({ pack, nextTruck: { ...RECT_TRUCK, length: 130 } });
-  StateStore.set({ caseLibrary: [{ ...caseA, noStackOnTop: true }] });
-  const beforeCommit = StateStore.snapshot();
-  assert.equal(modals[0].actions.find(a => a.label === 'Apply change').onClick(), false,
-    'a changed Case invalidating the preview must block, never certify old poses with new rules');
-  assert.deepEqual(StateStore.snapshot(), beforeCommit);
-});
-
-// ---------------------------------------------------------------------------
-// Validation STATUS UI — presentation only.
-//
-// The Handling Rules validation SAFETY feature is unchanged (the authority is
-// PackLibrary.isHandlingRulesValidationRequired / validateLoadPlan and the stored
-// signature). What changed is how a stale Load Plan is shown: a compact warning
-// icon on Load Plans (Grid + List) and a compact icon + small anchored panel in the
-// Editor, replacing the Load Plans chip, the full-width Editor banner, and the
-// generic viewport info icon.
-// ---------------------------------------------------------------------------
-
 const indexHtml = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
+
 const mainCss = readFileSync(new URL('../../styles/main.css', import.meta.url), 'utf8');
+
 const packsSource = readFileSync(new URL('../../src/screens/packs-screen.js', import.meta.url), 'utf8');
+
 const casesSource = readFileSync(new URL('../../src/screens/cases-screen.js', import.meta.url), 'utf8');
 
 test('VALIDATION-STATUS-UI Editor markup: banner and generic viewport info icon are gone; a compact hidden status + short hint card + hidden action panel replace them', () => {
@@ -1028,7 +326,7 @@ test('VALIDATION-STATUS-UI Editor markup: banner and generic viewport info icon 
   const hint = indexHtml.match(/<div\b[^>]*\bid="editor-validation-hint"[\s\S]*?<\/div>/)?.[0] || '';
   assert.match(hint, /role="tooltip"/);
   assert.match(hint, /class="tp3d-status-card__title">Load plan needs review</);
-  assert.match(hint, /id="editor-validation-hint-body">Loading rules have changed\.</);
+  assert.match(hint, /id="editor-validation-hint-body">Assessment uses current cargo source\.</);
   assert.doesNotMatch(hint, /<button|<a\b|<input|Check Load Plan/, 'the hint is informational only — no action, no long paragraph');
   const iBtn = indexHtml.indexOf('id="editor-validation-status-btn"');
   const iHint = indexHtml.indexOf('id="editor-validation-hint"');
@@ -1041,7 +339,7 @@ test('VALIDATION-STATUS-UI Editor markup: banner and generic viewport info icon 
   assert.match(popover, /role="dialog"[\s\S]*aria-modal="false"/, 'a small non-modal panel, not an alert modal');
   assert.match(popover, /class="tp3d-editor-validation-popover__title"[^>]*>\s*Load plan needs review\s*</);
   const panelBody = (popover.match(/class="tp3d-editor-validation-popover__body"[^>]*>([\s\S]*?)<\/p>/)?.[1] || '').replace(/\s+/g, ' ').trim();
-  assert.equal(panelBody, 'A case’s loading rules changed after this plan was last checked. Review the plan to make sure the cargo still follows the latest rules.');
+  assert.equal(panelBody, 'Check the current physical assessment and operational eligibility. Cargo stays in place.');
   assert.match(popover, /<button\b[^>]*\bid="editor-handling-rules-validate-btn"[^>]*\btype="button"[^>]*>\s*Check Load Plan\s*<\/button>/);
   // Hidden state is honoured by CSS.
   assert.match(mainCss, /\.tp3d-editor-validation-status\[hidden\]\s*\{\s*display:\s*none\s*;\s*\}/);
@@ -1100,13 +398,12 @@ test('VALIDATION-STATUS-UI Editor source: dead hint/banner code is gone, helper 
   const region = statusRegion();
   assert.doesNotMatch(region.status, /validateLoadPlan|buildHandlingRulesValiditySignature|handlingRulesValidatedSignature|commitCaseHandlingRuleChange/,
     'the status/panel code decides nothing and validates nothing itself');
-  assert.match(region.status, /PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)/, 'staleness still comes from the existing authority');
+  assert.match(region.status, /PackLibrary\.assessCommittedPack\(/, 'staleness still comes from the existing authority');
   assert.equal((region.all.match(/PackLibrary\.validateLoadPlan\(/g) || []).length, 1, 'exactly one validateLoadPlan call: the existing Validate handler');
   assert.match(region.handler, /PackLibrary\.validateLoadPlan\(packId, CaseLibrary\.getCases\(\)\)/);
   assert.doesNotMatch(packsSource, /validateLoadPlan\(/, 'Load Plans management screens never validate');
 });
 
-// Extracts the exact production status/panel code (and the untouched Validate handler) for behavioral tests.
 function statusRegion() {
   const from = editorSource.indexOf('let validationPopoverOpen = false;');
   const to = editorSource.indexOf('\n    // Swap a button', from);
@@ -1119,15 +416,18 @@ function statusRegion() {
 }
 
 class StatusFakeNode {}
+
 function makeStatusEl(doc, name, children = []) {
   const el = new StatusFakeNode();
   Object.assign(el, { name, hidden: true, attrs: {}, listeners: {}, children });
+  el.querySelectorAll = () => [];
   el.setAttribute = (k, v) => { el.attrs[k] = String(v); };
   el.addEventListener = (type, fn) => { (el.listeners[type] ||= []).push(fn); };
   el.focus = () => { doc.activeElement = el; };
   el.contains = node => node === el || children.some(c => c === node || c.contains(node));
   return el;
 }
+
 function fireOn(el, type, extra = {}) {
   const ev = {
     type,
@@ -1141,13 +441,13 @@ function fireOn(el, type, extra = {}) {
   (el.listeners[type] || []).slice().forEach(fn => fn(ev));
   return ev;
 }
+
 function fireOnDocument(doc, type, extra = {}) {
   const ev = { type, stopped: false, stopPropagation() { this.stopped = true; }, preventDefault() {}, ...extra };
   doc.listeners.filter(l => l.type === type).slice().forEach(l => l.fn(ev));
   return ev;
 }
 
-// Mounts the REAL status/panel/Validate-handler source against the REAL PackLibrary.
 function mountEditorStatus({ StateStore, PackLibrary, CaseLibrary }) {
   const doc = {
     activeElement: null,
@@ -1200,7 +500,7 @@ function runEditorRenderGate(StateStore, setValidationPopoverOpen) {
   return runInNewContext(`(function () {${gate}\nreturn true;\n})()`, { StateStore, setValidationPopoverOpen, previewScene: null });
 }
 
-const stalePackFixture = () => ({ ...activePackFixture(), handlingRulesValidatedSignature: 'v1:OLD' });
+const stalePackFixture = () => { const pack = activePackFixture(); pack.cases[1].transform.position.y = 18; return { ...pack, handlingRulesValidatedSignature: 'v1:OLD' }; };
 
 test('VALIDATION-STATUS-UI Editor: a stale Pack shows ONE compact status; a current Pack shows nothing', async () => {
   const mods = await freshModules();
@@ -1215,7 +515,8 @@ test('VALIDATION-STATUS-UI Editor: a stale Pack shows ONE compact status; a curr
   assert.equal(m.popover.hidden, true, 'the panel stays closed until the icon is clicked');
   assert.equal(m.statusBtn.attrs['aria-expanded'], undefined, 'no state is written until the user interacts');
 
-  const current = { ...stale, handlingRulesValidatedSignature: mods.PackLibrary.buildHandlingRulesValiditySignature(stale, [caseA]) };
+  const current = activePackFixture();
+  mods.StateStore.set({ packLibrary: [current] });
   m.api.renderHandlingRulesStatus(current);
   assert.equal(m.status.hidden, true, 'current: the bottom-left corner is empty');
   m.api.renderHandlingRulesStatus(null);
@@ -1258,20 +559,20 @@ test('VALIDATION-STATUS-UI Editor: Validate Load Plan reuses the existing author
   assert.deepEqual(m.calls.validate[0], ['pack-active', mods.CaseLibrary.getCases()]);
   assert.equal(m.calls.render, 1, 'the existing handler re-renders');
   assert.equal(m.api.isOpen(), false, 'the panel closes as soon as the explicit action is taken');
-  assert.deepEqual(m.toasts, [{ message: 'Load Plan validated. No cargo changes were needed.', tone: 'success' }]);
+  assert.deepEqual(m.toasts, [{ message: 'Load Plan checked: INVALID. Operational eligibility: blocked. Cargo unchanged.', tone: 'warning' }]);
 
   const after = mods.PackLibrary.getById('pack-active');
-  assert.equal(mods.PackLibrary.isHandlingRulesValidationRequired(after, [caseA]), false, 'the real authority now reports current');
-  assert.equal(m.status.hidden, true, 'status disappears once the Pack is current');
-  assert.equal(m.doc.activeElement, m.autoPackBtn, 'successful validation moves focus to the visible AutoPack toolbar action');
-  assert.equal(m.status.contains(m.doc.activeElement), false, 'focus never remains inside the hidden validation status');
+  assert.equal(mods.PackLibrary.isHandlingRulesValidationRequired(after, [caseA]), true, 'read-only Check leaves physical findings present');
+  assert.equal(m.status.hidden, false, 'status remains until source is corrected');
+  assert.equal(m.doc.activeElement, m.statusBtn, 'focus returns to the still-visible status');
+  assert.equal(m.status.contains(m.doc.activeElement), true);
 });
 
 test('VALIDATION-STATUS-UI Editor: incomplete validation closes the panel and returns focus to the still-visible warning', async () => {
   const mods = await freshModules();
   initFixture(mods.StateStore, mkCase(), stalePackFixture());
   const m = mountEditorStatus(mods);
-  m.ctx.PackLibrary.validateLoadPlan = () => ({ validationComplete: false, summary: {} });
+  m.ctx.PackLibrary.validateLoadPlan = () => ({ primary: 'INCOMPLETE', eligibility: { state: 'blocked' } });
   m.api.renderHandlingRulesStatus(mods.PackLibrary.getById('pack-active'));
   fireOn(m.statusBtn, 'click');
   m.doc.activeElement = m.validateBtn;
@@ -1287,11 +588,10 @@ test('VALIDATION-STATUS-UI Editor: every validation outcome keeps its original t
   const mods = await freshModules();
   initFixture(mods.StateStore, mkCase(), stalePackFixture());
   const outcomes = [
-    [{ validationComplete: true, summary: {} }, 'Load Plan validated. No cargo changes were needed.', 'success'],
-    [{ validationComplete: false, summary: {} }, 'Some cargo could not be validated and remains flagged.', 'warning'],
-    [{ validationComplete: true, summary: { staged: 2 } }, 'Load Plan validated. Affected cargo could not rest safely and was moved to staging.', 'warning'],
-    [{ validationComplete: true, summary: { repaired: 1 } }, 'Load Plan validated. Cargo was adjusted to match current Handling Rules.', 'info'],
-    [{ validationComplete: true, summary: { adjusted: 1 } }, 'Load Plan validated. Cargo was adjusted to match current Handling Rules.', 'info'],
+    ...[['VALID', 'eligible'], ['VALID', 'blocked'], ['INCOMPLETE', 'eligible'], ['INCOMPLETE', 'blocked'], ['INVALID', 'blocked']]
+      .map(([primary, state]) => [{ primary, eligibility: { state } },
+        `Load Plan checked: ${primary}. Operational eligibility: ${state}. Cargo unchanged.`,
+        primary === 'VALID' && state === 'eligible' ? 'success' : 'warning']),
     [null, 'Validation failed. Please try again.', 'error'],
   ];
   for (const [result, message, tone] of outcomes) {
@@ -1364,7 +664,8 @@ test('VALIDATION-STATUS-UI Editor: the panel closes when the Pack becomes curren
   m.api.renderHandlingRulesStatus(stale); // an unrelated re-render keeps it open
   assert.equal(m.api.isOpen(), true);
 
-  m.api.renderHandlingRulesStatus({ ...stale, handlingRulesValidatedSignature: mods.PackLibrary.buildHandlingRulesValiditySignature(stale, [caseA]) });
+  mods.StateStore.set({ packLibrary: [activePackFixture()] });
+  m.api.renderHandlingRulesStatus(mods.PackLibrary.getById(stale.id));
   assert.equal(m.api.isOpen(), false, 'no longer stale: closed');
   assert.equal(m.status.hidden, true);
   assert.equal(m.doc.listeners.length, 0);
@@ -1409,7 +710,6 @@ test('VALIDATION-STATUS-UI Editor: leaving through the normal screen-render flow
     'every currentScreen notification invokes the Editor render gate, including navigation away');
 });
 
-// Extracts the exact production Load Plans status-icon + shared floating-card source.
 function packStatusRegion() {
   const from = packsSource.indexOf("const PACK_STATUS_CARD_ID = 'tp3d-pack-status-card';");
   const to = packsSource.indexOf('function createPackNotesButton(', from);
@@ -1424,7 +724,6 @@ function packScreenChangeCleanupRegion() {
   return packsSource.slice(from, to);
 }
 
-// Mounts that REAL source against a small fake DOM/window (viewport vw x vh, 186x56 card).
 function mountPackStatus({ vw = 1000, vh = 800, stateStore = null } = {}) {
   const body = { children: [], appendChild(el) { this.children.push(el); el.isConnected = true; } };
   const win = {
@@ -1436,13 +735,16 @@ function mountPackStatus({ vw = 1000, vh = 800, stateStore = null } = {}) {
   };
   const makeEl = () => {
     const el = {
-      attrs: {}, listeners: {}, className: '', tabIndex: -1, innerHTML: '', id: '', style: {}, isConnected: true,
+      dataset: {}, attrs: {}, listeners: {}, className: '', tabIndex: -1, innerHTML: '', id: '', style: {}, isConnected: true,
       classes: new Set(), rect: { left: 0, top: 0, right: 0, bottom: 0 }, offsetWidth: 186, offsetHeight: 56,
     };
     el.setAttribute = (k, v) => { el.attrs[k] = String(v); };
     el.addEventListener = (type, fn) => { (el.listeners[type] ||= []).push(fn); };
     el.classList = { add: c => el.classes.add(c), remove: c => el.classes.delete(c), contains: c => el.classes.has(c) };
     el.getBoundingClientRect = () => el.rect;
+    el.getAttribute = key => el.attrs[key];
+    const texts = {};
+    el.querySelector = key => texts[key] ||= { textContent: '' };
     return el;
   };
   const document = {
@@ -1469,6 +771,8 @@ initToolbarDropdownCoordinator();`
     `(function () {\n${packStatusRegion()}\n${screenCleanup}\nreturn { createPackValidationStatus, hidePackStatusCard, current: () => packStatusCardAnchor };\n})()`,
     { document, window: win, StateStore: stateStore, UIComponents, PreferencesManager }
   );
+  const createStatus = api.createPackValidationStatus;
+  api.createPackValidationStatus = (options = {}) => createStatus({ assessment: { primary: 'INVALID', eligibility: { state: 'eligible' } }, ...options });
   const place = (el, left, top, w = 28, h = 28) => { el.rect = { left, top, right: left + w, bottom: top + h }; return el; };
   const card = () => body.children.find(el => el.id === 'tp3d-pack-status-card');
   return {
@@ -1484,7 +788,7 @@ test('VALIDATION-STATUS-UI Load Plans: the status icon uses the new accessible n
   for (const [opts, expectedClass] of [[undefined, 'tp3d-validation-status'], [{ inline: true }, 'tp3d-validation-status tp3d-validation-status--inline']]) {
     const el = m.api.createPackValidationStatus(opts);
     assert.equal(el.className, expectedClass);
-    assert.equal(el.attrs['aria-label'], 'Load plan needs review');
+    assert.equal(el.attrs['aria-label'], 'Load plan: INVALID');
     assert.equal('data-tooltip' in el.attrs, false, 'the generic black tooltip is not used');
     assert.equal('title' in el.attrs, false, 'no native title tooltip either');
     assert.equal(el.attrs['aria-describedby'], 'tp3d-pack-status-card-body', 'the short card body is the accessible description');
@@ -1518,7 +822,7 @@ test('VALIDATION-STATUS-UI Load Plans: ONE shared informational card — created
   assert.match(card.className, /tp3d-status-card tp3d-status-card--floating/);
   assert.equal(card.attrs.role, 'tooltip');
   assert.match(card.innerHTML, /class="tp3d-status-card__title">Load plan needs review</);
-  assert.match(card.innerHTML, /id="tp3d-pack-status-card-body">Loading rules have changed\.</);
+  assert.match(card.innerHTML, /id="tp3d-pack-status-card-body">Assessment uses current cargo source\.</);
   assert.doesNotMatch(card.innerHTML, /<button|<a\b|<input|Check Load Plan|validat/i, 'informational only — no action and no technical wording');
   assert.equal(card.classes.has('is-visible'), false, 'hidden until hover/focus');
   assert.equal(m.win.listeners.length, 0, 'no document/window listeners exist while the card is hidden');
@@ -1707,7 +1011,7 @@ test('VALIDATION-STATUS-UI Load Plans Grid: stale Pack gets the icon between the
   // P1-C: selection now LEADS the title in the header; only the warning, Notes and overflow trail.
   const cluster = grid.slice(grid.indexOf("actions.className = 'card-head-actions tp3d-management-card-actions'"), grid.indexOf('head.appendChild(selectCb)'));
   const iSel = cluster.indexOf('actions.appendChild(selectCb)');
-  const iStatus = cluster.indexOf('actions.appendChild(createPackValidationStatus())');
+  const iStatus = cluster.indexOf('actions.appendChild(createPackValidationStatus({ assessment }))');
   const iNotes = cluster.indexOf('actions.appendChild(createPackNotesButton(pack))');
   const iKebab = cluster.indexOf('actions.appendChild(kebabBtn)');
   assert.equal(iSel, -1, 'the checkbox is no longer in the trailing cluster');
@@ -1716,7 +1020,7 @@ test('VALIDATION-STATUS-UI Load Plans Grid: stale Pack gets the icon between the
   const iHeadTitle = grid.indexOf('head.appendChild(titleWrap)');
   const iHeadActions = grid.indexOf('head.appendChild(actions)');
   assert.ok(iHeadSel >= 0 && iHeadSel < iHeadTitle && iHeadTitle < iHeadActions, 'header order: [ checkbox ] title [ warning / Notes / ⋮ ]');
-  assert.match(cluster, /if \(PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)\) \{\s*actions\.appendChild\(createPackValidationStatus\(\)\);\s*\}/,
+  assert.match(cluster, /actions\.appendChild\(createPackValidationStatus\(\{ assessment \}\)\)/,
     'shown only when the existing authority says the Load Plan is stale');
   // The whole-card click handler skips the status (in addition to the status stopping propagation itself).
   const cardClick = grid.slice(grid.indexOf("card.addEventListener('click'"), grid.indexOf('openPack(pack.id);'));
@@ -1727,7 +1031,7 @@ test('VALIDATION-STATUS-UI Load Plans List: stale Pack gets the same icon beside
   const list = packsSource.slice(packsSource.indexOf('function renderListView(packs) {'), packsSource.indexOf('function renderGridView(packs) {'));
   assert.ok(list.length > 500);
   assert.doesNotMatch(list, /badge--warning|validationBadge|Validation required/, 'the old chip is gone from the List');
-  assert.match(list, /if \(PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)\) \{\s*title\.appendChild\(createPackValidationStatus\(\{ inline: true \}\)\);\s*\}/);
+  assert.match(list, /title\.appendChild\(createPackValidationStatus\(\{ inline: true, assessment \}\)\)/);
   assert.equal((list.match(/\btr\.appendChild\(/g) || []).length, 12, 'the row keeps its existing 12 cells — no new column, no structure change');
   assert.equal((list.match(/createElement\('td'\)/g) || []).length, 12);
 });
@@ -1742,14 +1046,14 @@ test('VALIDATION-STATUS-UI Scope: old technical copy is gone, the locked copy is
 
   // Locked new copy.
   assert.equal((indexHtml.match(/Load plan needs review/g) || []).length, 3, 'Editor: icon name, hint title, panel title');
-  assert.equal((indexHtml.match(/Loading rules have changed\./g) || []).length, 1);
+  assert.equal((indexHtml.match(/Assessment uses current cargo source\./g) || []).length, 1);
   assert.equal((indexHtml.match(/Check Load Plan/g) || []).length, 1);
   assert.match(packsSource, /Load plan needs review/);
-  assert.match(packsSource, /Loading rules have changed\./);
+  assert.match(packsSource, /Assessment uses current cargo source\./);
 
   // The internal names are NOT renamed by this copy change.
   assert.match(editorSource, /PackLibrary\.validateLoadPlan\(packId, CaseLibrary\.getCases\(\)\)/);
-  assert.match(packsSource, /PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)/);
+  assert.match(packsSource, /PackLibrary\.assessCommittedPack\(/);
   assert.doesNotMatch(casesSource, /isHandlingRulesValidationRequired|Load plan needs review|createPackValidationStatus|data-pack-status/,
     'no Case-level validation status exists or is implied');
 });
@@ -1786,15 +1090,6 @@ test('VALIDATION-STATUS-UI Scope: Load Plans icon is amber (warning color) at re
   assert.match(mainCss, /\.tp3d-editor-info-icon\[data-tooltip\]::after/);
 });
 
-// ============================================================================
-// CASE-DELETION: PackLibrary.commitCaseDeletion — Load Plan integrity when a
-// Case definition (single or bulk) is deleted. Deleted instances must vanish
-// from every Pack; remaining cargo that physically depended on removed packed
-// cargo must be repaired/staged through the canonical revalidation; and no Pack
-// may be left silently "current" after an unvalidated packed change. One
-// confirmed deletion is exactly one StateStore.set() / one Undo step.
-// ============================================================================
-
 function seedDeletion(StateStore, { cases, packs, currentScreen = 'cases', currentPackId = null, selectedInstanceIds = [] }) {
   StateStore.init({
     currentScreen, currentPackId, selectedInstanceIds,
@@ -1822,12 +1117,10 @@ function assertNoOrphanCaseIds(StateStore, ...deletedIds) {
   for (const id of deletedIds) assert.equal(remaining.has(id), false, `Case ${id} must be gone from the Case Library`);
 }
 
-// The persisted result must be a fixed point of the canonical validator: nothing
-// left to adjust, stage or fail — i.e. no floating / invalid packed cargo.
 function assertPersistedPackIsValid(PackLibrary, pack, caseLibrary, message) {
-  const again = PackLibrary.revalidateManualPlacements(pack, caseLibrary, { repairDependents: true, preserveStagedPositions: true });
-  assert.equal(again.validationComplete, true, `${message}: validation must be complete`);
-  assert.deepEqual(again.summary, { adjusted: 0, repaired: 0, staged: 0, failed: 0 }, `${message}: nothing may need further adjustment`);
+  const assessment = PackLibrary.assessCommittedPack(pack, caseLibrary);
+  assert.equal(assessment.primary, 'VALID', message);
+  assert.equal(assessment.eligibility.state, 'eligible', message);
 }
 
 test('CASE-DELETION A: an unused Case is deleted with no Pack change and exactly one atomic write', async () => {
@@ -1883,7 +1176,7 @@ test('CASE-DELETION B: a staged-only Case is removed without revalidating unrela
   const after = StateStore.get('packLibrary')[0];
   assert.deepEqual(after.cases.map(i => i.id), ['other']);
   assert.equal(after.cases[0], before.cases[0], 'unrelated packed cargo must be the identical object (never revalidated/moved)');
-  assert.equal(after.handlingRulesValidatedSignature, signature, 'the stored signature is preserved exactly');
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false, 'a staged-only deletion must not create a false stale state');
   assert.equal(after.stats.totalCases, 1, 'stats are recomputed against the final Pack');
   assert.ok(after.lastEdited > 123, 'lastEdited is refreshed for a Pack whose cargo changed');
@@ -1925,8 +1218,8 @@ test('CASE-DELETION C: a packed floor item with no dependents is removed, remain
   assert.deepEqual(after.cases.map(i => i.id), ['other']);
   assert.equal(after.cases[0].placement, 'packed');
   assert.deepEqual(after.cases[0].transform.position, { x: 60, y: 5, z: 0 }, 'a valid remaining item does not move');
-  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, nextLibrary));
-  assert.notEqual(after.handlingRulesValidatedSignature, priorSignature, 'the deleted Case no longer contributes to the signature');
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), false);
   assert.equal(after.stats.totalCases, 1);
   assert.ok(after.lastEdited > 123);
@@ -2000,7 +1293,7 @@ test('CASE-DELETION E1: a legacy UNSIGNED Pack with a deleted packed instance re
   PackLibrary.commitCaseDeletion(['case-s']);
 
   const after = StateStore.get('packLibrary')[0];
-  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, StateStore.get('caseLibrary')));
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
 });
 
@@ -2021,7 +1314,7 @@ test('CASE-DELETION E2: a legacy UNSIGNED Pack whose validation is incomplete ca
 
   const after = StateStore.get('packLibrary')[0];
   assert.equal(result.packImpacts[0].validationComplete, false);
-  assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete', 'uses the existing non-current marker');
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true,
     'the Pack must report review required');
   assert.deepEqual(after.cases.map(i => i.id), ['B', 'ghost'], 'the safest result is still committed: deleted instance gone, the rest preserved');
@@ -2043,8 +1336,8 @@ test('CASE-DELETION F: an already-signed Pack gets its signature re-stamped agai
 
   const after = StateStore.get('packLibrary')[0];
   const nextLibrary = StateStore.get('caseLibrary');
-  assert.notEqual(after.handlingRulesValidatedSignature, priorSignature);
-  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, nextLibrary));
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), false);
 });
 
@@ -2102,7 +1395,7 @@ test('CASE-DELETION G2: bulk deletion of several Cases is one write and revalida
   assert.deepEqual(StateStore.get('caseLibrary').map(c => c.id), ['case-t']);
   assert.deepEqual(after.cases.map(i => i.id), ['top']);
   assert.equal(after.cases[0].transform.position.y, 5);
-  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, StateStore.get('caseLibrary')));
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(result.packImpacts.length, 1, 'a Pack hit by several deleted Cases is revalidated once, not once per Case');
   assertNoOrphanCaseIds(StateStore, 'case-s', 'case-o');
   assert.equal(watch.writes.length, 1);
@@ -2189,7 +1482,7 @@ test('CASE-DELETION J1: incomplete validation with a previously-current signatur
 
   const after = StateStore.get('packLibrary')[0];
   const nextLibrary = StateStore.get('caseLibrary');
-  assert.notEqual(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, nextLibrary));
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), true, 'never stamped current after an unresolved validation');
 });
 
@@ -2209,7 +1502,7 @@ test('CASE-DELETION J2: incomplete validation whose stored signature coincidenta
   PackLibrary.commitCaseDeletion(['case-s']);
 
   const after = StateStore.get('packLibrary')[0];
-  assert.equal(after.handlingRulesValidatedSignature, 'v1:incomplete');
+  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), true);
 });
 
@@ -2352,10 +1645,6 @@ test('CASE-DELETION UI: both Cases-screen delete paths delegate to the single or
   assert.match(single, /UIComponents\.showToast\('Case deleted', 'info'\)/);
 });
 
-// --- Behavioral harness: execute the exact production deleteCase/bulkDeleteSelected
-// closures (via vm.runInNewContext, same technique as HANDLING-RULES-P0A above) against
-// mocked dependencies, so failure/no-op/success feedback is proven at runtime rather
-// than only by source-text regex. ---
 function makeToastSpy() {
   const calls = [];
   return { calls, showToast: (message, type) => calls.push({ message, type }) };
@@ -2455,333 +1744,236 @@ test('CASE-DELETION UI-COUNT bulk: success feedback and cleanup use the actual d
   assert.equal(calls.render, 1);
 });
 
-// ============================================================================
-// HANDLING RULES — PHYSICAL/STORED PLACEMENT PARITY
-//
-// buildHandlingRulesValiditySignature()/commitCaseHandlingRuleChange()/
-// commitCaseDeletion() now share one active-load membership authority:
-//   - placement === 'staged' is NEVER a member, regardless of physical pose;
-//   - a non-staged instance participates only when it physically occupies
-//     usable truck geometry (containment only — support/collision/rear
-//     retention/orientation legality remain a separate revalidation concern);
-//   - a non-staged instance that cannot be safely classified (missing Case,
-//     missing/malformed position or dimensions) is conservatively ACTIVE.
-// ============================================================================
-
-test('HANDLING-RULES MEMBERSHIP four-case matrix: explicit staged state always wins; physical containment governs the rest', async () => {
-  const { PackLibrary } = await freshModules();
-  const caseInside = mkCase({ id: 'case-inside' });
-  const caseOutside = mkCase({ id: 'case-outside' });
-  const caseStagedOutside = mkCase({ id: 'case-staged-outside' });
-  const caseStagedInside = mkCase({ id: 'case-staged-inside' });
-  const library = [caseInside, caseOutside, caseStagedOutside, caseStagedInside];
-  const cases = [
-    mkInst('a', 'case-inside', { x: 20, y: 5, z: 0 }, 'packed'), // 1: stored packed + physically inside
-    mkInst('b', 'case-outside', { x: 500, y: 5, z: 0 }, 'packed'), // 2: stored packed + physically outside
-    mkInst('c', 'case-staged-outside', { x: 500, y: 5, z: 20 }, 'staged'), // 3: stored staged + physically outside
-    mkInst('d', 'case-staged-inside', { x: 40, y: 5, z: 0 }, 'staged'), // 4: stored staged + physically inside
-  ];
-  const pack = deletionPack('pack-matrix', cases);
-
-  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
-
-  assert.match(signature, /case-inside:/, 'A: stored packed + physically inside participates');
-  assert.doesNotMatch(signature, /case-outside:/, 'B: stored packed + physically outside is excluded');
-  assert.doesNotMatch(signature, /case-staged-outside:/, 'C: stored staged + physically outside is excluded');
-  assert.doesNotMatch(signature, /case-staged-inside:/, 'D: stored staged + physically inside is STILL excluded — explicit staged always wins over physical geometry');
-});
-
-test('HANDLING-RULES MEMBERSHIP: hidden active packed cargo still participates; groupId is irrelevant', async () => {
-  const { PackLibrary } = await freshModules();
-  const caseHidden = mkCase({ id: 'case-hidden' });
-  const caseGrouped = mkCase({ id: 'case-grouped' });
-  const library = [caseHidden, caseGrouped];
-  const hiddenActive = { ...mkInst('hidden-1', 'case-hidden', { x: 20, y: 5, z: 0 }, 'packed'), hidden: true };
-  const groupedActive = { ...mkInst('grouped-1', 'case-grouped', { x: 40, y: 5, z: 0 }, 'packed'), groupId: 'group-x' };
-  const pack = deletionPack('pack-hidden-group', [hiddenActive, groupedActive]);
-
-  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
-
-  assert.match(signature, /case-hidden:/, 'hidden packed cargo remains physical cargo and still participates');
-  assert.match(signature, /case-grouped:/, 'groupId does not affect membership');
-});
-
-test('HANDLING-RULES MEMBERSHIP: a missing Case definition on non-staged cargo is conservatively represented as caseId:missing', async () => {
-  const { PackLibrary } = await freshModules();
-  const caseO = mkCase({ id: 'case-o' });
-  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
-  const missingCasePacked = mkInst('ghost', 'case-does-not-exist', { x: 500, y: 5, z: 0 }, 'packed');
-  const missingCaseStaged = mkInst('staged-ghost', 'case-also-missing', { x: 20, y: 5, z: 0 }, 'staged');
-  const pack = deletionPack('pack-missing', [other, missingCasePacked, missingCaseStaged]);
-
-  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseO]);
-
-  assert.match(signature, /case-does-not-exist:missing/, 'a non-staged instance with a missing Case is conservatively active, not silently excluded');
-  assert.doesNotMatch(signature, /case-also-missing/, 'explicit staged state still wins exclusion even for an unresolved Case');
-});
-
-test('HANDLING-RULES MEMBERSHIP: malformed/missing position or dimensions on non-staged cargo is conservatively active — never invents origin geometry', async () => {
-  const { PackLibrary } = await freshModules();
-  const caseMalformedPos = mkCase({ id: 'case-malformed-pos' });
-  const caseNoTransform = mkCase({ id: 'case-no-transform' });
-  const caseBadDims = mkCase({ id: 'case-bad-dims', dimensions: { length: 0, width: 10, height: 10 } });
-  const library = [caseMalformedPos, caseNoTransform, caseBadDims];
-
-  const malformedPos = mkInst('malformed-pos', 'case-malformed-pos', { x: Number.NaN, y: 5, z: 0 }, 'packed');
-  const noTransform = { ...mkInst('no-transform', 'case-no-transform', { x: 0, y: 0, z: 0 }, 'packed'), transform: undefined };
-  const badDims = mkInst('bad-dims', 'case-bad-dims', { x: 20, y: 5, z: 0 }, 'packed');
-  const pack = deletionPack('pack-malformed', [malformedPos, noTransform, badDims]);
-
-  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
-
-  assert.match(signature, /case-malformed-pos:/, 'a malformed (NaN) position never falls back to the origin; it stays conservatively active');
-  assert.match(signature, /case-no-transform:/, 'a missing transform/position is conservatively active');
-  assert.match(signature, /case-bad-dims:/, 'malformed Case dimensions are conservatively active — full geometry is required before a physical classification is trusted');
-});
-
-// getTrailerUsableZones() returns NO usable zones for a missing/malformed truck
-// (0/negative/non-finite length, width, or height), which would otherwise make
-// getPlacementForAabb() classify every non-staged instance as physically
-// "outside" — silently dropping real cargo from Handling Rules coverage. The
-// membership classifier must treat unresolved truck geometry the same as any
-// other "cannot be safely classified" case: conservatively ACTIVE.
-const UNRESOLVED_TRUCKS = [
-  ['missing truck', undefined],
-  ['empty truck object', {}],
-  ['zero length', { length: 0, width: 60, height: 60 }],
-  ['zero width', { length: 120, width: 0, height: 60 }],
-  ['zero height', { length: 120, width: 60, height: 0 }],
-  ['non-finite length', { length: Number.NaN, width: 60, height: 60 }],
-];
-
-for (const [label, truck] of UNRESOLVED_TRUCKS) {
-  test(`HANDLING-RULES MEMBERSHIP: unresolved truck geometry (${label}) is conservatively active — explicit staged still excluded`, async () => {
-    const { PackLibrary } = await freshModules();
-    const caseActive = mkCase({ id: 'case-active' });
-    const caseStaged = mkCase({ id: 'case-staged' });
-    const library = [caseActive, caseStaged];
-    const active = mkInst('active', 'case-active', { x: 20, y: 5, z: 0 }, 'packed');
-    const staged = mkInst('staged', 'case-staged', { x: 20, y: 5, z: 0 }, 'staged');
-    const pack = deletionPack('pack-unresolved-truck', [active, staged], { truck });
-
-    const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
-
-    assert.match(signature, /case-active:/, `non-staged cargo remains active when truck geometry is unresolved (${label}); no fallback truck is ever invented`);
-    assert.doesNotMatch(signature, /case-staged:/, `explicit staged state still wins exclusion even with unresolved truck geometry (${label})`);
-  });
+// C4's committed-load contract replaces durable freshness and implicit repair.
+function freezeSource(value) {
+  if (value && typeof value === 'object') {
+    Object.values(value).forEach(freezeSource);
+    Object.freeze(value);
+  }
+  return value;
 }
 
-test('HANDLING-RULES CASE-EDIT PARITY E: a non-staged Case instance with unresolved truck geometry still marks the Pack affected', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const activeUnresolvedTruck = mkInst('active', 'case-a', { x: 20, y: 5, z: 0 }, 'packed');
-  const pack = deletionPack('pack-unresolved-truck-edit', [activeUnresolvedTruck], { truck: {} });
-  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
-  const before = StateStore.get('packLibrary')[0];
+function sourcePose(instance) {
+  const { id, ...source } = instance;
+  return source;
+}
 
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-
-  const after = StateStore.get('packLibrary')[0];
-  assert.notEqual(after, before, 'unresolved truck geometry must not exempt non-staged cargo from marking the Pack affected');
-  assert.equal('handlingRulesValidatedSignature' in after, true);
-});
-
-test('HANDLING-RULES CASE-DELETION PARITY E: a non-staged deletion target with unresolved truck geometry does not take the unsafe staged-only fast path', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseS = mkCase({ id: 'case-s' });
-  const caseO = mkCase({ id: 'case-o' });
-  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
-  const targetUnresolvedTruck = mkInst('target', 'case-s', { x: 20, y: 5, z: 0 }, 'packed');
-  const pack = deletionPack('pack-unresolved-truck-delete', [other, targetUnresolvedTruck], { truck: { length: 0, width: 60, height: 60 } });
-  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
-
-  const result = PackLibrary.commitCaseDeletion(['case-s']);
-
-  const impact = result.packImpacts.find(i => i.packId === 'pack-unresolved-truck-delete');
-  assert.equal(impact.revalidated, true, 'unresolved truck geometry must not allow the unsafe staged-only fast path — it forces conservative full revalidation');
-});
-
-const WHEEL_TRUCK = {
-  length: 120, width: 60, height: 60, shapeMode: 'wheelWells',
-  shapeConfig: { wellHeight: 20, wellWidth: 12, wellLength: 40, wellOffsetFromRear: 40 },
-};
-
-test('HANDLING-RULES MEMBERSHIP stays Wheel-Well shape-aware: a legal resting-on-the-well placement participates; a position inside the blocked well body does not', async () => {
+test('C4 assessment population, precedence, eligibility and immutable inputs', async () => {
   const { PackLibrary } = await freshModules();
-  const caseOnWell = mkCase({ id: 'case-on-well' });
-  const caseInWell = mkCase({ id: 'case-in-well' });
-  const library = [caseOnWell, caseInWell];
-  // Resting exactly on top of the left wheel well (bottom y === wellHeight):
-  // only the Wheel-Well-aware zone/union authority includes this, not a plain
-  // full-rectangle containment check.
-  const onWell = mkInst('on-well', 'case-on-well', { x: 60, y: 25, z: -24 }, 'packed');
-  // Physically inside the blocked wheel-well body itself (below wellHeight,
-  // within the well's side strip) — never a legal usable position.
-  const inWell = mkInst('in-well', 'case-in-well', { x: 60, y: 10, z: -24 }, 'packed');
-  const pack = { id: 'pack-wheel', title: 'Wheel', truck: WHEEL_TRUCK, cases: [onWell, inWell], stats: {} };
-
-  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
-
-  assert.match(signature, /case-on-well:/, 'a legal Wheel-Well-aware resting placement participates');
-  assert.doesNotMatch(signature, /case-in-well:/, 'a position physically inside the blocked wheel-well body is excluded');
+  const library = [mkCase(), mkCase({ id: 'heavy', weight: 20 })];
+  const pack = activePackFixture();
+  assert.equal(PackLibrary.assessCommittedPack(pack, library).primary, 'VALID');
+  const unknownMass = library.map(c => ({ ...c, weight: null }));
+  const incomplete = PackLibrary.assessCommittedPack(pack, unknownMass);
+  assert.equal(incomplete.primary, 'INCOMPLETE');
+  assert.ok(incomplete.unresolvedHard.length);
+  const bad = { ...pack, cases: [{ ...pack.cases[0], hidden: true,
+    transform: { ...pack.cases[0].transform, position: { x: -10, y: 5, z: 0 } } }] };
+  assert.equal(PackLibrary.assessCommittedPack(bad, unknownMass).primary, 'INVALID', 'hard failure wins over unresolved mass');
+  const staged = { ...bad, cases: bad.cases.map(i => ({ ...i, placement: 'staged', caseId: 'missing' })) };
+  assert.equal(PackLibrary.assessCommittedPack(staged, []).primary, 'VALID', 'staged cargo is outside loaded assessment');
+  const blocked = { ...pack, cases: [pack.cases[0], { ...pack.cases[1], caseId: 'heavy' }] };
+  const snapshot = structuredClone({ blocked, library });
+  const result = PackLibrary.assessCommittedPack(freezeSource(blocked), freezeSource(library));
+  assert.equal(result.primary, 'VALID');
+  assert.equal(result.eligibility.state, 'blocked', 'weight compatibility does not become physical INVALID');
+  assert.ok(result.gates.some(g => g.property === 'supportWeight' && g.outcome === 'FAIL'));
+  assert.ok(result.unverified.length && result.advisory.length);
+  assert.deepEqual({ blocked, library }, snapshot, 'assessment mutates no source input');
 });
 
-const FRONT_BONUS_TRUCK = {
-  length: 120, width: 60, height: 60, shapeMode: 'frontBonus',
-  shapeConfig: { bonusLength: 30, bonusHeight: 24 },
-};
-
-test('HANDLING-RULES MEMBERSHIP stays Front-Overhang shape-aware: a legal raised-deck placement participates; a cab-void placement does not', async () => {
+test('C4 freshness uses the C2 physical identity and explicit compatibility policy', async () => {
   const { PackLibrary } = await freshModules();
-  const caseOnDeck = mkCase({ id: 'case-on-deck' });
-  const caseCabVoid = mkCase({ id: 'case-cab-void' });
-  const library = [caseOnDeck, caseCabVoid];
-  // Resting on the raised over-cab deck (x beyond truck.length, y >= bonusHeight).
-  const onDeck = mkInst('on-deck', 'case-on-deck', { x: 135, y: 30, z: 0 }, 'packed');
-  // Inside the cab void beneath the deck — a structurally blocked volume.
-  const cabVoid = mkInst('cab-void', 'case-cab-void', { x: 135, y: 10, z: 0 }, 'packed');
-  const pack = { id: 'pack-front', title: 'Front', truck: FRONT_BONUS_TRUCK, cases: [onDeck, cabVoid], stats: {} };
-
-  const signature = PackLibrary.buildHandlingRulesValiditySignature(pack, library);
-
-  assert.match(signature, /case-on-deck:/, 'a legal raised-deck Front Overhang placement participates');
-  assert.doesNotMatch(signature, /case-cab-void:/, 'a cab-void/blocked placement never becomes active membership');
+  const pack = activePackFixture(), library = [mkCase()];
+  const base = PackLibrary.assessCommittedPack(pack, library);
+  const displayOnly = { ...pack, title: 'Renamed', lastEdited: 999, handlingRulesValidatedSignature: 'v1:incomplete',
+    cases: pack.cases.map(i => ({ ...i, hidden: !i.hidden, orientationLocked: true, lockedRotation: { x: 0, y: 1, z: 0 } })) };
+  assert.equal(PackLibrary.assessCommittedPack(displayOnly, [{ ...library[0], name: 'Label', notes: 'Note' }]).identity, base.identity);
+  assert.notEqual(PackLibrary.assessCommittedPack(pack, [{ ...library[0], weight: 11 }]).identity, base.identity);
+  assert.notEqual(PackLibrary.assessCommittedPack(pack, library, {
+    compatibility: { support50: false, wheelWellThird: true, supportWeight: true },
+  }).identity, base.identity);
+  assert.equal(base.fresh, true);
+  assert.notStrictEqual(PackLibrary.assessCommittedPack(pack, library), base, 'no retained cache/certificate');
 });
 
-test('HANDLING-RULES CASE-EDIT PARITY A: a Case referenced only by stored-packed, physically-outside cargo does not mark the Pack affected', async () => {
+test('C4 normalization, hydration and open preserve INVALID and INCOMPLETE physical source', async () => {
   const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const ghostOutside = mkInst('ghost', 'case-a', { x: 500, y: 5, z: 0 }, 'packed');
-  const pack = deletionPack('pack-outside', [ghostOutside]); // no stored signature: legacy/unsigned
-  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
-  const before = StateStore.get('packLibrary')[0];
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-
-  const after = StateStore.get('packLibrary')[0];
-  assert.equal(after, before, 'an unaffected Pack is the identical, untouched object — no cargo movement');
-  assert.equal('handlingRulesValidatedSignature' in after, false, 'no false stale flag is invented for physically-outside ghost cargo');
+  const Normalizer = await import(normalizerPath.href);
+  for (const incomplete of [false, true]) {
+    const caseA = mkCase({ weight: incomplete ? null : 10 });
+    const pack = { ...activePackFixture(), cases: [mkInst('saved', caseA.id,
+      { x: incomplete ? 40 : -10, y: 5, z: 0 })], handlingRulesValidatedSignature: 'v1:CURRENT', groups: [{ id: 'group-1' }] };
+    Object.assign(pack.cases[0], { hidden: true, groupId: 'group-1', orientationLocked: true,
+      lockedRotation: { x: 0, y: Math.PI / 2, z: 0 } });
+    const normalized = Normalizer.normalizeAppData({ caseLibrary: [caseA], packLibrary: [pack], preferences: {} });
+    const restored = normalized.packLibrary[0];
+    for (const key of ['transform', 'placement', 'hidden', 'groupId', 'orientationLocked', 'lockedRotation']) {
+      assert.deepEqual(restored.cases[0][key], pack.cases[0][key]);
+    }
+    assert.equal(restored.handlingRulesValidatedSignature, undefined);
+    StateStore.init({ ...normalized, currentScreen: 'packs', currentPackId: null });
+    const before = structuredClone(restored);
+    PackLibrary.open(pack.id);
+    assert.deepEqual(PackLibrary.getById(pack.id), before);
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, incomplete ? 'INCOMPLETE' : 'INVALID');
+    assert.deepEqual(PackLibrary.getById(pack.id), before);
+    assert.equal(StateStore.undo(), false);
+  }
+  const missingPose = Normalizer.normalizeInstance({ id: 'missing', caseId: 'case-a', placement: 'packed', transform: {} }, new Map([['case-a', mkCase()]]));
+  assert.deepEqual(missingPose.transform.position, { x: null, y: null, z: null }, 'no invented location for unresolved geometry');
 });
 
-test('HANDLING-RULES CASE-EDIT PARITY B: a Case referenced by genuinely active physical cargo still marks the Pack affected', async () => {
+test('C4 Case dimensions, orientation and unknown mass change assessment without touching any Pack', async () => {
   const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const activeInside = mkInst('active', 'case-a', { x: 20, y: 5, z: 0 }, 'packed');
-  const pack = deletionPack('pack-active', [activeInside]);
-  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
-  const before = StateStore.get('packLibrary')[0];
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-
-  const after = StateStore.get('packLibrary')[0];
-  assert.notEqual(after, before, 'a genuinely affected Pack is updated exactly as before this fix');
-  assert.equal('handlingRulesValidatedSignature' in after, true, 'the Pack is baselined so it correctly reports Validation required');
+  for (const change of [
+    { dimensions: { length: 160, width: 10, height: 10 } },
+    { orientationLock: 'upright' },
+    { weight: null },
+  ]) {
+    const caseA = mkCase();
+    const pack = activePackFixture();
+    pack.cases[0].transform.rotation.x = Math.PI / 2;
+    Object.assign(pack.cases[0], { hidden: true, groupId: 'saved-group', orientationLocked: true,
+      lockedRotation: { x: 0, y: Math.PI / 2, z: 0 } });
+    pack.groups = [{ id: 'saved-group', name: 'Keep group' }];
+    const other = { ...structuredClone(pack), id: 'unseen' };
+    initFixture(StateStore, caseA, pack);
+    StateStore.set({ packLibrary: [pack, other] }, { skipHistory: true });
+    StateStore.resetHistory();
+    const before = StateStore.snapshot();
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'VALID');
+    PackLibrary.commitCaseHandlingRuleChange({ ...caseA, ...change }, { key: 'qa', name: 'QA', color: '#112233' });
+    assert.deepEqual(StateStore.get('packLibrary'), before.packLibrary, 'all IDs, poses, targets, groups, membership and timestamps preserved');
+    const expected = change.weight === null ? 'INCOMPLETE' : 'INVALID';
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, expected);
+    assert.equal(StateStore.undo(), true);
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'VALID');
+    assert.deepEqual(StateStore.snapshot(), before, 'one Undo restores Case and category together');
+    assert.equal(StateStore.undo(), false);
+    assert.equal(StateStore.redo(), true);
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, expected);
+    assert.equal(StateStore.redo(), false);
+  }
 });
 
-test('HANDLING-RULES CASE-EDIT PARITY C: a Case referenced only by explicit staged-inside cargo leaves the Pack unaffected', async () => {
+test('C4 Check recomputes from committed source without writes, history, lastEdited or certification', async () => {
   const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const stagedInside = mkInst('staged-inside', 'case-a', { x: 20, y: 5, z: 0 }, 'staged');
-  const pack = deletionPack('pack-staged-inside', [stagedInside]);
-  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
-  const before = StateStore.get('packLibrary')[0];
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-
-  const after = StateStore.get('packLibrary')[0];
-  assert.equal(after, before, 'explicit staged state wins even though the saved pose sits inside the truck');
-  assert.equal('handlingRulesValidatedSignature' in after, false);
+  for (const legacy of ['v1:incomplete', 'v1:case-a:any:1:0:0', undefined]) {
+    const pack = { ...activePackFixture(), handlingRulesValidatedSignature: legacy };
+    initFixture(StateStore, mkCase(), pack);
+    StateStore.set({ autoPackResults: { packId: pack.id, preview: { cases: [] } } }, { skipHistory: true });
+    const before = StateStore.snapshot();
+    let writes = 0;
+    const unsubscribe = StateStore.subscribe(() => writes++);
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'VALID', 'legacy incomplete flag is not authority');
+    assert.equal(writes, 0);
+    assert.equal(StateStore.undo(), false);
+    assert.deepEqual(StateStore.snapshot(), before);
+    unsubscribe();
+    PackLibrary.commitCaseHandlingRuleChange({ ...mkCase(), noStackOnTop: true });
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'INVALID', 'legacy matching rule signature cannot certify a hard failure');
+    const invalid = StateStore.snapshot();
+    assert.equal(StateStore.undo(), true);
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'VALID');
+    assert.equal(StateStore.redo(), true, 'Check never truncates redo');
+    assert.deepEqual(StateStore.snapshot(), invalid);
+    assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'INVALID');
+  }
 });
 
-test('HANDLING-RULES CASE-EDIT PARITY D: hidden active packed cargo still marks the Pack affected', async () => {
+test('C4 duplicate assigns new IDs, preserves physical source and discards legacy certification', async () => {
   const { StateStore, PackLibrary } = await freshModules();
-  const caseA = mkCase({ id: 'case-a' });
-  const hiddenActive = { ...mkInst('hidden-active', 'case-a', { x: 20, y: 5, z: 0 }, 'packed'), hidden: true };
-  const pack = deletionPack('pack-hidden', [hiddenActive]);
-  seedDeletion(StateStore, { cases: [caseA], packs: [pack] });
-  const before = StateStore.get('packLibrary')[0];
-
-  PackLibrary.commitCaseHandlingRuleChange({ ...caseA, noStackOnTop: true });
-
-  const after = StateStore.get('packLibrary')[0];
-  assert.notEqual(after, before, 'hidden packed cargo remains physical cargo and still affects the Pack');
-  assert.equal('handlingRulesValidatedSignature' in after, true);
+  const pack = activePackFixture();
+  pack.handlingRulesValidatedSignature = 'v1:incomplete';
+  initFixture(StateStore, mkCase({ noStackOnTop: true }), pack);
+  const copied = PackLibrary.duplicate(pack.id);
+  assert.notEqual(copied.id, pack.id);
+  assert.ok(copied.cases.every((i, n) => i.id !== pack.cases[n].id));
+  assert.deepEqual(copied.cases.map(sourcePose), pack.cases.map(sourcePose));
+  assert.equal(copied.handlingRulesValidatedSignature, undefined);
+  assert.equal(PackLibrary.validateLoadPlan(copied.id).primary, 'INVALID');
 });
 
-test('HANDLING-RULES CASE-DELETION PARITY A: a stored-packed but physically-outside target takes the staged-only fast path', async () => {
+test('C4 Pack import and workspace restore preserve physical failures; malformed imports remain atomic', async () => {
   const { StateStore, PackLibrary } = await freshModules();
-  const caseS = mkCase({ id: 'case-s' });
-  const caseO = mkCase({ id: 'case-o' });
-  const library = [caseS, caseO];
-  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
-  const ghostOutside = mkInst('ghost', 'case-s', { x: 500, y: 5, z: 0 }, 'packed'); // stored packed, physically outside
-  const signature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [other], truck: RECT_TRUCK }, library);
-  const pack = deletionPack('pack-parity-a', [other, ghostOutside], { handlingRulesValidatedSignature: signature });
-  seedDeletion(StateStore, { cases: library, packs: [pack] });
-  const before = StateStore.get('packLibrary')[0];
-  const watch = watchStateWrites(StateStore);
+  const { planWorkspaceRestore } = await import('../../src/services/import-export.js');
+  const caseA = mkCase({ noStackOnTop: true });
+  const incoming = { ...activePackFixture(), handlingRulesValidatedSignature: 'v1:FOREIGN' };
+  StateStore.init({ caseLibrary: [], packLibrary: [], preferences: {}, folderLibrary: [] });
+  const before = StateStore.snapshot();
+  const plan = PackLibrary.planPackImport({ pack: incoming, bundledCases: [caseA] });
+  assert.deepEqual(plan.pack.cases.map(sourcePose), incoming.cases.map(sourcePose));
+  assert.equal(plan.pack.handlingRulesValidatedSignature, undefined);
+  assert.equal(plan.placementsRepaired, 0);
+  assert.equal(plan.placementsStaged, 0);
+  assert.equal(PackLibrary.assessCommittedPack(plan.pack, plan.newCases).primary, 'INVALID');
+  const restored = planWorkspaceRestore({ caseLibrary: [caseA], packLibrary: [incoming], folderLibrary: [], categories: [] });
+  assert.deepEqual(restored.packLibrary[0].cases.map(i => i.transform), incoming.cases.map(i => i.transform));
+  assert.equal(restored.placementsRepaired + restored.placementsStaged, 0);
+  assert.equal(PackLibrary.assessCommittedPack(restored.packLibrary[0], restored.caseLibrary).primary, 'INVALID');
+  for (const payload of [
+    { pack: incoming, bundledCases: [] },
+    { pack: incoming, bundledCases: [{ ...caseA, dimensions: { length: 0, width: 10, height: 10 } }] },
+    { pack: { ...incoming, cases: [{ ...incoming.cases[0], caseId: '' }] }, bundledCases: [caseA] },
+  ]) assert.throws(() => PackLibrary.importPackPayload(payload));
+  assert.deepEqual(StateStore.snapshot(), before);
+  assert.equal(StateStore.undo(), false);
+});
 
-  const result = PackLibrary.commitCaseDeletion(['case-s']);
-  watch.off();
-
-  const after = StateStore.get('packLibrary')[0];
-  assert.deepEqual(after.cases.map(i => i.id), ['other']);
-  assert.equal(after.cases[0], before.cases[0], 'unrelated packed cargo is never revalidated/moved');
-  assert.equal(after.handlingRulesValidatedSignature, signature, 'the prior signature is preserved exactly — no unnecessary revalidation from an outside ghost');
-  assert.deepEqual(result.packImpacts, [{ packId: 'pack-parity-a', removedInstanceCount: 1, revalidated: false, validationComplete: null, repositionedCount: 0, stagedCount: 0 }]);
-  assert.equal(watch.writes.length, 1);
+test('C4 local edits and removal adjust only acted cargo and actual causal dependents in one Undo step', async () => {
+  const { StateStore, PackLibrary } = await freshModules();
+  const pack = activePackFixture();
+  const unrelated = mkInst('unrelated-invalid', 'case-a', { x: 400, y: 33, z: 0 });
+  const staged = mkInst('unrelated-staged', 'case-a', { x: 10, y: 22, z: 80 }, 'staged');
+  Object.assign(unrelated, { hidden: true, groupId: 'keep', orientationLocked: true, lockedRotation: { x: 0, y: 0.7, z: 0 } });
+  Object.assign(staged, { packedProfile: 'legacy-cache' });
+  pack.cases.push(unrelated, staged);
+  initFixture(StateStore, mkCase(), pack);
+  const before = StateStore.snapshot();
+  const proposed = structuredClone(pack.cases);
+  proposed[0].transform.position.x = 20;
+  const result = PackLibrary.updateCasesWithManualRevalidation(pack.id, proposed, [mkCase()], { repairDependents: true });
+  assert.equal(result.pack.cases.find(i => i.id === 'child').transform.position.y, 5, 'cargo losing its support settles safely');
+  assert.deepEqual(result.pack.cases.slice(2), pack.cases.slice(2), 'unrelated packed and staged source is byte-equivalent');
+  assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'INVALID', 'unrelated pre-existing failure remains visible');
+  const after = StateStore.snapshot();
   assert.equal(StateStore.undo(), true);
-  assert.equal(StateStore.undo(), false, 'the staged-only deletion remains exactly one history step');
+  assert.deepEqual(StateStore.snapshot(), before);
+  assert.equal(StateStore.undo(), false);
+  assert.equal(StateStore.redo(), true);
+  assert.deepEqual(StateStore.snapshot(), after);
+  StateStore.undo();
+  PackLibrary.removeInstances(pack.id, ['base']);
+  assert.equal(PackLibrary.getById(pack.id).cases.find(i => i.id === 'child').transform.position.y, 5);
+  assert.deepEqual(PackLibrary.getById(pack.id).cases.filter(i => i.id.startsWith('unrelated')), pack.cases.slice(2));
 });
 
-test('HANDLING-RULES CASE-DELETION PARITY B: an explicit staged-inside target still takes the staged-only fast path', async () => {
+test('C4 an equivalent support envelope does not authorize repair of an existing dependent finding', async () => {
   const { StateStore, PackLibrary } = await freshModules();
-  const caseS = mkCase({ id: 'case-s' });
-  const caseO = mkCase({ id: 'case-o' });
-  const library = [caseS, caseO];
-  const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 }, 'packed');
-  const stagedInside = mkInst('staged-inside', 'case-s', { x: 20, y: 5, z: 0 }, 'staged'); // stored staged, physically inside
-  const signature = PackLibrary.buildHandlingRulesValiditySignature({ cases: [other], truck: RECT_TRUCK }, library);
-  const pack = deletionPack('pack-parity-b', [other, stagedInside], { handlingRulesValidatedSignature: signature });
-  seedDeletion(StateStore, { cases: library, packs: [pack] });
-  const before = StateStore.get('packLibrary')[0];
-
-  const result = PackLibrary.commitCaseDeletion(['case-s']);
-
-  const after = StateStore.get('packLibrary')[0];
-  assert.equal(after.cases[0], before.cases[0], 'unrelated packed cargo is never revalidated/moved');
-  assert.equal(after.handlingRulesValidatedSignature, signature, 'staged-inside removal never invalidates a signature it never contributed to');
-  assert.deepEqual(result.packImpacts, [{ packId: 'pack-parity-b', removedInstanceCount: 1, revalidated: false, validationComplete: null, repositionedCount: 0, stagedCount: 0 }]);
+  const caseA = mkCase({ noStackOnTop: true });
+  const pack = activePackFixture();
+  initFixture(StateStore, caseA, pack);
+  const proposed = structuredClone(pack.cases);
+  proposed[0].transform.rotation.y = Math.PI / 2;
+  const result = PackLibrary.updateCasesWithManualRevalidation(pack.id, proposed, [caseA], { repairDependents: true });
+  assert.deepEqual(result.pack.cases[1], pack.cases[1], 'the existing invalid child is unaffected by the identical support envelope');
+  assert.equal(PackLibrary.validateLoadPlan(pack.id).primary, 'INVALID');
 });
 
-test('HANDLING-RULES CASE-DELETION PARITY C: deleting genuinely active physical cargo keeps the existing full revalidation behavior', async () => {
+test('C4 preserved invalid cargo remains an obstacle but cannot supply support for a new proposal', async () => {
   const { StateStore, PackLibrary } = await freshModules();
-  const caseS = mkCase({ id: 'case-s' });
-  const caseO = mkCase({ id: 'case-o' });
-  const activeInside = mkInst('active', 'case-s', { x: 20, y: 5, z: 0 }, 'packed');
-  const other = mkInst('other', 'case-o', { x: 60, y: 5, z: 0 }, 'packed');
-  const pack = deletionPack('pack-parity-c', [activeInside, other]);
-  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
-
-  const result = PackLibrary.commitCaseDeletion(['case-s']);
-
-  assert.deepEqual(result.packImpacts, [{ packId: 'pack-parity-c', removedInstanceCount: 1, revalidated: true, validationComplete: true, repositionedCount: 0, stagedCount: 0 }]);
-  const after = StateStore.get('packLibrary')[0];
-  assert.equal(after.handlingRulesValidatedSignature, PackLibrary.buildHandlingRulesValiditySignature(after, StateStore.get('caseLibrary')));
-});
-
-test('HANDLING-RULES CASE-DELETION PARITY D: an unresolved non-staged target does not take the unsafe staged-only fast path', async () => {
-  const { StateStore, PackLibrary } = await freshModules();
-  const caseS = mkCase({ id: 'case-s' });
-  const caseO = mkCase({ id: 'case-o' });
-  const other = mkInst('other', 'case-o', { x: 20, y: 5, z: 0 }, 'packed');
-  // Non-staged, malformed position: cannot be safely classified => conservative.
-  const malformedTarget = mkInst('malformed', 'case-s', { x: Number.NaN, y: 5, z: 0 }, 'packed');
-  const pack = deletionPack('pack-parity-d', [other, malformedTarget]);
-  seedDeletion(StateStore, { cases: [caseS, caseO], packs: [pack] });
-
-  const result = PackLibrary.commitCaseDeletion(['case-s']);
-
-  const impact = result.packImpacts.find(i => i.packId === 'pack-parity-d');
-  assert.equal(impact.revalidated, true, 'an unresolved non-staged target forces full revalidation rather than an unsafe staged-only assumption');
+  const pack = { ...activePackFixture(), cases: [
+    mkInst('floating', 'case-a', { x: 40, y: 15, z: 0 }),
+    mkInst('proposal', 'case-a', { x: 10, y: 5, z: 80 }, 'staged'),
+  ] };
+  initFixture(StateStore, mkCase(), pack);
+  const desiredPosition = { x: 40, y: 25, z: 0 };
+  const proposal = PackLibrary.findManualVerticalPlacement(pack, [mkCase()], 'proposal', { mode: 'resolve', desiredPosition, exact: true });
+  assert.equal(proposal.ok, false, 'a floating body is not rigid support');
+  const cases = structuredClone(pack.cases);
+  cases[1].placement = 'packed'; cases[1].transform.position = desiredPosition;
+  const result = PackLibrary.updateCasesWithManualRevalidation(pack.id, cases, [mkCase()]);
+  assert.notDeepEqual(result.pack.cases[1].transform.position, desiredPosition);
+  assert.deepEqual(result.pack.cases[0], pack.cases[0], 'proposal correction does not move the unrelated invalid body');
 });

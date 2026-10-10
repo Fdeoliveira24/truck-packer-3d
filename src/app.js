@@ -2849,11 +2849,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const storedCases = (stored.caseLibrary || [])
           .map(applyCanonicalCargoFields)
           .map(applyCaseDefaultColor);
-        const storedPacks = stored.packLibrary.map(pack =>
-          pack.handlingRulesValidatedSignature && PackLibrary.isHandlingRulesValidationRequired(pack, storedCases)
-            ? pack
-            : PackLibrary.repairRestoredPackPlacements(pack, storedCases)
-        );
+        const storedPacks = stored.packLibrary;
         const storedPrefs = stored.preferences || Defaults.defaultPreferences;
         const storedCurrentPackId =
           stored.currentPackId && storedPacks.some(p => p && p.id === stored.currentPackId)
@@ -2921,11 +2917,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const storedCases = (stored.caseLibrary || [])
           .map(applyCanonicalCargoFields)
           .map(applyCaseDefaultColor);
-        const storedPacks = stored.packLibrary.map(pack =>
-          pack.handlingRulesValidatedSignature && PackLibrary.isHandlingRulesValidationRequired(pack, storedCases)
-            ? pack
-            : PackLibrary.repairRestoredPackPlacements(pack, storedCases)
-        );
+        const storedPacks = stored.packLibrary;
         const storedPrefs = stored.preferences || Defaults.defaultPreferences;
         const storedCurrentPackId =
           stored.currentPackId && storedPacks.some(p => p && p.id === stored.currentPackId)

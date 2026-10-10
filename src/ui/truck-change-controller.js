@@ -241,11 +241,9 @@ export function createTruckChangeController({
     if (!completeness.validationComplete || finalReconciliation.invalid.length || finalReconciliation.adjusted.length) {
       throw new Error('Load Plan validation is incomplete. No truck changes were saved.');
     }
-    const handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(finalPack, currentCases);
-    const validatedPack = { ...finalPack, handlingRulesValidatedSignature };
     const committed = ctx.commit
-      ? ctx.commit(validatedPack)
-      : PackLibrary.update(ctx.pack.id, { truck: ctx.nextTruck, cases: finalPack.cases, handlingRulesValidatedSignature });
+      ? ctx.commit(finalPack)
+      : PackLibrary.update(ctx.pack.id, { truck: ctx.nextTruck, cases: finalPack.cases });
     if (!committed) throw new Error('Truck change could not be saved. No changes were applied.');
     ctx.committed = true;
     if (typeof ctx.onCommitted === 'function') ctx.onCommitted(committed);

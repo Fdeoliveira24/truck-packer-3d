@@ -170,7 +170,7 @@ test('RECON every production truck writer routes through the shared controller',
   assert.doesNotMatch(packs, /PackLibrary\.update\(pack\.id, \{ truck/,
     'Packs toolbar has no direct truck writer');
   assert.match(controller, /PackLibrary\.reconcilePlacementsForTruck\(pack, nextTruck, caseLibrary\)/);
-  assert.match(controller, /PackLibrary\.update\(ctx\.pack\.id, \{ truck: ctx\.nextTruck, cases: finalPack\.cases, handlingRulesValidatedSignature \}\)/,
+  assert.match(controller, /PackLibrary\.update\(ctx\.pack\.id, \{ truck: ctx\.nextTruck, cases: finalPack\.cases \}\)/,
     'only the controller owns the default atomic truck+cases+validation-signature commit');
   assert.match(app, /const TruckChangeController = createTruckChangeController\(\{/,
     'one controller instance is injected into both screens');

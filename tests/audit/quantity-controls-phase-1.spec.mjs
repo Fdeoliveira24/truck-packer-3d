@@ -2053,7 +2053,7 @@ test('P1-A G3: physically staged explicit Delete bypasses revalidation and is on
   });
   assert.equal(packWrites, 1);
   assert.deepEqual(PackLibrary.getById('pack-1').cases.find(inst => inst.id === 'floating-packed'), packedBefore);
-  assert.equal(PackLibrary.getById('pack-1').handlingRulesValidatedSignature, 'v1:stale-before-delete');
+  assert.equal(PackLibrary.getById('pack-1').handlingRulesValidatedSignature, undefined);
 
   assert.equal(StateStore.undo(), true);
   assert.equal(PackLibrary.getById('pack-1').cases.some(inst => inst.id === 'staged-target'), true);
@@ -2248,7 +2248,7 @@ test('P1-A R7/R8: hidden and grouped staged instances are never automatically el
   assert.deepEqual(result.pack.cases.map(inst => inst.id), ['hidden', 'grouped']);
 });
 
-test('P1-A R14-R17: every staged-only authority preserves signature state and invalid packed bytes', async () => {
+test('P1-A R14-R17: every staged-only authority preserves invalid packed bytes without certification', async () => {
   const { StateStore, PackLibrary } = await loadModules();
   const currentCase = baseCase({ noStackOnTop: true });
   const oldCase = baseCase({ noStackOnTop: false });
@@ -2296,18 +2296,18 @@ test('P1-A R14-R17: every staged-only authority preserves signature state and in
       const packedBefore = structuredClone(before.cases.find(inst => inst.id === packed.id));
       assert.equal(
         PackLibrary.isHandlingRulesValidationRequired(before, [currentCase]),
-        signature.stale,
+        true,
         `${operation.name}/${signature.name}: precondition`
       );
 
       operation.run();
       const after = PackLibrary.getById('pack-1');
-      assert.equal(after.handlingRulesValidatedSignature, signature.value,
-        `${operation.name}/${signature.name}: signature value must be byte-equivalent`);
+      assert.equal(after.handlingRulesValidatedSignature, undefined,
+        `${operation.name}/${signature.name}: retired certificate is stripped`);
       assert.equal(
         PackLibrary.isHandlingRulesValidationRequired(after, [currentCase]),
-        signature.stale,
-        `${operation.name}/${signature.name}: stale/current state must not change`
+        true,
+        `${operation.name}/${signature.name}: physical review state must not change`
       );
       assert.deepEqual(after.cases.find(inst => inst.id === packed.id), packedBefore,
         `${operation.name}/${signature.name}: floating packed transform and Max Capacity metadata must not change`);

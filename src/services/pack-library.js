@@ -12,6 +12,8 @@
 // ============================================================================
 
 import * as StateStore from '../core/state-store.js';
+import { assessCommittedPack } from './pack-assessment.js';
+export { assessCommittedPack } from './pack-assessment.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import { validatePortableCasePhysicalFields } from '../core/import-schema.js';
@@ -571,20 +573,6 @@ function overlapsAny(aabb, acceptedAabbs) {
   return (acceptedAabbs || []).some(other => aabbsOverlap(aabb, other));
 }
 
-function getSafeImportedPlacement(pack, inst, caseData, acceptedAabbs) {
-  const position = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
-  if (!position) return null;
-  const dims = getInstanceEffectiveDims(inst, caseData);
-  if (!dims) return null;
-  const aabb = makeAabb(position, dims);
-  const zones = getTrailerUsableZones(pack && pack.truck);
-  if (aabbIntersectsWheelWellBlockedBody(aabb, pack && pack.truck) ||
-      aabbIntersectsFrontBonusBlockedBody(aabb, pack && pack.truck)) return null;
-  if (!isAabbContainedInAnyZone(aabb, zones)) return null;
-  if (overlapsAny(aabb, acceptedAabbs)) return null;
-  return { position, dims, aabb };
-}
-
 /**
  * Canonical staging-zone layout shared by every "place outside the trailer"
  * path (Add Case default placement, AutoPack overflow/unpacked items, Unpack
@@ -1072,60 +1060,6 @@ function getTrustedUnresolvedPackedAabb(inst) {
   return inst && inst.placement !== 'staged' ? getTrustedSavedAabb(inst) : null;
 }
 
-function repairPackInstancePlacements(pack, caseLibrary) {
-  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
-  const acceptedAabbs = [];
-  const nextCases = (pack.cases || []).map(inst => {
-    const next = Utils.deepClone(inst);
-    const savedCase = caseMap.get(next.caseId);
-    const savedGeometry = getCanonicalInstanceEffectiveDims(next, savedCase);
-    if (savedGeometry.ok && !savedGeometry.orientationAllowed) {
-      const savedPosition = normalizeTransformPosition(next.transform?.position);
-      if (savedPosition) acceptedAabbs.push(makeAabb(savedPosition, savedGeometry.dims));
-      return next; // C3 never relocates a saved forbidden pose during import.
-    }
-    if (next.placement !== 'packed' || next.packedProfile !== 'max-capacity') {
-      delete next.packedProfile;
-    }
-    const caseData = caseMap.get(next.caseId);
-    next.transform = next.transform && typeof next.transform === 'object' ? next.transform : {};
-    const storedRotation = next.transform.rotation;
-    const hasCanonicalStoredRotation = Boolean(
-      storedRotation &&
-      typeof storedRotation === 'object' &&
-      ['x', 'y', 'z'].every(axis => {
-        const angle = Number(storedRotation[axis] ?? 0);
-        return Number.isFinite(angle) && Math.abs(Math.sin(angle * 2)) <= 1e-6;
-      })
-    );
-    next.transform.rotation = normalizeTransformRotation(next.transform.rotation);
-    next.transform.scale = normalizeTransformScale(next.transform.scale);
-    const canonical = next.packedProfile === 'max-capacity' && hasCanonicalStoredRotation
-      ? getCanonicalInstanceEffectiveDims(next, caseData)
-      : null;
-    if (canonical && canonical.ok) next.orientedDims = { ...canonical.dims };
-    const dims = canonical && canonical.ok ? canonical.dims : getInstanceEffectiveDims(next, caseData);
-    if (!dims) return next;
-
-    const safeImported = getSafeImportedPlacement(pack, next, caseData, acceptedAabbs);
-    if (safeImported) {
-      next.transform.position = safeImported.position;
-      next.placement = 'packed';
-      acceptedAabbs.push(safeImported.aabb);
-      return next;
-    }
-
-    const staged = findSafeStagingPosition(pack, dims, acceptedAabbs);
-    next.transform.position = staged.position;
-    next.placement = 'staged';
-    delete next.packedProfile;
-    acceptedAabbs.push(staged.aabb);
-    return next;
-  });
-
-  return repairRestoredPackPlacements({ ...pack, cases: nextCases }, caseLibrary);
-}
-
 // ============================================================================
 // SECTION: SHARED PLACEMENT VALIDATION CONSTANTS AND HELPERS
 // PLACEMENT_EPS, MIN_SUPPORT_FRACTION, and computeSupportFraction are re-exported
@@ -1341,6 +1275,14 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
   return manualVerticalFailure('blocked-collision');
 }
 
+// Preserving a saved body does not certify its support path. New proposals may
+// collide with it, but cannot rest on floating/unresolved/unstable cargo.
+function qualifiedSupportIds(assessment) {
+  return new Set(assessment.measurements.bodies
+    .filter(body => body.pathOutcome === 'PASS' && body.loadedOutcome === 'PASS')
+    .map(body => body.id));
+}
+
 /**
  * Manual vertical placement resolver for ONE instance. Staged cases may use
  * only 'resolve' to test an in-truck drop; they cannot move vertically while
@@ -1360,6 +1302,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
   const zones = getTrailerUsableZones(truck);
   const wheelWell = getWheelWellGeometry(truck);
+  const supportIds = qualifiedSupportIds(assessCommittedPack({ ...source, cases: source.cases || [] }, caseLibrary || []));
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
 
   let target = null;
@@ -1389,7 +1332,8 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
       curAabb: makeAabb(pos, canonical.dims),
     };
     if (isTarget) target = node;
-    else accepted.push({ ...node, aabb: node.curAabb, position: pos });
+    else accepted.push({ ...node, aabb: node.curAabb, position: pos,
+      collisionOnly: !canonical.orientationAllowed || !supportIds.has(inst.id) });
   }
   if (!target) return manualVerticalFailure('invalid-selection');
   if (!target.canonical.orientationAllowed) {
@@ -1529,14 +1473,33 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     (x.curAabb.min.y - y.curAabb.min.y) || (indexById.get(x.inst) - indexById.get(y.inst))
   );
 
-  const accepted = [...collisionOnly];
+  // A local edit reserves all unrelated cargo in place, even if it already
+  // has a physical finding. Truck Change remains an explicitly whole-truck edit.
+  const mutableIds = options.mutableInstanceIds;
+  const fixedNodes = mutableIds instanceof Set
+    ? packedNodes.filter(node => !mutableIds.has(node.inst.id)) : [];
+  const accepted = [...collisionOnly, ...fixedNodes.map(node => ({
+    ...node, aabb: node.curAabb, position: node.curPos,
+    collisionOnly: !node.canonical.orientationAllowed || !options.fixedSupportIds?.has(node.inst.id),
+  }))];
   const resultByInst = new Map();
   const kept = []; const adjusted = []; const invalid = [];
   const invalidReasons = {};
 
   for (const node of order) {
     const { inst, dims, curPos, canonical } = node;
+    if (mutableIds instanceof Set && !mutableIds.has(inst.id)) {
+      resultByInst.set(inst, { status: 'preserved', position: curPos, node });
+      continue;
+    }
     const proposed = options.changedInstanceIds instanceof Set && options.changedInstanceIds.has(inst.id);
+    if (!proposed && options.causalChanges instanceof Set &&
+        !options.dependencies.some(([support, child]) => child === inst.id && options.causalChanges.has(support))) {
+      accepted.push({ ...node, aabb: node.curAabb, position: curPos,
+        collisionOnly: !canonical.orientationAllowed || !options.fixedSupportIds?.has(inst.id) });
+      resultByInst.set(inst, { status: 'preserved', position: curPos, node });
+      continue;
+    }
     const cargoSupports = accepted.filter(support => !support.collisionOnly &&
       Math.abs(node.curAabb.min.y - support.aabb.max.y) <= RECON_TOL &&
       reconXzOverlapArea(node.curAabb, support.aabb) > 0.05);
@@ -1557,6 +1520,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     if (!canonical.orientationAllowed) {
       invalid.push(inst.id);
       invalidReasons[inst.id] = 'orientation violates the case policy';
+      options.causalChanges?.add(inst.id);
       resultByInst.set(inst, { status: 'invalid', position: curPos, node });
       continue;
     }
@@ -1583,6 +1547,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     if (snapped) {
       accepted.push({ ...node, aabb: snapped.aabb, position: snapped.pos });
       adjusted.push({ id: inst.id, fromY: curPos.y, toY: snapped.pos.y });
+      options.causalChanges?.add(inst.id);
       resultByInst.set(inst, { status: 'adjusted', position: snapped.pos, node });
       continue;
     }
@@ -1590,18 +1555,24 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     // 3) Invalid — leave at current position; the user resolves it.
     invalid.push(inst.id);
     invalidReasons[inst.id] = 'not safely placeable in the proposed truck geometry';
+    options.causalChanges?.add(inst.id);
     resultByInst.set(inst, { status: 'invalid', position: curPos, node });
   }
 
   // Existing staged cargo is outside the active load plan. Keep a safe staging
   // pose exactly; only repair it when it is floating, colliding, or inside the truck.
-  const stagingAccepted = [];
+  const stagingAccepted = mutableIds instanceof Set
+    ? stagedNodes.filter(node => !mutableIds.has(node.inst.id)).map(node => node.curAabb) : [];
   const stagedUnchanged = [];
   const stagedAdjusted = [];
   const stagedRepairs = [];
   const packedAabbs = accepted.map(entry => entry.aabb);
   const stagedOrder = [...stagedNodes].sort((a, b) => indexById.get(a.inst) - indexById.get(b.inst));
   for (const node of stagedOrder) {
+    if (mutableIds instanceof Set && !mutableIds.has(node.inst.id)) {
+      resultByInst.set(node.inst, { status: 'preserved', position: node.curPos, node });
+      continue;
+    }
     const current = node.curAabb;
     const proposed = options.changedInstanceIds instanceof Set && options.changedInstanceIds.has(node.inst.id);
     if (!proposed && !node.canonical.orientationAllowed) {
@@ -1670,7 +1641,8 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
 
   const nextCases = allInstances.map(inst => {
     const r = resultByInst.get(inst);
-    if (r?.status === 'preserved') return inst;
+    if (r?.status === 'preserved' || (mutableIds instanceof Set && !mutableIds.has(inst.id))) return inst;
+    if (mutableIds instanceof Set && r?.status === 'kept') return inst;
     if (!r) {
       if (inst && inst.placement === 'staged' && inst.packedProfile !== undefined) {
         const next = Utils.deepClone(inst);
@@ -1859,23 +1831,9 @@ export function stageInvalidPlacements(reconResult, nextTruck, caseLibrary) {
   ).pack;
 }
 
-/**
- * PURE load/import repair. Existing valid poses are retained, while packed poses
- * that fail current geometry (including Front Overhang rear retention) move to
- * deterministic staging. Unresolved or malformed references remain untouched so
- * callers can continue surfacing their existing integrity diagnostics.
- */
-export function repairRestoredPackPlacements(pack, caseLibrary) {
-  const source = pack && typeof pack === 'object' ? pack : {};
-  const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
-  const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary);
-  if (!reconciliation.invalid.length) return reconciliation.nextPack;
-  return stagePlacementIds(
-    reconciliation.nextPack,
-    reconciliation.invalid,
-    truck,
-    caseLibrary
-  ).pack;
+// Compatibility entry point for older callers. Reading saved source never repairs it.
+export function repairRestoredPackPlacements(pack) {
+  return pack;
 }
 
 /**
@@ -1962,11 +1920,8 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
 // A Case is a shared definition; packed Load Plan instances reference it by
 // caseId. Editing a placement-affecting rule, dimension, or weight can make an
 // already-packed Load Plan illegal without moving cargo out from under the
-// user's feet in a Plan they aren't looking at. See docs/engineering — this
-// section owns: the semantic (not raw-storage) Case change detector, the
-// per-Pack durable signature, and the single-write Case-Save
-// orchestration that revalidates only the actively-displayed Editor Pack and
-// marks every other affected Pack "Validation required" without touching cargo.
+// user's feet. This section owns Case change detection and atomic Case edits.
+// C4 derives assessment separately and never repairs a Pack on Case Save.
 // ============================================================================
 
 const HANDLING_RULES_SIGNATURE_VERSION = 'v1';
@@ -1977,7 +1932,7 @@ const HANDLING_RULES_SIGNATURE_VERSION = 'v1';
 // AutoPack/manual revalidation already consult), never from raw stored values.
 // Two storage representations with identical hard-rule behavior (e.g. the
 // legacy stackable/noStackOnTop aliases) therefore always fingerprint
-// identically. Keep this v1 signature component unchanged for persisted Packs.
+// identically. The historical fingerprint remains only for compatibility.
 // maxPalletWeight, laneItem, loadPriority, and shape do not define
 // existing manual packed-placement validity and are intentionally excluded.
 function handlingRuleSemanticFingerprint(caseData) {
@@ -2105,6 +2060,7 @@ function createHandlingRulesMembershipClassifier(pack, caseLibrary) {
   };
 }
 
+// Legacy fingerprint compatibility helper; never physical or persisted authority.
 // Deterministic per-Pack signature of the placement-affecting Handling Rules
 // currently governing every ACTIVE-LOAD (see createHandlingRulesMembershipClassifier)
 // instance's Case. Explicitly staged instances are excluded: a staged item has
@@ -2127,37 +2083,16 @@ export function buildHandlingRulesValiditySignature(pack, caseLibrary) {
   return `${HANDLING_RULES_SIGNATURE_VERSION}:${parts.join('|')}`;
 }
 
-// Shared pure staleness authority — UI code must not reproduce signature logic.
-// A Pack with no stored signature is never rendered stale (legacy Packs from
-// before this feature existed must not all become "Validation required" the
-// moment it lands); staleness only exists once a signature has actually been
-// recorded and a later Case edit makes it disagree with the live computation.
-export function isHandlingRulesValidationRequired(pack, caseLibrary) {
-  const stored = pack && pack.handlingRulesValidatedSignature;
-  if (!stored) return false;
-  return stored !== buildHandlingRulesValiditySignature(pack, caseLibrary || CaseLibrary.getCases());
+// Compatibility adapter for existing review indicators (including report copy).
+// Legacy certificates never determine current physical state or eligibility.
+export function isHandlingRulesValidationRequired(pack, caseLibrary = CaseLibrary.getCases()) {
+  if (!pack) return false;
+  const assessment = assessCommittedPack(pack, caseLibrary);
+  return assessment.primary !== 'VALID' || assessment.eligibility.state === 'blocked';
 }
 
-// A physical edit can leave the rule-only v1 signature byte-identical. In that
-// case use the existing non-current marker rather than changing the meaning of
-// every persisted v1 signature or migrating all Packs. Preserve a prior stale
-// signature whenever it already differs from the post-edit Pack.
-function signatureRequiringValidation(beforePack, beforeCases, afterPack, afterCases) {
-  const prior = beforePack.handlingRulesValidatedSignature ||
-    buildHandlingRulesValiditySignature(beforePack, beforeCases);
-  return prior === buildHandlingRulesValiditySignature(afterPack, afterCases)
-    ? 'v1:incomplete'
-    : prior;
-}
-
-// Atomic Case Save orchestration: prepares the Case (+ optional category) and,
-// when the edit changed placement-affecting semantics, the impact on every
-// affected Pack — all BEFORE publishing — then commits everything through
-// exactly one StateStore.set(). Only the Pack actively displayed in the Editor
-// (currentScreen === 'editor' AND pack.id === currentPackId) may be
-// automatically revalidated/repaired/staged; every other affected Pack is left
-// untouched except for the minimal validation-required metadata described
-// below, so cargo in a Plan the user is not viewing is never silently moved.
+// A Case Save commits the shared definition and optional category only. Every
+// referencing Pack keeps its source exactly; its next assessment sees the edit.
 export function commitCaseHandlingRuleChange(caseData, categoryUpdate, modalUnits = null) {
   const oldCaseLibrary = CaseLibrary.getCases();
   const oldCase = oldCaseLibrary.find(c => c && c.id === (caseData && caseData.id)) || null;
@@ -2172,74 +2107,8 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate, modalUnit
     if (calculated.preferences) setPatch.preferences = calculated.preferences;
   }
 
-  let packImpact = null;
-
-  if (hasPlacementAffectingHandlingRuleChange(oldCase, nextCase)) {
-    const packs = getPacks();
-    // Same active-load membership authority buildHandlingRulesValiditySignature
-    // uses — a Pack is affected only through cargo that actually governs its
-    // signature, so an explicitly staged or physically-outside instance of
-    // this Case can never falsely mark (or move cargo in) an unrelated Pack.
-    const affectedPacks = packs.filter(p => {
-      const isActiveLoadMember = createHandlingRulesMembershipClassifier(p, oldCaseLibrary);
-      return ((p && p.cases) || []).some(inst => inst && inst.caseId === nextCase.id && isActiveLoadMember(inst));
-    });
-
-    if (affectedPacks.length) {
-      const currentScreen = StateStore.get('currentScreen');
-      const currentPackId = StateStore.get('currentPackId');
-      const affectedIds = new Set(affectedPacks.map(p => p.id));
-
-      const nextPacks = packs.map(p => {
-        if (!affectedIds.has(p.id)) return p;
-
-        const isActiveEditorPack = currentScreen === 'editor' && p.id === currentPackId;
-
-        if (isActiveEditorPack) {
-          const result = revalidateManualPlacements(p, nextCaseLibrary, {
-            repairDependents: true,
-            preserveStagedPositions: true,
-          });
-          const revalidated = { ...result.pack };
-          revalidated.stats = computeStats(revalidated, nextCaseLibrary);
-          revalidated.lastEdited = Date.now();
-          if (result.validationComplete === true) {
-            revalidated.handlingRulesValidatedSignature =
-              buildHandlingRulesValiditySignature(revalidated, nextCaseLibrary);
-          } else {
-            // An unresolved validation must stay stale even when only physical
-            // Case data changed and the legacy rule-only signature still matches.
-            revalidated.handlingRulesValidatedSignature = signatureRequiringValidation(
-              p, oldCaseLibrary, revalidated, nextCaseLibrary
-            );
-          }
-          packImpact = {
-            packId: p.id,
-            summary: result.summary,
-            failedIds: result.failedIds,
-            validationComplete: result.validationComplete,
-            unresolved: result.unresolved,
-            malformed: result.malformed,
-            warnings: result.warnings,
-          };
-          return revalidated;
-        }
-
-        // Not actively displayed: never move cargo, never touch lastEdited.
-        const staleSignature = signatureRequiringValidation(
-          p, oldCaseLibrary, p, nextCaseLibrary
-        );
-        return p.handlingRulesValidatedSignature === staleSignature
-          ? p
-          : { ...p, handlingRulesValidatedSignature: staleSignature };
-      });
-
-      setPatch.packLibrary = nextPacks;
-    }
-  }
-
   StateStore.set(setPatch);
-  return { case: nextCase, category, packImpact };
+  return { case: nextCase, category, packImpact: null };
 }
 
 // Atomic Case Deletion orchestration (single or bulk). Removes the Case
@@ -2249,21 +2118,6 @@ export function commitCaseHandlingRuleChange(caseData, categoryUpdate, modalUnit
 // Pack Library through exactly one StateStore.set() so one Undo/Redo covers the
 // whole deletion. The full next state is built BEFORE publishing: an
 // unexpected throw leaves the store untouched.
-//
-// Unlike commitCaseHandlingRuleChange (where the Case still exists and unseen
-// Packs' cargo is deliberately left alone), deletion is an already-confirmed,
-// destructive, cross-Pack operation, so every affected Pack is repaired even
-// when it is not the Pack open in the Editor. Per Pack:
-//   - no target instance: the original object is returned untouched;
-//   - target instances all staged: they are removed and stats/lastEdited
-//     refreshed, but no cargo is revalidated and the stored signature is kept
-//     exactly (a staged instance is never a support/obstacle, so its removal
-//     cannot change packed validity and must not create a false stale state);
-//   - any physical (non-staged) target instance: the remaining Pack goes
-//     through the canonical whole-Pack revalidation against the NEXT Case
-//     Library. Only a COMPLETE revalidation stamps a fresh signature (this
-//     also closes the legacy-unsigned hole); an incomplete one is persisted
-//     as non-current so the Pack reports "Validation required".
 export function commitCaseDeletion(caseIds) {
   const oldCaseLibrary = CaseLibrary.getCases();
   const requested = new Set((Array.isArray(caseIds) ? caseIds : [caseIds]).filter(id => id != null));
@@ -2302,7 +2156,7 @@ export function commitCaseDeletion(caseIds) {
     // Cases being deleted must still resolve for their own removed instances.
     const isActiveLoadMember = createHandlingRulesMembershipClassifier(p, oldCaseLibrary);
     if (!targets.some(inst => isActiveLoadMember(inst))) {
-      const stagedOnly = { ...p, cases: remaining, lastEdited: now };
+      const stagedOnly = CoreNormalizer.sanitizeLegacyPackQuantityFields({ ...p, cases: remaining, lastEdited: now });
       stagedOnly.stats = computeStats(stagedOnly, nextCaseLibrary);
       return stagedOnly;
     }
@@ -2310,22 +2164,11 @@ export function commitCaseDeletion(caseIds) {
     const revalidation = revalidateManualPlacements({ ...p, cases: remaining }, nextCaseLibrary, {
       repairDependents: true,
       preserveStagedPositions: true,
+      beforePack: p,
+      beforeCaseLibrary: oldCaseLibrary,
     });
-    const next = { ...revalidation.pack, lastEdited: now };
+    const next = CoreNormalizer.sanitizeLegacyPackQuantityFields({ ...revalidation.pack, lastEdited: now });
     next.stats = computeStats(next, nextCaseLibrary);
-
-    const previousSignature = p.handlingRulesValidatedSignature;
-    const currentSignature = buildHandlingRulesValiditySignature(next, nextCaseLibrary);
-    if (revalidation.validationComplete === true) {
-      next.handlingRulesValidatedSignature = currentSignature;
-    } else if (!previousSignature || previousSignature === currentSignature) {
-      // Same non-current marker updateCasesWithManualRevalidation uses: a
-      // legacy/unsigned or coincidentally-current Pack must never look
-      // certified after an unresolved validation.
-      next.handlingRulesValidatedSignature = 'v1:incomplete';
-    } else {
-      next.handlingRulesValidatedSignature = previousSignature;
-    }
 
     impact.revalidated = true;
     impact.validationComplete = revalidation.validationComplete === true;
@@ -2364,7 +2207,7 @@ export function commitCaseDeletion(caseIds) {
 }
 
 // Completeness concerns packed placements only; staged integrity diagnostics
-// remain available without preventing certification of understood truck cargo.
+// remain available without blocking an otherwise complete explicit mutation.
 export function getPackedReconciliationCompleteness(pack, reconciliation, failedIds = []) {
   const packedIds = new Set((pack.cases || []).filter(inst => inst && inst.placement === 'packed').map(inst => inst.id));
   const unresolved = reconciliation.unresolved || [];
@@ -2380,12 +2223,62 @@ export function getPackedReconciliationCompleteness(pack, reconciliation, failed
   };
 }
 
+// Mutation authority follows actual pre-edit support/blocking contacts. Hidden
+// cargo participates, staged cargo does not. Missing geometry yields no invented
+// contact. A connected item is kept exactly if its current pose is still safe.
+function manualMutationScope(beforePack, proposedPack, beforeCases, explicitIds) {
+  const before = new Map((beforePack?.cases || []).map(inst => [inst.id, inst]));
+  const after = new Map((proposedPack.cases || []).map(inst => [inst.id, inst]));
+  const changed = new Set(explicitIds || []);
+  for (const id of new Set([...before.keys(), ...after.keys()])) {
+    const a = before.get(id), b = after.get(id);
+    if (!a || !b || a.caseId !== b.caseId || a.placement !== b.placement ||
+        JSON.stringify(a.transform) !== JSON.stringify(b.transform)) changed.add(id);
+  }
+  const mutable = new Set(changed);
+  const physicalChanges = new Set([...changed].filter(id => {
+    const a = before.get(id), b = after.get(id);
+    if (!a || !b || a.placement !== b.placement || a.caseId !== b.caseId) return true;
+    const caseData = beforeCases.find(c => c.id === a.caseId);
+    const oldDims = getCanonicalInstanceEffectiveDims(a, caseData);
+    const newDims = getCanonicalInstanceEffectiveDims(b, caseData);
+    return JSON.stringify(a.transform?.position) !== JSON.stringify(b.transform?.position) ||
+      JSON.stringify(oldDims.dims) !== JSON.stringify(newDims.dims);
+  }));
+  const dependencies = [];
+  const assessment = assessCommittedPack(beforePack, beforeCases);
+  const supportIds = qualifiedSupportIds(assessment);
+  if (!physicalChanges.size) return { changed, mutable, physicalChanges, dependencies, supportIds };
+  dependencies.push(...assessment.measurements.supportGraph.edges.map(edge => [edge.to, edge.from]));
+  for (const finding of assessment.hard) {
+    if (finding.property !== 'front-overhang.rear-blocking') continue;
+    for (const contact of [...(finding.evidence.contacts || []), ...(finding.evidence.uncertain || [])]) {
+      dependencies.push([contact.id, finding.subject]);
+    }
+  }
+  const queue = [...physicalChanges];
+  for (let index = 0; index < queue.length; index += 1) {
+    for (const [support, child] of dependencies) {
+      if (support !== queue[index] || mutable.has(child)) continue;
+      mutable.add(child);
+      queue.push(child);
+    }
+  }
+  return { changed, mutable, physicalChanges, dependencies, supportIds };
+}
+
 export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   const source = pack && typeof pack === 'object' ? pack : {};
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
+  const beforePack = options.beforePack || getById(source.id) || source;
+  const scope = manualMutationScope(beforePack, source, options.beforeCaseLibrary || caseLibrary, options.changedInstanceIds);
   const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary, {
     preserveStagedPositions: options.preserveStagedPositions !== false,
-    changedInstanceIds: options.changedInstanceIds,
+    changedInstanceIds: scope.changed,
+    mutableInstanceIds: scope.mutable,
+    causalChanges: scope.physicalChanges,
+    dependencies: scope.dependencies,
+    fixedSupportIds: scope.supportIds,
   });
   let nextPack = reconciliation.nextPack;
   let stagedIds = [];
@@ -2412,6 +2305,10 @@ export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
     warnings = staged.warnings || [];
   }
 
+  // Staging helpers may rebuild caches. A local action has no write authority
+  // over any other row, including unrelated malformed/staged source.
+  nextPack = { ...nextPack, cases: nextPack.cases.map(inst => scope.mutable.has(inst.id)
+    ? inst : source.cases.find(original => original.id === inst.id)) };
   return {
     pack: nextPack,
     ...getPackedReconciliationCompleteness(source, reconciliation, failedIds),
@@ -2434,44 +2331,16 @@ export function updateCasesWithManualRevalidation(packId, nextCases, caseLibrary
   const pack = getById(packId);
   if (!pack) return null;
   const proposed = { ...pack, cases: Array.isArray(nextCases) ? nextCases : [] };
-  const beforeById = new Map((pack.cases || []).map(inst => [inst.id, inst]));
-  const changedInstanceIds = new Set(proposed.cases.filter(inst => {
-    const before = beforeById.get(inst.id);
-    return !before || before.placement !== inst.placement ||
-      JSON.stringify(before.transform) !== JSON.stringify(inst.transform);
-  }).map(inst => inst.id));
-  const result = revalidateManualPlacements(proposed, caseLibrary, { ...options, changedInstanceIds });
+  const result = revalidateManualPlacements(proposed, caseLibrary, { ...options, beforePack: pack });
   const patch = { cases: result.pack.cases };
-  // A fresh handling-rules signature may only be persisted once a path has
-  // actually performed a complete, successful whole-Pack revalidation — never
-  // after an unresolved failure. Centralized here so every existing caller
-  // (drag/rotate/delete-repair) and the explicit Validate Load
-  // Plan action all get correct signature lifecycle for free.
-  if (result.validationComplete === true) {
-    patch.handlingRulesValidatedSignature = buildHandlingRulesValiditySignature(result.pack, caseLibrary);
-  } else if (!pack.handlingRulesValidatedSignature ||
-      pack.handlingRulesValidatedSignature === buildHandlingRulesValiditySignature(result.pack, caseLibrary)) {
-    // A legacy/current signature must not make an incomplete explicit validation
-    // look successful. This non-current marker cannot equal a Case fingerprint.
-    patch.handlingRulesValidatedSignature = 'v1:incomplete';
-  }
   const updated = update(packId, patch);
   return { ...result, pack: updated || result.pack };
 }
 
-// Smallest possible "Validate Load Plan" service action: re-runs the same
-// whole-Pack revalidation this Pack's own current cases against the current
-// Case Library, applying repair/staging exactly like any other manual
-// revalidation and clearing the "Validation required" state only on complete
-// success. One existing significant Pack update -> one Undo/Redo action, no
-// bespoke history code needed.
+// Explicit Check is a read: no source write, history entry or certification.
 export function validateLoadPlan(packId, caseLibrary = CaseLibrary.getCases()) {
   const pack = getById(packId);
-  if (!pack) return null;
-  return updateCasesWithManualRevalidation(packId, pack.cases, caseLibrary, {
-    repairDependents: true,
-    preserveStagedPositions: true,
-  });
+  return pack ? assessCommittedPack(pack, caseLibrary) : null;
 }
 
 // Repack the invalid items into the NEW truck's free floor/deck space front-first
@@ -3572,48 +3441,12 @@ export function planPackImport(payload) {
 
   const rawTruck = pack.truck && typeof pack.truck === 'object' ? pack.truck : {};
   pack.truck = CoreNormalizer.normalizeTruck(rawTruck);
-  // Repair placements and compute stats against the PLANNED final case set, not
-  // the live store (which is not mutated until the commit below). Snapshot the
-  // pre-repair placement/position of every instance (same order/length as the
-  // repaired result — repairPackInstancePlacements maps 1:1) purely to REPORT
-  // what repair changed; this never feeds back into the repair decision itself.
-  const prePlacementSnapshot = pack.cases.map(inst => ({
-    placement: inst && inst.placement,
-    position: inst && inst.transform && inst.transform.position,
-  }));
-  const repairedPack = repairPackInstancePlacements(pack, finalCases);
-  pack.cases = repairedPack.cases;
+  // Structural validation has succeeded. Preserve physical source even when
+  // current assessment is INVALID or INCOMPLETE; only safe derived stats rebuild.
   pack.stats = computeStats(pack, finalCases);
-  // This path remaps Case IDs and just performed full placement repair against
-  // the planned final (local) Case set, so it is safe to certify: recompute the
-  // handling-rules signature against the LOCAL Case Library. Never trust a
-  // foreign signature value the imported file itself might have carried.
-  pack.handlingRulesValidatedSignature = buildHandlingRulesValiditySignature(pack, finalCases);
-
-  let placementsPreserved = 0;
-  let placementsRepaired = 0;
-  let placementsStaged = 0;
-  pack.cases.forEach((inst, index) => {
-    const before = prePlacementSnapshot[index] || {};
-    const beforePos = before.position;
-    const afterPos = inst && inst.transform && inst.transform.position;
-    // A malformed (non-finite) incoming coordinate that repair replaced is a
-    // change, never "preserved".
-    const positionChanged = !beforePos || !afterPos ||
-      ['x', 'y', 'z'].some(axis => !(Math.abs(Number(beforePos[axis]) - Number(afterPos[axis])) <= PLACEMENT_EPS));
-    // An imported file is not required to state `placement` up front (repair
-    // always derives it fresh); only treat a placement CHANGE as meaningful
-    // when the incoming file actually claimed one, so gaining a freshly
-    // derived label is never mistaken for a repair.
-    const beforePlacementStated = before.placement === 'packed' || before.placement === 'staged';
-    if (inst.placement === 'staged' && (!beforePlacementStated || before.placement !== 'staged')) {
-      placementsStaged += 1;
-    } else if (positionChanged || (beforePlacementStated && before.placement !== inst.placement)) {
-      placementsRepaired += 1;
-    } else {
-      placementsPreserved += 1;
-    }
-  });
+  const placementsPreserved = pack.cases.length;
+  const placementsRepaired = 0;
+  const placementsStaged = 0;
 
   // Portable category metadata (Milestone C): additive only — a category key
   // the LOCAL WORKSPACE HAS EXPLICITLY CUSTOMIZED is never overwritten (the

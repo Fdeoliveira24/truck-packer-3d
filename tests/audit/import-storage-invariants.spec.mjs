@@ -408,7 +408,10 @@ test('PACK-IMPORT-SAFE-1 import stays on Packs and does not auto-open imported p
 
   const importedPack = PackLibrary.importPackPayload(makePackImportPayload(
     caseData,
-    [makePackImportInstance(caseData.id, { id: 'inst-route' })],
+    [makePackImportInstance(caseData.id, { id: 'inst-route', placement: 'packed', transform: {
+      position: { x: 20, y: caseData.dimensions.height / 2, z: 0 },
+      rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 },
+    } })],
     { packId: 'pack-import-route', title: 'Route Import' }
   ));
 

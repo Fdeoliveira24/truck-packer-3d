@@ -1914,3 +1914,220 @@ test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspecto
   assert.doesNotMatch(src, /relaxed-handling-profile|Relaxed handling profile/,
     'the Inspector repeats no relaxed-profile notice; the Results card carries the Max Capacity warning');
 });
+
+// C5 tests exercise the shared materialization/assessment boundary, not solver
+// claims or a detached placement list. All fixtures are disposable Pack source.
+const c5Case = (id = 'c', weight = 10) => ({ id, name: id, shape: 'box', orientationLock: 'any',
+  dimensions: { length: 10, width: 10, height: 10 }, weight });
+const c5Instance = (id, caseId = 'c', placement = 'staged', x = -30) => ({ id, caseId, placement, hidden: false,
+  transform: { position: { x, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } });
+const c5Pack = cases => ({ id: 'c5-pack', truck: { length: 60, width: 20, height: 20, shapeMode: 'rect' },
+  cases, lastEdited: 123 });
+const c5Solution = (entries, id = 'default') => ({ id, placements: new Map(entries),
+  rotations: new Map(entries.map(([key]) => [key, { x: 0, y: 0, z: 0 }])),
+  orientedDims: new Map(entries.map(([key]) => [key, { length: 10, width: 10, height: 10 }])) });
+
+async function c5Modules() {
+  return Promise.all([import(enginePath.href), import(editorScreenPath.href), import(packLibraryPath.href),
+    import('../../src/services/pack-assessment.js')]);
+}
+
+function c5Option(Engine, pack, materialized, id = 'default') {
+  const next = { ...pack, cases: materialized.nextCases };
+  return { id, ...materialized, movableIds: pack.cases.filter(i => !i.hidden).map(i => i.id),
+    sourceStagedIds: pack.cases.filter(i => i.placement === 'staged').map(i => i.id),
+    signature: Engine.buildAutoPackResultSignature(next), layoutSignature: Engine.buildAutoPackLayoutSignature(next),
+    packedCount: next.cases.filter(i => i.placement === 'packed').length,
+    stagedCount: next.cases.filter(i => i.placement === 'staged').length, partialCauses: [] };
+}
+
+function c5Results(Engine, pack, options, definitions) {
+  return { packId: pack.id, runId: 'c5-run', options, adoptedOptionIds: [],
+    sourceSignature: Engine.buildAutoPackResultSignature(pack),
+    caseRuleSignature: Engine.buildAutoPackCaseRuleSignature(pack, id => definitions.find(c => c.id === id)) };
+}
+
+test('C5 materializes the full candidate before assessment including hidden packed and excluding staged cargo', async () => {
+  const [E, , , A] = await c5Modules();
+  const definitions = [c5Case(), c5Case('unknown', null)];
+  const source = c5Pack([c5Instance('move'), { ...c5Instance('fixed', 'c', 'packed', 5), hidden: true },
+    c5Instance('outside', 'unknown')]);
+  const before = JSON.stringify(source);
+  const candidate = E.materializeAutoPackCandidate(source, c5Solution([['move', { x: 20, y: 5, z: 0 }]]),
+    new Map(), new Set(['move', 'outside']), new Set(), definitions);
+  assert.equal(candidate.assessment.primary, 'VALID');
+  assert.equal(candidate.assessment.eligibility.state, 'eligible');
+  assert.deepEqual(candidate.assessment, A.assessCommittedPack({ ...source, cases: candidate.nextCases }, definitions));
+  assert.deepEqual(candidate.nextCases[1], source.cases[1]);
+  assert.deepEqual(candidate.nextCases[2], source.cases[2]);
+  assert.equal(candidate.nextCases[0].placement, 'packed');
+  assert.equal(candidate.nextCases[0].transform.position.x, 20);
+  assert.equal(candidate.assessment.input.instances.length, 2);
+  const overlap = E.materializeAutoPackCandidate(source, c5Solution([['move', { x: 5, y: 5, z: 0 }]]),
+    new Map(), new Set(['move']), new Set(), definitions);
+  assert.equal(overlap.assessment.primary, 'INVALID', 'hidden packed cargo is a real collision participant');
+  source.cases[1].caseId = 'unknown';
+  const unknown = E.materializeAutoPackCandidate(source, c5Solution([['move', { x: 20, y: 5, z: 0 }]]),
+    new Map(), new Set(['move']), new Set(), definitions);
+  assert.equal(unknown.assessment.primary, 'INCOMPLETE');
+  source.cases[1].caseId = 'c';
+  assert.equal(JSON.stringify(source), before, 'materialization never mutates source');
+});
+
+test('C5 populations and ranking separate physical truth, eligibility, completeness and Max recommendation', async () => {
+  const [E, , , A] = await c5Modules();
+  const valid = A.assessCommittedPack(c5Pack([c5Instance('v', 'c', 'packed', 5)]), [c5Case()]);
+  const incomplete = A.assessCommittedPack(c5Pack([c5Instance('i', 'c', 'packed', 5)]), [c5Case('c', null)]);
+  const top = c5Instance('top', 'heavy', 'packed', 5); top.transform.position.y = 15;
+  const blocked = A.assessCommittedPack(c5Pack([c5Instance('base', 'c', 'packed', 5), top]), [c5Case(), c5Case('heavy', 20)]);
+  assert.equal(blocked.primary, 'VALID'); assert.equal(blocked.eligibility.state, 'blocked');
+  const invalid = A.assessCommittedPack(c5Pack([c5Instance('x', 'c', 'packed', 0)]), [c5Case()]);
+  const option = (id, assessment, packedCount) => ({ id, assessment, packedCount, stagedCount: 0,
+    layoutSignature: id, status: 'complete', partialCauses: [] });
+  const normal = { ...option('default', valid, 1), status: 'partial', stagedCount: 2 };
+  const max = { ...normal, id: 'max-capacity' };
+  const population = E.rankAutoPackResultOptions([option('more', incomplete, 20), max,
+    option('blocked', blocked, 40), option('invalid', invalid, 50), normal]);
+  assert.equal(population.selectedId, 'default');
+  assert.equal(population.validSolutionCount, 2);
+  assert.equal(population.incompleteSolutionCount, 1);
+  assert.deepEqual(population.options.map(o => o.id), ['default', 'max-capacity', 'more']);
+  assert.equal(population.options[0].status, 'partial');
+  assert.equal(population.options[2].status, 'complete');
+  const neutral = E.rankAutoPackResultOptions([option('only', incomplete, 20)]);
+  assert.equal(neutral.selectedId, null); assert.equal(neutral.validSolutionCount, 0);
+});
+
+test('C5 semantic dedup retains assessment evidence, eligibility and actual orientation differences', async () => {
+  const [E, , , A] = await c5Modules();
+  const pack = c5Pack([c5Instance('p', 'c', 'packed', 5)]);
+  const assessment = A.assessCommittedPack(pack, [c5Case()]);
+  const base = { id: 'default', packedCount: 1, stagedCount: 0, assessment, layoutSignature: E.buildAutoPackLayoutSignature(pack) };
+  const changedEvidence = structuredClone(base);
+  changedEvidence.id = 'evidence'; changedEvidence.assessment.unverified.push({ property: 'extra-limitation', outcome: 'UNVERIFIED' });
+  const turned = structuredClone(pack); turned.cases[0].transform.rotation.y = Math.PI / 2;
+  const rotation = { ...base, id: 'turned', layoutSignature: E.buildAutoPackLayoutSignature(turned) };
+  assert.notEqual(rotation.layoutSignature, base.layoutSignature, 'cube symmetry never erases actual rotation');
+  const result = E.rankAutoPackResultOptions([base, { ...base, id: 'duplicate' }, changedEvidence, rotation]);
+  assert.deepEqual(result.options.map(o => o.id), ['default', 'evidence', 'turned']);
+  const incomplete = { ...base, id: 'incomplete', assessment: A.assessCommittedPack(pack, [c5Case('c', null)]) };
+  assert.equal(E.rankAutoPackResultOptions([base, incomplete]).options.length, 2);
+  const advisory = structuredClone(base); advisory.id = 'advisory'; advisory.assessment.advisory.push({ property: 'extra-advisory' });
+  const gate = structuredClone(base); gate.id = 'policy'; gate.assessment.gates[0].active = false;
+  assert.equal(E.rankAutoPackResultOptions([base, advisory, gate]).options.length, 3);
+});
+
+test('C5 staging reserves user poses before deterministic new leftovers and isolates carousel options', async () => {
+  const [E, Editor, P] = await c5Modules();
+  const definition = c5Case();
+  const truck = c5Pack([]).truck;
+  const first = P.findSafeStagingPosition({ truck }, definition.dimensions, []);
+  const staged = c5Instance('user'); staged.transform.position = { ...first.position, y: 45 };
+  staged.transform.rotation.y = Math.PI / 2;
+  Object.assign(staged, { orientationLocked: true, lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+    notes: 'keep here', groupId: 'g', metadata: { label: 'source' } });
+  const hidden = { ...c5Instance('hidden'), hidden: true }; hidden.transform.position.z = first.position.z + 50;
+  const source = c5Pack([staged, c5Instance('left1', 'c', 'packed', 5), c5Instance('left2', 'c', 'packed', 20), hidden]);
+  const original = structuredClone(source);
+  const allItems = source.cases.map(inst => ({ inst, caseData: definition }));
+  const movable = allItems.filter(i => !i.inst.hidden);
+  const map = E.buildAutoPackStagingMap(movable, truck, P.findSafeStagingPosition, allItems);
+  assert.deepEqual([...map], [...E.buildAutoPackStagingMap(movable, truck, P.findSafeStagingPosition, allItems)]);
+  const { getAabb } = await import('../../src/services/autopack-solver.js');
+  const { aabbsOverlap } = await import('../../src/packing-core/validation.js');
+  const reservations = [...map.values()].map(p => getAabb({ ...p.position, y: 5 }, { l: 10, w: 10, h: 10 }));
+  reservations.forEach((a, i) => reservations.slice(i + 1).forEach(b => assert.equal(aabbsOverlap(a, b), false)));
+  const ids = new Set(movable.map(i => i.inst.id));
+  const a = E.materializeAutoPackCandidate(source, c5Solution([]), map, ids, new Set(), [definition]);
+  assert.deepEqual(a.nextCases[0], staged); assert.deepEqual(a.nextCases[3], hidden);
+  assert.equal(a.nextCases[1].placement, 'staged'); assert.notDeepEqual(a.nextCases[1].transform, source.cases[1].transform);
+  const b = E.materializeAutoPackCandidate(source, c5Solution([['user', { x: 40, y: 5, z: 0 }], ['left1', { x: 20, y: 5, z: 0 }]]),
+    map, ids, new Set(), [definition]);
+  assert.equal(b.nextCases[0].placement, 'packed'); assert.equal(b.nextCases[0].notes, 'keep here');
+  assert.equal(b.nextCases[1].transform.position.x, 20);
+  assert.deepEqual(b.nextCases[2], a.nextCases[2]);
+  assert.deepEqual(source, original);
+  const aOption = c5Option(E, source, a);
+  const bOption = c5Option(E, source, b, 'floor-first');
+  assert.deepEqual(Editor.buildAppliedAutoPackCases(aOption, structuredClone, b.nextCases), a.nextCases);
+  assert.deepEqual(Editor.buildAppliedAutoPackCases(bOption, structuredClone, a.nextCases), b.nextCases);
+});
+
+test('C5 fresh unapplied incomplete Apply is exact, reassessed and blocked after staging Case or truck edits', async () => {
+  const [E, Editor] = await c5Modules();
+  const definitions = [c5Case('c', null)];
+  const source = c5Pack([c5Instance('move'), c5Instance('stay')]);
+  const solution = c5Solution([['move', { x: 20, y: 5, z: 0 }]]);
+  const candidate = E.materializeAutoPackCandidate(source, solution, new Map(), new Set(['move', 'stay']), new Set(), definitions);
+  const option = c5Option(E, source, candidate);
+  const results = c5Results(E, source, [option], definitions);
+  const getCase = id => definitions.find(c => c.id === id);
+  const before = JSON.stringify(source);
+  assert.equal(Editor.getAppliedAutoPackOption(source, results, getCase), null);
+  assert.equal(E.isAutoPackResultsFresh(source, results, getCase), true);
+  const applied = Editor.prepareAutoPackResultApply(source, results, option, getCase);
+  assert.deepEqual(applied.cases, candidate.nextCases);
+  assert.equal(applied.assessment.primary, 'INCOMPLETE');
+  assert.match(Editor.describeAutoPackAssessment(applied.assessment), /unresolved/);
+  assert.equal(JSON.stringify(source), before);
+  const sameLayout = { ...source, cases: applied.cases };
+  assert.equal(Editor.getAppliedAutoPackOption(sameLayout, results, getCase), null,
+    'generating an incomplete candidate equal to source is not an Apply');
+  assert.ok(Editor.prepareAutoPackResultApply(sameLayout, results, option, getCase), 'explicit Apply is still available');
+  results.adoptedOptionIds = [option.id];
+  assert.equal(Editor.getAppliedAutoPackOption(sameLayout, results, getCase), option);
+  const stagingEdit = structuredClone(source); stagingEdit.cases[1].transform.position.x += 0.00001;
+  const truckEdit = structuredClone(source); truckEdit.truck.length += 0.00001;
+  for (const edited of [stagingEdit, truckEdit]) {
+    assert.equal(E.isAutoPackResultsFresh(edited, results, getCase), false);
+    assert.equal(Editor.prepareAutoPackResultApply(edited, results, option, getCase), null);
+  }
+  definitions[0].dimensions.length += 0.00001;
+  assert.equal(Editor.prepareAutoPackResultApply(source, results, option, getCase), null);
+  definitions[0].dimensions.length = 10;
+  // A forged/stale acceptable verdict cannot bless a newly invalid layout.
+  const corrupt = structuredClone(option); corrupt.nextCases[0].transform.position.x = -20;
+  corrupt.signature = E.buildAutoPackResultSignature({ ...source, cases: corrupt.nextCases });
+  results.options = [corrupt];
+  assert.equal(Editor.prepareAutoPackResultApply(source, results, corrupt, getCase), null);
+});
+
+async function c5RunEngine(weight) {
+  const [E, , P] = await c5Modules();
+  const source = c5Pack([c5Instance('one')]);
+  const definition = c5Case('c', weight);
+  let committed = structuredClone(source);
+  const state = { currentPackId: source.id, currentScreen: 'editor', preferences: {} };
+  const writes = [];
+  const engine = E.createAutoPackEngine({
+    CaseLibrary: { getById: () => definition }, CaseScene: { getObject: () => null, setSelected() {} },
+    PackLibrary: { ...P, getById: () => committed, update: (id, patch) => { writes.push(patch); committed = { ...committed, ...patch }; },
+      computeStats: pack => ({ volumePercent: pack.cases.filter(i => i.placement === 'packed').length }) },
+    StateStore: { get: key => state[key], set: patch => Object.assign(state, patch) },
+    TrailerGeometry: { getTrailerUsableZones: truck => [{ min: { x: 0, y: 0, z: -truck.width / 2 },
+      max: { x: truck.length, y: truck.height, z: truck.width / 2 } }] },
+    runtimeWindow: { requestAnimationFrame: fn => fn(), __TP3D_BILLING: { getBillingState: () => ({ ok: true }) } },
+    getActiveOrgIdForBilling: () => '', getOrgRoleHydrationState: () => 'ready', getProRuleSet: () => ({ canUseProFeature: true }),
+    getWorkspaceSwitchState: () => null, normalizeOrgIdForBilling: value => value, maybeScheduleBillingRefresh() {}, openSettingsOverlay() {},
+    UIComponents: { showToast() {} }, toast() {}, SceneManager: {},
+    Utils: { deepClone: structuredClone, volumeInCubicInches: d => d.length * d.width * d.height },
+  });
+  await engine.pack();
+  return { source, committed, writes, results: state.autoPackResults };
+}
+
+test('C5 initial engine adoption commits only VALID eligible and leaves incomplete source byte-equivalent', async () => {
+  const known = await c5RunEngine(10);
+  assert.equal(known.writes.length, 1);
+  assert.ok(known.results.validSolutionCount > 0);
+  assert.equal(known.results.options.find(o => o.id === known.results.selectedId).assessment.primary, 'VALID');
+  const unknown = await c5RunEngine(null);
+  assert.equal(unknown.writes.length, 0);
+  assert.equal(JSON.stringify(unknown.committed), JSON.stringify(unknown.source));
+  assert.equal(unknown.results.selectedId, null);
+  assert.equal(unknown.results.validSolutionCount, 0);
+  assert.ok(unknown.results.incompleteSolutionCount > 0);
+  assert.equal(unknown.results.minimized, false);
+  assert.ok(unknown.results.options.every(o => o.assessment.primary === 'INCOMPLETE'));
+  assert.ok(unknown.results.options.some(o => o.id === 'max-capacity'));
+});

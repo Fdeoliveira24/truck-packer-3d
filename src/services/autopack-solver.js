@@ -414,10 +414,6 @@ function createStackCapacityCache(packed) {
 function applyMaxCapacityRuleProfile(item = {}) {
   return {
     ...item,
-    noStackOnTop: false,
-    stackable: true,
-    maxStackCount: 0,
-    relaxWeightComparison: true,
     laneItem: false,
     loadPriority: 0,
     fullOrientationSearch: true,
@@ -712,6 +708,29 @@ function placementsHaveRearRetention(placements, retentionContext) {
   );
 }
 
+// Computational rectangles may overlap: the channel continues across both
+// seams on the real truck floor. All floor passes consume this same region,
+// including repeated grids and compaction. No raised floor is manufactured.
+export function buildContinuousFloorZones(zones, truck) {
+  const geometry = getWheelWellGeometry(truck);
+  if (!geometry || geometry.betweenHalfW <= FREE_RECT_EPS) return zones;
+  const channel = {
+    min: { ...geometry.truckBox.min, z: -geometry.betweenHalfW },
+    max: { ...geometry.truckBox.max, z: geometry.betweenHalfW },
+  };
+  const ground = zones.filter(zone => Math.abs(zone.min.y - channel.min.y) <= CONTACT_EPS &&
+    zone.min.z <= channel.min.z && zone.max.z >= channel.max.z && zone.max.y >= channel.max.y)
+    .slice().sort((a, b) => a.min.x - b.min.x);
+  // Respect caller-supplied usable space as well as the physical blocked bodies.
+  let coveredTo = channel.min.x;
+  for (const zone of ground) {
+    if (zone.min.x > coveredTo) break;
+    coveredTo = Math.max(coveredTo, zone.max.x);
+  }
+  if (!isAabbWithinTruckMinusBlocked(channel, geometry) || coveredTo < channel.max.x) return zones;
+  return [...zones, channel];
+}
+
 function createFloorState(zones, frontSurfaceFirst = false, retentionContext = null) {
   return {
     freeRects: normalizeFreeRects(zones.map((zone, index) => makeFreeRect(zone, index))),
@@ -747,11 +766,11 @@ function subtractAabbFromFreeRect(rect, aabb) {
   return out;
 }
 
-function occupyFloorSpace(floorState, placement) {
-  if (!floorState || !placement || !placement.zone) return;
+export function occupyFloorSpace(floorState, placement) {
+  if (!floorState || !placement?.aabb) return;
   const next = [];
   for (const rect of floorState.freeRects) {
-    if (rect.zone !== placement.zone) {
+    if (Math.abs(rect.zone.min.y - placement.aabb.min.y) > CONTACT_EPS) {
       next.push(rect);
       continue;
     }
@@ -3243,63 +3262,6 @@ function placeFrontOverhangDeckFillFromUnpacked(
   return deckFill.placed;
 }
 
-// Wheel Wells continuous-floor seam candidates: ordinary floor candidates come
-// from per-zone free rects, so they can never straddle the rear/channel/front
-// zone seams even though the truck floor is physically continuous there. When
-// zone lengths are not multiples of the cargo length this wastes a strip at
-// every seam. This generator proposes floor-level (bottom at the truck floor)
-// poses that straddle a seam, validated by the exact truck-minus-blocked
-// containment, collision, and the wheel-well support model (which recognizes
-// the continuous floor). Never raised, never bridged, never inside a body.
-function findWheelWellSeamFloorPlacement(item, packed, geometry, loadFrontFirst) {
-  const floorY = geometry.truckBox.min.y;
-  const seams = [geometry.wx0, geometry.wx1];
-  let best = null;
-  let bestScore = null;
-
-  for (const orientation of item.candidates) {
-    const { l, w, h } = orientation;
-    if (floorY + h > geometry.truckBox.max.y + CONTAINMENT_EPS_INCHES) continue;
-    const xRaw = [];
-    for (const seam of seams) xRaw.push(seam - l / 2);
-    const zRaw = [-geometry.betweenHalfW, geometry.betweenHalfW - w];
-    for (const placement of physicalPlacements(packed)) {
-      if (Math.abs(placement.aabb.min.y - floorY) > CONTACT_EPS) continue;
-      xRaw.push(placement.aabb.max.x, placement.aabb.min.x - l);
-      zRaw.push(placement.aabb.min.z, placement.aabb.max.z - w, placement.aabb.min.z - w, placement.aabb.max.z);
-    }
-    // Only genuinely seam-straddling poses: everything else is the ordinary
-    // floor pass's job. A straddler overlaps the well x-range, so its width
-    // must sit inside the channel walls (the union check would reject the rest
-    // anyway; the pre-filter just avoids wasted candidates).
-    const xCands = uniqueSorted(xRaw, loadFrontFirst ? (a, b) => b - a : (a, b) => a - b)
-      .filter(xMin => seams.some(seam => xMin < seam - FREE_RECT_EPS && xMin + l > seam + FREE_RECT_EPS))
-      .slice(0, 16);
-    const zCands = uniqueSorted(zRaw, (a, b) => a - b)
-      .filter(zMin => zMin >= -geometry.betweenHalfW - FREE_RECT_EPS &&
-        zMin + w <= geometry.betweenHalfW + FREE_RECT_EPS)
-      .slice(0, 12);
-
-    for (const xMin of xCands) {
-      for (const zMin of zCands) {
-        const position = { x: xMin + l / 2, y: floorY + h / 2, z: zMin + w / 2 };
-        const dims = { l, w, h };
-        const aabb = getAabb(position, dims);
-        if (!isAabbWithinTruckMinusBlocked(aabb, geometry)) continue;
-        if (collidesPacked(aabb, packed)) continue;
-        if (!isWheelWellSupportedAndStable(aabb, structuralPlacements(packed), geometry, item)) continue;
-        const score = [loadFrontFirst ? -aabb.max.x : aabb.min.x, aabb.min.z, h];
-        if (!best || compareScore(score, bestScore) < 0) {
-          best = { position, dims, aabb, orientation, zone: null, freeRect: null };
-          bestScore = score;
-        }
-      }
-    }
-  }
-
-  return best;
-}
-
 export function placeLeftoverRecovery(
   output,
   packed,
@@ -3373,11 +3335,6 @@ export function placeLeftoverRecovery(
       ? findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled })
       : null;
     let phase = 'filler';
-    if (!placement && wheelWell) {
-      // Continuous-floor seam retry: legal floor poses straddling the zone
-      // seams that per-zone free rects can never generate.
-      placement = findWheelWellSeamFloorPlacement(item, packed, wheelWell, loadFrontFirst);
-    }
     if (!placement && allowStack) {
       // Final safe stack/raised attempt against the FINAL layout: compaction and
       // earlier leftover rescues changed the world since the main stack phase, so
@@ -3508,7 +3465,7 @@ export function solveAutoPack(input = {}) {
     : rawItems;
   const items = solverItems.map(normalizeItem);
   const loadFrontFirst = input.loadFrontFirst === true || input.loadDirection === 'front_to_rear';
-  const floorZones = sortZonesForFloor(zones, loadFrontFirst);
+  const floorZones = sortZonesForFloor(buildContinuousFloorZones(zones, input.truck || {}), loadFrontFirst);
   // Phase C: only a raised usable surface extending beyond the truck's main
   // high-X boundary changes floor/deck priority. Wheel-well raised zones remain
   // inside truck.length, so Standard and Wheel Wells retain byte-identical scores.

@@ -2909,3 +2909,110 @@ test('P0-SM-OF-10B a selection change outside the Editor never touches the scene
     await browser.close();
   }
 });
+
+test('C5 browser incomplete Results stays neutral until explicit Apply and keeps C4 assessment truthful', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const before = await page.evaluate(() => {
+      const p = window.probe;
+      const definition = { id: 'c5-unknown', name: 'Unknown mass', shape: 'box', orientationLock: 'upright', weight: null,
+        dimensions: { length: 20, width: 20, height: 20 } };
+      const instance = { id: 'c5-one', caseId: definition.id, placement: 'staged', hidden: false,
+        transform: { position: { x: -50, y: 10, z: -50 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } };
+      const pack = { ...p.PackLibrary.getById('fixture-pack'), cases: [instance],
+        truck: { length: 80, width: 40, height: 40, shapeMode: 'rect' } };
+      p.StateStore.set({ caseLibrary: [definition], packLibrary: [pack], selectedInstanceIds: [], autoPackResults: null });
+      p.StateStore.resetHistory();
+      return JSON.stringify(pack);
+    });
+    await page.evaluate(() => window.probe.AutoPackEngine.pack());
+    const neutral = await page.evaluate(() => {
+      const p = window.probe, r = p.StateStore.get('autoPackResults');
+      return { source: JSON.stringify(p.PackLibrary.getById('fixture-pack')), selected: r.selectedId,
+        valid: r.validSolutionCount, options: r.options.length, canUndo: p.StateStore.undo() };
+    });
+    assert.equal(neutral.source, before); assert.equal(neutral.selected, null); assert.equal(neutral.valid, 0);
+    assert.ok(neutral.options > 0); assert.equal(neutral.canUndo, false);
+    // Exercise the same neutral path with only one available incomplete option.
+    const chosen = await page.evaluate(() => {
+      const p = window.probe, r = p.StateStore.get('autoPackResults');
+      const option = r.options[0];
+      p.StateStore.set({ autoPackResults: { ...r, options: [option], hasAlternates: false } }, { skipHistory: true });
+      return option.nextCases;
+    });
+    const panel = page.locator('[data-role="autopack-results-panel"]');
+    assert.match(await panel.innerText(), /INCOMPLETE/);
+    assert.match(await panel.innerText(), /unresolved/);
+    assert.doesNotMatch(await panel.innerText(), /Recommended|Best|Outdated/);
+    assert.equal(await page.locator('[data-focus-key="results-apply"]').isEnabled(), true);
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    assert.match(await panel.innerText(), /INCOMPLETE.*Apply available/s, 'collapsed card still explains adoption');
+    assert.equal(await page.locator('[data-role="autopack-assessment"]').evaluate(el =>
+      getComputedStyle(el).whiteSpace === 'normal' && el.scrollWidth <= el.clientWidth + 1), true,
+    'decisive reason wraps instead of disappearing behind an ellipsis');
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    const bounds = await panel.boundingBox();
+    assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 900, 'evidence stays inside the existing card viewport');
+    await page.locator('[data-focus-key="results-apply"]').click();
+    const applied = await page.evaluate(() => {
+      const p = window.probe, pack = p.PackLibrary.getById('fixture-pack');
+      return { cases: pack.cases, primary: p.PackLibrary.assessCommittedPack(pack, p.CaseLibrary.getCases()).primary };
+    });
+    assert.deepEqual(applied.cases, chosen);
+    assert.equal(applied.primary, 'INCOMPLETE');
+    assert.equal(await page.locator('[data-focus-key="results-apply"]').innerText(), 'Applied');
+    assert.equal(await page.locator('.tp3d-modal-backdrop:visible').count(), 0, 'one explicit Apply, no confirmation flow');
+    await page.screenshot({ path: '/tmp/c5-results-incomplete.png' });
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('C5 browser carousel preserves source staging visually and blocks Apply after a newer staging edit', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => {
+      const p = window.probe;
+      const definition = { id: 'c5-small', name: 'Small', shape: 'box', orientationLock: 'upright', weight: 10,
+        dimensions: { length: 20, width: 20, height: 20 } };
+      const large = { ...definition, id: 'c5-large', name: 'Staging plan', dimensions: { length: 200, width: 80, height: 20 } };
+      const instance = (id, caseId, x, z) => ({ id, caseId, placement: 'staged', hidden: false, notes: 'user staging',
+        transform: { position: { x, y: 10, z }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } });
+      const pack = { ...p.PackLibrary.getById('fixture-pack'),
+        cases: [instance('small', definition.id, -50, -50), instance('stay', large.id, 100, 130)],
+        truck: { length: 80, width: 40, height: 40, shapeMode: 'rect' } };
+      p.StateStore.set({ caseLibrary: [definition, large], packLibrary: [pack], selectedInstanceIds: [], autoPackResults: null });
+      p.StateStore.resetHistory();
+    });
+    const sourceStaged = await page.evaluate(() => {
+      const p = window.probe;
+      return { source: JSON.stringify(p.PackLibrary.getById('fixture-pack').cases.find(i => i.id === 'stay')),
+        pose: p.CaseScene.getObject('stay').position.toArray() };
+    });
+    await page.evaluate(() => window.probe.AutoPackEngine.pack());
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    const committed = await page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getById('fixture-pack')));
+    assert.equal(await page.locator('[data-focus-key="results-next"]').isEnabled(), true);
+    await page.locator('[data-focus-key="results-next"]').click();
+    const preview = await page.evaluate(() => {
+      const p = window.probe;
+      return { pack: JSON.stringify(p.PackLibrary.getById('fixture-pack')),
+        source: JSON.stringify(p.PackLibrary.getById('fixture-pack').cases.find(i => i.id === 'stay')),
+        pose: p.CaseScene.getObject('stay').position.toArray() };
+    });
+    assert.equal(preview.pack, committed);
+    assert.equal(preview.source, sourceStaged.source);
+    assert.deepEqual(preview.pose, sourceStaged.pose);
+    await page.locator('[data-focus-key="results-apply"]').click();
+    assert.equal(await page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getById('fixture-pack').cases.find(i => i.id === 'stay'))), sourceStaged.source);
+    await page.evaluate(() => {
+      const p = window.probe, pack = p.PackLibrary.getById('fixture-pack');
+      const cases = structuredClone(pack.cases); cases.find(i => i.id === 'stay').transform.position.x += 1;
+      p.PackLibrary.update(pack.id, { cases });
+    });
+    assert.match(await page.locator('[data-role="autopack-results-panel"]').innerText(), /Outdated/);
+    assert.equal(await page.locator('[data-focus-key="results-apply"]').isDisabled(), true);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});

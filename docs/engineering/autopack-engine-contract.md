@@ -40,14 +40,19 @@ Hard rules include:
 - no unsupported floating cases;
 - no invalid seam-crossing placements.
 
-## Relaxable Cargo-Handling Preferences (Max Capacity only)
+## Max Capacity Search and Assessment
 
-Max Capacity is a distinct, never-auto-selected AutoPack strategy (`src/packing-core/solution.js`, `applyMaxCapacityRuleProfile()` in `src/services/autopack-solver.js`) that may relax the following cargo-handling **preferences** — not physical rules — for every item in the solve, uniformly:
+C5 materializes every candidate as the complete Pack that Apply would commit,
+then uses the shared C2/C4 assessment and separate operational eligibility.
+Only VALID + eligible candidates count as valid solutions or qualify for initial
+automatic adoption. Acceptable INCOMPLETE candidates require explicit Apply;
+INVALID and operationally blocked candidates cannot be adopted. A complete or
+partial packing population does not determine physical validity.
 
-- `noStackOnTop` / `stackable:false` support-side behavior;
-- `maxStackCount` as a direct-child support cap (treated as unlimited);
-- load priority and lane (`loadPriority`, `laneItem`) solver ordering behavior;
-- the **child-vs-support weight comparison** for known canonical masses. The solver uses an explicit transient `relaxWeightComparison` flag; positive mass and unknown (`null`) mass remain unchanged. Unknown required cargo mass cannot pass the relationship. Fixed support rules remain strict for newly solved cargo. Support footprint and geometric stability remain enforced.
+Max Capacity uses the same no-top, stack-count, mass, support and operational
+contracts as Standard. Its search may relax lane/load-priority ordering and try
+all permitted signed orientations. It cannot clear exact instance targets or
+change physical Case permission or mass. Equivalent quality favors Standard.
 
 Case physical orientation is always `orientationLock: any | upright | onSide`, enforced through the signed `isCasePhysicalOrientationAllowed` predicate. Upright means authored +Y remains world +Y, and onSide means an authored side face is down. `canFlip` is retired and has no runtime authority. Instance fields and `packedProfile` cannot expand Case permission.
 
@@ -55,9 +60,9 @@ Standard and the default-family strategies deliberately search two upright yaws 
 
 An active exact instance target narrows either search to the intersection of Case permission and that target. Malformed or conflicting targets produce no candidate and remain stored. Actual Case geometry always follows authored dimensions plus actual rotation; the exact target is planning data only.
 
-Committed Max-to-Max support reconciliation uses the same explicit known-mass comparison relaxation through `projectMaxCapacitySupportRecords()`. It preserves actual cargo mass and pallet identity. The remaining stacking/count/order relaxations above intentionally remain until C5 candidate assessment and eligibility integration.
-
-`packedProfile: 'max-capacity'` is **mode-level metadata**: the solver relaxes preferences for every item in a Max Capacity solve uniformly, so an applied instance carrying this marker is not proof that its specific placement individually required any particular relaxed rule — only that it belongs to a Max Capacity result and is evaluated under that profile wherever relevant. See [Max Capacity Phase C — Packed-Profile Semantics Audit](../audits/max-capacity-phase-c-packed-profile-semantics-audit-2026-07-18.md) for the full contract.
+`packedProfile: 'max-capacity'` is search provenance only, never physical
+assessment authority. Legacy profile-aware reconciliation does not replace C2/C4.
+Candidate assessments, identities, evidence and Results remain transient.
 
 ## Quality Scoring
 
@@ -84,7 +89,7 @@ Wheel Wells geometry has these conceptual areas:
 
 Rules:
 
-- The center channel is valid floor.
+- The center channel is continuous floor across rear/channel/front computational seams. Its shared floor region participates in ordinary lane, floor, repeated, filler, recovery and quality passes; occupancy subtracts every intersected region at the same floor height.
 - Raised wheel-well shelf use is valid only where actual support/span rules pass.
 - Do not fake a full-width raised floor.
 - Do not force boxes wider than the shelf into shelf space.
@@ -119,7 +124,7 @@ Rules:
 ## AutoPack and Unpack Product Contract
 
 - AutoPack is currently a whole-pack re-solve of eligible non-hidden cases.
-- AutoPack may move existing packed and staged cases because it generates a new load plan.
+- AutoPack may move cargo into the load space. Source-staged cargo that remains staged retains its exact pose and metadata. New packed-to-staged leftovers reserve all source staging footprints first; Unpack owns staging organization.
 - Hidden packed cases may be retained as physical blockers/support context depending on current engine behavior.
 - AutoPack must not leave stale selected IDs after solve.
 - Unpack is currently whole-pack staging.
@@ -130,11 +135,11 @@ Rules:
 ## AutoPack Results Authority
 
 - Results browsing is non-authoritative. Viewing an option does not mutate the committed Pack.
-- Applied state is derived from the current Pack/layout plus current Case Library rule authority; it must not be guessed from stale UI state.
+- Applied state is derived from the current Pack/layout plus current Case physical source. Fresh unapplied Results may still match their captured Pack source; not-yet-applied does not mean stale. Any staging, physical Case or target-space edit invalidates that captured context.
 - Ambiguous result/layout matching fails closed.
 - All Results UI mutation belonging to a run must be guarded by that run's `runId`; stale run UI must never overwrite newer Results state.
 - Apply must respect `OperationLifecycle` busy ownership.
-- Apply commits through canonical Pack mutation authority.
+- Apply rechecks freshness and reassesses the exact selected materialized layout before committing through canonical Pack mutation authority. Explicit incomplete Apply remains INCOMPLETE; it creates no persisted certificate.
 - Browsing must not mutate history, `lastEdited`, export authority, or saved Pack state.
 - The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
 

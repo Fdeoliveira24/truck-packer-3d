@@ -4708,11 +4708,19 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 /* Body (hidden when minimized). One consistent gap between sections. */
+.tp3d-autopack-results [data-role='autopack-assessment'] {
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+
 .tp3d-autopack-results__body {
   display: flex;
   flex-direction: column;
   gap: 9px;
   padding: 11px 12px;
+  max-height: min(55vh, 480px);
+  overflow-y: auto;
 }
 
 .tp3d-autopack-results__carousel-nav {

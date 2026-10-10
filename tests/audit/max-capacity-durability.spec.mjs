@@ -454,12 +454,14 @@ test('MAX-CAPACITY-B14 Pack import replaces stale marked dimensions with canonic
   assert.deepEqual(result.imported.orientedDims, { length: 10, width: 20, height: 10 });
 });
 
-test('MAX-CAPACITY-B15 Pack import still stages genuinely out-of-bounds marked rotations', async () => {
+test('MAX-CAPACITY-B15 Pack import preserves and assesses finite out-of-bounds marked rotations', async () => {
   const result = await importRotatedMarkedPack('out-of-bounds', {
     position: { x: 116, y: 5, z: 0 },
   });
-  assert.equal(result.imported.placement, 'staged');
-  assert.equal('packedProfile' in result.imported, false);
-  assert.notDeepEqual(result.imported.transform.position, { x: 116, y: 5, z: 0 });
+  assert.equal(result.imported.placement, 'packed');
+  assert.equal(result.imported.packedProfile, MAX_PROFILE);
+  assert.deepEqual(result.imported.transform, result.instance.transform);
   assert.deepEqual(result.imported.orientedDims, { length: 10, width: 20, height: 10 });
+  const { assessCommittedPack } = await import(packLibraryPath.href);
+  assert.equal(assessCommittedPack({ truck: RECT_TRUCK, cases: [result.imported] }, [result.caseData]).primary, 'INVALID');
 });

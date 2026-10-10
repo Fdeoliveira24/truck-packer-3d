@@ -604,37 +604,40 @@ test('EXPORT-C-SEQ deliverySequence: null/blank stay null, numbers are kept, gar
 });
 
 // ===========================================================================
-// C8 / C31 — import repairs are disclosed
+// C8 / C31 — structural rejection and exact physical-source preservation
 // ===========================================================================
 
-test('EXPORT-C-REPAIR unsafe placements are still repaired and are reported, never "exact"', async () => {
+test('EXPORT-C-REPAIR malformed imports reject and finite invalid layouts stay exact without physical repair', async () => {
   assert.equal(ImportExport.describePlacementRepairs({}), '');
   assert.equal(ImportExport.describePlacementRepairs({ placementsRepaired: 1 }), '1 cargo placement repaired for safety');
   assert.equal(ImportExport.describePlacementRepairs({ placementsRepaired: 2, placementsStaged: 3 }),
     '2 cargo placements repaired and 3 cargo placements moved to staging for safety');
 
-  // Load Plan import: a malformed coordinate and an overlapping placement.
+  // A malformed coordinate rejects before any Case/Pack publication.
   init();
   const doc = JSON.parse(ImportExport.buildRestorablePackExportJSON(PackLibrary.getById('pack-1')));
   doc.data.pack.cases[0].transform.position = { x: 'abc', y: 10, z: 0 };
   doc.data.pack.cases[1].transform.position = { x: 81, y: 10, z: 0 }; // overlaps inst-3 at x=80
   StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+  assert.throws(() => PackLibrary.planPackImport(ImportExport.parsePackImportJSON(JSON.stringify(doc))), /transform.position/);
+  assert.deepEqual(StateStore.snapshot(), before);
+  // Finite out-of-bounds and overlapping layouts are representable source.
+  doc.data.pack.cases[0].transform.position = { x: 999, y: 10, z: 0 };
   const plan = PackLibrary.planPackImport(ImportExport.parsePackImportJSON(JSON.stringify(doc)));
-  const [malformed, overlapping] = plan.pack.cases;
-  assert.ok(['x', 'y', 'z'].every(axis => Number.isFinite(malformed.transform.position[axis])), 'repair produced a safe pose');
-  assert.ok(plan.placementsRepaired + plan.placementsStaged >= 2, JSON.stringify(plan));
-  assert.notEqual(overlapping.transform.position.x === 81 && overlapping.placement === 'packed', true,
-    'the overlapping placement was not accepted as exact');
-  assert.ok(ImportExport.describePlacementRepairs(plan).endsWith('for safety'));
+  assert.deepEqual(plan.pack.cases.map(inst => inst.transform), doc.data.pack.cases.map(inst => inst.transform));
+  assert.deepEqual(plan.pack.cases.map(inst => inst.placement), doc.data.pack.cases.map(inst => inst.placement));
+  assert.equal(plan.placementsRepaired + plan.placementsStaged, 0);
+  assert.equal(PackLibrary.assessCommittedPack(plan.pack, plan.newCases).primary, 'INVALID');
+  assert.equal(ImportExport.describePlacementRepairs(plan), '');
 
-  // App import: normalization of malformed poses is counted exactly.
+  // App import likewise preserves structurally valid physical failures.
   const state = workspaceState();
-  state.packLibrary[0].cases[0].transform.position.x = 'NaN';
-  state.packLibrary[0].cases[1].placement = 'floating';
+  state.packLibrary[0].cases[0].transform.position.x = 999;
   init(state);
   const app = ImportExport.parseAppImportJSON(Storage.exportAppJSON());
-  assert.deepEqual(app.importReport, { placementsRepaired: 2 });
-  assert.equal(app.packLibrary[0].cases[0].transform.position.x, -80, 'normalizer still supplies its safe fallback');
+  assert.equal(app.importReport?.placementsRepaired || 0, 0);
+  assert.deepEqual(app.packLibrary[0].cases.map(inst => inst.transform), state.packLibrary[0].cases.map(inst => inst.transform));
   assert.equal(Object.keys(app).includes('importReport'), false, 'the report is never persisted');
 
   const [packDialog, appDialog, settings] = await Promise.all([

@@ -343,7 +343,7 @@ test('PLACEMENT-STATE-S2 manual delete of a support recursively settles dependen
     'settled dependents inside usable geometry remain packed');
 });
 
-test('DELETE-REVALIDATION removeInstances repairs invalid non-selected dependents when possible, otherwise stages them', async () => {
+test('DELETE-REVALIDATION removeInstances adjusts true dependents and preserves unrelated invalid cargo', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const caseData = makePackImportSafeCase({
@@ -375,9 +375,9 @@ test('DELETE-REVALIDATION removeInstances repairs invalid non-selected dependent
       },
       cases: [
         mk('selected-support', { x: 12, y: 6, z: 0 }),
-        // This pose straddles the center channel / raised shelf seam. Revalidation
-        // must either repair it to a physically valid packed pose or stage it.
-        mk('dependent-needs-staging', { x: 60, y: 36, z: 18 }),
+        mk('true-dependent', { x: 12, y: 18, z: 0 }),
+        // This invalid seam pose is physically unrelated to the deleted support.
+        mk('unrelated-invalid', { x: 60, y: 36, z: 18 }),
         mk('unrelated-front', { x: 100, y: 6, z: 0 }),
       ],
     }],
@@ -385,6 +385,8 @@ test('DELETE-REVALIDATION removeInstances repairs invalid non-selected dependent
     preferences: {},
   });
 
+  const untouched = structuredClone(PackLibrary.getById('pack-delete-revalidation-wheelwell').cases
+    .filter(inst => inst.id.startsWith('unrelated')));
   const result = PackLibrary.removeInstances('pack-delete-revalidation-wheelwell', ['selected-support']);
   const pack = PackLibrary.getById('pack-delete-revalidation-wheelwell');
   const byId = new Map(pack.cases.map(inst => [inst.id, inst]));
@@ -393,37 +395,12 @@ test('DELETE-REVALIDATION removeInstances repairs invalid non-selected dependent
     'only the selected support instance may be reported as deleted');
   assert.equal(byId.has('selected-support'), false,
     'selected support instance must be removed');
-  assert.equal(byId.has('dependent-needs-staging'), true,
-    'non-selected dependent must not be deleted by revalidation');
-  const repairedOrStagedCount = result.dependentRepairedIds.length + result.dependentStagedIds.length;
-  assert.equal(repairedOrStagedCount, 1,
-    'invalid non-selected dependent must be accounted for exactly once as repaired or staged');
-  const dependent = byId.get('dependent-needs-staging');
-  if (dependent.placement === 'packed') {
-    const zones = PackLibrary.getTrailerUsableZones(pack.truck);
-    const aabb = getPackImportAabb(dependent, caseData);
-    assert.equal(testAabbInsidePhysicalTrailer(PackLibrary, aabb, zones, pack.truck), true,
-      'repaired dependent must be inside the physically allowed trailer geometry');
-    assert.equal(testAabbOnPhysicalFloor(PackLibrary, aabb, zones, pack.truck), true,
-      'repaired dependent must rest on valid floor/surface support');
-    assert.deepEqual(result.dependentRepairedIds, ['dependent-needs-staging'],
-      'delete mutation result must report the dependent repaired in-place');
-    assert.deepEqual(result.dependentStagedIds, [],
-      'a successfully repaired dependent must not also be reported as staged');
-    assert.equal(result.dependentStagedCount, 0,
-      'staged dependent count remains zero when repair succeeds');
-  } else {
-    assert.equal(dependent.placement, 'staged',
-      'unrepairable non-selected dependent must be moved to staging instead of left packed/floating');
-    assert.deepEqual(result.dependentStagedIds, ['dependent-needs-staging'],
-      'delete mutation result must report the dependent moved to staging');
-    assert.equal(result.dependentStagedCount, 1,
-      'delete mutation result must report the dependent staging count');
-  }
-  assert.equal(byId.has('unrelated-front'), true,
-    'delete near Wheel Wells must not remove unrelated packed cases');
-  assert.equal(byId.get('unrelated-front').placement, 'packed',
-    'unrelated packed cases must remain packed');
+  assert.equal(byId.get('true-dependent').transform.position.y, 6, 'the actual dependent settles to the floor');
+  assert.deepEqual(result.revalidation.adjustedIds, ['true-dependent']);
+  assert.deepEqual(result.dependentRepairedIds, [], 'unrelated invalid cargo is not reported as locally repaired');
+  assert.deepEqual(result.dependentStagedIds, [], 'unrelated invalid cargo is not reported as staged');
+  assert.equal(result.dependentStagedCount, 0);
+  assert.deepEqual(pack.cases.filter(inst => inst.id.startsWith('unrelated')), untouched);
 });
 
 test('DELETE-REVALIDATION multi-delete removes exactly selected instance IDs', async () => {

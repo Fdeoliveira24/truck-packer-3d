@@ -2198,13 +2198,6 @@ function buildWorkspaceRestoreCategorySlice(cases, categories) {
     }));
 }
 
-function positionsDiffer(before, after) {
-  if (!before || !after) return true;
-  return ['x', 'y', 'z'].some(axis =>
-    !(Math.abs(Number(before[axis]) - Number(after[axis])) <= PackLibrary.PLACEMENT_EPS)
-  );
-}
-
 /** Pure Workspace Replace preflight. No StateStore or storage writes occur. */
 export function planWorkspaceRestore(imported, {
   currentState = AppStateStore.snapshot(),
@@ -2236,41 +2229,23 @@ export function planWorkspaceRestore(imported, {
     throw workspaceBackupError('Workspace Restore normalization changed graph cardinality.');
   }
 
-  let placementsPreserved = 0;
-  let placementsRepaired = 0;
-  let placementsStaged = 0;
-  const repairedPacks = normalized.packLibrary.map(pack => {
-    const beforeInstances = Array.isArray(pack.cases) ? pack.cases : [];
-    const repaired = PackLibrary.repairRestoredPackPlacements(pack, normalized.caseLibrary);
-    const afterInstances = Array.isArray(repaired.cases) ? repaired.cases : [];
-    if (afterInstances.length !== beforeInstances.length) {
-      throw workspaceBackupError('Workspace Restore placement repair changed instance cardinality.');
-    }
-    afterInstances.forEach((instance, index) => {
-      const before = beforeInstances[index] || {};
-      const beforePosition = before.transform && before.transform.position;
-      const afterPosition = instance && instance.transform && instance.transform.position;
-      const placementChanged = before.placement !== instance.placement;
-      const positionChanged = positionsDiffer(beforePosition, afterPosition);
-      if (instance.placement === 'staged' && before.placement !== 'staged') placementsStaged += 1;
-      else if (placementChanged || positionChanged) placementsRepaired += 1;
-      else placementsPreserved += 1;
-    });
-    return {
-      ...repaired,
-      stats: PackLibrary.computeStats(repaired, normalized.caseLibrary),
-      thumbnail: null,
-      thumbnailUpdatedAt: null,
-      thumbnailSource: null,
-      thumbnailVisualSignature: null,
-      thumbnailViewSignature: null,
-      thumbnailRenderVersion: null,
-    };
-  });
+  const placementsPreserved = normalized.packLibrary.reduce((total, pack) => total + pack.cases.length, 0);
+  const placementsRepaired = 0;
+  const placementsStaged = 0;
+  const restoredPacks = normalized.packLibrary.map(pack => ({
+    ...pack,
+    stats: PackLibrary.computeStats(pack, normalized.caseLibrary),
+    thumbnail: null,
+    thumbnailUpdatedAt: null,
+    thumbnailSource: null,
+    thumbnailVisualSignature: null,
+    thumbnailViewSignature: null,
+    thumbnailRenderVersion: null,
+  }));
 
   const expectedInstances = imported.packLibrary.reduce((total, pack) =>
     total + (pack && Array.isArray(pack.cases) ? pack.cases.length : 0), 0);
-  const actualInstances = repairedPacks.reduce((total, pack) => total + pack.cases.length, 0);
+  const actualInstances = restoredPacks.reduce((total, pack) => total + pack.cases.length, 0);
   if (actualInstances !== expectedInstances) {
     throw workspaceBackupError('Workspace Restore normalization changed instance cardinality.');
   }
@@ -2290,7 +2265,7 @@ export function planWorkspaceRestore(imported, {
     integrityErrors: [],
     counts: {
       cases: normalized.caseLibrary.length,
-      packs: repairedPacks.length,
+      packs: restoredPacks.length,
       folders: normalized.folderLibrary.length,
       categories: imported.categories.length,
       instances: actualInstances,
@@ -2299,7 +2274,7 @@ export function planWorkspaceRestore(imported, {
     placementsRepaired,
     placementsStaged,
     caseLibrary: normalized.caseLibrary,
-    packLibrary: repairedPacks,
+    packLibrary: restoredPacks,
     folderLibrary: normalized.folderLibrary,
     categorySlice,
   };

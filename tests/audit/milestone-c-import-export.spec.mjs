@@ -951,7 +951,7 @@ test('MILESTONE-C-29 planPackImport reports a valid packed instance as preserved
   }
 });
 
-test('MILESTONE-C-30 planPackImport reports an out-of-bounds instance as moved to staging', async () => {
+test('MILESTONE-C-30 C4 import preserves an out-of-bounds physical instance', async () => {
   const rt = await createRuntime('repair-staged');
   try {
     const { StateStore, PackLibrary } = rt;
@@ -967,8 +967,11 @@ test('MILESTONE-C-30 planPackImport reports an out-of-bounds instance as moved t
       bundledCases: [c],
     };
     const plan = PackLibrary.planPackImport(payload);
-    assert.equal(plan.placementsStaged, 1);
-    assert.equal(plan.pack.cases[0].placement, 'staged');
+    assert.equal(plan.placementsStaged, 0);
+    assert.equal(plan.placementsPreserved, 1);
+    assert.deepEqual(plan.pack.cases[0].transform, payload.pack.cases[0].transform);
+    assert.equal(plan.pack.cases[0].placement, 'packed');
+    assert.equal(PackLibrary.assessCommittedPack(plan.pack, [c]).primary, 'INVALID');
   } finally {
     rt.cleanup();
   }

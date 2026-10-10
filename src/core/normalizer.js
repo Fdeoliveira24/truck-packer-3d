@@ -112,7 +112,7 @@ function safeId(value) {
 }
 
 /**
- * Compatibility-only cleanup for the rejected Target/Missing quantity model.
+ * Compatibility-only cleanup for retired quantity and validation-certification fields.
  * Legacy files remain importable, but the obsolete field is never interpreted,
  * converted into physical instances, or allowed back across a save/export boundary.
  * @param {Record<string, any>} pack
@@ -120,9 +120,10 @@ function safeId(value) {
  */
 export function sanitizeLegacyPackQuantityFields(pack) {
   const source = pack && typeof pack === 'object' && !Array.isArray(pack) ? pack : {};
-  if (!Object.prototype.hasOwnProperty.call(source, 'caseRequirements')) return source;
+  if (!Object.hasOwn(source, 'caseRequirements') && !Object.hasOwn(source, 'handlingRulesValidatedSignature')) return source;
   const next = { ...source };
   delete next.caseRequirements;
+  delete next.handlingRulesValidatedSignature;
   return next;
 }
 
@@ -366,7 +367,6 @@ export function normalizeInstance(inst, caseMap) {
   const scale = transform.scale && typeof transform.scale === 'object' ? transform.scale : { x: 1, y: 1, z: 1 };
   const caseId = safeString(inst && inst.caseId, '');
   const caseData = caseMap.get(caseId) || null;
-  const halfY = caseData ? Math.max(1, (caseData.dimensions.height || 1) / 2) : 10;
   const orientationLocked = inst && inst.orientationLocked === true;
   const placement =
     inst && (inst.placement === 'packed' || inst.placement === 'staged') ? inst.placement : null;
@@ -393,9 +393,9 @@ export function normalizeInstance(inst, caseMap) {
     caseId,
     transform: {
       position: {
-        x: caseData ? finiteNumber(pos.x, -80) : (typeof pos.x === 'number' && Number.isFinite(pos.x) ? pos.x : null),
-        y: caseData ? finiteNumber(pos.y, halfY) : (typeof pos.y === 'number' && Number.isFinite(pos.y) ? pos.y : null),
-        z: caseData ? finiteNumber(pos.z, 0) : (typeof pos.z === 'number' && Number.isFinite(pos.z) ? pos.z : null),
+        x: typeof pos.x === 'number' && Number.isFinite(pos.x) ? pos.x : null,
+        y: typeof pos.y === 'number' && Number.isFinite(pos.y) ? pos.y : null,
+        z: typeof pos.z === 'number' && Number.isFinite(pos.z) ? pos.z : null,
       },
       rotation: {
         x: finiteNumber(rot.x, 0),
@@ -444,13 +444,6 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
   const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
   const thumbnailSource =
     p && (p.thumbnailSource === 'auto' || p.thumbnailSource === 'manual') ? p.thumbnailSource : null;
-  // P0-A: durable "validated against current Handling Rules" signature. A
-  // simple typed passthrough — normalizePack() does not itself recompute or
-  // validate it (import paths that remap Case IDs and perform their own full
-  // repair recompute it explicitly; see planPackImport). Legacy Packs with no
-  // stored value stay null, never rendered as stale.
-  const handlingRulesValidatedSignature =
-    typeof (p && p.handlingRulesValidatedSignature) === 'string' ? p.handlingRulesValidatedSignature : null;
   const baseStats = {
     totalCases: 0,
     hiddenCases: 0,
@@ -496,7 +489,6 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     thumbnailViewSignature: typeof p?.thumbnailViewSignature === 'string' && p.thumbnailViewSignature
       ? p.thumbnailViewSignature : null,
     editorView: normalizeEditorView(p?.editorView),
-    handlingRulesValidatedSignature,
   };
 }
 

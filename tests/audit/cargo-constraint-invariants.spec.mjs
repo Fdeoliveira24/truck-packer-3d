@@ -1239,36 +1239,24 @@ test('HANDLING-RULES-P0D restored placement repair must evaluate a legacy stacka
   });
   const pack = { id: 'p0d-pack', truck, cases: [baseInst, childInst] };
 
-  // Pre-fix contrast: feeding repair the raw, uncanonicalized rule value
-  // reproduces the confirmed defect — the child is silently retained as packed
-  // on a support whose rule says it must not carry anything.
-  const preFixResult = PackLib.repairRestoredPackPlacements(pack, [rawBaseCase, childCase]);
-  assert.equal(preFixResult.cases.find(c => c.id === 'p0d-child').placement, 'packed',
-    'documents the confirmed P0-D defect: raw string "false" does not trip the strict stackable === false check');
-
-  // Fixed pipeline: canonicalize before repair, exactly as app.js now does.
+  // C4 keeps saved source in place. Canonical Case rules now drive a
+  // read-only finding instead of silently staging the dependent cargo.
   const canonicalCases = [applyCanonicalCargoFields(rawBaseCase), childCase];
-  const fixedResult = PackLib.repairRestoredPackPlacements(pack, canonicalCases);
-  const repairedChild = fixedResult.cases.find(c => c.id === 'p0d-child');
-  const repairedBase = fixedResult.cases.find(c => c.id === 'p0d-base');
-
-  assert.notEqual(repairedChild.placement, 'packed',
-    'restored placement repair must not silently accept a child resting on a canonically stackable:false support');
-  assert.equal(repairedChild.placement, 'staged',
-    'with no other legal floor space, the correctly-disqualified child must be staged');
-  assert.equal(repairedBase.placement, 'packed',
-    'the valid, unaffected support must not be moved or staged by this repair');
+  const restored = PackLib.repairRestoredPackPlacements(pack, canonicalCases);
+  assert.deepEqual(restored.cases, pack.cases);
+  assert.equal(PackLib.assessCommittedPack(restored, canonicalCases).primary, 'INVALID');
 });
 
-test('HANDLING-RULES-P0D both ordinary load entry points (seedIfEmpty and loadScopedStateOrSeed) canonicalize Case cargo rules before repair, not just initial boot', async () => {
+test('HANDLING-RULES-P0D both ordinary load entry points (seedIfEmpty and loadScopedStateOrSeed) canonicalize Case cargo rules and preserve Pack source, not just initial boot', async () => {
   const appSrc = await fs.readFile(appPath, 'utf8');
 
   for (const fnName of ['seedIfEmpty', 'loadScopedStateOrSeed']) {
     const start = appSrc.indexOf(`function ${fnName}(`);
     assert.ok(start >= 0, `${fnName} must be extractable from app.js`);
-    const repairCallIdx = appSrc.indexOf('repairRestoredPackPlacements', start);
-    assert.ok(repairCallIdx > start, `${fnName} must call repairRestoredPackPlacements`);
-    const body = appSrc.slice(start, repairCallIdx);
+    const loadEnd = appSrc.indexOf('const storedPrefs', start);
+    const body = appSrc.slice(start, loadEnd);
+    assert.match(body, /const storedPacks = stored\.packLibrary;/);
+    assert.doesNotMatch(body, /repairRestoredPackPlacements/);
     assert.match(body, /\.map\(applyCanonicalCargoFields\)[\s\S]*\.map\(applyCaseDefaultColor\)/,
       `${fnName} must canonicalize Case cargo-rule fields (applyCanonicalCargoFields) before ` +
       'applyCaseDefaultColor and before placement repair, not just at initial application boot');
@@ -1399,7 +1387,7 @@ test('HANDLING-RULES-P0C required policy regressions A-F: the confirmed defects,
   }
 });
 
-test('HANDLING-RULES-P0C C3 saved forbidden onSide pose remains preserved and unresolved', async () => {
+test('HANDLING-RULES-P0C C3 saved forbidden onSide pose remains preserved and assesses INVALID', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
 
@@ -1411,7 +1399,7 @@ test('HANDLING-RULES-P0C C3 saved forbidden onSide pose remains preserved and un
 
   assert.deepEqual(result.invalidIds, []);
   assert.deepEqual(result.stagedIds, []);
-  assert.equal(result.validationComplete, false);
+  assert.equal(PackLib.assessCommittedPack(result.pack, [caseData]).primary, 'INVALID');
   assert.deepEqual(result.pack.cases[0], inst, 'saved forbidden pose is never silently repaired');
 });
 
@@ -1428,8 +1416,9 @@ test('HANDLING-RULES-P0C manual revalidation preserves a saved forbidden inverte
   assert.deepEqual(result.invalidIds, [],
     'saved incompatibility is preserved for later assessment');
   assert.deepEqual(result.stagedIds, []);
-  assert.equal(result.validationComplete, false);
+  assert.equal(PackLib.assessCommittedPack(result.pack, [caseData]).primary, 'INVALID');
   const revalidated = result.pack.cases.find(c => c.id === 'inst-p0c-upright');
+  assert.deepEqual(revalidated, inst, 'every saved physical and planning field stays exact');
   assert.equal(revalidated.placement, 'packed', 'the saved forbidden pose remains packed in place');
   assert.deepEqual(revalidated.transform.position, { x: 60, y: 5, z: 0 });
 });

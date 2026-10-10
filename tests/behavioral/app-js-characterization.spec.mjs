@@ -1901,3 +1901,71 @@ test('auth user switching A to B to A replaces user-scoped workspace state', asy
   );
   assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
 });
+
+test('C4 saved invalid pose survives open, read-only Check and referenced Case edit in the live editor', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+  await scenario.context.route('**/index.html', async route => {
+    const response = await route.fetch();
+    const imports = { three: '/node_modules/three/build/three.module.js', 'three/addons/': '/node_modules/three/examples/jsm/' };
+    await route.fulfill({ response, body: (await response.text()).replace('<head>',
+      `<head><script type="importmap">${JSON.stringify({ imports })}</script>`) });
+  });
+  // Read-only scene probe on this test response; no production debug API added.
+  await scenario.context.route('**/src/app.js?*', async route => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace(
+      '_debug: { Utils, StateStore, Storage, CaseLibrary, PackLibrary, Defaults }',
+      '_debug: { Utils, StateStore, Storage, CaseLibrary, PackLibrary, Defaults, CaseScene, SceneManager }') });
+  });
+  const instance = { id: 'c4-instance', caseId: 'c4-case', hidden: false, placement: 'packed', groupId: 'c4-group',
+    orientationLocked: true, lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+    transform: { position: { x: 50, y: 20, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } };
+  const saved = { version: 'legacy', savedAt: 123,
+    caseLibrary: [{ id: 'c4-case', name: 'C4 Saved Case', dimensions: { length: 10, width: 10, height: 10 }, weight: 10, shape: 'box', orientationLock: 'any' }],
+    packLibrary: [{ id: 'c4-pack', title: 'C4 Saved Load', loadPlanNumber: 'C4-QA',
+      truck: { length: 120, width: 80, height: 80, shapeMode: 'rect' },
+      cases: [instance], groups: [{ id: 'c4-group', name: 'Saved group' }], createdAt: 12, lastEdited: 34 }],
+    folderLibrary: [], currentPackId: null };
+  await scenario.context.addInitScript(({ key, saved }) => localStorage.setItem(key, JSON.stringify(saved)),
+    { key: `truckPacker3d:v1:user-a:workspace:${ORG_A}`, saved });
+  const page = await scenario.openPage();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+  await page.locator('#packs-grid .card').filter({ hasText: 'C4 Saved Load' }).click();
+  await page.locator('#editor-validation-status-btn').waitFor({ state: 'visible' });
+  const snapshot = () => page.evaluate(() => {
+    const { StateStore, PackLibrary, CaseScene, SceneManager } = window.TruckPackerApp._debug;
+    const pack = PackLibrary.getById('c4-pack');
+    const object = CaseScene.getObject('c4-instance');
+    return { pack, assessment: PackLibrary.validateLoadPlan(pack.id).primary,
+      scene: object && { position: SceneManager.vecWorldToInches(object.position),
+        rotation: { x: object.rotation.x, y: object.rotation.y, z: object.rotation.z } },
+      length: StateStore.get('caseLibrary')[0].dimensions.length };
+  });
+  const opened = await snapshot();
+  assert.equal(opened.assessment, 'INVALID');
+  assert.deepEqual(opened.pack.cases[0], instance);
+  assert.deepEqual(opened.scene, { position: instance.transform.position, rotation: instance.transform.rotation });
+  await page.locator('#editor-validation-status-btn').click();
+  await page.getByRole('button', { name: 'Check Load Plan', exact: true }).click();
+  assert.deepEqual(await snapshot(), opened, 'Check preserves source, timestamp and actual rendered pose');
+  assert.match(await page.locator('#editor-validation-hint-body').textContent(), /Physical assessment: INVALID/);
+  assert.equal(await page.evaluate(() => window.TruckPackerApp._debug.StateStore.undo()), false);
+  await page.locator('#btn-sidebar').click();
+  await page.locator('[data-nav="cases"]').click();
+  await page.getByRole('button', { name: 'More actions for C4 Saved Case', exact: true }).click();
+  await page.getByText('Edit', { exact: true }).click();
+  await page.getByRole('spinbutton', { name: 'Length (in) (required)', exact: true }).fill('20');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.locator('[data-nav="packs"]').click();
+  await page.locator('#packs-grid .card').filter({ hasText: 'C4 Saved Load' }).click();
+  await page.locator('#editor-validation-status-btn').waitFor({ state: 'visible' });
+  const edited = await snapshot();
+  assert.notEqual(edited.length, opened.length);
+  assert.deepEqual(edited.pack.cases, opened.pack.cases);
+  assert.equal(edited.pack.lastEdited, opened.pack.lastEdited);
+  assert.deepEqual(edited.scene, opened.scene, 'Case Save changes the envelope, not its rendered pose');
+  assert.deepEqual(scenario.diagnostics.pageErrors, []);
+  await page.screenshot({ path: '/tmp/c4-editor-preserved-pose.png' });
+});

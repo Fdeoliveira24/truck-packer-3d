@@ -422,7 +422,7 @@ test('MILESTONE-D-3 valid Replace restore uses scoped recovery and preserves unr
   }
 });
 
-test('MILESTONE-D-4 placement preflight preserves valid poses and stages unsafe poses', async () => {
+test('MILESTONE-D-4 C4 placement preflight preserves valid and invalid source poses', async () => {
   const runtime = await createRuntime('placement-repair');
   try {
     const unsafe = portableInstance({
@@ -440,9 +440,10 @@ test('MILESTONE-D-4 placement preflight preserves valid poses and stages unsafe 
     assert.equal(plan.packLibrary[0].cases.length, 2);
     assert.deepEqual(plan.packLibrary[0].cases[0].transform.position, { x: 20, y: 5, z: 0 });
     assert.equal(plan.packLibrary[0].cases[0].placement, 'packed');
-    assert.equal(plan.packLibrary[0].cases[1].placement, 'staged');
-    assert.equal(plan.placementsPreserved, 1);
-    assert.equal(plan.placementsStaged, 1);
+    assert.equal(plan.packLibrary[0].cases[1].placement, 'packed');
+    assert.deepEqual(plan.packLibrary[0].cases[1].transform, unsafe.transform);
+    assert.equal(plan.placementsPreserved, 2);
+    assert.equal(plan.placementsStaged, 0);
   } finally {
     runtime.cleanup();
   }

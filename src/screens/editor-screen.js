@@ -2279,7 +2279,7 @@ export function createInteractionManager({
       const preflight = PackLibrary.revalidateManualPlacements(
         { ...pack, cases: candidateCases },
         CaseLibrary.getCases(),
-        { repairDependents: true }
+        { repairDependents: true, beforePack: pack }
       );
       const preflightSelf = preflight && preflight.pack && Array.isArray(preflight.pack.cases)
         ? preflight.pack.cases.find(item => item && item.id === inst.id)
@@ -2400,7 +2400,7 @@ export function createInteractionManager({
       const preflight = PackLibrary.revalidateManualPlacements(
         { ...pack, cases: candidate.cases },
         CaseLibrary.getCases(),
-        { repairDependents: true }
+        { repairDependents: true, beforePack: pack }
       );
       const atomicResult = validateAtomicManualGroupResult(candidate.cases, preflight, groupIds);
       if (!atomicResult.ok || (Array.isArray(preflight && preflight.failedIds) && preflight.failedIds.length)) {
@@ -4083,11 +4083,8 @@ export function createEditorScreen({
     let packNotesButton = null;
     let editorFieldId = 0;
 
-    // Handling Rules validation STATUS: a compact warning icon plus a small anchored
-    // panel. Presentation only — PackLibrary.isHandlingRulesValidationRequired() is
-    // still the sole authority for "stale", and only the explicit "Check Load Plan"
-    // click below mutates cargo. Rendering the icon and opening the panel never move
-    // cargo. (The hover/focus status card is pure CSS and shares no state with the panel.)
+    // Existing status/popover shows derived committed-Pack assessment. Neither
+    // opening it nor explicitly checking the load changes cargo or history.
     let validationPopoverOpen = false;
     let validationPopoverPackId = null;
 
@@ -4127,14 +4124,22 @@ export function createEditorScreen({
       if (restoreFocus && focusInside) validationStatusBtn.focus();
     }
 
-    // Shows the compact warning only while the actively-displayed Pack requires
-    // validation; otherwise hides it and closes the panel (also on a Pack switch).
     function renderHandlingRulesStatus(pack) {
       if (!validationStatusEl) return;
-      const stale = Boolean(pack) &&
-        PackLibrary.isHandlingRulesValidationRequired(pack, CaseLibrary.getCases());
-      validationStatusEl.hidden = !stale;
-      if (!stale || (validationPopoverOpen && validationPopoverPackId !== pack.id)) {
+      const committed = pack && PackLibrary.getById(pack.id);
+      const assessment = committed && PackLibrary.assessCommittedPack(committed, CaseLibrary.getCases());
+      const needsReview = assessment && (assessment.primary !== 'VALID' || assessment.eligibility.state === 'blocked');
+      validationStatusEl.hidden = !needsReview;
+      if (assessment) {
+        const title = `Load plan: ${assessment.primary}`;
+        const body = `Physical assessment: ${assessment.primary}. Operational eligibility: ${assessment.eligibility.state}.`;
+        validationStatusBtn?.setAttribute('aria-label', title);
+        validationStatusEl.querySelectorAll('.tp3d-status-card__title, .tp3d-editor-validation-popover__title')
+          .forEach(el => { el.textContent = title; });
+        validationStatusEl.querySelectorAll('.tp3d-status-card__body, .tp3d-editor-validation-popover__body')
+          .forEach(el => { el.textContent = body; });
+      }
+      if (!needsReview || (validationPopoverOpen && validationPopoverPackId !== pack.id)) {
         setValidationPopoverOpen(false);
       }
     }
@@ -4178,19 +4183,8 @@ export function createEditorScreen({
           focusAfterValidationAction();
           return;
         }
-        const summary = result.summary || {};
-        let message = 'Load Plan validated. No cargo changes were needed.';
-        let tone = 'success';
-        if (result.validationComplete !== true) {
-          message = 'Some cargo could not be validated and remains flagged.';
-          tone = 'warning';
-        } else if ((summary.staged || 0) > 0) {
-          message = 'Load Plan validated. Affected cargo could not rest safely and was moved to staging.';
-          tone = 'warning';
-        } else if ((summary.repaired || 0) > 0 || (summary.adjusted || 0) > 0) {
-          message = 'Load Plan validated. Cargo was adjusted to match current Handling Rules.';
-          tone = 'info';
-        }
+        const message = `Load Plan checked: ${result.primary}. Operational eligibility: ${result.eligibility.state}. Cargo unchanged.`;
+        const tone = result.primary === 'VALID' && result.eligibility.state === 'eligible' ? 'success' : 'warning';
         UIComponents.showToast(message, tone);
         render();
         focusAfterValidationAction();
@@ -4457,19 +4451,10 @@ export function createEditorScreen({
         UIComponents.showToast('Rerun AutoPack after edits.', 'info', { title: 'AutoPack Results' });
         return;
       }
-      // A successfully applied AutoPack solution has gone through the current
-      // packing validation path, so it is safe to certify: stamp the fresh
-      // handling-rules signature in the SAME existing Pack update (no second
-      // StateStore write).
-      const appliedSignature = PackLibrary.buildHandlingRulesValiditySignature(
-        projectedPack,
-        CaseLibrary.getCases()
-      );
       StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true, skipNotify: true });
       CaseScene.setSelected([]);
       PackLibrary.update(pack.id, {
         cases: appliedCases,
-        handlingRulesValidatedSignature: appliedSignature,
       });
       UIComponents.showToast(`Applied ${option.label || 'load option'}.`, 'success', { title: 'AutoPack Results' });
     }
@@ -6119,11 +6104,6 @@ export function createEditorScreen({
         const movedCount = organized.movedCount;
         if (OperationLifecycle && !OperationLifecycle.isCurrent(opToken)) return;
         const patch = { cases: nextCases };
-        if (!nextCases.some(inst => inst.placement === 'packed')) {
-          patch.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(
-            { ...livePack, cases: nextCases }, CaseLibrary.getCases()
-          );
-        }
         // Staging the cargo discards the packed solution this Pack's AutoPack
         // Results describe. Clear them without a notification of their own so
         // the Pack commit's notification renders the staged Pack without them

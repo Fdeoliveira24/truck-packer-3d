@@ -2011,6 +2011,10 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
     const showWarning = visible => page.evaluate(on => {
       document.getElementById('editor-validation-status').hidden = !on;
     }, visible);
+    // C4 derives the warning from the committed physical assessment, so this
+    // layout check must explicitly create the "results only" state instead of
+    // assuming AutoPack leaves the warning hidden.
+    await showWarning(false);
     const resultsOnly = await corner();
     assert.equal(resultsOnly.reopenName, 'Reopen AutoPack Results');
     assert.equal(resultsOnly.reopenFocusable, true);

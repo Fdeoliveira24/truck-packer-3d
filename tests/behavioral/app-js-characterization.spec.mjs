@@ -771,6 +771,76 @@ test('signed-in boot and TOKEN_REFRESHED preserve the active user workspace', as
   assert.equal(scenario.diagnostics.pageErrors.length, 0, JSON.stringify(scenario.diagnostics.pageErrors));
 });
 
+test('C3 legacy zero mass survives signed-in startup, reload and workspace switching', async t => {
+  const scenario = await harness.createScenario(multiWorkspaceScenario());
+  t.after(() => scenario.close());
+  // This static fixture serves the same npm Three.js modules Vite resolves in
+  // the local application, without changing the production entry point.
+  await scenario.context.route('**/index.html', async route => {
+    const response = await route.fetch();
+    const imports = { three: '/node_modules/three/build/three.module.js',
+      'three/addons/': '/node_modules/three/examples/jsm/' };
+    const body = (await response.text()).replace('<head>',
+      `<head><script type="importmap">${JSON.stringify({ imports })}</script>`);
+    await route.fulfill({ response, body });
+  });
+  const instance = {
+    id: 'legacy-instance', caseId: 'legacy-case-a', hidden: true, placement: 'packed',
+    orientationLocked: true, lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+    transform: { position: { x: 5, y: 7, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+  };
+  const payload = (suffix, weight) => ({
+    version: 'legacy', savedAt: 123,
+    caseLibrary: [{ id: `legacy-case-${suffix}`, name: `Saved Case ${suffix}`, weight,
+      dimensions: { length: 10, width: 12, height: 14 }, orientationLock: 'upright', notes: 'Keep saved metadata' }],
+    packLibrary: [{ id: `legacy-pack-${suffix}`, title: `Saved Load ${suffix}`, loadPlanNumber: `LP-0000000${suffix.toUpperCase()}`,
+      truck: { length: 100, width: 80, height: 80, shapeMode: 'rect' },
+      cases: [{ ...instance, caseId: `legacy-case-${suffix}` }], groups: [], createdAt: 12, lastEdited: 34 }],
+    folderLibrary: [], currentPackId: null,
+  });
+  const entries = [
+    [`truckPacker3d:v1:user-a:workspace:${ORG_A}`, payload('a', 0)],
+    [`truckPacker3d:v1:user-a:workspace:${ORG_B}`, payload('b', '0')],
+  ];
+  await scenario.context.addInitScript(values => {
+    for (const [key, data] of values) {
+      if (localStorage.getItem(key) === null) localStorage.setItem(key, JSON.stringify(data));
+    }
+  }, entries);
+  const page = await scenario.openPage();
+  const assertSavedWorkspace = async suffix => {
+    await page.waitForFunction(async expectedId => {
+      const StateStore = await import('/src/core/state-store.js');
+      return StateStore.get('caseLibrary')?.some(c => c.id === expectedId);
+    }, `legacy-case-${suffix}`, { timeout: 5000 });
+    const loaded = await page.evaluate(async () => {
+      const StateStore = await import('/src/core/state-store.js');
+      return { cases: StateStore.get('caseLibrary'), packs: StateStore.get('packLibrary') };
+    });
+    assert.equal(loaded.cases.length, 1, 'the saved Case survives instead of being dropped or reseeded');
+    assert.equal(loaded.cases[0].weight, null);
+    assert.equal(loaded.cases[0].notes, 'Keep saved metadata');
+    assert.equal(loaded.packs.length, 1);
+    assert.equal(loaded.packs[0].id, `legacy-pack-${suffix}`);
+    const restored = loaded.packs[0].cases[0];
+    for (const key of ['hidden', 'placement', 'orientationLocked', 'lockedRotation', 'transform']) {
+      assert.deepEqual(restored[key], instance[key], `${key} survives loading unchanged`);
+    }
+  };
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+  await assertSavedWorkspace('a');
+  await page.reload();
+  await scenario.waitForAppReady(page);
+  await waitForSignedInOwner(page, 'user-a', ORG_A);
+  await assertSavedWorkspace('a');
+  await switchWorkspaceAndWait(page, ORG_B, 'Workspace B');
+  await assertSavedWorkspace('b');
+  await switchWorkspaceAndWait(page, ORG_A, 'Workspace A');
+  await assertSavedWorkspace('a');
+  assert.deepEqual(scenario.diagnostics.pageErrors, [], 'startup and switching never reject with invalid Case mass');
+});
+
 test('stale getUserSingleFlight result cannot replace newer authoritative auth user', async t => {
   const scenario = await harness.createScenario(signedInScenario(['user-a', 'user-b']));
   t.after(() => scenario.close());

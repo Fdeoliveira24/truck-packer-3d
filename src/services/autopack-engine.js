@@ -1,10 +1,8 @@
 import { buildLegacyAutoPackItems } from './autopack-item-builder.js';
 import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
-// AutoPack routes through the packing-core strategy runner: the core owns
-// strategy orchestration and the solution envelope; the selected default
-// solution is byte-equivalent to a direct solveAutoPack call, so the engine
-// stays a thin orchestrator. (Supersedes the direct-solver-call wiring the
-// A1-R6 source contract pinned — update that spec on the validation branch.)
+import { assessCommittedPack } from './pack-assessment.js';
+// The core generates strategy candidates; this orchestrator materializes each
+// complete Pack and applies the shared assessment before choosing any adoption.
 import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 import { getOrientedDimsForRotation, getActualPoseDimensions } from '../core/oriented-dims.js';
@@ -46,11 +44,30 @@ export function buildStagedPose(item) {
   };
 }
 
-export function buildAutoPackStagingMap(packItems, truck, findSafeStagingPosition) {
+export function buildAutoPackStagingMap(packItems, truck, findSafeStagingPosition, sourceItems = packItems) {
   const acceptedAabbs = [];
   const map = new Map();
   if (typeof findSafeStagingPosition !== 'function') return map;
+  // Reserve ALL source staging first, including hidden/excluded cargo. Each
+  // option in the run uses this same map; generated leftovers never seed it.
+  for (const { inst, caseData } of sourceItems || []) {
+    if (inst.placement !== 'staged') continue;
+    const actual = getActualPoseDimensions(caseData, inst);
+    const dims = actual.valid ? actual.value : inst.orientedDims;
+    const position = inst.transform?.position;
+    if (!position || !['x', 'y', 'z'].every(axis => Number.isFinite(position[axis])) ||
+        !dims || !['length', 'width', 'height'].every(axis => Number.isFinite(dims[axis]) && dims[axis] > 0)) {
+      throw new Error('Existing staged cargo has unresolved geometry; staging cannot be allocated safely.');
+    }
+    const reserved = getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
+    // Reserve the footprint even for user staging placed above the floor.
+    reserved.min.y = -Infinity;
+    reserved.max.y = Infinity;
+    acceptedAabbs.push(reserved);
+    map.set(inst.id, { position, rotation: inst.transform.rotation, orientedDims: dims });
+  }
   for (const item of Array.isArray(packItems) ? packItems : []) {
+    if (item.inst.placement === 'staged') continue;
     const pose = buildStagedPose(item);
     if (!pose) continue;
     const staged = findSafeStagingPosition({ truck }, pose.dims, acceptedAabbs);
@@ -148,11 +165,11 @@ function getSignatureCaseRules(caseData) {
   if (!caseData) return null;
   const rules = {
     id: caseData.id || null,
-    dimensions: getSignatureDims(caseData.dimensions),
+    dimensions: exactRuleSignatureValue(caseData.dimensions),
     weight: exactRuleSignatureValue(caseData.weight),
   };
   CARGO_RULE_FIELDS.forEach(field => {
-    if (hasOwn(caseData, field)) rules[field] = caseData[field];
+    if (hasOwn(caseData, field)) rules[field] = exactRuleSignatureValue(caseData[field]);
   });
   return rules;
 }
@@ -188,12 +205,11 @@ function getSignatureCaseFields(inst) {
 
 function getStrictSignatureCaseFields(inst) {
   const fields = getSignatureCaseFields(inst);
-  if (fields.placement === 'staged') {
-    delete fields.position;
-    delete fields.rotation;
-    delete fields.orientedDims;
-    return fields;
-  }
+  // Source freshness has no display tolerance. Staging belongs to the user;
+  // even a small staged pose edit must not be overwritten by an older option.
+  fields.position = exactRuleSignatureValue(inst?.transform?.position);
+  fields.rotation = exactRuleSignatureValue(inst?.transform?.rotation);
+  fields.scale = exactRuleSignatureValue(inst?.transform?.scale);
   if (fields.placement === 'packed') {
     fields.packedProfile = normalizeSignatureValue(inst && inst.packedProfile != null
       ? inst.packedProfile
@@ -203,7 +219,7 @@ function getStrictSignatureCaseFields(inst) {
 }
 
 export function buildAutoPackResultSignature(pack, packedProfileOverride, profileInstanceIds) {
-  const truck = normalizeSignatureValue((pack && pack.truck) || {});
+  const truck = exactRuleSignatureValue((pack && pack.truck) || {});
   const cases = (Array.isArray(pack && pack.cases) ? pack.cases : [])
     .map(inst => {
       const signatureInstance = inst && inst.placement === 'packed' && packedProfileOverride !== undefined &&
@@ -227,8 +243,7 @@ export function buildAutoPackResultSignature(pack, packedProfileOverride, profil
  * ids — hash identically here, so the portfolio dedupe (buildAutoPackResultsState)
  * can collapse them into one option. Staleness detection
  * (isAutoPackResultsStale in editor-screen.js) uses the strict, id-aware
- * buildAutoPackResultSignature, whose staged cases intentionally omit pose-only
- * fields while preserving membership, identity, hidden state, and cargo rules.
+ * buildAutoPackResultSignature, which retains exact source poses, including staging.
  */
 export function buildAutoPackLayoutSignature(pack) {
   const truck = normalizeSignatureValue((pack && pack.truck) || {});
@@ -249,6 +264,43 @@ export function buildAutoPackCaseRuleSignature(pack, getCaseById) {
     return getSignatureCaseRules(caseData) || { id: caseId, missing: true };
   });
   return stableSignature({ cases });
+}
+
+export function isAutoPackResultsFresh(pack, results, getCaseById) {
+  if (!pack || results?.packId !== pack.id || !results.options?.length ||
+      buildAutoPackCaseRuleSignature(pack, getCaseById) !== results.caseRuleSignature) return false;
+  const signature = buildAutoPackResultSignature(pack);
+  return signature === results.sourceSignature || results.options.some(option => option.signature === signature);
+}
+
+export function isAutoPackAssessmentAdoptable(assessment) {
+  return (assessment?.primary === 'VALID' || assessment?.primary === 'INCOMPLETE') &&
+    assessment.eligibility?.state === 'eligible';
+}
+
+// Final semantic dedup/ranking happens only AFTER full Pack materialization and
+// C2/C4 assessment. Solver selection is a search hint, never adoption authority.
+export function rankAutoPackResultOptions(rawOptions) {
+  const acceptable = rawOptions.filter(option => isAutoPackAssessmentAdoptable(option.assessment));
+  const ranked = acceptable.slice().sort((a, b) =>
+    Number(b.assessment.primary === 'VALID') - Number(a.assessment.primary === 'VALID') ||
+    b.packedCount - a.packedCount || a.stagedCount - b.stagedCount ||
+    Number(a.id === 'max-capacity') - Number(b.id === 'max-capacity')
+  );
+  const seen = new Set();
+  const options = ranked.filter(option => {
+    const a = option.assessment;
+    const key = JSON.stringify([option.layoutSignature, option.id === 'max-capacity',
+      a.primary, a.hard, a.eligibility, a.gates, a.unverified, a.advisory, option.partialCauses]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const validSolutionCount = options.filter(option => option.assessment.primary === 'VALID').length;
+  return { options, validSolutionCount,
+    incompleteSolutionCount: options.length - validSolutionCount,
+    deduplicatedSolutionCount: acceptable.length - options.length,
+    selectedId: validSolutionCount ? options[0].id : null };
 }
 
 function animationNumber(value, fallback = 0) {
@@ -565,15 +617,9 @@ export function buildAutoPackNextCases(
 ) {
   return (cases || []).map(inst => {
     if (excludedIds.has(inst.id)) return inst;
-    if (inst.hidden) {
-      if (inst.placement === 'staged' && inst.packedProfile !== undefined) {
-        const next = { ...inst };
-        delete next.packedProfile;
-        return next;
-      }
-      return inst;
-    }
+    if (inst.hidden) return inst;
     const isPacked = placements instanceof Map && placements.has(inst.id);
+    if (!isPacked && inst.placement === 'staged') return inst;
     const currentRotation =
       inst.transform && inst.transform.rotation
         ? inst.transform.rotation
@@ -634,6 +680,19 @@ export function buildAutoPackNextCases(
     }
     return next;
   });
+}
+
+export function materializeAutoPackCandidate(pack, solution, stagingMap, movableIds, excludedIds, caseLibrary) {
+  const nextCases = buildAutoPackNextCases(pack.cases, solution.placements, solution.rotations,
+    solution.orientedDims, stagingMap, excludedIds).map(inst => {
+    if (!movableIds.has(inst.id) || inst.placement !== 'packed') return inst;
+    const next = { ...inst };
+    if (solution.id === 'max-capacity') next.packedProfile = 'max-capacity';
+    else delete next.packedProfile;
+    return next;
+  });
+  const assessment = assessCommittedPack({ ...pack, cases: nextCases }, caseLibrary);
+  return { nextCases, assessment };
 }
 
 export function createAutoPackEngine({
@@ -746,17 +805,13 @@ export function createAutoPackEngine({
   }
 
   function buildAutoPackResultOption(solution, index, packData, stagingMap, movableIds, excludedIds) {
-    const nextCases = buildAutoPackNextCases(
-      packData.cases || [],
-      solution.placements,
-      solution.rotations,
-      solution.orientedDims,
-      stagingMap,
-      excludedIds
-    );
+    const definitions = [...new Set((packData.cases || []).map(inst => inst.caseId))]
+      .map(id => CaseLibrary.getById(id)).filter(Boolean);
+    const { nextCases, assessment } = materializeAutoPackCandidate(
+      packData, solution, stagingMap, movableIds, excludedIds, definitions);
     const optionPack = { ...packData, cases: nextCases };
     const stats = PackLibrary.computeStats(optionPack);
-    const stagedCount = Math.max(0, movableIds.size - solution.placements.size);
+    const stagedCount = nextCases.filter(inst => inst.placement === 'staged').length;
     const solverComplete = solution.solveStatus
       ? solution.solveStatus.complete === true
       : !(Array.isArray(solution.unpacked) && solution.unpacked.length);
@@ -775,7 +830,7 @@ export function createAutoPackEngine({
       label: getSolutionLabel(solution, index),
       description: getSolutionDescription(solution),
       strategy: String(solution.strategy || id),
-      packedCount: solution.placements.size,
+      packedCount: nextCases.filter(inst => inst.placement === 'packed').length,
       stagedCount,
       floorCount,
       stackedCount,
@@ -783,10 +838,12 @@ export function createAutoPackEngine({
       status: complete ? 'complete' : 'partial',
       statusLabel: complete ? 'Complete' : 'Partial',
       partialCauses,
-      signature: buildAutoPackResultSignature(optionPack, id === 'max-capacity' ? 'max-capacity' : null, movableIds),
+      assessment,
+      signature: buildAutoPackResultSignature(optionPack),
       layoutSignature: buildAutoPackLayoutSignature(optionPack),
       nextCases: cloneForAutoPackResults(nextCases),
       movableIds: [...movableIds],
+      sourceStagedIds: (packData.cases || []).filter(inst => inst.placement === 'staged').map(inst => inst.id),
     };
   }
 
@@ -803,50 +860,21 @@ export function createAutoPackEngine({
       .map((solution, index) => buildAutoPackResultOption(solution, index, packData, stagingMap, movableIds, excludedIds));
     if (!rawOptions.length) return null;
 
-    const selectedRawId = String(
-      (selectedSolution && selectedSolution.id) ||
-      (packingSolution && packingSolution.selected) ||
-      rawOptions[0].id
-    );
-    const selectedRaw = rawOptions.find(option => option.id === selectedRawId) || rawOptions[0];
-
-    // Dedupe by physical layout, not raw instance id: two strategies that place
-    // the same {caseId, placement, position, rotation, orientedDims, rules} set
-    // — just assigned to a different permutation of interchangeable instances —
-    // are the same option to the user. The selected solver result owns its
-    // duplicate group so an earlier equivalent option cannot steal the applied
-    // id or strict staleness signature; every other group keeps its first option.
-    const options = [];
-    const layoutSignatureToId = new Map();
-    rawOptions.forEach(option => {
-      if (layoutSignatureToId.has(option.layoutSignature)) {
-        if (option.id !== selectedRaw.id) return;
-        const survivorIndex = options.findIndex(
-          survivor => survivor.layoutSignature === option.layoutSignature
-        );
-        if (survivorIndex >= 0) options[survivorIndex] = option;
-        layoutSignatureToId.set(option.layoutSignature, option.id);
-        return;
-      }
-      layoutSignatureToId.set(option.layoutSignature, option.id);
-      options.push(option);
-    });
+    const population = rankAutoPackResultOptions(rawOptions);
+    const { options, selectedId } = population;
     if (!options.length) return null;
-
-    const selectedId = selectedRaw && layoutSignatureToId.has(selectedRaw.layoutSignature)
-      ? layoutSignatureToId.get(selectedRaw.layoutSignature)
-      : options[0].id;
-    const selectedOption = options.find(option => option.id === selectedId) || options[0];
 
     return {
       runId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       packId,
-      selectedId: selectedOption.id,
-      currentSignature: selectedOption.signature,
+      ...population,
+      selectedId,
+      adoptedOptionIds: selectedId ? [selectedId] : [],
+      sourceSignature: buildAutoPackResultSignature(packData),
       caseRuleSignature: buildAutoPackCaseRuleSignature(packData, caseId => CaseLibrary.getById(caseId)),
       expanded: false,
       closed: false,
-      minimized: true,
+      minimized: selectedId !== null,
       position: null,
       attemptedSolutionCount: rawOptions.length,
       hasAlternates: options.length > 1,
@@ -994,7 +1022,8 @@ export function createAutoPackEngine({
     }
 
     const packId = StateStore.get('currentPackId');
-    const packData = PackLibrary.getById(packId);
+    const committedPack = PackLibrary.getById(packId);
+    const packData = committedPack ? cloneForAutoPackResults(committedPack) : null;
     if (!packData) {
       UIComponents.showToast('Open a pack first', 'warning');
       return;
@@ -1125,14 +1154,16 @@ export function createAutoPackEngine({
         );
       }
 
-      const stagingMap = buildStagingMap(packItems, truck);
-      stageInstant(stagingMap);
-      // Yield a frame so the staged poses and the status card's solve stage paint
-      // BEFORE the synchronous solver locks the main thread — otherwise large packs
-      // look frozen at their old positions. The status card is the only
-      // running-progress channel; no stage toast duplicates it.
+      const stagingMap = buildStagingMap(packItems, truck, (packData.cases || []).map(inst =>
+        ({ inst, caseData: CaseLibrary.getById(inst.caseId) })));
+      const sourceSignature = buildAutoPackResultSignature(packData);
+      const sourceCaseRules = buildAutoPackCaseRuleSignature(packData, id => CaseLibrary.getById(id));
+      // Yield a frame so the status card paints without moving committed cargo.
+      // This is the only running-progress channel ahead of the synchronous solve.
       await waitForAnimationFrames(2);
       if (isRunStale()) return;
+      if (buildAutoPackResultSignature(PackLibrary.getById(packId)) !== sourceSignature ||
+          buildAutoPackCaseRuleSignature(packData, id => CaseLibrary.getById(id)) !== sourceCaseRules) return;
 
       try {
         if (diag && typeof diag.autopackStart === 'function') {
@@ -1195,11 +1226,22 @@ export function createAutoPackEngine({
           };
         }),
       });
-      // Current UI consumes the selected default solution; additional
-      // strategies stay available on packingSolution.solutions for future UI.
-      const solverResult = packingSolution ? packingSolution.selectedSolution : null;
       solverMs = nowMs() - solverStartedAt;
-      if (!solverResult || isRunStale()) return;
+      if (isRunStale()) return;
+      const results = buildAutoPackResultsState({
+        packId, packData, packingSolution, selectedSolution: packingSolution?.selectedSolution,
+        stagingMap, movableIds: new Set(packItems.map(item => item.inst.id)),
+        excludedIds: physicalContext.excludedIds,
+      });
+      const selectedOption = results?.options.find(option => option.id === results.selectedId);
+      if (!selectedOption) {
+        StateStore.set({ autoPackResults: results }, { skipHistory: true });
+        UIComponents.showToast(results
+          ? 'No valid solution. Review the incomplete options before applying.'
+          : 'No adoptable solution. The load plan is unchanged.', 'warning', { title: 'AutoPack' });
+        return;
+      }
+      const solverResult = packingSolution.solutions.find(solution => solution.id === selectedOption.id);
 
       const placements = solverResult.placements;
       const rotations = solverResult.rotations;
@@ -1213,14 +1255,9 @@ export function createAutoPackEngine({
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
-      const nextCases = buildAutoPackNextCases(
-        packData.cases || [],
-        placements,
-        rotations,
-        orientedDimsMap,
-        stagingMap,
-        physicalContext.excludedIds
-      );
+      const nextCases = cloneForAutoPackResults(selectedOption.nextCases);
+      StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true, skipNotify: true });
+      CaseScene.setSelected?.([]);
       PackLibrary.update(packId, { cases: nextCases });
 
       cancelAllTweens();
@@ -1284,15 +1321,7 @@ export function createAutoPackEngine({
         );
       }
       StateStore.set({
-        autoPackResults: buildAutoPackResultsState({
-          packId,
-          packData,
-          packingSolution,
-          selectedSolution: solverResult,
-          stagingMap,
-          movableIds: new Set(packItems.map(item => item.inst.id)),
-          excludedIds: physicalContext.excludedIds,
-        }),
+        autoPackResults: results,
       }, { skipHistory: true });
 
       try {
@@ -1366,8 +1395,8 @@ export function createAutoPackEngine({
     });
   }
 
-  function buildStagingMap(packItems, truck) {
-    return buildAutoPackStagingMap(packItems, truck, PackLibrary.findSafeStagingPosition);
+  function buildStagingMap(packItems, truck, sourceItems) {
+    return buildAutoPackStagingMap(packItems, truck, PackLibrary.findSafeStagingPosition, sourceItems);
   }
 
   async function animatePlacements(

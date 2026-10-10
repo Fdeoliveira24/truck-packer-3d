@@ -20,8 +20,8 @@
  * - `stack-priority`: an item that fails the floor is offered a safe supported
  *   stack immediately (favors vertical use over floor spread).
  * - `max-capacity`: a physical-fit estimate that may relax handling rules but
- *   still uses the same containment, collision, support, and blocked-body
- *   validation pipeline. Phase A never auto-selects this option.
+ *   still uses the same physical rules. Its selected field is only a search
+ *   hint; the engine selects adoption after materialization and C2 assessment.
  * - `constrained-first`: constrained (narrower) zones are reserved and filled
  *   with best-fitting cargo before the open floor phases run.
  * Leftover recovery runs inside EVERY strategy (it is part of the pipeline,
@@ -39,7 +39,7 @@ export const PACKING_STRATEGIES = Object.freeze([
     id: 'default',
     strategy: 'front-first-balanced',
     label: 'Balanced',
-    description: 'Best overall load quality; tidy rows, wheel-well aware.',
+    description: 'Balanced loading; tidy rows, wheel-well aware.',
     options: Object.freeze({}),
   }),
   Object.freeze({
@@ -67,7 +67,7 @@ export const PACKING_STRATEGIES = Object.freeze([
     id: 'max-capacity',
     strategy: 'max-capacity',
     label: 'Max Capacity',
-    description: 'Relaxed handling comparison',
+    description: 'Broader orientation search with the same physical rules',
     options: Object.freeze({ maxCapacityMode: true }),
   }),
   Object.freeze({

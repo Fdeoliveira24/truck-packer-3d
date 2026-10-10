@@ -4708,3 +4708,113 @@ test('C3 Results signatures retain tiny mass and exact target changes for packed
     assert.notEqual(sig(0.00001), sig(0.00002));
   }
 });
+
+async function c5SeamFixture() {
+  const solver = await import(autoPackSolverPath.href);
+  const { createTrailerGeometry } = await import(trailerGeometryPath.href);
+  const geometry = createTrailerGeometry({ Utils: { clamp: (v, lo, hi) => Math.min(hi, Math.max(lo, v)) },
+    CorePackLibrary: {}, getSceneManager: () => null });
+  const truck = { length: 110, width: 40, height: 20, shapeMode: 'wheelWells', shapeConfig: {
+    wellOffsetFromRear: 30, wellLength: 30, wellWidth: 10, wellHeight: 5 } };
+  const items = Array.from({ length: 5 }, (_, n) => ({ instanceId: `cube-${n}`, caseId: 'cube',
+    dims: { l: 20, w: 20, h: 20 }, weight: 10, shape: 'box', orientationLock: 'upright' }));
+  return { solver, geometry, truck, items };
+}
+
+// Independent physical oracle: no solver zones or candidate rectangles enter
+// this check. Use authored rectangular envelopes, raw truck dimensions and the
+// two blocked well bodies, with direct interval overlap and floor measurements.
+function c5AssertPhysicalFloor(result, truck, expectedDims) {
+  const boxes = [...result.placements].map(([id, position]) => {
+    const d = result.orientedDims.get(id);
+    assert.deepEqual([d.length, d.width, d.height].sort((a, b) => a - b), expectedDims.slice().sort((a, b) => a - b));
+    return { id, min: { x: position.x - d.length / 2, y: position.y - d.height / 2, z: position.z - d.width / 2 },
+      max: { x: position.x + d.length / 2, y: position.y + d.height / 2, z: position.z + d.width / 2 } };
+  });
+  const overlaps = (a, b) => ['x', 'y', 'z'].every(axis => a.min[axis] < b.max[axis] - 0.000001 && a.max[axis] > b.min[axis] + 0.000001);
+  const cfg = truck.shapeConfig;
+  const blocked = cfg ? [-1, 1].map(sign => ({
+    min: { x: cfg.wellOffsetFromRear, y: 0, z: sign < 0 ? -truck.width / 2 : truck.width / 2 - cfg.wellWidth },
+    max: { x: cfg.wellOffsetFromRear + cfg.wellLength, y: cfg.wellHeight, z: sign < 0 ? -truck.width / 2 + cfg.wellWidth : truck.width / 2 },
+  })) : [];
+  boxes.forEach((a, i) => {
+    assert.equal(a.min.y, 0, 'floor support, never manufactured raised space');
+    assert.ok(a.min.x >= 0 && a.max.x <= truck.length && a.max.y <= truck.height);
+    assert.ok(a.min.z >= -truck.width / 2 && a.max.z <= truck.width / 2);
+    blocked.forEach(b => assert.equal(overlaps(a, b), false, `${a.id} clears the well bodies`));
+    boxes.slice(i + 1).forEach(b => assert.equal(overlaps(a, b), false, `${a.id}/${b.id} do not overlap`));
+  });
+  return boxes;
+}
+
+test('C5 Wheel-Well seam competes in ordinary floor passes with cleanup disabled and deterministic output', async () => {
+  const { solver, geometry, truck, items } = await c5SeamFixture();
+  const input = { truck, zones: geometry.getTrailerUsableZones(truck), items, loadFrontFirst: true,
+    cleanupBudgetMs: 0, enableWheelWellFloorChannelCompaction: false, enableWheelWellFrontCompression: false, enableLeftoverPass: false };
+  const result = solver.solveAutoPack(input);
+  assert.equal(result.placements.size, 5);
+  const boxes = c5AssertPhysicalFloor(result, truck, [20, 20, 20]);
+  assert.ok(boxes.some(a => a.min.x === 50 && a.max.x === 70), 'ordinary competition finds the 50–70 seam footprint');
+  assert.equal(result.phaseStats.stackCount, 0);
+  const again = solver.solveAutoPack(input);
+  assert.deepEqual([...again.placements], [...result.placements]);
+  assert.deepEqual([...again.rotations], [...result.rotations]);
+});
+
+test('C5 seam occupancy subtracts every intersected floor region and reserves later placements', async () => {
+  const { solver, geometry, truck } = await c5SeamFixture();
+  const zones = solver.buildContinuousFloorZones(geometry.getTrailerUsableZones(truck), truck);
+  const floorState = { freeRects: zones.map(zone => ({ zone, minX: zone.min.x, maxX: zone.max.x, minZ: zone.min.z, maxZ: zone.max.z })) };
+  const aabb = { min: { x: 50, y: 0, z: -10 }, max: { x: 70, y: 20, z: 10 } };
+  solver.occupyFloorSpace(floorState, { zone: zones.at(-1), aabb });
+  for (const rect of floorState.freeRects.filter(r => r.zone.min.y === 0)) {
+    const overlap = Math.min(rect.maxX, 70) > Math.max(rect.minX, 50) && Math.min(rect.maxZ, 10) > Math.max(rect.minZ, -10);
+    assert.equal(overlap, false, 'no region retains any occupied seam footprint');
+  }
+  const once = structuredClone(floorState.freeRects);
+  solver.occupyFloorSpace(floorState, { zone: zones.at(-1), aabb });
+  assert.deepEqual(floorState.freeRects, once, 'repeat occupancy cannot create double-free space');
+});
+
+test('C5 shared seam regions serve lane repeated and filler paths without changing Standard or Front Overhang space', async () => {
+  const { solver, geometry, truck, items } = await c5SeamFixture();
+  for (const variant of [items.map(i => ({ ...i, laneItem: true })),
+    Array.from({ length: 8 }, (_, n) => ({ ...items[n % 5], instanceId: `repeat-${n}` }))]) {
+    const result = solver.solveAutoPack({ truck, zones: geometry.getTrailerUsableZones(truck), items: variant,
+      loadFrontFirst: true, cleanupBudgetMs: 0, enableWheelWellFloorChannelCompaction: false });
+    const boxes = c5AssertPhysicalFloor(result, truck, [20, 20, 20]);
+    assert.ok(boxes.some(a => a.min.x < 60 && a.max.x > 60), 'normal lane/grid path includes the seam');
+  }
+  for (const shapeMode of ['rect', 'frontBonus']) {
+    const other = { length: 110, width: 40, height: 20, shapeMode,
+      ...(shapeMode === 'frontBonus' ? { shapeConfig: { bonusLength: 20, bonusHeight: 10 } } : {}) };
+    const zones = geometry.getTrailerUsableZones(other);
+    assert.equal(solver.buildContinuousFloorZones(zones, other), zones, 'other physical spaces are untouched');
+    const result = solver.solveAutoPack({ truck: other, zones, items, loadFrontFirst: true, cleanupBudgetMs: 0 });
+    assert.equal(result.placements.size, 5);
+    c5AssertPhysicalFloor(result, { ...other, shapeConfig: undefined }, [20, 20, 20]);
+  }
+});
+
+test('C5 Max retains no-top stack-count exact orientation and nullable mass under the same assessment', async () => {
+  const { solveAutoPack } = await import(autoPackSolverPath.href);
+  const { materializeAutoPackCandidate } = await import(autoPackEnginePath.href);
+  const truck = { length: 20, width: 20, height: 60, shapeMode: 'rect' };
+  const zones = [{ min: { x: 0, y: 0, z: -10 }, max: { x: 20, y: 60, z: 10 } }];
+  const rotation = { x: 0, y: Math.PI / 2, z: 0 };
+  const definition = { id: 'c', shape: 'box', orientationLock: 'upright', weight: null,
+    dimensions: { length: 20, width: 20, height: 20 }, noStackOnTop: true, maxStackCount: 1 };
+  const cases = ['a', 'b'].map((id, n) => ({ id, caseId: 'c', placement: 'staged', orientationLocked: true, lockedRotation: rotation,
+    transform: { position: { x: -30 - n * 30, y: 10, z: 0 }, rotation } }));
+  const items = cases.map(i => ({ ...definition, instanceId: i.id, caseId: 'c', dims: { l: 20, w: 20, h: 20 },
+    orientationLocked: true, lockedRotation: rotation }));
+  const before = JSON.stringify(items);
+  const max = { ...solveAutoPack({ truck, zones, items, maxCapacityMode: true, loadFrontFirst: true }), id: 'max-capacity' };
+  assert.equal(max.placements.size, 1, 'no-top and unknown mass do not become permissive Max stacking');
+  assert.deepEqual([...max.rotations.values()], [rotation]);
+  const candidate = materializeAutoPackCandidate({ truck, cases }, max, new Map(), new Set(['a', 'b']), new Set(), [definition]);
+  assert.equal(candidate.assessment.primary, 'INCOMPLETE');
+  assert.equal(candidate.assessment.eligibility.state, 'eligible');
+  assert.equal(candidate.nextCases.find(i => i.placement === 'packed').packedProfile, 'max-capacity');
+  assert.equal(JSON.stringify(items), before);
+});

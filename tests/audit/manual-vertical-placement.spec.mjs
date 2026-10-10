@@ -466,7 +466,7 @@ test('MANUAL-VERTICAL staged candidate may become packed only through manual rev
   const validPreflight = PackLibrary.revalidateManualPlacements(
     { ...pack, cases: validCandidate },
     [caseData, noStack],
-    { repairDependents: true }
+    { repairDependents: true, beforePack: pack }
   );
   const validSelf = validPreflight.pack.cases.find(inst => inst.id === 'staged-case');
   assert.equal(validSelf.placement, 'packed', 'a staged case proposed at a valid truck floor pose may become packed');
@@ -497,7 +497,7 @@ test('MANUAL-VERTICAL staged candidate may become packed only through manual rev
   const invalidPreflight = BlockedPackLibrary.revalidateManualPlacements(
     { ...blockedPack, cases: invalidCandidate },
     [caseData, noStack],
-    { repairDependents: true }
+    { repairDependents: true, beforePack: blockedPack }
   );
   assert.notEqual(
     invalidPreflight.pack.cases.find(inst => inst.id === 'blocked-staged').placement,
@@ -513,14 +513,10 @@ test('MANUAL-VERTICAL staged candidate may become packed only through manual rev
   const outsidePreflight = PackLibrary.revalidateManualPlacements(
     { ...pack, cases: outsideCandidate },
     [caseData, noStack],
-    { repairDependents: true }
+    { repairDependents: true, beforePack: pack }
   );
   const outsideSelf = outsidePreflight.pack.cases.find(inst => inst.id === 'staged-case');
-  assert.notEqual(
-    outsideSelf.transform.position.x,
-    160,
-    'outside staged candidates are not accepted at the user drop X/Z by raw revalidation'
-  );
+  assert.equal(outsideSelf.placement, 'staged', 'an outside proposal cannot be accepted as packed');
 });
 
 test('M02 staged exact truck release uses the packed manual hard rules across all truck shapes', async t => {
@@ -931,7 +927,7 @@ test('MANUAL-GROUP cargo and selected-sibling overlaps fail atomic preflight', a
     'selected siblings that require separation must reject atomically');
 });
 
-test('MANUAL-GROUP Front Overhang cab void cannot survive as staged data', async () => {
+test('MANUAL-GROUP Front Overhang cab void rejects a new proposal without repairing untouched staged source', async () => {
   const caseData = makeVerticalCase({ id: 'case-group-cab' });
   const proposed = [
     makeVerticalInstance(caseData.id, 'cab-case', { x: 115, y: 5, z: 0 }, { placement: 'staged' }),
@@ -939,7 +935,8 @@ test('MANUAL-GROUP Front Overhang cab void cannot survive as staged data', async
   ];
   const { PackLibrary, packId } = await setupVerticalPack({
     cases: [caseData],
-    instances: proposed,
+    instances: proposed.map(inst => inst.id === 'cab-case'
+      ? { ...inst, transform: { ...inst.transform, position: { x: 115, y: 5, z: 50 } } } : inst),
     truck: FRONT_OVERHANG_TRUCK,
   });
   const EditorScreen = await loadEditorScreenModule();
@@ -951,7 +948,10 @@ test('MANUAL-GROUP Front Overhang cab void cannot survive as staged data', async
   assert.equal(PackLibrary.aabbIntersectsFrontBonusBlockedBody(cabAabb, FRONT_OVERHANG_TRUCK), true,
     'the staged candidate must intersect the canonical cab-void blocked body');
 
-  const preflight = PackLibrary.revalidateManualPlacements(pack, [caseData], { repairDependents: true });
+  const candidate = { ...pack, cases: proposed };
+  assert.deepEqual(PackLibrary.revalidateManualPlacements(candidate, [caseData], { beforePack: candidate }).pack.cases,
+    proposed, 'unacted saved staged source stays exact');
+  const preflight = PackLibrary.revalidateManualPlacements(candidate, [caseData], { repairDependents: true, beforePack: pack });
   const cabCase = preflight.pack.cases.find(inst => inst.id === 'cab-case');
   const repairedCabAabb = {
     min: { x: cabCase.transform.position.x - 5, y: cabCase.transform.position.y - 5, z: cabCase.transform.position.z - 5 },
@@ -961,10 +961,10 @@ test('MANUAL-GROUP Front Overhang cab void cannot survive as staged data', async
     'revalidation must move staged cargo out of the cab void');
   assert.notDeepEqual(cabCase.transform.position, proposed[0].transform.position,
     'the illegal staged cab-void transform must not be preserved');
-  assert.equal(EditorScreen.validateAtomicManualGroupResult(pack.cases, preflight, ['cab-case', 'outside-case']).ok, false,
+  assert.equal(EditorScreen.validateAtomicManualGroupResult(proposed, preflight, ['cab-case', 'outside-case']).ok, false,
     'a group preflight must reject when cab-void repair changes a selected transform');
 
-  PackLibrary.updateCasesWithManualRevalidation(packId, pack.cases, [caseData], { repairDependents: true });
+  PackLibrary.updateCasesWithManualRevalidation(packId, proposed, [caseData], { repairDependents: true });
   const persistedCabCase = PackLibrary.getById(packId).cases.find(inst => inst.id === 'cab-case');
   const persistedCabAabb = {
     min: { x: persistedCabCase.transform.position.x - 5, y: persistedCabCase.transform.position.y - 5, z: persistedCabCase.transform.position.z - 5 },
@@ -982,14 +982,18 @@ test('MANUAL-GROUP Wheel Wells blocked body rejects while legal channel and top 
   ];
   const { PackLibrary, packId } = await setupVerticalPack({
     cases: [caseData],
-    instances: blockedGroup,
+    instances: blockedGroup.map(inst => inst.id === 'blocked'
+      ? { ...inst, transform: { ...inst.transform, position: { x: 50, y: 5, z: 50 } } } : inst),
     truck: WHEEL_WELL_TRUCK,
   });
   const EditorScreen = await loadEditorScreenModule();
   const blockedPack = PackLibrary.getById(packId);
-  const blockedResult = PackLibrary.revalidateManualPlacements(blockedPack, [caseData], { repairDependents: true });
+  const candidate = { ...blockedPack, cases: blockedGroup };
+  assert.deepEqual(PackLibrary.revalidateManualPlacements(candidate, [caseData], { beforePack: candidate }).pack.cases,
+    blockedGroup, 'unacted saved staged source stays exact');
+  const blockedResult = PackLibrary.revalidateManualPlacements(candidate, [caseData], { repairDependents: true, beforePack: blockedPack });
   assert.equal(EditorScreen.validateAtomicManualGroupResult(
-    blockedPack.cases,
+    blockedGroup,
     blockedResult,
     ['blocked', 'outside']
   ).ok, false, 'a selected Wheel Wells blocked-body pose must reject atomically');
@@ -1001,7 +1005,7 @@ test('MANUAL-GROUP Wheel Wells blocked body rejects while legal channel and top 
   const legalResult = PackLibrary.revalidateManualPlacements(
     { ...blockedPack, cases: legalCases },
     [caseData],
-    { repairDependents: true }
+    { repairDependents: true, beforePack: blockedPack }
   );
   assert.deepEqual(EditorScreen.validateAtomicManualGroupResult(
     legalCases,
@@ -1295,7 +1299,7 @@ test('MANUAL-VERTICAL drag release for a single packed case resolves through val
   );
   assert.match(src, /function tryCommitStagedIntoTruck\([\s\S]*findManualVerticalPlacement\(\s*\n\s*pack, CaseLibrary\.getCases\(\), inst\.id,[\s\S]*exact: true/,
     'staged release must validate the exact candidate pose through the normal manual hard rules');
-  assert.match(src, /function tryCommitStagedIntoTruck\(packId, pack, inst, obj, groupIds, startMap\) \{[\s\S]*PackLibrary\.revalidateManualPlacements\(\s*\n\s*\{ \.\.\.pack, cases: candidateCases \},\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true \}/,
+  assert.match(src, /function tryCommitStagedIntoTruck\(packId, pack, inst, obj, groupIds, startMap\) \{[\s\S]*PackLibrary\.revalidateManualPlacements\(\s*\n\s*\{ \.\.\.pack, cases: candidateCases \},\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true, beforePack: pack \}/,
     'staged-to-packed preflight must use pure manual revalidation with dependent repair');
   assert.match(src, /PackLibrary\.updateCasesWithManualRevalidation\(\s*\n\s*packId,\s*\n\s*candidateCases,\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true \}/,
     'accepted staged-to-packed releases must still commit through manual revalidation with dependent repair');

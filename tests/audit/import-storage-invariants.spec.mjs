@@ -792,33 +792,42 @@ test('CARGO-RULE-V1 batch pack import applies the same cargo-conflict rule', asy
   assert.equal(r2.cases[0].caseId, r2.caseConflicts[0].newId, 'conflicting instance remaps to the new case');
 });
 
-test('PACK-IMPORT-SAFE-1 invalid imported transforms are staged without overlap outside the truck', async () => {
+test('PACK-IMPORT-SAFE-1 malformed transforms reject atomically while finite physical failures stay exact', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const caseData = makePackImportSafeCase({ id: 'case-import-invalid', dimensions: { length: 12, width: 12, height: 12 } });
 
-  StateStore.init({ caseLibrary: [caseData], packLibrary: [], folderLibrary: [], preferences: {} });
-  const importedPack = PackLibrary.importPackPayload(makePackImportPayload(
-    caseData,
-    [
-      makePackImportInstance(caseData.id, { transform: null }),
-      makePackImportInstance(caseData.id, { transform: { position: { x: 'bad', y: 6, z: 0 } } }),
-      makePackImportInstance(caseData.id, { transform: { position: { x: 12, z: 0 } } }),
-      makePackImportInstance(caseData.id, { transform: { position: { x: 999, y: 6, z: 999 } } }),
-    ],
-    { truck: { length: 120, width: 60, height: 60 } }
-  ));
-
-  assertPackImportNoOverlaps(importedPack.cases, caseData);
-  assert.ok(
-    importedPack.cases.every(inst => inst.transform.position.z > importedPack.truck.width / 2),
-    'Invalid or missing imported transforms must stage outside the truck footprint'
-  );
-  assert.equal(PackLibrary.computeStats(importedPack, [caseData]).packedCases, 0,
-    'Staged repaired instances must not count as packed in the truck');
+  StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
+  const before = StateStore.snapshot();
+  for (const transform of [undefined, null, [], {},
+    { position: { x: 'bad', y: 6, z: 0 } }, { position: { x: 12, z: 0 } },
+    { position: { x: Infinity, y: 6, z: 0 } }, { position: { x: 12, y: null, z: 0 } },
+    { position: { x: 12, y: 6, z: 0 }, rotation: { x: NaN, y: 0, z: 0 } },
+  ]) {
+    const payload = makePackImportPayload(caseData, [makePackImportInstance(caseData.id, { transform })]);
+    assert.throws(() => PackLibrary.planPackImport(payload), /Pack import blocked:.*transform/);
+    assert.throws(() => PackLibrary.importPackPayload(payload), /Pack import blocked:.*transform/);
+    assert.deepEqual(StateStore.snapshot(), before, 'neither bundled Cases nor a partial Pack may publish');
+    assert.equal(StateStore.undo(), false);
+  }
+  for (const [position, rotation] of [
+    [{ x: 999, y: 6, z: 999 }, { x: 0, y: 0, z: 0 }],
+    [{ x: 12, y: 6, z: 0 }, { x: Math.PI, y: 0, z: 0 }],
+  ]) {
+    const definition = { ...caseData, orientationLock: 'upright' };
+    const source = makePackImportInstance(caseData.id, { placement: 'packed', orientationLocked: true,
+      lockedRotation: { x: 0, y: Math.PI / 2, z: 0 },
+      transform: { position, rotation, scale: { x: 1, y: 1, z: 1 } } });
+    const plan = PackLibrary.planPackImport(makePackImportPayload(definition, [source]));
+    assert.deepEqual(plan.pack.cases[0].transform, source.transform);
+    assert.equal(plan.pack.cases[0].placement, 'packed');
+    assert.deepEqual(plan.pack.cases[0].lockedRotation, source.lockedRotation);
+    assert.equal(plan.placementsRepaired + plan.placementsStaged, 0);
+    assert.equal(PackLibrary.assessCommittedPack(plan.pack, plan.newCases).primary, 'INVALID');
+  }
 });
 
-test('PACK-IMPORT-SAFE-1 duplicate imported transforms preserve one safe placement and stage the collision', async () => {
+test('PACK-IMPORT-SAFE-1 duplicate finite transforms remain packed and assess as an overlap', async () => {
   const StateStore = await import(stateStorePath.href);
   const PackLibrary = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const caseData = makePackImportSafeCase({ id: 'case-import-dupe', dimensions: { length: 10, width: 10, height: 10 } });
@@ -828,23 +837,17 @@ test('PACK-IMPORT-SAFE-1 duplicate imported transforms preserve one safe placeme
   const importedPack = PackLibrary.importPackPayload(makePackImportPayload(
     caseData,
     [
-      makePackImportInstance(caseData.id, { transform: duplicateTransform }),
-      makePackImportInstance(caseData.id, { transform: duplicateTransform }),
+      makePackImportInstance(caseData.id, { transform: duplicateTransform, placement: 'packed' }),
+      makePackImportInstance(caseData.id, { transform: duplicateTransform, placement: 'packed' }),
     ],
     { truck: { length: 120, width: 60, height: 60 } }
   ));
 
-  assertPackImportNoOverlaps(importedPack.cases, caseData);
-  assert.equal(
-    importedPack.cases.filter(inst => inst.transform.position.z <= importedPack.truck.width / 2).length,
-    1,
-    'Exactly one duplicate safe in-truck placement should be preserved'
-  );
-  assert.equal(
-    importedPack.cases.filter(inst => inst.transform.position.z > importedPack.truck.width / 2).length,
-    1,
-    'Colliding duplicate imported placement should be staged'
-  );
+  assert.deepEqual(importedPack.cases.map(inst => inst.transform), [duplicateTransform, duplicateTransform]);
+  assert.ok(importedPack.cases.every(inst => inst.placement === 'packed'));
+  const assessment = PackLibrary.assessCommittedPack(importedPack, StateStore.get('caseLibrary'));
+  assert.equal(assessment.primary, 'INVALID');
+  assert.ok(assessment.hard.some(finding => finding.property === 'collision' && finding.outcome === 'FAIL'));
 });
 
 test('PACK-IMPORT-SAFE-1 valid explicit non-overlapping in-truck placements are preserved', async () => {

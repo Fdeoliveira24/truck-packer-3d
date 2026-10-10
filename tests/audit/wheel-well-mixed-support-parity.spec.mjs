@@ -227,10 +227,12 @@ test('solver final validation does not retain an illegal Wheel-Well mixed-suppor
   assert.deepEqual(result.unpacked, ['candidate']);
 });
 
-test('manual resolve and whole-Pack revalidation reject illegal Wheel-Well mixed support', () => {
+test('manual proposals and explicit truck reconciliation reject illegal Wheel-Well mixed support', () => {
   const { cases, pack } = makeMixedSupportPlan();
   const desiredPosition = pack.cases.find(instance => instance.id === 'child').transform.position;
-  const manual = PackLibrary.findManualVerticalPlacement(pack, cases, 'child', {
+  const beforePack = { ...pack, cases: pack.cases.map(instance => instance.id === 'child'
+    ? { ...instance, placement: 'staged', transform: { ...instance.transform, position: { x: 20, y: 5, z: 100 } } } : instance) };
+  const manual = PackLibrary.findManualVerticalPlacement(beforePack, cases, 'child', {
     mode: 'resolve',
     desiredPosition,
   });
@@ -243,6 +245,7 @@ test('manual resolve and whole-Pack revalidation reject illegal Wheel-Well mixed
 
   const revalidated = PackLibrary.revalidateManualPlacements(pack, cases, {
     preserveStagedPositions: true,
+    beforePack,
   });
   assert.deepEqual(revalidated.invalidIds, ['child']);
   assert.deepEqual(revalidated.stagedIds, ['child']);

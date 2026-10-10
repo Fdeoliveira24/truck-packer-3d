@@ -181,7 +181,7 @@ async function runProductionUnpack(StateStore, PackLibrary, CaseLibrary) {
   await unpack();
 }
 
-test('HANDLING-RULES-P0A production Unpack commits staged cargo + empty signature in one Undo/Redo action', async () => {
+test('HANDLING-RULES-P0A production Unpack commits staged cargo without certification in one Undo/Redo action', async () => {
   const { StateStore, PackLibrary, CaseLibrary } = await freshModules();
   const caseA = mkCase();
   const pack = activePackFixture();
@@ -200,7 +200,7 @@ test('HANDLING-RULES-P0A production Unpack commits staged cargo + empty signatur
   assert.deepEqual(StateStore.snapshot(), after);
 });
 
-test('HANDLING-RULES-P0A partial production Unpack preserves signature and unresolved packed cargo', async () => {
+test('HANDLING-RULES-P0A partial production Unpack preserves unresolved packed cargo without certification', async () => {
   const { StateStore, PackLibrary, CaseLibrary } = await freshModules();
   for (const signature of ['v1:OLD', undefined]) {
     const pack = { ...activePackFixture(), handlingRulesValidatedSignature: signature };
@@ -1201,7 +1201,7 @@ test('CASE-DELETION B2: a legacy unsigned Pack affected only by staged instances
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, StateStore.get('caseLibrary')), false);
 });
 
-test('CASE-DELETION C: a packed floor item with no dependents is removed, remaining cargo stays valid, and a fresh current signature is persisted', async () => {
+test('CASE-DELETION C: a packed floor item with no dependents is removed and remaining cargo stays valid without certification', async () => {
   const { StateStore, PackLibrary } = await freshModules();
   const caseF = mkCase({ id: 'case-f' });
   const caseO = mkCase({ id: 'case-o' });
@@ -1218,7 +1218,6 @@ test('CASE-DELETION C: a packed floor item with no dependents is removed, remain
   assert.deepEqual(after.cases.map(i => i.id), ['other']);
   assert.equal(after.cases[0].placement, 'packed');
   assert.deepEqual(after.cases[0].transform.position, { x: 60, y: 5, z: 0 }, 'a valid remaining item does not move');
-  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), false);
   assert.equal(after.stats.totalCases, 1);
@@ -1279,7 +1278,7 @@ test('CASE-DELETION D2: a dependent that can no longer be legally supported anyw
     'a completed validation that staged the dependent is a certified, current result');
 });
 
-test('CASE-DELETION E1: a legacy UNSIGNED Pack with a deleted packed instance receives a fresh signature once whole-Pack validation completes', async () => {
+test('CASE-DELETION E1: a legacy unsigned Pack stays uncertified after a packed instance is deleted', async () => {
   const { StateStore, PackLibrary } = await freshModules();
   const caseS = mkCase({ id: 'case-s' });
   const caseT = mkCase({ id: 'case-t' });
@@ -1321,7 +1320,7 @@ test('CASE-DELETION E2: a legacy UNSIGNED Pack whose validation is incomplete ca
   assertNoOrphanCaseIds(StateStore, 'case-s');
 });
 
-test('CASE-DELETION F: an already-signed Pack gets its signature re-stamped against the next Case Library', async () => {
+test('CASE-DELETION F: an already-signed Pack drops its retired certificate after a Case deletion', async () => {
   const { StateStore, PackLibrary } = await freshModules();
   const caseS = mkCase({ id: 'case-s' });
   const caseT = mkCase({ id: 'case-t' });
@@ -1336,7 +1335,6 @@ test('CASE-DELETION F: an already-signed Pack gets its signature re-stamped agai
 
   const after = StateStore.get('packLibrary')[0];
   const nextLibrary = StateStore.get('caseLibrary');
-  assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(after.handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
   assert.equal(PackLibrary.isHandlingRulesValidationRequired(after, nextLibrary), false);
 });
@@ -1782,19 +1780,41 @@ test('C4 assessment population, precedence, eligibility and immutable inputs', a
   assert.deepEqual({ blocked, library }, snapshot, 'assessment mutates no source input');
 });
 
-test('C4 freshness uses the C2 physical identity and explicit compatibility policy', async () => {
+test('C4 exact bounded cache reuses only matching C2 physical input and policy', async () => {
   const { PackLibrary } = await freshModules();
   const pack = activePackFixture(), library = [mkCase()];
   const base = PackLibrary.assessCommittedPack(pack, library);
   const displayOnly = { ...pack, title: 'Renamed', lastEdited: 999, handlingRulesValidatedSignature: 'v1:incomplete',
     cases: pack.cases.map(i => ({ ...i, hidden: !i.hidden, orientationLocked: true, lockedRotation: { x: 0, y: 1, z: 0 } })) };
-  assert.equal(PackLibrary.assessCommittedPack(displayOnly, [{ ...library[0], name: 'Label', notes: 'Note' }]).identity, base.identity);
-  assert.notEqual(PackLibrary.assessCommittedPack(pack, [{ ...library[0], weight: 11 }]).identity, base.identity);
-  assert.notEqual(PackLibrary.assessCommittedPack(pack, library, {
+  assert.strictEqual(PackLibrary.assessCommittedPack(displayOnly, [{ ...library[0], name: 'Label', notes: 'Note' }]), base);
+  const changedCase = PackLibrary.assessCommittedPack(pack, [{ ...library[0], weight: 11 }]);
+  assert.notStrictEqual(changedCase, base);
+  assert.notEqual(changedCase.identity, base.identity);
+  const changedPolicy = PackLibrary.assessCommittedPack(pack, library, {
     compatibility: { support50: false, wheelWellThird: true, supportWeight: true },
-  }).identity, base.identity);
+  });
+  assert.notStrictEqual(changedPolicy, base);
+  assert.notEqual(changedPolicy.identity, base.identity);
+  const moved = structuredClone(pack);
+  moved.cases[0].transform.position.x += 1;
+  assert.notStrictEqual(PackLibrary.assessCommittedPack(moved, library), base);
+  assert.notStrictEqual(PackLibrary.assessCommittedPack({ ...pack, truck: { ...pack.truck, length: 200 } }, library), base);
+  assert.strictEqual(PackLibrary.assessCommittedPack(pack, library), base, 'identical source skips the solve');
+  assert.ok(Object.isFrozen(base) && Object.isFrozen(base.hard), 'callers cannot corrupt a shared result');
   assert.equal(base.fresh, true);
-  assert.notStrictEqual(PackLibrary.assessCommittedPack(pack, library), base, 'no retained cache/certificate');
+  for (const malformed of [
+    { ...pack, cases: [{ ...pack.cases[0], transform: { ...pack.cases[0].transform, position: null } }] },
+    { ...pack, cases: [pack.cases[0], pack.cases[0]] },
+    { ...pack, truck: { ...pack.truck, length: NaN } },
+  ]) {
+    const first = PackLibrary.assessCommittedPack(malformed, library);
+    assert.equal(first.identity, null);
+    assert.notStrictEqual(PackLibrary.assessCommittedPack(malformed, library), first, 'malformed source always assesses fresh');
+  }
+  for (let n = 0; n < 33; n++) {
+    PackLibrary.assessCommittedPack({ ...pack, truck: { ...pack.truck, length: 300 + n } }, library);
+  }
+  assert.notStrictEqual(PackLibrary.assessCommittedPack(pack, library), base, 'bounded cache evicts old entries');
 });
 
 test('C4 normalization, hydration and open preserve INVALID and INCOMPLETE physical source', async () => {

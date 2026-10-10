@@ -4622,7 +4622,7 @@ test('C3 nullable mass never passes required cargo support and Max retains sourc
 test('C3 exact planning conflicts and stale dimension caches never control actual geometry', async () => {
   const { PackLib } = await p5Modules();
   const truck = { length: 100, width: 50, height: 50, shapeMode: 'rect' };
-  const caseData = { id: 'c', dimensions: { length: 30, width: 20, height: 10 }, weight: 20, orientationLock: 'upright' };
+  const caseData = { id: 'c', shape: 'box', dimensions: { length: 30, width: 20, height: 10 }, weight: 20, orientationLock: 'upright' };
   const instance = { id: 'i', caseId: 'c', placement: 'packed', orientationLocked: true,
     lockedRotation: { x: Math.PI / 2, y: 0, z: 0 }, orientedDims: { length: 99, width: 99, height: 99 },
     transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } };
@@ -4636,7 +4636,8 @@ test('C3 exact planning conflicts and stale dimension caches never control actua
   const forbidden = { ...instance, transform: { position: { x: 20, y: 5, z: 0 }, rotation: { x: Math.PI, y: 0, z: 0 } } };
   const saved = PackLib.revalidateManualPlacements({ truck, cases: [forbidden] }, [caseData]);
   assert.deepEqual(saved.pack.cases[0], forbidden, 'saved forbidden pose and exact target preserved');
-  assert.equal(saved.validationComplete, false, 'preservation never claims physical validity');
+  assert.equal(PackLib.assessCommittedPack(saved.pack, [caseData]).primary, 'INVALID');
+  assert.deepEqual(saved.stagedIds, [], 'assessment does not authorize repair');
   const stagedForbidden = { ...forbidden, placement: 'staged', hidden: true, packedProfile: 'max-capacity' };
   const staged = PackLib.revalidateManualPlacements({ truck, cases: [stagedForbidden] }, [caseData]);
   assert.deepEqual(staged.pack.cases[0], stagedForbidden, 'forbidden staged pose and stale cache stay byte-equivalent');
@@ -4648,13 +4649,13 @@ test('C3 exact planning conflicts and stale dimension caches never control actua
 test('C3 unknown saved support is preserved incomplete while new placement remains conservative', async () => {
   const { PackLib } = await p5Modules();
   const truck = { length: 20, width: 20, height: 30, shapeMode: 'rect' };
-  const caseData = { id: 'c', dimensions: { length: 20, width: 20, height: 10 }, weight: null, orientationLock: 'any' };
+  const caseData = { id: 'c', shape: 'box', dimensions: { length: 20, width: 20, height: 10 }, weight: null, orientationLock: 'any' };
   const instances = [5, 15].map((y, index) => ({ id: `i${index}`, caseId: 'c', placement: 'packed',
     transform: { position: { x: 10, y, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }));
   const pack = { truck, cases: instances };
   const existing = PackLib.revalidateManualPlacements(pack, [caseData]);
-  assert.deepEqual(existing.pack.cases[1], instances[1]);
-  assert.equal(existing.validationComplete, false);
+  assert.deepEqual(existing.pack.cases, instances);
+  assert.equal(PackLib.assessCommittedPack(existing.pack, [caseData]).primary, 'INCOMPLETE');
   assert.deepEqual(existing.stagedIds, []);
   const proposal = PackLib.findManualVerticalPlacement(pack, [caseData], 'i1', {
     mode: 'resolve', desiredPosition: instances[1].transform.position,

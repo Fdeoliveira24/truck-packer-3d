@@ -2272,7 +2272,20 @@ export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
   const beforePack = options.beforePack || getById(source.id) || source;
   const scope = manualMutationScope(beforePack, source, options.beforeCaseLibrary || caseLibrary, options.changedInstanceIds);
-  const reconciliation = reconcilePlacementsForTruck(source, truck, caseLibrary, {
+  const stagedBefore = new Set((beforePack.cases || []).filter(inst => inst.placement === 'staged').map(inst => inst.id));
+  const definitions = new Map((caseLibrary || []).map(definition => [definition.id, definition]));
+  const zones = getTrailerUsableZones(truck);
+  const proposed = { ...source, cases: (source.cases || []).map(inst => {
+    if (!scope.changed.has(inst.id) || !stagedBefore.has(inst.id) || inst.placement !== 'packed') return inst;
+    const position = normalizeTransformPosition(inst.transform?.position);
+    const geometry = getCanonicalInstanceEffectiveDims(inst, definitions.get(inst.caseId));
+    if (!position || !geometry.ok) return inst;
+    const aabb = makeAabb(position, geometry.dims);
+    // An outside staged drop stays staging. It must not become an implicit
+    // local repack into the truck; untouched saved source is never classified.
+    return zones.some(zone => reconXzOverlapArea(aabb, zone) > 0) ? inst : { ...inst, placement: 'staged' };
+  }) };
+  const reconciliation = reconcilePlacementsForTruck(proposed, truck, caseLibrary, {
     preserveStagedPositions: options.preserveStagedPositions !== false,
     changedInstanceIds: scope.changed,
     mutableInstanceIds: scope.mutable,
@@ -3266,6 +3279,27 @@ export function validatePackImportPayload(payload, localCaseIds = new Set()) {
     );
   }
 
+  // Structural preflight precedes all planning/publication. Finite overlap,
+  // containment and Case-permission failures remain representable source;
+  // missing/nonfinite coordinates cannot be repaired into an imported pose.
+  const record = value => value && typeof value === 'object' && !Array.isArray(value);
+  for (const [index, instance] of incomingPack.cases.entries()) {
+    const transform = instance.transform;
+    if (!record(transform) || !record(transform.position) ||
+        !['x', 'y', 'z'].every(axis => typeof transform.position[axis] === 'number' && Number.isFinite(transform.position[axis]))) {
+      throw new Error(`Pack import blocked: instance ${index + 1} requires a finite transform.position (x/y/z).`);
+    }
+    for (const field of ['rotation', 'scale']) {
+      const vector = transform[field];
+      // Older portable files may omit these optional identity-transform fields.
+      if (vector === undefined) continue;
+      if (!record(vector) || !['x', 'y', 'z'].every(axis =>
+        typeof vector[axis] === 'number' && Number.isFinite(vector[axis]) && (field !== 'scale' || vector[axis] > 0))) {
+        throw new Error(`Pack import blocked: instance ${index + 1} has malformed transform.${field}.`);
+      }
+    }
+  }
+
   // Validate every bundled case definition. A malformed bundled case (anywhere in
   // the list — first, middle, or last) blocks the entire import atomically.
   for (const c of bundled) {
@@ -3426,6 +3460,14 @@ export function planPackImport(payload) {
     const next = Utils.deepClone(inst);
     next.id = Utils.uuid();
     next.caseId = caseIdMap.get(next.caseId) || next.caseId;
+    next.transform.rotation ??= { x: 0, y: 0, z: 0 };
+    next.transform.scale ??= { x: 1, y: 1, z: 1 };
+    if (next.placement !== 'packed' || next.packedProfile !== 'max-capacity') delete next.packedProfile;
+    if (next.packedProfile === 'max-capacity' || Object.hasOwn(next, 'orientedDims')) {
+      const geometry = getCanonicalInstanceEffectiveDims(next, caseById.get(next.caseId));
+      if (geometry.ok) next.orientedDims = { ...geometry.dims };
+      else delete next.orientedDims;
+    }
     return next;
   });
 

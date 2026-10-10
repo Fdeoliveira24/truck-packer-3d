@@ -1387,7 +1387,7 @@ test('HANDLING-RULES-P0C required policy regressions A-F: the confirmed defects,
   }
 });
 
-test('HANDLING-RULES-P0C C3 saved forbidden onSide pose remains preserved and unresolved', async () => {
+test('HANDLING-RULES-P0C C3 saved forbidden onSide pose remains preserved and assesses INVALID', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
 
@@ -1399,7 +1399,7 @@ test('HANDLING-RULES-P0C C3 saved forbidden onSide pose remains preserved and un
 
   assert.deepEqual(result.invalidIds, []);
   assert.deepEqual(result.stagedIds, []);
-  assert.equal(result.validationComplete, false);
+  assert.equal(PackLib.assessCommittedPack(result.pack, [caseData]).primary, 'INVALID');
   assert.deepEqual(result.pack.cases[0], inst, 'saved forbidden pose is never silently repaired');
 });
 
@@ -1416,8 +1416,9 @@ test('HANDLING-RULES-P0C manual revalidation preserves a saved forbidden inverte
   assert.deepEqual(result.invalidIds, [],
     'saved incompatibility is preserved for later assessment');
   assert.deepEqual(result.stagedIds, []);
-  assert.equal(result.validationComplete, false);
+  assert.equal(PackLib.assessCommittedPack(result.pack, [caseData]).primary, 'INVALID');
   const revalidated = result.pack.cases.find(c => c.id === 'inst-p0c-upright');
+  assert.deepEqual(revalidated, inst, 'every saved physical and planning field stays exact');
   assert.equal(revalidated.placement, 'packed', 'the saved forbidden pose remains packed in place');
   assert.deepEqual(revalidated.transform.position, { x: 60, y: 5, z: 0 });
 });

@@ -1562,7 +1562,7 @@ test('MANAGEMENT-CARD-UX Cases Grid header: checkbox leads the title, Notes + ov
   assert.doesNotMatch(notesButton, /fa-pen|fa-pencil|fa-edit/, 'the Notes control is not replaced by a pencil/edit icon');
 });
 
-test('MANAGEMENT-CARD-UX Load Plans Grid header: checkbox leads the title; warning, Notes, overflow trail; warning only when stale', async () => {
+test('MANAGEMENT-CARD-UX Load Plans Grid header: checkbox leads the title; derived assessment warning, Notes, overflow trail', async () => {
   const { packGrid, packsSource } = await readManagementSources();
   const build = sliceBetween(packGrid, "const actions = document.createElement('div')", 'if (badgesWrap.children.length)');
 
@@ -1574,13 +1574,14 @@ test('MANAGEMENT-CARD-UX Load Plans Grid header: checkbox leads the title; warni
       build.indexOf('head.appendChild(titleWrap)') < build.indexOf('head.appendChild(actions)'),
     'header order: [ checkbox ] titleWrap [ actions ]'
   );
-  const iStatus = build.indexOf('actions.appendChild(createPackValidationStatus())');
+  const iStatus = build.indexOf('actions.appendChild(createPackValidationStatus({ assessment }))');
   const iNotes = build.indexOf('actions.appendChild(createPackNotesButton(pack))');
   const iKebab = build.indexOf('actions.appendChild(kebabBtn)');
   assert.ok(iStatus >= 0 && iStatus < iNotes && iNotes < iKebab,
     'trailing cluster: [ warning ] [ Notes ] [ overflow ]');
-  assert.match(build, /if \(PackLibrary\.isHandlingRulesValidationRequired\(pack, CaseLibrary\.getCases\(\)\)\) \{\s*actions\.appendChild\(createPackValidationStatus\(\)\);\s*\}/,
-    'the warning is still gated by the existing stale authority, so a current Load Plan has none');
+  assert.match(build, /const assessment = PackLibrary\.assessCommittedPack\(pack, CaseLibrary\.getCases\(\)\)/);
+  assert.match(build, /if \(assessment\.primary !== 'VALID' \|\| assessment\.eligibility\.state === 'blocked'\) \{\s*actions\.appendChild\(createPackValidationStatus\(\{ assessment \}\)\);\s*\}/,
+    'the warning uses physical assessment and independent operational eligibility');
   assert.equal((packGrid.match(/createPackValidationStatus\(/g) || []).length, 1,
     'exactly one warning creation site in the Grid, and it is the gated one');
   assert.doesNotMatch(packsSource, /tp3d-packs-card-head/, 'the old Load Plan header hooks are gone');
@@ -1641,7 +1642,7 @@ test('MANAGEMENT-CARD-UX List views keep their table structure: dedicated checkb
     'Cases List rows carry the same selected class the Load Plans List and both Grids use');
   assert.match(packList, /if \(isSelected\) tr\.classList\.add\('selected'\)/);
   assert.match(packList, /tr\.classList\.toggle\('selected', selectedIds\.has\(pack\.id\)\)/);
-  assert.match(packList, /title\.appendChild\(createPackValidationStatus\(\{ inline: true \}\)\)/,
+  assert.match(packList, /title\.appendChild\(createPackValidationStatus\(\{ inline: true, assessment \}\)\)/,
     'the Load Plans List warning stays inline beside the title');
 });
 
@@ -2321,7 +2322,7 @@ test('CASES-CATEGORY-UI Load Plan validation-status keeps the solid warning-tria
   // warning/exclamation symbol, so the original solid triangle is kept
   // rather than substituting a differently-shaped icon (e.g. a flag).
   assert.match(block, /fa-solid fa-triangle-exclamation/, 'the warning-triangle icon is kept — no available free-tier outline equivalent');
-  assert.match(block, /aria-label', 'Load plan needs review'\)/, 'the accessible name is unchanged');
+  assert.match(block, /aria-label', `Load plan: \$\{assessment\.primary\}`\)/, 'the accessible name describes current physical assessment');
   assert.match(block, /aria-describedby', PACK_STATUS_CARD_BODY_ID\)/, 'the floating status explanation wiring is unchanged');
   assert.match(block, /role', 'img'\)/, 'status semantics (not a button) are unchanged');
 

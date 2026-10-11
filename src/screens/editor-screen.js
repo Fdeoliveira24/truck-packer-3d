@@ -2164,7 +2164,7 @@ export function createInteractionManager({
     }
     function showOperationsBusyToast() {
       UIComponents.showToast(scenePreviewOnly()
-        ? 'Previewing an AutoPack option. Apply it or return to the Applied option to edit cargo.'
+        ? 'Previewing an AutoPack option. Open AutoPack Results to Apply it or choose an option before editing cargo.'
         : 'Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
     }
     const raycaster = new THREE.Raycaster();
@@ -4056,9 +4056,10 @@ export function createEditorScreen({
     function landAutoPackResultsViewOnApplied() {
       const pack = PackLibrary.getById(StateStore.get('currentPackId'));
       if (!getAutoPackResultsPreviewPack(pack)) return;
-      const view = resolveAutoPackResultsView(pack);
-      const appliedIndex = view.options.indexOf(view.currentOption);
-      if (appliedIndex >= 0) patchAutoPackResultsState({ viewIndex: appliedIndex }, view.results.runId);
+      // The selection, not the card view: a closed card can still be previewing.
+      const selection = resolveAutoPackResultsSelection(pack);
+      const appliedIndex = selection.options.indexOf(selection.currentOption);
+      if (appliedIndex >= 0) patchAutoPackResultsState({ viewIndex: appliedIndex }, selection.results.runId);
     }
 
     // Visual export and whole-Pack operations (Unpack, Truck Change) start from
@@ -4391,12 +4392,21 @@ export function createEditorScreen({
     }
 
     // The single viewed-option resolution shared by the Results card, the 3D
-    // scene and the Inspector, so they can never show different options.
+    // scene and the Inspector, so they can never show different options. The
+    // card view adds only presentation: a closed card is not rendered (the
+    // reopen control restores it) but its run is still resolved below.
     function resolveAutoPackResultsView(pack) {
+      const selection = resolveAutoPackResultsSelection(pack);
+      return { ...selection, open: selection.resolved && selection.results.closed !== true };
+    }
+
+    // The run's option selection. It never reads closed/minimized: Results
+    // visibility is presentation-only and must not decide the scene's contents.
+    function resolveAutoPackResultsSelection(pack) {
       const results = getAutoPackResultsState();
       const options = orderAutoPackResultOptions(results && results.options);
-      if (!pack || !results || results.closed || results.packId !== pack.id || !options.length) {
-        return { results, options, open: false };
+      if (!pack || !results || results.packId !== pack.id || !options.length) {
+        return { results, options, resolved: false };
       }
       const currentOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
       const hasAlternates = options.length > 1;
@@ -4412,15 +4422,18 @@ export function createEditorScreen({
         ? Math.min(Math.max(0, requestedIndex), options.length - 1)
         : selectedIndex;
       const viewedOption = hasAlternates ? (options[viewIndex] || options[0]) : (currentOption || options[0]);
-      return { results, options, open: true, currentOption, hasAlternates, viewIndex, viewedOption };
+      return { results, options, resolved: true, currentOption, hasAlternates, viewIndex, viewedOption };
     }
 
-    // Transient live preview: while the open, expanded Results card views a
-    // non-Applied option of a current (not Outdated) run, the scene and the
-    // Inspector totals show that option through the same projection Apply
-    // commits. Presentation only — the Pack, history, autosave, thumbnail and
-    // export never see it (scene authority is published only for the committed
-    // Pack). Anything else, or an operation owning the scene, shows the Pack.
+    // Transient live preview: while a current (not Outdated) Results run views a
+    // non-Applied option, the scene and the Inspector totals show that option
+    // through the same projection Apply commits. The card being expanded,
+    // minimized or closed never matters: the preview ends only for an authority
+    // reason (Apply or landing on the Applied option, a stale source, a newer
+    // run, leaving the Editor, Unpack, Truck Change, Undo/Redo). Presentation
+    // only — the Pack, history, autosave, thumbnail and export never see it
+    // (scene authority is published only for the committed Pack). An operation
+    // owning the scene shows the Pack.
     let autoPackResultsPreview = null;
 
     function getAutoPackResultsPreviewPack(pack) {
@@ -4432,10 +4445,10 @@ export function createEditorScreen({
       if (memo && memo.pack === pack && memo.results === results && memo.caseLibrary === caseLibrary) {
         return memo.previewPack;
       }
-      const view = resolveAutoPackResultsView(pack);
-      const option = view.open && view.results.minimized !== true &&
+      const selection = resolveAutoPackResultsSelection(pack);
+      const option = selection.resolved &&
         isAutoPackResultsFresh(pack, results, caseId => CaseLibrary.getById(caseId)) &&
-        view.viewedOption !== view.currentOption ? view.viewedOption : null;
+        selection.viewedOption !== selection.currentOption ? selection.viewedOption : null;
       const cases = option ? buildAppliedAutoPackCases(option, cloneAutoPackCases, pack.cases) : null;
       autoPackResultsPreview = { pack, results, caseLibrary, previewPack: cases ? { ...pack, cases } : null };
       return autoPackResultsPreview.previewPack;

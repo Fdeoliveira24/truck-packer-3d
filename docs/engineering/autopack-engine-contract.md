@@ -145,7 +145,7 @@ Rules:
 - Apply must respect `OperationLifecycle` busy ownership.
 - Apply rechecks freshness and reassesses the exact selected materialized layout before committing through canonical Pack mutation authority. Explicit incomplete Apply remains INCOMPLETE; it creates no persisted certificate.
 - Browsing must not mutate history, `lastEdited`, export authority, or saved Pack state.
-- The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
+- The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Minimizing or closing the Results card is presentation-only and never changes the previewed scene; the preview ends only on Apply or returning to the Applied option, a stale source, a newer run, leaving the Editor, Unpack, Truck Change, or Undo/Redo. An incomplete preferred option is animated scene-only and previewed without committing; Apply commits the selected option through canonical Pack authority.
 
 ## Manual Vertical Placement Authority
 

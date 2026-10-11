@@ -1584,10 +1584,11 @@ test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the
     'A1-R6 must route runtime AutoPack through the packing-core solution runner');
   assert.match(engineSrc, /const packingSolution = runAdaptiveAutoPack\(\{/,
     'runtime AutoPack must call the adaptive core-engine path for live placement');
-  // C5: the solver's selection is only a search hint. The solution applied to
-  // the scene is the one whose materialized, assessed option was adopted.
-  assert.match(engineSrc, /const solverResult = packingSolution\.solutions\.find\(solution => solution\.id === selectedOption\.id\);/,
-    'runtime AutoPack must apply the core solution behind the adopted assessed option to the scene');
+  // C5: the solver's selection is only a search hint. The solution animated in
+  // the scene is the one whose materialized, assessed option is preferred; only
+  // the adopted (VALID + eligible) one is also committed.
+  assert.match(engineSrc, /const solverResult = packingSolution\.solutions\.find\(solution => solution\.id === preferredOption\.id\);/,
+    'runtime AutoPack must apply the core solution behind the preferred assessed option to the scene');
   assert.match(solutionSrc, /export function runPackingStrategies\(input, strategyIds = \['default'\], solve = solveAutoPack\)/,
     'packing-core must own strategy execution and keep solveAutoPack injectable');
   assert.match(solutionSrc, /export function runAdaptiveAutoPack\(input, solve = solveAutoPack\)/,

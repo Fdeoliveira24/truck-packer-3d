@@ -2346,7 +2346,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     });
     assert.equal(refused.unchanged, true, 'rotate and delete never commit from a previewed scene');
     assert.equal(refused.selected.length, 1, 'selection still works during a preview');
-    assert.ok(refused.toasts.some(text => /Previewing an AutoPack option\. Apply it or return to the Applied option to edit cargo\./.test(text)),
+    assert.ok(refused.toasts.some(text => /Previewing an AutoPack option\. Open AutoPack Results to Apply it or choose an option before editing cargo\./.test(text)),
       `the refusal explains itself (${JSON.stringify(refused.toasts)})`);
     assert.equal(refused.stillPreview, true, 'selecting keeps the preview');
     const applyStart = await changeCount();
@@ -3127,6 +3127,180 @@ test('C5 browser Truck Change previews and commits while preserving unresolved s
     assert.equal(after.length, 90);
     assert.equal(after.orphan, before.orphan);
     assert.equal(after.count, 2);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+// C5 transient preview: the Results card's visibility is presentation-only. An
+// incomplete preferred candidate is animated scene-only, then must stay the
+// scene through minimize, restore, close and reopen until an explicit Apply.
+test('C5 browser incomplete preferred preview survives minimize, restore, close and reopen, then Apply commits it once', { timeout: 240000 }, async () => {
+  const { createC5MixedLoadFixture } = await import('../fixtures/autopack-strategy-audit-fixtures.mjs');
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const fixture = createC5MixedLoadFixture('rect');
+    await page.evaluate(({ pack, caseLibrary }) => {
+      const p = window.probe;
+      p.StateStore.set({ caseLibrary, packLibrary: [{ ...pack, id: 'fixture-pack', title: 'Test-01 mixed load' }],
+        selectedInstanceIds: [], autoPackResults: null });
+      p.StateStore.resetHistory();
+      // Pose signature of every mesh, the committed Pack JSON and Pack notifications.
+      p.sceneSig = () => JSON.stringify(p.PackLibrary.getById('fixture-pack').cases.map(inst => {
+        const o = p.CaseScene.getObject(inst.id);
+        return [inst.id, o.position.x, o.position.y, o.position.z, o.rotation.x, o.rotation.y, o.rotation.z];
+      }));
+      p.packNotes = 0;
+      p.StateStore.subscribe(changes => { if ('packLibrary' in changes) p.packNotes += 1; });
+      // One hash of every mesh pose per animation frame, for the whole scenario:
+      // proves the scene animated, settled once, and never flashed back.
+      p.hash = text => {
+        let h = 2166136261;
+        for (let i = 0; i < text.length; i += 1) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+        return h >>> 0;
+      };
+      p.frameLog = [];
+      p.sampling = true;
+      const tick = () => { if (!p.sampling) return; p.frameLog.push(p.hash(p.sceneSig())); requestAnimationFrame(tick); };
+      requestAnimationFrame(tick);
+    }, fixture);
+    const startSource = await page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getById('fixture-pack')));
+
+    await page.evaluate(() => window.probe.AutoPackEngine.pack());
+    await page.waitForFunction(() => window.probe.CaseScene.isTransientPreview() === true);
+
+    const snap = label => page.evaluate(label2 => {
+      const p = window.probe;
+      const r = p.StateStore.get('autoPackResults');
+      const candidate = r.options[0];
+      let maxDeviation = 0;
+      for (const inst of candidate.nextCases) {
+        const mesh = p.CaseScene.getObject(inst.id);
+        maxDeviation = Math.max(maxDeviation, mesh.position.distanceTo(p.SceneManager.vecInchesToWorld(inst.transform.position)));
+      }
+      const summary = document.querySelector('.tp3d-editor-stats-card')?.innerText.replace(/\s+/g, ' ') || '';
+      const panel = document.querySelector('[data-role="autopack-results-panel"]');
+      const reopen = document.getElementById('btn-autopack-results-reopen');
+      return {
+        label: label2, scene: p.sceneSig(), source: JSON.stringify(p.PackLibrary.getById('fixture-pack')),
+        transient: p.CaseScene.isTransientPreview(), maxDeviation, packNotes: p.packNotes,
+        results: { runId: r.runId, closed: r.closed === true, minimized: r.minimized === true, viewIndex: r.viewIndex ?? null,
+          selectedId: r.selectedId, adopted: r.adoptedOptionIds, first: candidate.id,
+          packed: candidate.packedCount, staged: candidate.stagedCount, primary: candidate.assessment.primary },
+        panel: panel ? { minimized: panel.classList.contains('is-minimized'), text: panel.innerText.replace(/\s+/g, ' ') } : null,
+        reopenVisible: Boolean(reopen && !reopen.hidden),
+        totals: { inTruck: Number((/In truck\s*(\d+)/.exec(summary) || [])[1]), staged: Number((/Staged\s*(\d+)/.exec(summary) || [])[1]) },
+        applyEnabled: !document.querySelector('[data-focus-key="results-apply"]')?.disabled,
+      };
+    }, label);
+
+    // 1. Settled: Balanced 205/29 is the scene; the Pack is untouched; nothing Applied/Recommended.
+    const settled = await snap('settled');
+    assert.equal(settled.results.first, 'default');
+    assert.equal(settled.results.packed, 205);
+    assert.equal(settled.results.staged, 29);
+    assert.equal(settled.results.primary, 'INCOMPLETE');
+    assert.equal(settled.source, startSource, 'the committed Pack is byte-equivalent after the run');
+    assert.equal(settled.packNotes, 0, 'no Pack write: no history, no lastEdited');
+    assert.equal(settled.results.selectedId, null);
+    assert.deepEqual(settled.results.adopted, []);
+    assert.equal(settled.transient, true);
+    assert.ok(settled.maxDeviation < 1e-3, `the scene is the candidate layout (deviation ${settled.maxDeviation})`);
+    assert.deepEqual(settled.totals, { inTruck: 205, staged: 29 }, 'Inspector totals are the candidate totals');
+    assert.ok(settled.panel && settled.panel.minimized === false, 'Results opened expanded');
+    assert.match(settled.panel.text, /Balanced/);
+    assert.match(settled.panel.text, /Needs review/);
+    assert.doesNotMatch(settled.panel.text, /Recommended|Applied/);
+    assert.equal(settled.applyEnabled, true);
+    assert.equal(settled.reopenVisible, false);
+    await page.screenshot({ path: '/tmp/c5-preview-1-settled.png' });
+
+    // Every presentation step leaves scene, Pack, view and Inspector totals untouched.
+    const sameAs = (after, label) => {
+      assert.equal(after.scene, settled.scene, `${label}: scene poses are byte-equivalent`);
+      assert.equal(after.source, startSource, `${label}: the committed Pack is byte-equivalent`);
+      assert.equal(after.packNotes, 0, `${label}: no Pack write or history`);
+      assert.equal(after.transient, true, `${label}: the candidate is still the transient scene`);
+      assert.deepEqual(after.totals, { inTruck: 205, staged: 29 }, `${label}: Inspector totals`);
+      assert.equal(after.results.runId, settled.results.runId, `${label}: same run`);
+      assert.equal(after.results.viewIndex, settled.results.viewIndex, `${label}: same view index`);
+      assert.deepEqual(after.results.adopted, [], `${label}: nothing becomes Applied`);
+    };
+
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    const minimized = await snap('minimized');
+    sameAs(minimized, 'minimize');
+    assert.equal(minimized.results.minimized, true);
+    assert.ok(minimized.panel && minimized.panel.minimized === true, 'the card collapsed to its header');
+    await page.screenshot({ path: '/tmp/c5-preview-2-minimized.png' });
+
+    await page.locator('[data-focus-key="results-toggle"]').click();
+    const restored = await snap('restored');
+    sameAs(restored, 'restore');
+    assert.equal(restored.panel.minimized, false);
+
+    await page.locator('[data-focus-key="results-close"]').click();
+    const closed = await snap('closed');
+    sameAs(closed, 'close');
+    assert.equal(closed.panel, null, 'the Results panel disappeared');
+    assert.equal(closed.reopenVisible, true, 'the existing reopen control appeared');
+    await page.screenshot({ path: '/tmp/c5-preview-3-closed.png' });
+
+    // A closed card does not lift the preview guard: cargo edits are still refused, truthfully.
+    const refused = await page.evaluate(async () => {
+      const p = window.probe;
+      const id = p.PackLibrary.getById('fixture-pack').cases[0].id;
+      p.InteractionManager.setSelection([id]);
+      const before = p.casesJson();
+      const toastsBefore = p.toasts.length;
+      p.InteractionManager.rotateSelection('y', Math.PI / 2);
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const result = { unchanged: p.casesJson() === before, toasts: p.toasts.slice(toastsBefore) };
+      p.InteractionManager.setSelection([]);
+      return result;
+    });
+    assert.equal(refused.unchanged, true, 'a closed card never unlocks cargo edits on a previewed scene');
+    assert.ok(refused.toasts.some(text => /Previewing an AutoPack option\. Open AutoPack Results to Apply it or choose an option before editing cargo\./.test(text)),
+      `the refusal explains itself (${JSON.stringify(refused.toasts)})`);
+    assert.equal((await snap('after-refusal')).scene, settled.scene, 'the refusal moved nothing');
+
+    await page.locator('#btn-autopack-results-reopen').click();
+    const reopened = await snap('reopened');
+    sameAs(reopened, 'reopen');
+    assert.ok(reopened.panel && reopened.panel.minimized === false, 'the same run reopened expanded');
+    assert.equal(reopened.reopenVisible, false);
+    await page.screenshot({ path: '/tmp/c5-preview-4-reopened.png' });
+
+    // Apply commits exactly the previewed candidate, once, with no visible jump.
+    await page.locator('[data-focus-key="results-apply"]').click();
+    const applied = await snap('applied');
+    assert.equal(applied.packNotes, 1, 'Apply is one canonical Pack write (one history action)');
+    assert.notEqual(applied.source, startSource, 'the Pack now holds the candidate');
+    assert.equal(applied.scene, settled.scene, 'Apply causes no pose jump: preview == committed layout');
+    assert.equal(applied.transient, false, 'the scene is now the committed Pack');
+    assert.deepEqual(applied.results.adopted, ['default'], 'Applied becomes truthful');
+    assert.equal(applied.results.selectedId, null, 'still not Recommended');
+    assert.match(applied.panel.text, /Applied/);
+    assert.deepEqual(applied.totals, { inTruck: 205, staged: 29 });
+    assert.ok(applied.maxDeviation < 1e-3);
+    await page.screenshot({ path: '/tmp/c5-preview-5-applied.png' });
+
+    // Across the whole scenario: the scene animated from the start layout, then
+    // settled on the candidate and never left it (no flash on publish, minimize,
+    // close, reopen or Apply).
+    const frames = await page.evaluate(settledScene => {
+      const p = window.probe;
+      p.sampling = false;
+      const target = p.hash(settledScene);
+      const first = p.frameLog.indexOf(target);
+      return { total: p.frameLog.length, distinct: new Set(p.frameLog).size, first,
+        startsOnTarget: p.frameLog[0] === target,
+        departures: first < 0 ? -1 : p.frameLog.slice(first).filter(hash => hash !== target).length };
+    }, settled.scene);
+    assert.equal(frames.startsOnTarget, false, 'the scene began on the pre-run layout');
+    assert.ok(frames.distinct > 10, `the placement animation ran (${frames.distinct} distinct frames)`);
+    assert.ok(frames.first > 0, 'the scene reached the candidate layout');
+    assert.equal(frames.departures, 0, 'once settled the scene never left the candidate layout');
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

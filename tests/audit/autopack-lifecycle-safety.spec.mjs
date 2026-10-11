@@ -117,7 +117,7 @@ async function withFixture(options, run) {
     id: 'b', title: 'B', truck: packA.truck, cases: casesFor(1),
   };
   const packs = new Map([['a', packA], ['b', packB]]);
-  const caseData = { id: 'c', name: 'Box', dimensions: { length: 10, width: 10, height: 10 }, weight: 10, volume: 1000, shape: 'box', orientationLock: 'upright', canFlip: false };
+  const caseData = { id: 'c', name: 'Box', dimensions: { length: 10, width: 10, height: 10 }, weight: 10, volume: 1000, shape: 'box', orientationLock: 'upright', canFlip: false, ...options.caseData };
   const state = { currentPackId: 'a', currentScreen: 'editor', autoPackResults: { previous: true } };
   if (options.preferences !== undefined) state.preferences = options.preferences;
   const listeners = new Set();
@@ -787,4 +787,111 @@ test('10B: screen departure invalidates the run at once and releases the operati
     assert.equal(f.clock.jobs.size, 0);
     assert.equal(f.listenerCount(), 0);
   });
+});
+
+// C5 preferred vs adopted option: an INCOMPLETE preferred option (unknown case
+// weight here) is never committed, but it owns the placement animation. The
+// scene animates over the uncommitted candidate, Results publish only after it
+// settles, and the editor's transient preview then shows that same layout.
+test('C5-PREVIEW: incomplete preferred option animates scene-only, commits nothing, and publishes Results after the scene settles', async () => {
+  await withFixture({ tween: 'none', caseData: { weight: null } }, async f => {
+    const sourceJson = JSON.stringify(f.packs.get('a'));
+    const published = [];
+    f.StateStore.subscribe(patch => {
+      if (patch.autoPackResults && patch.autoPackResults.options) {
+        published.push({ x: f.objects.get('i0').position.x, busy: f.lifecycle.isBusy() });
+      }
+    });
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    await f.clock.advanceBy(276);
+    await promise;
+
+    const results = f.state.autoPackResults;
+    assert.equal(results.options[0].assessment.primary, 'INCOMPLETE', 'the preferred option is incomplete');
+    assert.equal(results.options[0].assessment.eligibility.state, 'eligible');
+    assert.equal(results.selectedId, null, 'nothing is adopted');
+    assert.deepEqual(results.adoptedOptionIds, []);
+    assert.equal(results.minimized, false, 'Results open expanded for the explicit Apply');
+    assert.equal(results.packId, 'a');
+
+    assert.equal(f.packWrites.length, 0, 'no PackLibrary.update: no history and no lastEdited');
+    assert.equal(JSON.stringify(f.packs.get('a')), sourceJson, 'the committed Pack is byte-equivalent');
+    assert.equal(f.stateWrites.some(patch => 'selectedInstanceIds' in patch), false, 'no selection change');
+
+    const obj = f.objects.get('i0');
+    assert.ok(obj.writes.length >= 2, 'the scene was staged then placed by the normal animation');
+    assert.notEqual(obj.writes[0].x, 5000, 'the animation starts from the staging pose');
+    assert.equal(obj.position.x, 5000, 'the scene ends on the preferred candidate layout');
+    assert.equal(results.options[0].nextCases[0].transform.position.x, 5000, 'the candidate is that same layout');
+
+    assert.equal(published.length, 1, 'Results publish exactly once');
+    assert.equal(published[0].x, 5000, 'Results publish only after the candidate scene has settled');
+    const messages = f.toasts.map(args => args[0]);
+    assert.ok(messages.some(text => /^Needs review\./.test(text)), 'a concise Needs review message is shown');
+    assert.equal(messages.some(text => /^Packed /.test(text)), false, 'nothing is claimed as packed');
+    assert.equal(f.lifecycle.isBusy(), false);
+    assert.equal(f.overlays[0].closed, true, 'the existing status card owned the run and closed with it');
+    assert.equal(f.clock.jobs.size, 0);
+  });
+});
+
+test('C5-PREVIEW: a VALID preferred option still adopts, commits once and clears selection with the same animation', async () => {
+  await withFixture({ tween: 'none' }, async f => {
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    await f.clock.advanceBy(276);
+    await promise;
+    const results = f.state.autoPackResults;
+    assert.equal(results.options[0].assessment.primary, 'VALID');
+    assert.equal(results.selectedId, results.options[0].id);
+    assert.deepEqual(results.adoptedOptionIds, [results.options[0].id]);
+    assert.equal(results.minimized, true, 'an adopted run starts collapsed');
+    assert.equal(f.packWrites.length, 1, 'the adopted option commits once');
+    assert.equal(f.packs.get('a').cases[0].placement, 'packed');
+    assert.equal(f.stateWrites.some(patch => Array.isArray(patch.selectedInstanceIds) && patch.selectedInstanceIds.length === 0),
+      true, 'adoption clears the selection as before');
+    const obj = f.objects.get('i0');
+    assert.ok(obj.writes.length >= 2, 'the same staged-then-placed animation ran');
+    assert.equal(obj.position.x, 5000);
+    assert.ok(f.toasts.map(args => args[0]).some(text => /^Packed 1 of 1/.test(text)));
+  });
+});
+
+test('C5-PREVIEW: a large incomplete load snaps scene-only and commits nothing', async () => {
+  await withFixture({ caseCount: 301, tween: 'none', caseData: { weight: null } }, async f => {
+    const sourceJson = JSON.stringify(f.packs.get('a'));
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    await f.finish(promise);
+    const results = f.state.autoPackResults;
+    assert.equal(results.selectedId, null);
+    assert.equal(f.packWrites.length, 0);
+    assert.equal(JSON.stringify(f.packs.get('a')), sourceJson);
+    assert.equal(f.objects.get('i0').position.x, 5000, 'the candidate pose is shown instantly');
+    assert.equal(f.objects.get('i300').position.x, 5000 - 300 * 12);
+    assert.ok(f.toasts.some(args => /^Large load detected/.test(args[0])));
+    assert.ok(f.toasts.some(args => /^Needs review\./.test(args[0])));
+    assert.equal(f.lifecycle.isBusy(), false);
+  });
+});
+
+test('C5-PREVIEW: a stale incomplete run writes no further scene pose, no Pack and no Results', async () => {
+  for (const departure of [{ currentPackId: 'b' }, { currentScreen: 'cases' }]) {
+    await withFixture({ caseData: { weight: null } }, async f => {
+      const sourceJson = JSON.stringify(f.packs.get('a'));
+      const promise = f.engine.pack();
+      await f.initialFrames();
+      const obj = f.objects.get('i0');
+      const writesAtDeparture = obj.writes.length;
+      f.StateStore.set(departure);
+      await f.clock.advanceBy(276);
+      await promise;
+      assert.equal(obj.writes.length, writesAtDeparture, 'no stale scene write after departure');
+      assert.equal(f.packWrites.length, 0);
+      assert.equal(JSON.stringify(f.packs.get('a')), sourceJson);
+      assert.equal(f.state.autoPackResults, null, 'a stale run publishes no Results');
+      assert.equal(f.lifecycle.isBusy(), false);
+    });
+  }
 });

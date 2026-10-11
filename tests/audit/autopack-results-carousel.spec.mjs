@@ -1857,11 +1857,19 @@ test('AUTOPACK-RESULTS-PREVIEW the scene follows the viewed option and restores 
       'the preview is exactly the layout Apply would commit');
     assert.equal(preview(pack()), projected, 'unchanged inputs reuse the same projection');
 
+    // Minimize and Close are presentation-only: the same option stays previewed,
+    // the scene layout is identical, and restore/reopen shows it again unchanged.
     for (const [label, patch] of [['minimized', { minimized: true }], ['closed', { closed: true }]]) {
       f.patchResults(patch, 'run-A');
-      assert.equal(preview(pack()), null, `${label} Results restore the committed Pack`);
+      const hidden = preview(pack());
+      assert.ok(hidden, `${label} Results keep previewing the viewed option`);
+      assert.deepEqual(hidden.cases, projected.cases, `${label} Results leave the scene layout unchanged`);
+      assert.equal(f.StateStore.get('autoPackResults').viewIndex, 1, `${label} never changes the viewed option`);
       f.patchResults({ minimized: false, closed: false }, 'run-A');
-      assert.ok(preview(pack()), `${label}: restored Results resume the same viewed option`);
+      const shown = preview(pack());
+      assert.ok(shown, `${label}: restored Results still preview the same viewed option`);
+      assert.deepEqual(shown.cases, projected.cases, `${label}: restored Results leave the scene layout unchanged`);
+      assert.equal(f.StateStore.get('autoPackResults').viewIndex, 1, `${label}: restore keeps the viewed option`);
     }
     for (const kind of ['autopacking', 'unpacking', 'changingTruck', 'previewingTruckChange']) {
       operation = { busy: true, kind };
@@ -1893,6 +1901,135 @@ test('AUTOPACK-RESULTS-PREVIEW the scene follows the viewed option and restores 
   } finally { f.unsubscribe(); }
 });
 
+// Test-01 shape: nothing was committed (the preferred option is incomplete), so
+// no option is Applied and every viewed option previews. Card visibility must
+// never decide the scene: the preview ends only for an authority reason.
+test('AUTOPACK-RESULTS-PREVIEW minimize, close, restore and reopen never change a no-Applied preview or write the Pack', async () => {
+  const f = await resultsSyncFixture();
+  try {
+    const source = await fs.readFile(editorScreenPath, 'utf8');
+    let operation = { busy: false, kind: 'idle' };
+    const preview = previewProjector(f, source, () => operation);
+    // The production card view + option selection, over the same fixture.
+    const resolvers = new Function('getAutoPackResultsState', 'orderAutoPackResultOptions', 'getAppliedAutoPackOption',
+      'CaseLibrary', 'PreferencesManager', 'resolveAutoPackResultsStartIndex',
+      `${sliceFn(source, 'let autoPackResultsStart = null;', '// Transient live preview')}
+       return { resolveAutoPackResultsView, resolveAutoPackResultsSelection };`)(
+      () => f.StateStore.get('autoPackResults'), f.EditorScreen.orderAutoPackResultOptions,
+      f.EditorScreen.getAppliedAutoPackOption, { getById: f.getCaseById },
+      { get: () => ({ autoPackResultsStartView: 'first' }) }, f.EditorScreen.resolveAutoPackResultsStartIndex);
+    const pack = () => f.PackLibrary.getById(f.winner.id);
+
+    // Back to the pre-run committed source; the run's preferred option is incomplete.
+    f.StateStore.set({ packLibrary: [structuredClone(f.pre)] }, { skipHistory: true });
+    f.StateStore.set({ autoPackResults: { ...f.StateStore.get('autoPackResults'),
+      selectedId: null, adoptedOptionIds: [], viewIndex: undefined, minimized: false, closed: false } }, { skipHistory: true });
+    assert.equal(f.applied(), null, 'no option is Applied: the preferred candidate was never committed');
+    const packBefore = f.StateStore.get('packLibrary');
+    const packJson = JSON.stringify(packBefore);
+    const noteCount = f.notifications.length;
+
+    const candidate = preview(pack());
+    assert.ok(candidate, 'the preferred incomplete option previews as a transient scene');
+    assert.deepEqual(candidate.cases, f.EditorScreen.buildAppliedAutoPackCases(f.options[0], structuredClone, pack().cases),
+      'the preview is exactly the layout an explicit Apply would commit');
+    const sceneJson = JSON.stringify(candidate.cases);
+    const totals = cases => ({ packed: cases.filter(c => c.placement === 'packed').length,
+      staged: cases.filter(c => c.placement === 'staged').length });
+    const candidateTotals = totals(candidate.cases);
+    assert.notDeepEqual(candidateTotals, totals(pack().cases), 'the candidate differs from the committed source');
+
+    const viewedBefore = resolvers.resolveAutoPackResultsSelection(pack());
+    for (const [label, patch, open] of [
+      ['minimized', { minimized: true }, true],
+      ['restored', { minimized: false }, true],
+      ['closed', { closed: true }, false],
+      ['reopened', { closed: false, minimized: false }, true],
+      ['closed and minimized', { closed: true, minimized: true }, false],
+      ['reopened expanded', { closed: false, minimized: false }, true],
+    ]) {
+      f.patchResults(patch, 'run-A');
+      const shown = preview(pack());
+      assert.ok(shown, `${label}: the candidate stays previewed`);
+      assert.equal(JSON.stringify(shown.cases), sceneJson, `${label}: scene poses are byte-equivalent`);
+      assert.deepEqual(totals(shown.cases), candidateTotals, `${label}: Inspector totals remain the candidate totals`);
+      const view = resolvers.resolveAutoPackResultsView(pack());
+      assert.equal(view.open, open, `${label}: only the card presentation follows visibility`);
+      assert.equal(view.viewedOption, viewedBefore.viewedOption, `${label}: the viewed option never changes`);
+      assert.equal(view.viewIndex, viewedBefore.viewIndex, `${label}: the view index never changes`);
+      assert.equal(f.StateStore.get('autoPackResults').adoptedOptionIds.length, 0, `${label}: nothing becomes Applied`);
+    }
+    assert.equal(f.StateStore.get('packLibrary'), packBefore, 'presentation writes never replace the Pack library');
+    assert.equal(JSON.stringify(f.StateStore.get('packLibrary')), packJson, 'the committed source is byte-equivalent');
+    assert.equal(f.writes.length, 0, 'no PackLibrary update (so no history entry and no lastEdited)');
+    assert.equal(f.notifications.slice(noteCount).filter(n => n.keys.includes('packLibrary')).length, 0,
+      'no Pack notification: presentation changes only touch Results state');
+
+    // A closed card still yields to authority events: an operation owning the
+    // scene shows the committed Pack (whole-Pack operations start from it).
+    f.patchResults({ closed: true }, 'run-A');
+    for (const kind of ['autopacking', 'unpacking', 'changingTruck', 'previewingTruckChange']) {
+      operation = { busy: true, kind };
+      assert.equal(preview(pack()), null, `${kind} owns the scene even while the card is closed`);
+    }
+    operation = { busy: false, kind: 'idle' };
+    assert.ok(preview(pack()), 'the closed card previews again once the operation releases the scene');
+    // ... and a source edit makes the run Outdated: the preview ends, closed or not.
+    const edited = structuredClone(pack());
+    edited.cases[1].transform.position.x += 9;
+    f.StateStore.set({ packLibrary: [edited] }, { skipHistory: true });
+    assert.equal(preview(pack()), null, 'an Outdated run ends the preview even with the card closed');
+    f.StateStore.set({ packLibrary: [structuredClone(f.pre)] }, { skipHistory: true });
+    assert.ok(preview(pack()), 'back on the unedited source the same run previews again');
+
+    // Apply (reopened card or not) commits exactly the previewed candidate once.
+    f.patchResults({ closed: false, minimized: false }, 'run-A');
+    const before = f.notifications.length;
+    f.apply(f.options[0].id, 'run-A');
+    assert.equal(f.writes.length, 1, 'Apply is one canonical Pack write');
+    assert.equal(f.notifications.slice(before).filter(n => n.keys.includes('packLibrary')).length, 1,
+      'Apply is one Pack notification (one history action)');
+    assert.deepEqual(pack().cases.map(c => [c.id, c.placement, c.transform.position]),
+      candidate.cases.map(c => [c.id, c.placement, c.transform.position]),
+      'the committed layout equals the previewed one: Apply causes no pose jump');
+    assert.equal(preview(pack()), null, 'after Apply the viewed option is the committed Pack');
+    assert.deepEqual(f.StateStore.get('autoPackResults').adoptedOptionIds, [f.options[0].id],
+      'the Applied state becomes truthful only on the explicit Apply');
+  } finally { f.unsubscribe(); }
+});
+
+test('AUTOPACK-RESULTS-PREVIEW Undo/Redo and export landing resolve the Applied option through a closed card', async () => {
+  const f = await resultsSyncFixture();
+  try {
+    const source = await fs.readFile(editorScreenPath, 'utf8');
+    const preview = previewProjector(f, source, () => ({ busy: false, kind: 'idle' }));
+    const resolveSelection = new Function('getAutoPackResultsState', 'orderAutoPackResultOptions', 'getAppliedAutoPackOption',
+      'CaseLibrary', 'PreferencesManager', 'resolveAutoPackResultsStartIndex',
+      `${sliceFn(source, 'let autoPackResultsStart = null;', '// Transient live preview')}
+       return resolveAutoPackResultsSelection;`)(
+      () => f.StateStore.get('autoPackResults'), f.EditorScreen.orderAutoPackResultOptions,
+      f.EditorScreen.getAppliedAutoPackOption, { getById: f.getCaseById },
+      { get: () => ({ autoPackResultsStartView: 'first' }) }, f.EditorScreen.resolveAutoPackResultsStartIndex);
+    const land = new Function('PackLibrary', 'StateStore', 'getAutoPackResultsPreviewPack',
+      'resolveAutoPackResultsSelection', 'patchAutoPackResultsState',
+      `${sliceFn(source, 'function landAutoPackResultsViewOnApplied() {', '// Visual export and whole-Pack operations')}
+       return landAutoPackResultsViewOnApplied;`)(
+      f.PackLibrary, f.StateStore, preview, resolveSelection, f.patchResults);
+    const pack = () => f.PackLibrary.getById(f.winner.id);
+
+    // The Applied option (Balanced) is committed; the closed card previews Option 2.
+    f.patchResults({ viewIndex: 1, closed: true }, 'run-A');
+    assert.ok(preview(pack()), 'a closed card is previewing a non-Applied option');
+    const packBefore = f.StateStore.get('packLibrary');
+    land();
+    assert.equal(f.StateStore.get('autoPackResults').viewIndex, 0, 'landing returns the view to the Applied option');
+    assert.equal(f.StateStore.get('autoPackResults').closed, true, 'landing never reopens the card');
+    assert.equal(preview(pack()), null, 'the committed scene shows after landing');
+    assert.equal(f.StateStore.get('packLibrary'), packBefore, 'landing writes no Pack source');
+    assert.equal(f.writes.length, 0);
+  } finally { f.unsubscribe(); }
+});
+
 test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspector; scene authority stays Pack-only', async () => {
   const { src, render } = await renderBlock();
   const editorRender = sliceFn(src, '    function render() {\n      const previousPreviewScene', 'function renderSelection()');
@@ -1916,7 +2053,10 @@ test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspecto
     'visual export ends a Results preview before resolving authority');
   assert.match(render, /const view = resolveAutoPackResultsView\(pack\);/, 'the card reads the same view resolution');
   const preview = sliceFn(src, 'function getAutoPackResultsPreviewPack(pack) {', 'function isAutoPackResultsStale(');
-  assert.match(preview, /const view = resolveAutoPackResultsView\(pack\);/, 'the scene reads the same view resolution');
+  assert.match(preview, /const selection = resolveAutoPackResultsSelection\(pack\);/,
+    'the scene reads the shared option selection, never the card visibility');
+  assert.doesNotMatch(preview, /\.minimized|\.closed|resolveAutoPackResultsView/,
+    'minimize and close are presentation-only and never decide the scene preview');
   assert.equal((src.match(/buildSpaceUtilizationResult\(getAutoPackResultsPreviewPack\(pack\) \|\| pack, PackLibrary\)/g) || []).length, 2,
     'Load Summary and Space Utilization read the layout the scene shows');
   assert.doesNotMatch(src, /relaxed-handling-profile|Relaxed handling profile/,
@@ -2107,7 +2247,7 @@ test('C5 fresh unapplied incomplete Apply is exact, reassessed and blocked after
   assert.equal(Editor.prepareAutoPackResultApply(source, results, corrupt, getCase), null);
 });
 
-async function c5RunEngine(weight, { cases, lookup, truck } = {}) {
+async function c5RunEngine(weight, { cases, lookup, truck, scene } = {}) {
   const [E, , P] = await c5Modules();
   const source = c5Pack(cases || [c5Instance('one')]);
   if (truck !== undefined) source.truck = truck;
@@ -2117,7 +2257,8 @@ async function c5RunEngine(weight, { cases, lookup, truck } = {}) {
   const state = { currentPackId: source.id, currentScreen: 'editor', preferences: {} };
   const writes = [];
   const engine = E.createAutoPackEngine({
-    CaseLibrary: { getById: lookup || (() => definition) }, CaseScene: { getObject: () => null, setSelected() {} },
+    CaseLibrary: { getById: lookup || (() => definition) },
+    CaseScene: { getObject: id => (scene && scene.get(id)) || null, setSelected() {} },
     PackLibrary: { ...P, getById: () => committed, update: (id, patch) => { writes.push(patch); committed = { ...committed, ...patch }; },
       computeStats: pack => ({ volumePercent: pack.cases.filter(i => i.placement === 'packed').length }) },
     StateStore: { get: key => state[key], set: patch => Object.assign(state, patch) },
@@ -2126,7 +2267,8 @@ async function c5RunEngine(weight, { cases, lookup, truck } = {}) {
     runtimeWindow: { requestAnimationFrame: fn => fn(), __TP3D_BILLING: { getBillingState: () => ({ ok: true }) } },
     getActiveOrgIdForBilling: () => '', getOrgRoleHydrationState: () => 'ready', getProRuleSet: () => ({ canUseProFeature: true }),
     getWorkspaceSwitchState: () => null, normalizeOrgIdForBilling: value => value, maybeScheduleBillingRefresh() {}, openSettingsOverlay() {},
-    UIComponents: { showToast(message) { toasts.push(message); } }, toast(message) { toasts.push(message); }, SceneManager: {},
+    UIComponents: { showToast(message) { toasts.push(message); } }, toast(message) { toasts.push(message); },
+    SceneManager: scene ? { vecInchesToWorld: v => v, toWorld: v => v } : {},
     Utils: { deepClone: structuredClone, volumeInCubicInches: d => d.length * d.width * d.height },
   });
   await engine.pack();
@@ -2178,6 +2320,65 @@ test('C5 Test-01 preferred Balanced stays first and unapplied when incomplete de
   assert.equal(floor.packedCount, 44);
   assert.equal(floor.assessment.primary, 'VALID');
   assert.ok(run.results.options.some(o => o.id === 'max-capacity'));
+});
+
+// Real Test-01 shape through the production engine with a recording scene: the
+// incomplete preferred Balanced candidate (205 packed / 29 staged) is animated
+// scene-only over the uncommitted Pack. The scene must end on exactly the
+// candidate layout the editor's transient preview then projects, so publishing
+// Results (and any later minimize/close) never moves a mesh.
+test('C5 Test-01 incomplete preferred Balanced animates scene-only to exactly the candidate and leaves the Pack byte-equivalent', async () => {
+  const { createC5MixedLoadFixture } = await import('../fixtures/autopack-strategy-audit-fixtures.mjs');
+  const { pack, caseLibrary } = createC5MixedLoadFixture();
+  const lookup = id => caseLibrary.find(c => c.id === id);
+  const scene = new Map(pack.cases.map(inst => {
+    const t = inst.transform || { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } };
+    const vec = (target, v) => Object.assign(target, v, { set(x, y, z) { this.x = x; this.y = y; this.z = z; } });
+    return [inst.id, { id: inst.id, position: vec({}, { ...t.position }), rotation: vec({}, { ...(t.rotation || { x: 0, y: 0, z: 0 }) }),
+      userData: {} }];
+  }));
+  const poseJson = () => JSON.stringify([...scene.values()].map(mesh => [mesh.position.x, mesh.position.y, mesh.position.z]));
+  const startPoses = poseJson();
+  // The batched animation waits real time per batch; collapse the waits only.
+  const realSetTimeout = globalThis.setTimeout;
+  globalThis.setTimeout = (fn, ms, ...args) => realSetTimeout(fn, ms > 0 ? 0 : ms, ...args);
+  let run;
+  try {
+    run = await c5RunEngine(10, { cases: pack.cases, truck: pack.truck, lookup, scene });
+  } finally { globalThis.setTimeout = realSetTimeout; }
+  const [, Editor] = await c5Modules();
+  const balanced = run.results.options[0];
+  assert.equal(balanced.id, 'default');
+  assert.equal(balanced.packedCount, 205);
+  assert.equal(balanced.stagedCount, 29);
+  assert.equal(balanced.assessment.primary, 'INCOMPLETE');
+  assert.ok(balanced.packedCount < 300, 'below the large-load snap threshold, so the normal animation ran');
+
+  assert.notEqual(poseJson(), startPoses, 'the scene really was animated away from the committed poses');
+
+  // Nothing committed.
+  assert.equal(run.writes.length, 0, 'no PackLibrary.update: no history, no lastEdited');
+  assert.equal(JSON.stringify(run.committed), JSON.stringify(run.source), 'the committed Pack is byte-equivalent');
+  assert.equal(run.results.selectedId, null);
+  assert.deepEqual(run.results.adoptedOptionIds, []);
+  assert.equal(run.results.minimized, false);
+  assert.ok(run.toasts.some(text => /^Needs review\./.test(text)));
+  assert.equal(run.toasts.some(text => /^Packed /.test(text)), false, 'no "Packed" claim for an uncommitted candidate');
+
+  // The scene shows exactly the candidate: every mesh sits on its candidate pose.
+  const candidate = Editor.buildAppliedAutoPackCases(balanced, structuredClone, run.source.cases);
+  let placed = 0;
+  for (const inst of candidate) {
+    const mesh = scene.get(inst.id);
+    const p = inst.transform.position;
+    assert.ok(Math.abs(mesh.position.x - p.x) < 1e-6 && Math.abs(mesh.position.y - p.y) < 1e-6 &&
+      Math.abs(mesh.position.z - p.z) < 1e-6, `mesh ${inst.id} is on its candidate pose`);
+    if (inst.placement === 'packed') placed += 1;
+  }
+  assert.equal(placed, 205, 'the scene shows 205 packed');
+  assert.equal(candidate.length - placed, 29, 'and 29 staged');
+  assert.equal(Editor.getAppliedAutoPackOption(run.source, run.results, lookup), null, 'no Applied badge');
+  assert.notEqual(run.results.selectedId, balanced.id, 'no Recommended badge');
 });
 
 test('C5 recovery: unresolved source-staged cargo never aborts AutoPack, is never moved, and is never invented', async () => {

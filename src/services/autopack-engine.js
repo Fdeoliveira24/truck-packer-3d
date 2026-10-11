@@ -1332,15 +1332,20 @@ export function createAutoPackEngine({
         stagingMap, movableIds: new Set(packItems.map(item => item.inst.id)),
         excludedIds: physicalContext.excludedIds, diagnostics,
       });
-      const selectedOption = results?.options.find(option => option.id === results.selectedId);
-      if (!selectedOption) {
+      // Two roles. The PREFERRED option owns the initial Results view and the
+      // placement animation, VALID or INCOMPLETE; it is the option the Results
+      // card opens on (Balanced, else the first standard plan). Only the ADOPTED
+      // option (VALID + eligible, results.selectedId) is committed. An incomplete
+      // preferred option animates scene-only and stays a Results preview.
+      const adoptedOption = results?.options.find(option => option.id === results.selectedId) || null;
+      const preferredOption = adoptedOption ||
+        results?.options.find(option => option.id !== 'max-capacity') || results?.options[0] || null;
+      if (!preferredOption) {
         StateStore.set({ autoPackResults: results }, { skipHistory: true });
-        UIComponents.showToast(results
-          ? 'Needs review. Review the preferred option before applying.'
-          : (diagnostics.message || AUTOPACK_NO_ADOPTION_DEFAULT), 'warning', { title: 'AutoPack' });
+        UIComponents.showToast(diagnostics.message || AUTOPACK_NO_ADOPTION_DEFAULT, 'warning', { title: 'AutoPack' });
         return;
       }
-      const solverResult = packingSolution.solutions.find(solution => solution.id === selectedOption.id);
+      const solverResult = packingSolution.solutions.find(solution => solution.id === preferredOption.id);
 
       const placements = solverResult.placements;
       const rotations = solverResult.rotations;
@@ -1354,10 +1359,12 @@ export function createAutoPackEngine({
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
-      const nextCases = cloneForAutoPackResults(selectedOption.nextCases);
-      StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true, skipNotify: true });
-      CaseScene.setSelected?.([]);
-      PackLibrary.update(packId, { cases: nextCases });
+      const nextCases = cloneForAutoPackResults(preferredOption.nextCases);
+      if (adoptedOption) {
+        StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true, skipNotify: true });
+        CaseScene.setSelected?.([]);
+        PackLibrary.update(packId, { cases: nextCases });
+      }
 
       cancelAllTweens();
       const animationStartedAt = nowMs();
@@ -1373,8 +1380,9 @@ export function createAutoPackEngine({
           });
         }
       } else {
-        // The final pack state was already committed. Reset only the live meshes
-        // to their staging pose so the legacy small-load animation can still run.
+        // An adopted option's final pack state was already committed (a scene-only
+        // preferred option commits nothing). Reset only the live meshes to their
+        // staging pose so the legacy small-load animation can still run.
         updateLoadingOverlay('Placing cargo in the truck...');
         stageInstant(stagingMap);
         animationCompleted = await animatePlacements(
@@ -1396,8 +1404,17 @@ export function createAutoPackEngine({
       // committed, but it grants no authority over whatever scene is now current.
       if (isRunStale()) return;
       if (!animationCompleted) {
-        // Same context, incomplete animation: sync the scene to the committed Pack.
-        applyScenePoseFromCases(nextCases);
+        // Same context, incomplete animation: sync the scene to the committed
+        // Pack (the candidate itself only when it was adopted).
+        applyScenePoseFromCases(adoptedOption ? nextCases : packData.cases);
+        return;
+      }
+      if (!adoptedOption) {
+        // Scene-only run: nothing was committed, so no "Packed" claim. Results
+        // publish only now, after the candidate scene has settled, and the
+        // editor keeps showing the animated candidate as its Results preview.
+        StateStore.set({ autoPackResults: results }, { skipHistory: true });
+        UIComponents.showToast('Needs review. Review the preferred option before applying.', 'warning', { title: 'AutoPack' });
         return;
       }
 

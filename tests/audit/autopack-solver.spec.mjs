@@ -2135,7 +2135,7 @@ test('REPAIR-1C 7+8+9: corrected beam — every placed item is THREE-correct, co
 
 test('REPAIR-1D 1+2+3: old onSide 144x8x8 beam — the former ~68in transient gap is zero on every frame', async () => {
   const caseObj = { id: 'c', name: 'OldBeam', dimensions: { length: 144, width: 8, height: 8 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 144 * 8 * 8, weight: 50 };
-  const truck = { length: 240, width: 96, height: 96 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect', shapeConfig: {} };
   const { frames } = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: 4, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
   // Visual staging now ignores packing policy and uses deterministic identity,
   // so this beam lies flat at its real base height on every captured frame.
@@ -2147,7 +2147,7 @@ test('REPAIR-1D 1+2+3: old onSide 144x8x8 beam — the former ~68in transient ga
 });
 
 test('REPAIR-1D 4: corrected upright Long Beams stay on the floor on every frame', async () => {
-  const truck = { length: 240, width: 96, height: 96 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect', shapeConfig: {} };
   for (const [name, dims] of [['Long Beam 144', { length: 144, width: 8, height: 8 }], ['Long Beam No Lane', { length: 120, width: 10, height: 10 }]]) {
     const caseObj = { id: 'c', name, dimensions: dims, orientationLock: 'upright', canFlip: false, shape: 'box', volume: dims.length * dims.width * dims.height, weight: 50 };
     const { frames } = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: dims.height / 2, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
@@ -2159,7 +2159,7 @@ test('REPAIR-1D 4: corrected upright Long Beams stay on the floor on every frame
 test('REPAIR-1D 5: an exact compound orientation lock keeps metadata but stages in identity on the floor', async () => {
   const H = Math.PI / 2;
   const caseObj = { id: 'c', name: 'Locked', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'any', canFlip: true, shape: 'box', volume: 6000, weight: 40 };
-  const truck = { length: 240, width: 96, height: 96 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect', shapeConfig: {} };
   const inst = { id: 'i', caseId: 'c', hidden: false, orientationLocked: true, lockedRotation: { x: H, y: 0, z: H }, transform: { position: { x: 0, y: 5, z: 0 }, rotation: { x: H, y: 0, z: H } } };
   const { frames } = await runEnginePack({ caseObj, instances: [inst], truck });
   assertNoFloatFrames(frames, ['i'], 'exact compound lock');
@@ -2171,7 +2171,7 @@ test('REPAIR-1D 6+10: packed pose differs from staging pose — every frame on t
   // any+canFlip:true: staging uses orientations[0] (identity, 30x20x10), the solver
   // may pack a different face. Either way every frame rests on the floor.
   const caseObj = { id: 'c', name: 'Multi', dimensions: { length: 30, width: 20, height: 10 }, orientationLock: 'any', canFlip: true, shape: 'box', volume: 6000, weight: 40 };
-  const truck = { length: 240, width: 96, height: 96 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect', shapeConfig: {} };
   const { frames, objects, storedPack, THREE } = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: 5, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
   assertNoFloatFrames(frames, ['i'], 'packed-differs');
   // Scene and StateStore agree at the end: the rendered object's height matches the
@@ -2185,7 +2185,7 @@ test('REPAIR-1D 6+10: packed pose differs from staging pose — every frame on t
 
 test('REPAIR-1D 7: running AutoPack twice keeps every frame on the floor', async () => {
   const caseObj = { id: 'c', name: 'OnSideTwice', dimensions: { length: 144, width: 8, height: 8 }, orientationLock: 'onSide', canFlip: false, shape: 'box', volume: 144 * 8 * 8, weight: 50 };
-  const truck = { length: 240, width: 96, height: 96 };
+  const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect', shapeConfig: {} };
   const ctx = await runEnginePack({ caseObj, instances: [{ id: 'i', caseId: 'c', hidden: false, transform: { position: { x: 0, y: 4, z: 0 }, rotation: { x: 0, y: 0, z: 0 } } }], truck });
   assertNoFloatFrames(ctx.frames, ['i'], 'first run');
   // Second run on the same engine/scene/state.

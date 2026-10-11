@@ -1128,6 +1128,45 @@ function phbOverlapXZ(a, b) {
          Math.abs(a.pos.z - b.pos.z) < (a.od.width / 2 + b.od.width / 2) - 0.01;
 }
 
+// Physical usable-space containment: the AABB is fully covered by the UNION of
+// the usable zones (which tile truck-minus-blocked-bodies). Single-zone
+// containment is a computational decomposition detail, not a physical rule, so a
+// legal cargo box may straddle a zone seam on the continuous floor. Coverage is
+// checked per coordinate-compressed cell, independently of any solver code.
+function isAabbCoveredByUsableZones(aabb, zones, eps = 0.05) {
+  const axes = ['x', 'y', 'z'];
+  const cuts = axes.map(axis => {
+    const values = new Set([aabb.min[axis], aabb.max[axis]]);
+    for (const zone of zones) {
+      for (const value of [zone.min[axis], zone.max[axis]]) {
+        if (value > aabb.min[axis] + eps && value < aabb.max[axis] - eps) values.add(value);
+      }
+    }
+    return [...values].sort((a, b) => a - b);
+  });
+  for (let i = 0; i < cuts[0].length - 1; i++) {
+    for (let j = 0; j < cuts[1].length - 1; j++) {
+      for (let k = 0; k < cuts[2].length - 1; k++) {
+        const lo = [cuts[0][i], cuts[1][j], cuts[2][k]];
+        const hi = [cuts[0][i + 1], cuts[1][j + 1], cuts[2][k + 1]];
+        if (hi.some((value, axis) => value - lo[axis] <= eps)) continue;
+        const center = lo.map((value, axis) => (value + hi[axis]) / 2);
+        const covered = zones.some(zone => axes.every((axis, index) =>
+          center[index] >= zone.min[axis] - eps && center[index] <= zone.max[axis] + eps));
+        if (!covered) return false;
+      }
+    }
+  }
+  return true;
+}
+
+// A floor-level placement rests on a usable zone's floor plane and is
+// physically contained by the zone union (single-zone OR seam-spanning).
+function isAabbOnUsableFloor(aabb, zones, eps = 0.05) {
+  return zones.some(zone => Math.abs(aabb.min.y - zone.min.y) <= eps) &&
+    isAabbCoveredByUsableZones(aabb, zones, eps);
+}
+
 function phb2FloorHole(Solver, result, zones, itemSpec) {
   const packed = [...result.placements].map(([id, position]) => {
     const dims = result.orientedDims.get(id);
@@ -1175,10 +1214,7 @@ function phb2FloorCount(result, zones, Solver) {
   for (const [id, position] of result.placements) {
     const dims = result.orientedDims.get(id);
     const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
-    if (zones.some(zone =>
-      Solver.isAabbContainedInAnyZone(aabb, [zone]) &&
-      Math.abs(aabb.min.y - zone.min.y) <= 0.05
-    )) count++;
+    if (isAabbOnUsableFloor(aabb, zones)) count++;
   }
   return count;
 }
@@ -1191,11 +1227,9 @@ function phb2SequentialForwardViolation(Solver, result, zones, itemSpecsById, op
   for (const [id, position] of result.placements) {
     const dims = result.orientedDims.get(id);
     const aabb = Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
-    const floorZone = zones.find(zone =>
-      Solver.isAabbContainedInAnyZone(aabb, [zone]) &&
-      Math.abs(aabb.min.y - zone.min.y) <= 0.05
-    );
-    if (!floorZone) continue;
+    // Physical floor placement: a seam-spanning cargo box is on the floor and
+    // must still occupy `prior`, or later alternatives would overlap it silently.
+    if (!isAabbOnUsableFloor(aabb, zones)) continue;
 
     const itemSpec = itemSpecsById.get(id);
     const caseId = itemSpec?.caseId || '';
@@ -1355,7 +1389,7 @@ function e1AssertSafe(Solver, PackLib, P, zones, label) {
     assert.equal(Solver.aabbsOverlap(P[i].aabb, P[j].aabb), false, `${label}: no overlap`);
   }
   for (const p of P) {
-    assert.equal(PackLib.isAabbContainedInAnyZone(p.aabb, zones), true, `${label}: contained (no OOB/blocked)`);
+    assert.equal(isAabbCoveredByUsableZones(p.aabb, zones), true, `${label}: contained (no OOB/blocked)`);
     const floorY = Math.min(...P.map(q => q.minY));
     if (p.minY > floorY + 0.5) {
       const supports = P.filter(s => s !== p && Math.abs(s.maxY - p.minY) <= 0.05 &&
@@ -1869,7 +1903,18 @@ function maxAAssertPhysicalSafety({ Solver, PackLib, Oriented, result, truck, zo
         Math.abs(other.aabb.max.y - placement.aabb.min.y) <= 0.05 &&
         Solver.computeXzOverlapArea(other.aabb, placement.aabb) > 0.05
       );
-      assert.ok(PackLib.computeSupportFraction(placement.aabb, supports.map(other => other.aabb), 0.05) >= PackLib.MIN_SUPPORT_FRACTION,
+      // Real support is cargo OR the rigid wheel-well top (the wheel-well model
+      // counts both); a box resting on a well top is not floating.
+      const cargoSupport = PackLib.computeSupportFraction(placement.aabb, supports.map(other => other.aabb), 0.05);
+      const wellTopSupport = wheelWell
+        ? Solver.computeWheelWellSupport(
+          placement.aabb,
+          placed.filter(other => other !== placement).map(other => ({ instanceId: other.id, aabb: other.aabb, item: other.item })),
+          wheelWell,
+          placement.item
+        ).fraction
+        : 0;
+      assert.ok(Math.max(cargoSupport, wellTopSupport) >= PackLib.MIN_SUPPORT_FRACTION,
         `${label}: ${placement.id} has real cargo support and does not float`);
       if (wheelWell) {
         const physicalOnlyItem = item => ({
@@ -3072,6 +3117,8 @@ export {
   phb2AssertAnimationBatches,
   phb2AssertDirectStackLimit,
   phb2AssertSafe,
+  isAabbCoveredByUsableZones,
+  isAabbOnUsableFloor,
   phb2FloorCount,
   phb2FloorHole,
   phb2SequentialForwardViolation,

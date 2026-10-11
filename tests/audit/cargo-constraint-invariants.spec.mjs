@@ -1103,7 +1103,7 @@ test('placement-safety-euler-order getOrientedDimsForRotation compound X+Z gives
     'compound X+Z rotation AABB must match THREE.js matrix Rx*Ry*Rz applied in Rz-first order');
 });
 
-test('AUTOPACK-MAX-A relaxes noStackOnTop and stackable:false only inside the Max solve', async () => {
+test('AUTOPACK-MAX-A keeps noStackOnTop and stackable:false in the Max solve (C5: same contract as Standard)', async () => {
   const { Solver, PackLib } = await p5Modules();
   const truck = { length: 48, width: 48, height: 24, shapeMode: 'rect' };
   const zones = PackLib.getTrailerUsableZones(truck);
@@ -1120,8 +1120,10 @@ test('AUTOPACK-MAX-A relaxes noStackOnTop and stackable:false only inside the Ma
   const normal = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items });
   const max = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, maxCapacityMode: true });
   assert.equal(normal.placements.size, 1, 'normal solver preserves No top load');
-  assert.equal(max.placements.size, 2, 'Max may use the otherwise forbidden support surface');
-  assert.equal(max.phaseStats.stackCount, 1, 'the additional item is a real supported stack placement');
+  // C5: Max searches more orientations but uses the same no-top / stack
+  // contracts, so it can never place cargo on a surface the Case forbids.
+  assert.equal(max.placements.size, 1, 'Max preserves No top load exactly like Standard');
+  assert.equal(max.phaseStats.stackCount, 0, 'Max never builds a stack on a no-top surface');
 });
 
 test('HANDLING-RULES-P0D legacy string-typed Case rules survive raw Storage.load() but are canonicalized by the same applyCanonicalCargoFields() step app.js now applies before publication', async () => {

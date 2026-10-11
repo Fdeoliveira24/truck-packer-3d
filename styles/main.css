@@ -4708,19 +4708,11 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 /* Body (hidden when minimized). One consistent gap between sections. */
-.tp3d-autopack-results [data-role='autopack-assessment'] {
-  white-space: normal;
-  overflow: visible;
-  text-overflow: clip;
-}
-
 .tp3d-autopack-results__body {
   display: flex;
   flex-direction: column;
   gap: 9px;
   padding: 11px 12px;
-  max-height: min(55vh, 480px);
-  overflow-y: auto;
 }
 
 .tp3d-autopack-results__carousel-nav {
@@ -4888,9 +4880,9 @@ body.tp3d-shared-modal-lock #app .nav {
   font-size: 9px;
 }
 
-/* Max Capacity: compact, always-visible warning text that wraps rather than
-   truncates. */
-.tp3d-autopack-results__relaxed-note {
+/* Needs-review note: compact, always-visible caution text that wraps rather
+   than truncates. */
+.tp3d-autopack-results__review-note {
   display: flex;
   align-items: baseline;
   gap: 6px;
@@ -4906,7 +4898,7 @@ body.tp3d-shared-modal-lock #app .nav {
   white-space: normal;
 }
 
-.tp3d-autopack-results__relaxed-note i {
+.tp3d-autopack-results__review-note i {
   flex: 0 0 auto;
   color: var(--warning-readable);
   font-size: 11px;

@@ -6,6 +6,7 @@ import { assessCommittedPack } from './pack-assessment.js';
 import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 import { getOrientedDimsForRotation, getActualPoseDimensions } from '../core/oriented-dims.js';
+import { projectTargetSpaceSource } from '../packing-core/domain.js';
 import { getAabb } from './autopack-solver.js';
 import {
   CONTACT_EPS,
@@ -55,9 +56,13 @@ export function buildAutoPackStagingMap(packItems, truck, findSafeStagingPositio
     const actual = getActualPoseDimensions(caseData, inst);
     const dims = actual.valid ? actual.value : inst.orientedDims;
     const position = inst.transform?.position;
+    // Unresolved geometry is never invented and never a reason to abort the run:
+    // the staged instance stays exactly as the user left it (the preflight
+    // already excludes missing-Case cargo and warns), it simply cannot act as a
+    // trusted footprint reservation for newly generated leftovers.
     if (!position || !['x', 'y', 'z'].every(axis => Number.isFinite(position[axis])) ||
         !dims || !['length', 'width', 'height'].every(axis => Number.isFinite(dims[axis]) && dims[axis] > 0)) {
-      throw new Error('Existing staged cargo has unresolved geometry; staging cannot be allocated safely.');
+      continue;
     }
     const reserved = getAabb(position, { l: dims.length, w: dims.width, h: dims.height });
     // Reserve the footprint even for user staging placed above the floor.
@@ -278,20 +283,82 @@ export function isAutoPackAssessmentAdoptable(assessment) {
     assessment.eligibility?.state === 'eligible';
 }
 
+// Assessment classification for option identity. Findings carry instance ids and
+// per-instance evidence, so two physically identical layouts whose interchangeable
+// instances merely traded ids would otherwise look different. Only what the
+// planner can perceive survives: the primary state, eligibility, and the MULTISET
+// of non-passing (property, outcome, reason) findings, and every gate's outcome.
+/**
+ * @param {any[]} findings
+ * @param {(finding: any) => boolean} [keep]
+ */
+function assessmentFindingCounts(findings, keep = () => true) {
+  const counts = new Map();
+  for (const finding of findings || []) {
+    if (!keep(finding)) continue;
+    const reason = typeof finding?.evidence?.reason === 'string' ? finding.evidence.reason : '';
+    // Compatibility gates carry their policy state: an inactive gate is a
+    // different outcome for the planner than an active one that passed.
+    const active = typeof finding?.active === 'boolean' ? `|${finding.active}` : '';
+    const key = `${finding?.property}|${finding?.outcome}|${reason}${active}`;
+    counts.set(key, (counts.get(key) || 0) + 1);
+  }
+  return [...counts].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+export function buildAutoPackSemanticAssessmentKey(assessment) {
+  const nonPassing = finding => finding?.outcome !== 'PASS' && finding?.outcome !== 'NOT_APPLICABLE';
+  return [
+    assessment?.primary,
+    assessment?.eligibility?.state,
+    assessmentFindingCounts(assessment?.eligibility?.blockedBy),
+    assessmentFindingCounts(assessment?.hard, nonPassing),
+    assessmentFindingCounts(assessment?.gates),
+    assessmentFindingCounts(assessment?.unverified),
+    assessmentFindingCounts(assessment?.advisory),
+  ];
+}
+
+export const AUTOPACK_NO_ADOPTION_DEFAULT = 'No adoptable solution. The load plan is unchanged.';
+
+// Why no candidate could be adopted or applied, in plain language. Only the
+// shared assessment's outcomes are read; no ids, coordinates or property names
+// are exposed. Unknown situations keep the generic message.
+export function explainAutoPackNoAdoption(candidates) {
+  const assessments = (candidates || []).map(option => option?.assessment).filter(Boolean);
+  if (!assessments.length) return AUTOPACK_NO_ADOPTION_DEFAULT;
+  const unresolved = assessment => new Set((assessment.hard || [])
+    .filter(finding => finding.outcome === 'UNRESOLVED').map(finding => String(finding.property)));
+  if (assessments.every(assessment => unresolved(assessment).has('source.target-space'))) {
+    return 'The truck settings could not be verified. Check the truck size and shape, then run AutoPack again.';
+  }
+  if (assessments.every(assessment => assessment.primary === 'INVALID')) {
+    return 'AutoPack could not find a layout that passes the physical checks. Review the cargo and truck settings.';
+  }
+  if (assessments.every(assessment => ['source.instance', 'source.case', 'geometry.source']
+    .some(property => unresolved(assessment).has(property)))) {
+    return 'Some loaded cargo has missing or invalid information, so the load plan cannot be verified. ' +
+      'Fix or remove it, then run AutoPack again.';
+  }
+  return AUTOPACK_NO_ADOPTION_DEFAULT;
+}
+
 // Final semantic dedup/ranking happens only AFTER full Pack materialization and
 // C2/C4 assessment. Solver selection is a search hint, never adoption authority.
 export function rankAutoPackResultOptions(rawOptions) {
   const acceptable = rawOptions.filter(option => isAutoPackAssessmentAdoptable(option.assessment));
+  // Preserve the strategy portfolio's order, with Balanced as the preferred
+  // starting plan whenever it is acceptable. Physical certainty alone must not
+  // promote an inferior floor-only plan over an incomplete preferred layout.
   const ranked = acceptable.slice().sort((a, b) =>
-    Number(b.assessment.primary === 'VALID') - Number(a.assessment.primary === 'VALID') ||
-    b.packedCount - a.packedCount || a.stagedCount - b.stagedCount ||
-    Number(a.id === 'max-capacity') - Number(b.id === 'max-capacity')
-  );
+    Number(b.id === 'default') - Number(a.id === 'default'));
   const seen = new Set();
   const options = ranked.filter(option => {
-    const a = option.assessment;
+    // Strategy context stays part of identity: Max Capacity is a distinct,
+    // user-selectable strategy (it writes the max-capacity profile when applied).
+    // Only interchangeable-instance id/evidence permutations collapse.
     const key = JSON.stringify([option.layoutSignature, option.id === 'max-capacity',
-      a.primary, a.hard, a.eligibility, a.gates, a.unverified, a.advisory, option.partialCauses]);
+      buildAutoPackSemanticAssessmentKey(option.assessment), option.partialCauses]);
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -300,7 +367,7 @@ export function rankAutoPackResultOptions(rawOptions) {
   return { options, validSolutionCount,
     incompleteSolutionCount: options.length - validSolutionCount,
     deduplicatedSolutionCount: acceptable.length - options.length,
-    selectedId: validSolutionCount ? options[0].id : null };
+    selectedId: options[0]?.assessment.primary === 'VALID' ? options[0].id : null };
 }
 
 function animationNumber(value, fallback = 0) {
@@ -371,6 +438,24 @@ function existingSupportIsValid(candidate, placements, zones, wheelWell) {
 
 /** Pure preflight: only solved visible items can move; packed hidden and unresolved cargo cannot. */
 export function buildAutoPackPhysicalContext(pack, getCaseById, getCanonicalInstanceEffectiveDims, zones) {
+  // AutoPack, staging and the shared assessment all key cargo by instance id. An
+  // id that is blank or shared by two instances cannot be moved or assessed
+  // reliably (both would receive one pose, and every candidate would be
+  // unverifiable), so say so up front instead of failing every option silently.
+  const seenIds = new Set();
+  let unusableIdCount = 0;
+  for (const inst of pack?.cases || []) {
+    if (!inst) continue;
+    if (typeof inst.id !== 'string' || !inst.id.trim() || seenIds.has(inst.id)) unusableIdCount++;
+    else seenIds.add(inst.id);
+  }
+  if (unusableIdCount > 0) {
+    return {
+      ok: false,
+      reason: `${unusableIdCount} cargo item${unusableIdCount === 1 ? ' has' : 's have'} a missing or duplicate ID, ` +
+        'so AutoPack cannot place them reliably. Remove or re-add them, then run AutoPack again.',
+    };
+  }
   const fixedPlacements = [];
   const movablePacked = [];
   const excludedIds = new Set();
@@ -847,7 +932,7 @@ export function createAutoPackEngine({
     };
   }
 
-  function buildAutoPackResultsState({ packId, packData, packingSolution, selectedSolution, stagingMap, movableIds, excludedIds }) {
+  function buildAutoPackResultsState({ packId, packData, packingSolution, selectedSolution, stagingMap, movableIds, excludedIds, diagnostics = null }) {
     const solverSolutions = Array.isArray(packingSolution && packingSolution.solutions)
       ? packingSolution.solutions
       : [];
@@ -862,7 +947,10 @@ export function createAutoPackEngine({
 
     const population = rankAutoPackResultOptions(rawOptions);
     const { options, selectedId } = population;
-    if (!options.length) return null;
+    if (!options.length) {
+      if (diagnostics) diagnostics.message = explainAutoPackNoAdoption(rawOptions);
+      return null;
+    }
 
     return {
       runId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -1044,6 +1132,16 @@ export function createAutoPackEngine({
     );
     if (!physicalContext.ok) {
       UIComponents.showToast(physicalContext.reason, 'warning', { title: 'AutoPack' });
+      return;
+    }
+    // Candidates are assessed against the exact truck source. If the truck
+    // settings are not a verifiable physical source, no layout could be adopted
+    // or applied: say which setting needs attention instead of solving for nothing.
+    const targetSpace = projectTargetSpaceSource(packData.truck);
+    if (!targetSpace.valid) {
+      UIComponents.showToast(
+        `The truck settings could not be verified (${targetSpace.field}). Check the truck size and shape, then run AutoPack again.`,
+        'warning', { title: 'AutoPack' });
       return;
     }
 
@@ -1228,17 +1326,18 @@ export function createAutoPackEngine({
       });
       solverMs = nowMs() - solverStartedAt;
       if (isRunStale()) return;
+      const diagnostics = {};
       const results = buildAutoPackResultsState({
         packId, packData, packingSolution, selectedSolution: packingSolution?.selectedSolution,
         stagingMap, movableIds: new Set(packItems.map(item => item.inst.id)),
-        excludedIds: physicalContext.excludedIds,
+        excludedIds: physicalContext.excludedIds, diagnostics,
       });
       const selectedOption = results?.options.find(option => option.id === results.selectedId);
       if (!selectedOption) {
         StateStore.set({ autoPackResults: results }, { skipHistory: true });
         UIComponents.showToast(results
-          ? 'No valid solution. Review the incomplete options before applying.'
-          : 'No adoptable solution. The load plan is unchanged.', 'warning', { title: 'AutoPack' });
+          ? 'Needs review. Review the preferred option before applying.'
+          : (diagnostics.message || AUTOPACK_NO_ADOPTION_DEFAULT), 'warning', { title: 'AutoPack' });
         return;
       }
       const solverResult = packingSolution.solutions.find(solution => solution.id === selectedOption.id);

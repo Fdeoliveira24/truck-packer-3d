@@ -175,9 +175,13 @@ test('STRATEGY-AUDIT Floor first remains a truthful no-stacking strategy', () =>
 });
 
 test('STRATEGY-AUDIT C3 Max search is independent, Case-constrained, and never auto-applied', () => {
+  // C5: Max uses the same no-top / stack-count / mass / support contracts as
+  // Standard, so a fixture whose only Max advantage was a relaxed stacking
+  // preference no longer packs more. Max stays an independent solve and is never
+  // auto-applied.
   const relaxedWin = fixture('fragile-no-stack');
-  assert.ok(strategy(relaxedWin, 'max-capacity').packedCount > strategy(relaxedWin, 'default').packedCount,
-    'remaining stacking preferences can distinguish the independent Max result');
+  assert.equal(strategy(relaxedWin, 'max-capacity').packedCount, strategy(relaxedWin, 'default').packedCount,
+    'Max cannot beat Standard by clearing no-top or stack-count rules');
   assert.equal(relaxedWin.adaptivePortfolio.selectedStrategyId, 'default');
   const identical = fixture('identical-over-demand');
   assert.equal(strategy(identical, 'max-capacity').packedCount, 60,
@@ -195,7 +199,9 @@ test('STRATEGY-AUDIT constrained and special-geometry semantics are observable',
   const balanced = strategy(wheel, 'default');
   const constrained = strategy(wheel, 'constrained-first');
   assert.equal(constrained.packedCount, 52);
-  assert.equal(balanced.packedCount, 40);
+  // 41 = the 40 zone-bound placements plus the one seam-spanning floor slot the
+  // continuous channel floor legitimately offers (never fewer than before).
+  assert.equal(balanced.packedCount, 41);
   assert.ok(constrained.wheelWellUsage.channelCount > balanced.wheelWellUsage.channelCount);
   assert.ok(constrained.wheelWellUsage.raisedShelfCount > balanced.wheelWellUsage.raisedShelfCount);
   assert.equal(wheel.adaptivePortfolio.selectedStrategyId, 'constrained-first');

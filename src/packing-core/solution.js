@@ -19,8 +19,8 @@
  *   items that fit no floor position stage with an honest reason.
  * - `stack-priority`: an item that fails the floor is offered a safe supported
  *   stack immediately (favors vertical use over floor spread).
- * - `max-capacity`: a physical-fit estimate that may relax handling rules but
- *   still uses the same physical rules. Its selected field is only a search
+ * - `max-capacity`: a broader search of allowed orientations under the same
+ *   physical and handling rules. Its selected field is only a search
  *   hint; the engine selects adoption after materialization and C2 assessment.
  * - `constrained-first`: constrained (narrower) zones are reserved and filled
  *   with best-fitting cargo before the open floor phases run.
@@ -67,7 +67,7 @@ export const PACKING_STRATEGIES = Object.freeze([
     id: 'max-capacity',
     strategy: 'max-capacity',
     label: 'Max Capacity',
-    description: 'Broader orientation search with the same physical rules',
+    description: 'Tries more allowed orientations to fit more cargo.',
     options: Object.freeze({ maxCapacityMode: true }),
   }),
   Object.freeze({

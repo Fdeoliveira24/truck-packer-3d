@@ -731,10 +731,14 @@ test('A3 unresolved packed blocker is preserved, warned, and passed to every sol
     assert.equal(fixedSeen?.length, 1);
     assert.equal(fixedSeen[0].collisionOnly, true);
     assert.equal(JSON.stringify(f.packs.get('a').cases[0]), before);
-    assert.equal(JSON.stringify(f.state.autoPackResults.options[0].nextCases[0]), before);
-    assert.deepEqual(f.state.autoPackResults.options[0].movableIds, ['i1']);
     assert.ok(f.toasts.some(([message]) => /preserved as fixed physical blockers/.test(message)));
-    assert.ok(f.toasts.some(([message]) => /Packed 1 of 1 eligible cases/.test(message)));
+    // C5: a packed instance whose Case definition is missing leaves the loaded
+    // population unassessable, so every compatibility gate is unresolved and no
+    // candidate is operationally eligible. AutoPack warns and leaves the plan
+    // exactly as it was; nothing is adopted, applied or written.
+    assert.equal(f.state.autoPackResults, null);
+    assert.equal(f.packWrites.length, 0);
+    assert.ok(f.toasts.some(([message]) => /Some loaded cargo has missing or invalid information/.test(message)));
   });
 });
 
@@ -758,7 +762,8 @@ test('A3 resolved hidden packed cargo reaches the solver as fixed context and re
     assert.equal(JSON.stringify(f.packs.get('a').cases[0]), before);
     assert.equal(JSON.stringify(f.state.autoPackResults.options[0].nextCases[0]), before);
     assert.deepEqual(f.state.autoPackResults.options[0].movableIds, ['i1']);
-    assert.equal(f.state.autoPackResults.options[0].packedCount, 1);
+    // C5 counts the complete candidate Pack: the solved case plus the fixed hidden one.
+    assert.equal(f.state.autoPackResults.options[0].packedCount, 2);
   });
 });
 

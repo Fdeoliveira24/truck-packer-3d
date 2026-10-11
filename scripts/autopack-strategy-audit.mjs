@@ -272,11 +272,17 @@ function footprintContainedInZone(aabb, zone) {
   );
 }
 
-function isOnUsableSurface(record, zones) {
-  return zones.some(
+function isOnUsableSurface(record, zones, wheelWell = null) {
+  if (zones.some(
     zone =>
       Math.abs(record.aabb.min.y - zone.min.y) <= CONTACT_EPSILON_INCHES && footprintContainedInZone(record.aabb, zone)
-  );
+  )) return true;
+  // The Wheel Wells floor is continuous across the computational zone seams: a
+  // floor-level box inside truck-minus-blocked rests on the truck floor even when
+  // no single zone contains its whole footprint.
+  return Boolean(wheelWell) &&
+    Math.abs(record.aabb.min.y - wheelWell.truckBox.min.y) <= CONTACT_EPSILON_INCHES &&
+    isAabbWithinTruckMinusBlocked(record.aabb, wheelWell);
 }
 
 function rigidWheelWellSupportArea(aabb, geometry) {
@@ -312,7 +318,7 @@ export function validatePlacementRecords(fixture, records) {
   }
 
   for (const record of records) {
-    if (isOnUsableSurface(record, zones)) continue;
+    if (isOnUsableSurface(record, zones, wheelWell)) continue;
     const supporterAabbs = records.filter(other => other !== record).map(other => other.aabb);
     const itemSupportArea =
       computeSupportFraction(record.aabb, supporterAabbs) * (record.dims.length * record.dims.width);
@@ -364,10 +370,10 @@ function groupedSurfaceArea(zones) {
   return [...groups.values()].reduce((sum, rectangles) => sum + rectangleUnionArea(rectangles), 0);
 }
 
-function floorFootprintArea(records, zones) {
+function floorFootprintArea(records, zones, wheelWell = null) {
   const groups = new Map();
   for (const record of records) {
-    if (!isOnUsableSurface(record, zones)) continue;
+    if (!isOnUsableSurface(record, zones, wheelWell)) continue;
     const y = String(roundSignature(record.aabb.min.y));
     if (!groups.has(y)) groups.set(y, []);
     groups.get(y).push({
@@ -380,12 +386,12 @@ function floorFootprintArea(records, zones) {
   return [...groups.values()].reduce((sum, rectangles) => sum + rectangleUnionArea(rectangles), 0);
 }
 
-function supportDepthMetrics(records, zones) {
+function supportDepthMetrics(records, zones, wheelWell = null) {
   const recordById = new Map(records.map(record => [record.id, record]));
   const memo = new Map();
   const depth = record => {
     if (memo.has(record.id)) return memo.get(record.id);
-    if (isOnUsableSurface(record, zones) || !record.supporters.length) {
+    if (isOnUsableSurface(record, zones, wheelWell) || !record.supporters.length) {
       memo.set(record.id, 1);
       return 1;
     }
@@ -402,7 +408,7 @@ function supportDepthMetrics(records, zones) {
   const rootsFor = (record, seen = new Set()) => {
     if (seen.has(record.id)) return [];
     seen.add(record.id);
-    if (isOnUsableSurface(record, zones) || !record.supporters.length) return [record.id];
+    if (isOnUsableSurface(record, zones, wheelWell) || !record.supporters.length) return [record.id];
     return record.supporters.flatMap(id => {
       const support = recordById.get(id);
       return support ? rootsFor(support, new Set(seen)) : [];
@@ -515,7 +521,7 @@ function solutionMetrics(fixture, solution, strategyId) {
   const canonical = computeStats(pack, fixture.caseLibrary);
   const packedOnlyCases = pack.cases.filter(instance => instance.placement === 'packed');
   const packedOnlyCog = computeCoG({ truck: pack.truck, cases: packedOnlyCases }, fixture.caseLibrary);
-  const floorArea = floorFootprintArea(validRecords, zones);
+  const floorArea = floorFootprintArea(validRecords, zones, wheelWell);
   const availableFloorArea = groupedSurfaceArea(zones);
   const phase = solution.phaseStats || {};
   const minX = validRecords.length ? Math.min(...validRecords.map(record => record.aabb.min.x)) : 0;
@@ -523,7 +529,7 @@ function solutionMetrics(fixture, solution, strategyId) {
   const topY = validRecords.length ? Math.max(...validRecords.map(record => record.aabb.max.y)) : 0;
   const phaseFloorCount =
     (Number(phase.laneCount) || 0) + (Number(phase.floorCount) || 0) + (Number(phase.fillerCount) || 0);
-  const supportDepth = supportDepthMetrics(validRecords, zones);
+  const supportDepth = supportDepthMetrics(validRecords, zones, wheelWell);
   const frontOverhangUseCount =
     fixture.truck.shapeMode === 'frontBonus'
       ? validRecords.filter(record => record.aabb.max.x > fixture.truck.length + CONTACT_EPSILON_INCHES).length
@@ -556,7 +562,7 @@ function solutionMetrics(fixture, solution, strategyId) {
       stacked: Number(phase.stackCount) || 0,
       unpacked: Number(phase.unpackedCount) || 0,
     },
-    geometricFloorSurfaceCount: validRecords.filter(record => isOnUsableSurface(record, zones)).length,
+    geometricFloorSurfaceCount: validRecords.filter(record => isOnUsableSurface(record, zones, wheelWell)).length,
     ...supportDepth,
     totalPackedWeight: canonical.totalWeight === null ? null : round(canonical.totalWeight, 3),
     packedOnlyCog: packedOnlyCog

@@ -184,8 +184,8 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
 
   assert.match(render, /apply\.addEventListener\('click', \(\) => applyAutoPackResultOption\(viewedOption\.id, results\.runId\)\);/,
     'carousel Apply must call the existing applyAutoPackResultOption path');
-  assert.match(render, /apply\.disabled = isViewedCurrent \|\| stale;/,
-    'Apply must be disabled for the applied option and for stale results');
+  assert.match(render, /apply\.disabled = isViewedCurrent \|\| stale \|\| !isAutoPackAssessmentAdoptable\(assessment\);/,
+    'Apply must be disabled for the applied option, stale results, and a non-adoptable assessment');
   assert.match(render, /<i class="fa-solid fa-check"><\/i> Applied/,
     'the applied option button must show a check icon');
   assert.match(render, /tp3d-autopack-results__apply-btn--applied/, 'the applied button must carry its modifier class');
@@ -194,13 +194,18 @@ test('AUTOPACK-CAROUSEL apply keeps the validated path, marks Applied with a che
 
   const apply = sliceFn(src, 'function applyAutoPackResultOption(optionId, expectedRunId)', 'function makeAutoPackResultStat(');
   assert.match(apply, /if \(isAutoPackResultsStale\(pack, results\)\)/, 'apply must keep the stale guard');
-  assert.match(apply, /const appliedCases = buildAppliedAutoPackCases\(option, cloneAutoPackCases, pack\.cases\);/,
-    'apply must derive the applied option cases through the profile-aware builder');
+  assert.match(apply, /const prepared = prepareAutoPackResultApply\(pack, results, option, caseId => CaseLibrary\.getById\(caseId\)\);/,
+    'apply must derive the applied cases through the freshness + reassessment gate');
+  assert.match(apply, /const appliedCases = prepared\.cases;/, 'apply commits exactly the prepared cases');
   // Source-level production wiring coverage (not behavioral Apply execution).
   assert.doesNotMatch(apply, /handlingRulesValidatedSignature|buildHandlingRulesValiditySignature/,
     'C4 Apply commits source without persisting a validation certificate');
-  assert.match(apply, /getAppliedAutoPackOption\(projectedPack, results, caseId => CaseLibrary\.getById\(caseId\)\) !== option/,
-    'Apply must refuse a proposal that cannot become the exact unambiguous applied option');
+  const prepare = sliceFn(src, 'export function prepareAutoPackResultApply(', 'export function getAppliedAutoPackOption(');
+  assert.match(prepare, /isAutoPackResultsFresh\(pack, results, getCaseById\)/, 'prepare rechecks source freshness');
+  assert.match(prepare, /buildAppliedAutoPackCases\(option, value => structuredClone\(value\), pack\.cases\)/,
+    'prepare derives cases through the profile-aware builder');
+  assert.match(prepare, /assessCommittedPack\(\{ \.\.\.pack, cases \}, definitions\)/, 'prepare reassesses the exact Pack to commit');
+  assert.match(prepare, /isAutoPackAssessmentAdoptable\(assessment\)/, 'prepare refuses a non-adoptable assessment');
   assert.equal((apply.match(/PackLibrary\.update\(/g) || []).length, 1,
     'Apply must publish cases through one Pack update');
   assert.match(apply, /PackLibrary\.update\(pack\.id, \{\s*cases: appliedCases,\s*\}\)/,
@@ -226,9 +231,11 @@ test('AUTOPACK-CAROUSEL view/minimize state is clamped; fresh results open on th
 
   const engineSrc = await fs.readFile(enginePath, 'utf8');
   assert.equal(engineSrc.includes('viewIndex'), false, 'the result payload must not carry carousel view state');
-  // minimized: true is intentionally set in the initial payload so each new AutoPack
-  // run starts with the panel collapsed (the user expands it with the chevron toggle).
-  assert.match(engineSrc, /minimized: true/, 'result payload must set minimized:true so the panel starts collapsed on every new run');
+  // C5: a run that adopted a VALID option starts collapsed (the user expands it
+  // with the chevron toggle); an incomplete-only run adopted nothing, so it opens
+  // expanded so the planner sees the options that need an explicit Apply.
+  assert.match(engineSrc, /minimized: selectedId !== null/,
+    'result payload collapses only when a valid option was adopted');
 });
 
 // The production viewed-option resolver (shared by the Results card, the 3D
@@ -291,8 +298,8 @@ test('AUTOPACK-CAROUSEL fresh view follows the starting view, keeps an explicit 
     'with no unique Applied option (Outdated or ambiguous), Applied falls back to the first option');
   assert.equal(freshRun('recommended', balanced, { selectedId: 'missing' }).viewIndex, 0,
     'an unresolved Recommended plan falls back to the first option');
-  assert.equal(freshRun('recommended', compact, { selectedId: 'max-capacity' }).viewedOption, balanced,
-    'a Max Capacity selectedId is never treated as Recommended; the view falls back to the first option');
+  assert.equal(freshRun('recommended', compact, { selectedId: 'max-capacity' }).viewedOption, maxCapacity,
+    'C5: Max Capacity is recommendable when it is the best VALID + eligible assessed option');
   assert.equal(freshRun('bogus', compact).viewIndex, 0, 'an unknown stored value behaves as First option');
 
   assert.equal(freshRun('applied', compact, { viewIndex: 1 }).viewedOption, maxCapacity,
@@ -301,12 +308,13 @@ test('AUTOPACK-CAROUSEL fresh view follows the starting view, keeps an explicit 
     'an explicit browse is never forced back to the starting view');
   assert.equal(freshRun('first', balanced, { viewIndex: 99 }).viewIndex, options.length - 1, 'explicit indices are clamped');
 
-  // The pure resolver over the raw solver order: Recommended can never land on
-  // Max Capacity, and nothing it reads is changed.
+  // The pure resolver over the raw solver order follows the assessed run
+  // winner (C5: Max may be it), and nothing it reads is changed.
   const frozenRaw = Object.freeze(raw.map(option => Object.freeze({ ...option })));
   const frozenResults = Object.freeze({ selectedId: 'max-capacity' });
-  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, frozenResults, null, 'recommended'), 0);
-  assert.notEqual(frozenRaw[0].id, 'max-capacity', 'that fallback is the first raw option, not Max Capacity');
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, frozenResults, null, 'recommended'), 3);
+  assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, { selectedId: 'missing' }, null, 'recommended'), 0,
+    'an unresolved recommendation falls back to the first option');
   assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, { selectedId: 'compact-fill' }, null, 'recommended'), 1);
   assert.equal(EditorScreen.resolveAutoPackResultsStartIndex(frozenRaw, null, frozenRaw[3], 'applied'), 3,
     'Applied may legitimately be Max Capacity after the user applied it');
@@ -372,10 +380,11 @@ test('AUTOPACK-CAROUSEL detail styling: bordered arrows, uppercase tiles, semant
     'Applied keeps the brand orange fill on the white/orange primary contract');
   assert.match(css, /\.tp3d-autopack-results__recommended-pill \{[^}]*border-color: var\(--border-strong\);[^}]*background: transparent;/,
     'Recommended is a restrained neutral outline');
-  assert.match(css, /\.tp3d-autopack-results__relaxed-note \{[^}]*border: 1px solid rgb\(245, 158, 11, 0\.36\);[^}]*color: var\(--text-primary\);[^}]*white-space: normal;/,
-    'the Max Capacity warning keeps an amber border, neutral copy, and wraps instead of truncating');
-  assert.match(css, /\.tp3d-autopack-results__relaxed-note i \{[^}]*color: var\(--warning-readable\);/,
-    'the Max Capacity warning icon carries the orange warning token');
+  assert.match(css, /\.tp3d-autopack-results__review-note \{[^}]*border: 1px solid rgb\(245, 158, 11, 0\.36\);[^}]*color: var\(--text-primary\);[^}]*white-space: normal;/,
+    'the needs-review note keeps an amber border, neutral copy, and wraps instead of truncating');
+  assert.match(css, /\.tp3d-autopack-results__review-note i \{[^}]*color: var\(--warning-readable\);/,
+    'the needs-review note icon carries the orange warning token');
+  assert.equal(css.includes('relaxed-note'), false, 'the misleading relaxed-handling note style is gone');
   assert.match(css, /--warning-readable: #e87500;/, 'the light warning token is the corrected orange');
   assert.match(css, /:root \{[\s\S]*?--success-readable: #047857;/, 'light theme defines readable success text');
   assert.match(css, /\[data-theme='dark'\] \{[\s\S]*?--success-readable: #6ee7b7;/, 'dark theme defines readable success text');
@@ -415,7 +424,7 @@ function makeStalenessAuditPack() {
   };
 }
 
-test('AUTOPACK-STALE staged position, rotation, dimensions, and profile metadata do not change the strict signature', async () => {
+test('AUTOPACK-STALE staged pose belongs to the user: any staged edit makes old Results stale', async () => {
   const Engine = await import(enginePath.href);
   const pack = makeStalenessAuditPack();
   const baseline = Engine.buildAutoPackResultSignature(pack);
@@ -426,23 +435,25 @@ test('AUTOPACK-STALE staged position, rotation, dimensions, and profile metadata
   assert.equal(stagedFields.caseId, 'case-B');
   assert.equal(stagedFields.placement, 'staged');
   assert.equal(stagedFields.hidden, false);
-  assert.equal('position' in stagedFields, false, 'staged position must be excluded');
-  assert.equal('rotation' in stagedFields, false, 'staged rotation must be excluded');
-  assert.equal('orientedDims' in stagedFields, false, 'staged dimensions must be excluded');
-  assert.equal('packedProfile' in stagedFields, false, 'staged profile metadata must be excluded');
+  assert.ok('position' in stagedFields && 'rotation' in stagedFields,
+    'source freshness retains the exact staged pose: staging belongs to the user');
+  assert.equal('packedProfile' in stagedFields, false, 'staged profile metadata is not freshness evidence');
 
+  // C5: an older option must never overwrite a newer user staging edit.
   const mutations = [
-    ['position', next => { next.cases[1].transform.position.x += 37; }],
+    ['position', next => { next.cases[1].transform.position.x += 0.0001; }],
     ['rotation', next => { next.cases[1].transform.rotation.y = Math.PI / 2; }],
-    ['orientedDims', next => { next.cases[1].orientedDims = { length: 10, width: 24, height: 24 }; }],
-    ['packedProfile', next => { delete next.cases[1].packedProfile; }],
   ];
   for (const [label, mutate] of mutations) {
     const next = structuredClone(pack);
     mutate(next);
-    assert.equal(Engine.buildAutoPackResultSignature(next), baseline,
-      `staged ${label}-only changes must keep Results current`);
+    assert.notEqual(Engine.buildAutoPackResultSignature(next), baseline,
+      `staged ${label} edits must make Results stale instead of being overwritten`);
   }
+  const profileOnly = structuredClone(pack);
+  delete profileOnly.cases[1].packedProfile;
+  assert.equal(Engine.buildAutoPackResultSignature(profileOnly), baseline,
+    'a staged cargo marker that Apply never writes cannot make Results stale');
 
   const movedStaged = structuredClone(pack);
   movedStaged.cases[1].transform.position.x += 37;
@@ -456,8 +467,10 @@ test('AUTOPACK-STALE packed pose and packed Max Capacity profile remain protecte
   const baseline = Engine.buildAutoPackResultSignature(pack);
   const packedFields = JSON.parse(baseline).cases.find(inst => inst.id === 'packed-1');
 
-  assert.deepEqual(packedFields.position, { x: 30, y: 12, z: 0 });
-  assert.deepEqual(packedFields.rotation, { x: 0, y: 0, z: 0 });
+  // Source freshness has no display tolerance: pose values are exact encodings.
+  const exact = fields => Object.fromEntries(Object.entries(fields).map(([axis, value]) => [axis, Number(value.number)]));
+  assert.deepEqual(exact(packedFields.position), { x: 30, y: 12, z: 0 });
+  assert.deepEqual(exact(packedFields.rotation), { x: 0, y: 0, z: 0 });
   assert.deepEqual(packedFields.orientedDims, { length: 24, width: 24, height: 24 });
   assert.equal(packedFields.packedProfile, 'max-capacity');
 
@@ -487,9 +500,11 @@ test('AUTOPACK-STALE packed pose and packed Max Capacity profile remain protecte
 
   const engineSrc = await fs.readFile(enginePath, 'utf8');
   const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
-  assert.match(optionBlock,
-    /signature: buildAutoPackResultSignature\(optionPack, id === 'max-capacity' \? 'max-capacity' : null, movableIds\),/,
-    'option signatures must project the packed profile only for cargo that Apply may change');
+  // C5: the candidate is materialized as the COMPLETE Pack Apply would commit
+  // (packedProfile included) BEFORE assessment, so its signature is simply the
+  // signature of that Pack - there is no projection override to maintain.
+  assert.match(optionBlock, /signature: buildAutoPackResultSignature\(optionPack\),/,
+    'option signatures must be the exact signature of the materialized candidate Pack');
 });
 
 test('AUTOPACK-STALE membership, quantity, identity, and hidden-state changes still invalidate', async () => {
@@ -556,7 +571,7 @@ test('AUTOPACK-STALE truck, case definitions, and instance handling rules remain
     'case handling-rule changes must invalidate Results');
 });
 
-test('AUTOPACK-STALE production stale comparison stays current after staged-only movement', async () => {
+test('AUTOPACK-STALE production stale comparison goes stale after staged-only movement', async () => {
   const [Engine, EditorScreen] = await Promise.all([
     import(enginePath.href),
     import(editorScreenPath.href),
@@ -566,7 +581,7 @@ test('AUTOPACK-STALE production stale comparison stays current after staged-only
     ['case-B', { id: 'case-B', dimensions: { length: 24, width: 24, height: 24 }, weight: 10 }],
   ]);
   const getCaseById = id => casesById.get(id) || null;
-  const isStale = (pack, results) => !EditorScreen.getAppliedAutoPackOption(pack, results, getCaseById);
+  const isStale = (pack, results) => !Engine.isAutoPackResultsFresh(pack, results, getCaseById);
   const pack = makeStalenessAuditPack();
   const signature = Engine.buildAutoPackResultSignature(pack);
   const results = {
@@ -579,8 +594,8 @@ test('AUTOPACK-STALE production stale comparison stays current after staged-only
   movedStaged.cases[1].transform.position.x += 40;
   movedStaged.cases[1].transform.rotation.y = Math.PI / 2;
   movedStaged.cases[1].orientedDims = { length: 24, width: 12, height: 24 };
-  assert.equal(isStale(movedStaged, results), false,
-    'the production comparison must not show Outdated after staged-only pose edits');
+  assert.equal(isStale(movedStaged, results), true,
+    'a newer user staging edit makes the older Results outdated instead of being overwritten');
 
   const movedPacked = structuredClone(pack);
   movedPacked.cases[0].transform.position.x += 1;
@@ -822,26 +837,6 @@ test('AUTOPACK-STAGING Results preview and Apply share poses while packed solver
     'unresolved staged output must still drop a stale Max Capacity marker');
 });
 
-async function loadAutoPackResultsStateForAudit() {
-  const engineSrc = await fs.readFile(enginePath, 'utf8');
-  const stateBlock = sliceFn(
-    engineSrc,
-    'function buildAutoPackResultsState(',
-    '\n  function cancelAllTweens'
-  );
-  const createStateBuilder = new Function(
-    'buildAutoPackResultOption',
-    'buildAutoPackCaseRuleSignature',
-    'CaseLibrary',
-    `return (${stateBlock});`
-  );
-  return createStateBuilder(
-    solution => ({ ...solution.auditOption }),
-    () => 'case-rules-signature',
-    { getById: () => null }
-  );
-}
-
 test('AUTOPACK-CAROUSEL layout signature ignores interchangeable instance id permutation; strict signature does not', async () => {
   const Engine = await import(enginePath.href);
   const truck = { length: 240, width: 96, height: 96, shapeMode: 'rect' };
@@ -894,19 +889,27 @@ test('AUTOPACK-CAROUSEL portfolio dedupe keys on the layout signature, not the s
   const optionEnd = engineSrc.indexOf('\n  function buildAutoPackResultsState', optionStart);
   assert.ok(optionStart >= 0 && optionEnd > optionStart, 'buildAutoPackResultOption must exist');
   const optionBlock = engineSrc.slice(optionStart, optionEnd);
-  assert.match(optionBlock, /signature: buildAutoPackResultSignature\(optionPack,/,
-    'each option must still carry the strict, id-aware, apply-profile-aware signature');
+  assert.match(optionBlock, /signature: buildAutoPackResultSignature\(optionPack\),/,
+    'each option must still carry the strict, id-aware signature of its materialized candidate Pack');
   assert.match(optionBlock, /layoutSignature: buildAutoPackLayoutSignature\(optionPack\),/,
     'each option must also carry the dedupe-only layout signature');
 
-  const stateStart = engineSrc.indexOf('function buildAutoPackResultsState(');
-  const stateEnd = engineSrc.indexOf('\n  function cancelAllTweens', stateStart);
-  assert.ok(stateStart >= 0 && stateEnd > stateStart, 'buildAutoPackResultsState must exist');
-  const stateBlock = engineSrc.slice(stateStart, stateEnd);
-  assert.match(stateBlock, /layoutSignatureToId\.has\(option\.layoutSignature\)/,
-    'the option dedupe map must be keyed on the layout signature, not the strict per-instance signature');
-  assert.match(stateBlock, /currentSignature: selectedOption\.signature,/,
-    'the signature exposed for staleness detection must stay the strict, id-aware signature');
+  const rankBlock = sliceFn(engineSrc, 'export function rankAutoPackResultOptions(', 'function animationNumber(');
+  assert.match(rankBlock, /option\.layoutSignature,/,
+    'the option dedupe key is the layout signature, not the strict per-instance signature');
+  assert.equal(/option\.signature/.test(rankBlock), false,
+    'the id-aware strict signature never participates in user-option identity');
+  assert.match(rankBlock, /buildAutoPackSemanticAssessmentKey\(option\.assessment\)/,
+    'assessment classification joins identity only through the id-agnostic semantic key');
+});
+
+const auditValidAssessment = () => ({
+  primary: 'VALID', hard: [], unverified: [], advisory: [], gates: [],
+  eligibility: { state: 'eligible', blockedBy: [] },
+});
+const auditRankOption = (id, label, layoutSignature) => ({
+  id, label, layoutSignature, signature: `strict-${id}`, assessment: auditValidAssessment(),
+  packedCount: 4, stagedCount: 0, status: 'complete', partialCauses: [],
 });
 
 test('AUTOPACK-MAX-A participates in the existing physical-layout dedupe', async () => {
@@ -927,94 +930,76 @@ test('AUTOPACK-MAX-A participates in the existing physical-layout dedupe', async
     cases: Array.from(solution.placements, ([id, position]) =>
       makeAuditInstance(id, 'case-A', position.x, position.y, position.z)),
   });
-  assert.equal(
-    Engine.buildAutoPackLayoutSignature(asPack(maxCapacity)),
-    Engine.buildAutoPackLayoutSignature(asPack(balanced)),
-    'a physically identical Max Capacity result has the same dedupe key as Balanced'
-  );
+  const layout = Engine.buildAutoPackLayoutSignature(asPack(balanced));
+  assert.equal(Engine.buildAutoPackLayoutSignature(asPack(maxCapacity)), layout,
+    'a physically identical Max Capacity result has the same dedupe key as Balanced');
 
-  const engineSrc = await fs.readFile(enginePath, 'utf8');
-  const stateBlock = sliceFn(engineSrc, 'function buildAutoPackResultsState(', '\n  function cancelAllTweens');
-  assert.equal(stateBlock.includes('max-capacity'), false,
-    'the generic engine dedupe has no Max Capacity exception that could expose a fake duplicate');
-  assert.match(stateBlock, /layoutSignatureToId\.has\(option\.layoutSignature\)/,
-    'all options, including Max Capacity, collapse on an existing physical-layout signature');
+  // Behavior: Max Capacity is strategy context, so it stays a visible option
+  // beside a physically identical Standard result, while Standard duplicates of
+  // each other still collapse. Equivalent quality still favors Standard.
+  const population = Engine.rankAutoPackResultOptions([
+    auditRankOption('max-capacity', 'Max Capacity', layout),
+    auditRankOption('default', 'Balanced', layout),
+    auditRankOption('compact-fill', 'Compact fill', layout),
+  ]);
+  assert.deepEqual(population.options.map(option => option.id), ['default', 'max-capacity']);
+  assert.equal(population.deduplicatedSolutionCount, 1, 'only the Standard duplicate collapses');
+  assert.equal(population.selectedId, 'default', 'equivalent quality favors Standard');
 });
 
-test('AUTOPACK-MAX-A selected normal option owns its dedupe group without changing other first survivors', async () => {
-  const buildState = await loadAutoPackResultsStateForAudit();
-  const makeOption = (id, label, layoutSignature, signature) => ({
-    id,
-    label,
-    layoutSignature,
-    signature,
-  });
-  const makeSolution = auditOption => ({
-    id: auditOption.id,
-    placements: new Map(),
-    auditOption,
-  });
+test('AUTOPACK-MAX-A equivalent quality favors Standard without changing other first survivors', async () => {
+  const Engine = await import(enginePath.href);
+  const population = Engine.rankAutoPackResultOptions([
+    auditRankOption('default', 'Balanced', 'layout-balanced'),
+    auditRankOption('max-capacity', 'Max Capacity', 'layout-shared'),
+    auditRankOption('constrained-first', 'Constrained space first', 'layout-shared'),
+    auditRankOption('floor-first', 'Floor first', 'layout-shared'),
+  ]);
+  // Standard duplicates keep their first survivor; Max keeps its strategy slot
+  // in the intended portfolio order, independent of assessment certainty.
+  assert.deepEqual(population.options.map(option => option.id), ['default', 'max-capacity', 'constrained-first']);
+  assert.equal(population.options[2].label, 'Constrained space first');
+  assert.equal(population.selectedId, 'default', 'selection stays with the best valid Standard option');
+  assert.equal(population.deduplicatedSolutionCount, 1);
+});
 
-  const balanced = makeSolution(makeOption(
-    'default',
-    'Balanced',
-    'layout-balanced',
-    'strict-balanced'
-  ));
-  const maxCapacity = makeSolution(makeOption(
-    'max-capacity',
-    'Max Capacity',
-    'layout-shared',
-    'strict-max'
-  ));
-  const constrained = makeSolution(makeOption(
-    'constrained-first',
-    'Constrained space first',
-    'layout-shared',
-    'strict-constrained'
-  ));
-  const packingSolution = {
-    solutions: [balanced, maxCapacity, constrained],
-    selected: constrained.id,
-  };
-
-  const selectedNormalState = buildState({
-    packId: 'pack-selected-normal',
-    packData: { cases: [] },
-    packingSolution,
-    selectedSolution: constrained,
-    stagingMap: new Map(),
+test('C5 semantic dedup ignores interchangeable instance ids but keeps meaningful differences', async () => {
+  const Engine = await import(enginePath.href);
+  const finding = (property, outcome, subject, evidence = {}) => ({ property, outcome, subject, evidence });
+  const incomplete = subjects => ({
+    primary: 'INCOMPLETE', unverified: [], advisory: [], gates: [],
+    hard: subjects.map(id => finding('support.loaded-resultant', 'UNRESOLVED', id,
+      { reason: 'unresolved-support-population', at: { x: id.length } })),
+    eligibility: { state: 'eligible', blockedBy: [] },
   });
-  assert.deepEqual(
-    selectedNormalState.options.map(option => option.id),
-    ['default', 'constrained-first'],
-    'the selected normal option replaces the earlier identical Max survivor at the same visible slot'
-  );
-  assert.equal(selectedNormalState.options[1].label, 'Constrained space first',
-    'the surviving duplicate uses the selected normal label');
-  assert.equal(selectedNormalState.options.some(option => option.id === 'max-capacity'), false,
-    'identical Max Capacity dedupes away instead of stealing selection');
-  assert.equal(selectedNormalState.selectedId, 'constrained-first',
-    'Results selection stays owned by the normal solver winner');
-  assert.equal(selectedNormalState.currentSignature, 'strict-constrained',
-    'stale detection keeps the selected normal option strict signature');
-  assert.equal(selectedNormalState.attemptedSolutionCount, 3,
-    'dedupe still records every attempted raw solution');
-
-  const unrelatedSelectedState = buildState({
-    packId: 'pack-unrelated-selected',
-    packData: { cases: [] },
-    packingSolution: { ...packingSolution, selected: balanced.id },
-    selectedSolution: balanced,
-    stagingMap: new Map(),
+  const withAssessment = (id, assessment, extra = {}) => ({
+    ...auditRankOption(id, id, 'layout-same'), assessment, ...extra,
   });
-  assert.deepEqual(
-    unrelatedSelectedState.options.map(option => option.id),
-    ['default', 'max-capacity'],
-    'a duplicate group that does not contain the selected option keeps its existing first survivor'
-  );
-  assert.equal(unrelatedSelectedState.selectedId, 'default');
-  assert.equal(unrelatedSelectedState.currentSignature, 'strict-balanced');
+  // Same physical layout, interchangeable instances traded ids -> per-instance
+  // subjects and evidence coordinates differ, the plan the planner sees does not.
+  const swapped = Engine.rankAutoPackResultOptions([
+    withAssessment('a', incomplete(['inst-1', 'inst-2'])),
+    withAssessment('b', incomplete(['inst-9', 'inst-10'])),
+  ]);
+  assert.equal(swapped.options.length, 1, 'id/evidence permutations collapse to one user option');
+  assert.equal(swapped.deduplicatedSolutionCount, 1);
+
+  // VALID vs INCOMPLETE, and a different number of limitations, stay distinct.
+  const valid = withAssessment('valid', auditValidAssessment());
+  assert.equal(Engine.rankAutoPackResultOptions([valid, withAssessment('inc', incomplete(['x']))]).options.length, 2);
+  assert.equal(Engine.rankAutoPackResultOptions([
+    withAssessment('one', incomplete(['x'])), withAssessment('two', incomplete(['x', 'y'])),
+  ]).options.length, 2, 'a different number of unresolved findings is a meaningful difference');
+
+  // Eligible vs blocked is never a duplicate (blocked is also never adoptable).
+  const blocked = { ...auditValidAssessment(), eligibility: { state: 'blocked', blockedBy: [finding('support50', 'FAIL', 'z')] } };
+  const gated = Engine.rankAutoPackResultOptions([valid, withAssessment('blocked', blocked)]);
+  assert.deepEqual(gated.options.map(option => option.id), ['valid'], 'blocked options never enter the population');
+  assert.equal(gated.deduplicatedSolutionCount, 0);
+
+  // A different layout (e.g. actual orientation) is a different plan.
+  const turned = { ...valid, id: 'turned', layoutSignature: 'layout-turned' };
+  assert.equal(Engine.rankAutoPackResultOptions([valid, turned]).options.length, 2);
 });
 
 test('AUTOPACK-CAROUSEL stale Apply button carries a reachable title and aria-label explanation', async () => {
@@ -1206,21 +1191,25 @@ test('AUTOPACK-RESULTS Balanced leads and Max Capacity displays second while ran
   assert.deepEqual(EditorScreen.orderAutoPackResultOptions(undefined), []);
 });
 
-test('AUTOPACK-RESULTS Recommended follows the run selectedId, stays independent of Applied, and Max Capacity warns in visible text', async () => {
+test('AUTOPACK-RESULTS Recommended is the assessed run winner, independent of Applied; only incomplete options say Needs review', async () => {
   const { render } = await renderBlock();
   const optionBlock = sliceFn(render, 'const isViewedCurrent = viewedOption === currentOption;', 'panel.appendChild(body);');
   assert.match(optionBlock,
-    /const isViewedRecommended = viewedOption\.id === results\.selectedId && viewedOption\.id !== 'max-capacity';/,
-    'Recommended is the run winner (selectedId) and can never be Max Capacity');
+    /const isViewedRecommended = viewedOption\.id === results\.selectedId && assessment\?\.primary === 'VALID' &&\s*isAutoPackAssessmentAdoptable\(assessment\);/,
+    'Recommended is the run winner (selectedId) and only a VALID + eligible assessed option');
   assert.match(optionBlock,
     /if \(isViewedRecommended\) \{\s*badges\.appendChild\(makeAutoPackResultPill\('tp3d-autopack-results__recommended-pill', 'Recommended'\)\);\s*\}/,
     'Recommended renders as its own text badge');
   assert.match(optionBlock,
     /if \(isViewedCurrent\) \{\s*badges\.appendChild\(makeAutoPackResultPill\('tp3d-autopack-results__current-pill', 'Applied', 'fa-solid fa-check'\)\);\s*\}/,
     'Applied renders independently, so Recommended and Applied may sit on different plans or together');
-  const relaxed = sliceFn(optionBlock, "if (viewedOption.id === 'max-capacity') {", 'const actions = document.createElement');
-  assert.match(relaxed, /'Handling rules relaxed\. Review before transport\.'/, 'the relaxed-handling warning is visible text');
-  assert.doesNotMatch(relaxed, /\.title =|aria-label/, 'the warning meaning does not live only in a tooltip or label');
+  const review = sliceFn(optionBlock, 'const reviewReason = describeAutoPackReviewReason(assessment);', 'const actions = document.createElement');
+  assert.match(review, /if \(reviewReason\) \{/, 'the caution renders only when the option needs review');
+  assert.match(review, /`Needs review \\u00b7 \$\{reviewReason\}`/, 'one plain-language reason, visible as text');
+  assert.doesNotMatch(review, /\.title =|aria-label/, 'the caution meaning does not live only in a tooltip or label');
+  assert.doesNotMatch(optionBlock, /max-capacity/, 'Max Capacity never gets a strategy-specific warning');
+  assert.doesNotMatch(render, /Handling rules relaxed|Broader orientation search|UNRESOLVED|UNVERIFIED|ADVISORY/,
+    'the Results card never shows relaxed-handling or raw assessment vocabulary');
   assert.doesNotMatch(render, /Max Capacity profile|maxCapacityChip/, 'the redundant Max Capacity profile count chip is gone');
   assert.doesNotMatch(render, /normal transport recommendation/i);
 });
@@ -1231,7 +1220,9 @@ test('AUTOPACK-MAX-A preset metadata is exact and flows through the existing Res
 
   assert.ok(maxCapacity, 'Max Capacity must be a registered packing strategy');
   assert.equal(maxCapacity.label, 'Max Capacity');
-  assert.equal(maxCapacity.description, 'Relaxed handling comparison');
+  assert.equal(maxCapacity.description, 'Tries more allowed orientations to fit more cargo.');
+  assert.doesNotMatch(maxCapacity.description, /relax|handling|assessment|gate|physical/i,
+    'Max copy is plain product language, never engine vocabulary');
   assert.equal(Solution.getPackingStrategy('default').label, 'Balanced',
     'Recommended is a per-run badge, never hard-coded into the Balanced label');
   for (const preset of Solution.PACKING_STRATEGIES) {
@@ -1326,10 +1317,9 @@ test('AUTOPACK-CAROUSEL option descriptions come from the strategy presets and r
   const { render } = await renderBlock();
   assert.match(render, /const optionDescription = makeAutoPackResultDescription\(viewedOption\);/,
     'the carousel option must render the description line');
-  assert.match(render, /const compactDescription = makeAutoPackResultDescription\(viewedOption\);/,
-    'the single-option compact mode must render the description line too');
-  assert.match(render, /if \(!hasAlternates\) \{/,
-    'the compact description must be scoped to the single-option mode');
+  // C5: a single option renders through the same option row (title, status,
+  // description and an explicit Apply), so there is no separate compact path.
+  assert.doesNotMatch(render, /compactDescription/, 'single-option mode reuses the option row description');
 });
 
 test('AUTOPACK-CAROUSEL Floor/Stacked stay solver diagnostics off the Results card and the Partial pill explains itself', async () => {
@@ -1362,7 +1352,9 @@ test('AUTOPACK-CAROUSEL Floor/Stacked stay solver diagnostics off the Results ca
 
 test('AUTOPACK-CAROUSEL dedupe-collapsed results explain that other strategies produced the same layout', async () => {
   const { render } = await renderBlock();
-  assert.match(render, /if \(!hasAlternates && Number\(results\.attemptedSolutionCount\) > options\.length\) \{/,
+  // C5: attempted > shown is no longer proof of a collapse (invalid and blocked
+  // candidates are excluded), so the note follows the real dedupe count.
+  assert.match(render, /if \(!hasAlternates && Number\(results\.deduplicatedSolutionCount\) > 0\) \{/,
     'the note must appear only in single-option mode, where the collapse genuinely needs explaining');
   assert.match(render, /dedupeNote\.textContent = 'Other strategies produced the same layout\.';/,
     'the note must carry the agreed copy');
@@ -1435,7 +1427,7 @@ function resultsSyncPack(id, packedX, stagedX = 100) {
     editorView: { camera: id },
     cases: [
       { id: 'packed', caseId: 'case-A', placement: packedX === null ? 'staged' : 'packed',
-        transform: { position: { x: packedX ?? 5, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
+        transform: { position: { x: packedX ?? 5, y: packedX === null ? 0 : 12, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
         orientedDims: { length: 24, width: 24, height: 24 }, notes: 'original' },
       { id: 'staged', caseId: 'case-A', placement: 'staged',
         transform: { position: { x: stagedX, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0 } },
@@ -1445,26 +1437,36 @@ function resultsSyncPack(id, packedX, stagedX = 100) {
 }
 
 async function resultsSyncFixture({ maxCapacity = false } = {}) {
-  const [Engine, EditorScreen, StateStore, source] = await Promise.all([
+  const [Engine, EditorScreen, StateStore, source, Assessment] = await Promise.all([
     import(enginePath.href), import(editorScreenPath.href),
     import(new URL('../../src/core/state-store.js', import.meta.url).href),
     fs.readFile(editorScreenPath, 'utf8'),
+    import(new URL('../../src/services/pack-assessment.js', import.meta.url).href),
   ]);
   const caseData = { id: 'case-A', dimensions: { length: 24, width: 24, height: 24 }, weight: 10 };
   const getCaseById = id => id === caseData.id ? caseData : null;
   const pre = resultsSyncPack('view', null);
   const winner = resultsSyncPack('view', 20);
-  const alternate = resultsSyncPack('view', 60, 120);
+  // C5: source-staged cargo that stays staged keeps the user's exact pose in
+  // every option, so every option shares the source staging position.
+  const alternate = resultsSyncPack('view', 60, 100);
+  // C5 options carry the complete materialized Pack's signature and its real
+  // shared assessment; Apply rechecks freshness and reassesses before commit.
   const option = (id, pack) => ({
     id,
     nextCases: structuredClone(pack.cases),
-    signature: Engine.buildAutoPackResultSignature(pack, id === 'max-capacity' ? 'max-capacity' : null),
+    assessment: Assessment.assessCommittedPack(pack, [caseData]),
+    signature: Engine.buildAutoPackResultSignature(pack),
     layoutSignature: Engine.buildAutoPackLayoutSignature(pack),
   });
-  const options = [option('default', winner), option(maxCapacity ? 'max-capacity' : 'floor-first', alternate)];
+  // A Max candidate is materialized WITH its packed-profile provenance marker.
+  const alternateOption = structuredClone(alternate);
+  if (maxCapacity) alternateOption.cases[0].packedProfile = 'max-capacity';
+  const options = [option('default', winner), option(maxCapacity ? 'max-capacity' : 'floor-first', alternateOption)];
   const results = {
     runId: 'run-A', packId: winner.id, options,
-    selectedId: options[0].id, currentSignature: options[0].signature,
+    selectedId: options[0].id, adoptedOptionIds: [options[0].id],
+    sourceSignature: Engine.buildAutoPackResultSignature(pre),
     caseRuleSignature: Engine.buildAutoPackCaseRuleSignature(winner, getCaseById),
     viewIndex: 0,
   };
@@ -1489,19 +1491,19 @@ async function resultsSyncFixture({ maxCapacity = false } = {}) {
     },
   };
   const applied = () => EditorScreen.getAppliedAutoPackOption(PackLibrary.getById(winner.id), StateStore.get('autoPackResults'), getCaseById);
-  const applySource = sliceFn(source, 'function applyAutoPackResultOption(optionId, expectedRunId)', 'function makeAutoPackResultStat(');
-  const apply = new Function('getAutoPackResultsState', 'OperationLifecycle', 'UIComponents', 'PackLibrary',
-    'StateStore', 'isAutoPackResultsStale', 'getAppliedAutoPackOption', 'CaseLibrary',
-    'buildAppliedAutoPackCases', 'cloneAutoPackCases', 'CaseScene',
-    `${applySource}\nreturn applyAutoPackResultOption;`)(
-    () => StateStore.get('autoPackResults'), { isBusy: () => false }, { showToast() {} }, PackLibrary,
-    StateStore, (pack, result) => !EditorScreen.getAppliedAutoPackOption(pack, result, getCaseById),
-    EditorScreen.getAppliedAutoPackOption, { getById: getCaseById, getCases: () => [caseData] },
-    EditorScreen.buildAppliedAutoPackCases, structuredClone, { setSelected() {} }
-  );
   const patchSource = sliceFn(source, 'function patchAutoPackResultsState(patch, expectedRunId)', 'function isAutoPackResultsStale(');
   const patchResults = new Function('getAutoPackResultsState', 'StateStore', `${patchSource}\nreturn patchAutoPackResultsState;`)(
     () => StateStore.get('autoPackResults'), StateStore);
+  const applySource = sliceFn(source, 'function applyAutoPackResultOption(optionId, expectedRunId)', 'function makeAutoPackResultStat(');
+  const apply = new Function('getAutoPackResultsState', 'OperationLifecycle', 'UIComponents', 'PackLibrary',
+    'StateStore', 'isAutoPackResultsStale', 'getAppliedAutoPackOption', 'CaseLibrary',
+    'prepareAutoPackResultApply', 'patchAutoPackResultsState', 'CaseScene',
+    `${applySource}\nreturn applyAutoPackResultOption;`)(
+    () => StateStore.get('autoPackResults'), { isBusy: () => false }, { showToast() {} }, PackLibrary,
+    StateStore, (pack, result) => !Engine.isAutoPackResultsFresh(pack, result, getCaseById),
+    EditorScreen.getAppliedAutoPackOption, { getById: getCaseById, getCases: () => [caseData] },
+    EditorScreen.prepareAutoPackResultApply, patchResults, { setSelected() {} }
+  );
   return { Engine, EditorScreen, StateStore, pre, winner, alternate, options, results,
     getCaseById, applied, apply, patchResults, writes, notifications, unsubscribe, PackLibrary };
 }
@@ -1537,26 +1539,32 @@ test('AUTOPACK-RESULTS live Pack controls Applied through Apply, Undo, Redo, and
   } finally { f.unsubscribe(); }
 });
 
-test('AUTOPACK-RESULTS Apply preserves allowed staged pose and current metadata, but takes chosen packed/staged layout', async () => {
+test('AUTOPACK-RESULTS Apply keeps current metadata and takes the chosen layout; a staging edit makes Results stale instead', async () => {
   const f = await resultsSyncFixture();
   try {
     const edited = structuredClone(f.winner);
     edited.cases[0].notes = 'edited after solve';
     edited.cases[1].notes = 'staged note';
-    edited.cases[1].transform.position.x = 135;
-    edited.cases[1].transform.rotation.y = Math.PI / 2;
-    edited.cases[1].orientedDims = { length: 24, width: 12, height: 24 };
     f.StateStore.set({ packLibrary: [edited] });
-    assert.equal(f.applied(), f.options[0], 'allowed edits keep Results current');
+    assert.equal(f.applied(), f.options[0], 'non-physical metadata edits keep Results current');
     f.apply(f.options[1].id, 'run-A');
     const [packed, staged] = f.PackLibrary.getById(f.winner.id).cases;
     assert.equal(packed.transform.position.x, 60, 'chosen packed solver pose wins');
     assert.equal(packed.notes, 'edited after solve', 'current metadata survives');
-    assert.equal(staged.transform.position.x, 135, 'current staged position survives');
-    assert.equal(staged.transform.rotation.y, Math.PI / 2, 'current staged rotation survives');
-    assert.deepEqual(staged.orientedDims, { length: 24, width: 12, height: 24 });
+    assert.equal(staged.transform.position.x, 100, 'source staging keeps its exact pose');
     assert.equal(staged.notes, 'staged note');
     assert.equal(f.applied(), f.options[1]);
+
+    // C5: staging belongs to the user. A newer staged pose edit stales the old
+    // Results; Apply refuses to overwrite it rather than silently keeping a mix.
+    const writesBefore = f.writes.length;
+    const movedStaged = structuredClone(f.PackLibrary.getById(f.winner.id));
+    movedStaged.cases[1].transform.position.x = 135;
+    f.StateStore.set({ packLibrary: [movedStaged] });
+    assert.equal(f.applied(), null, 'a staging edit makes the old Results outdated');
+    f.apply(f.options[0].id, 'run-A');
+    assert.equal(f.writes.length, writesBefore, 'stale Apply mutates nothing');
+    assert.equal(f.PackLibrary.getById(f.winner.id).cases[1].transform.position.x, 135, 'the user staging edit survives');
 
     const toStaging = { id: 'floor-first', nextCases: structuredClone(f.alternate.cases) };
     toStaging.nextCases[0].placement = 'staged';
@@ -1643,11 +1651,10 @@ test('AUTOPACK-RESULTS Max Capacity profiles, ambiguity, and old-run actions fai
     moved.cases[1].transform.position.x = 150;
     assert.equal(f.EditorScreen.getAppliedAutoPackOption(moved, ambiguous, f.getCaseById), null,
       'otherwise duplicate strict matches are stale, never guessed');
-    f.StateStore.set({ packLibrary: [f.winner], autoPackResults: ambiguous }, { skipHistory: true });
-    const beforeAmbiguousApply = f.writes.length;
-    f.apply('same-strict', 'run-A');
-    assert.equal(f.writes.length, beforeAmbiguousApply,
-      'Apply refuses a strict-collision option that staged-pose preservation cannot distinguish');
+    // C5: the strict signature carries the exact staged pose, so two options can
+    // share a strict signature only when they are the same physical plan, which
+    // the semantic dedup already collapses. There is no distinguishable
+    // strict-collision pair left to refuse at Apply time.
   } finally { f.unsubscribe(); }
 });
 
@@ -1817,6 +1824,7 @@ function previewProjector(f, source, getOperation) {
     OperationLifecycle: { currentOperation: getOperation },
     StateStore: f.StateStore,
     buildAppliedAutoPackCases: f.EditorScreen.buildAppliedAutoPackCases,
+    isAutoPackResultsFresh: f.Engine.isAutoPackResultsFresh,
     cloneAutoPackCases: structuredClone,
   };
   const body = [
@@ -1991,11 +1999,16 @@ test('C5 populations and ranking separate physical truth, eligibility, completen
   assert.equal(population.selectedId, 'default');
   assert.equal(population.validSolutionCount, 2);
   assert.equal(population.incompleteSolutionCount, 1);
-  assert.deepEqual(population.options.map(o => o.id), ['default', 'max-capacity', 'more']);
+  assert.deepEqual(population.options.map(o => o.id), ['default', 'more', 'max-capacity']);
   assert.equal(population.options[0].status, 'partial');
-  assert.equal(population.options[2].status, 'complete');
+  assert.equal(population.options[1].status, 'complete');
   const neutral = E.rankAutoPackResultOptions([option('only', incomplete, 20)]);
   assert.equal(neutral.selectedId, null); assert.equal(neutral.validSolutionCount, 0);
+  const preferredIncomplete = E.rankAutoPackResultOptions([
+    option('default', incomplete, 205), option('floor-first', valid, 44), max]);
+  assert.deepEqual(preferredIncomplete.options.map(o => o.id), ['default', 'floor-first', 'max-capacity']);
+  assert.equal(preferredIncomplete.selectedId, null, 'a later valid plan cannot replace an incomplete preferred plan');
+  assert.equal(preferredIncomplete.validSolutionCount, 2, 'valid alternatives remain available');
 });
 
 test('C5 semantic dedup retains assessment evidence, eligibility and actual orientation differences', async () => {
@@ -2054,7 +2067,7 @@ test('C5 staging reserves user poses before deterministic new leftovers and isol
 });
 
 test('C5 fresh unapplied incomplete Apply is exact, reassessed and blocked after staging Case or truck edits', async () => {
-  const [E, Editor] = await c5Modules();
+  const [E, Editor, , A] = await c5Modules();
   const definitions = [c5Case('c', null)];
   const source = c5Pack([c5Instance('move'), c5Instance('stay')]);
   const solution = c5Solution([['move', { x: 20, y: 5, z: 0 }]]);
@@ -2068,7 +2081,9 @@ test('C5 fresh unapplied incomplete Apply is exact, reassessed and blocked after
   const applied = Editor.prepareAutoPackResultApply(source, results, option, getCase);
   assert.deepEqual(applied.cases, candidate.nextCases);
   assert.equal(applied.assessment.primary, 'INCOMPLETE');
-  assert.match(Editor.describeAutoPackAssessment(applied.assessment), /unresolved/);
+  assert.equal(Editor.describeAutoPackReviewReason(applied.assessment), 'Weight information is missing.');
+  assert.equal(Editor.describeAutoPackReviewReason(A.assessCommittedPack(source, [c5Case('c', 10)])), '',
+    'a VALID option carries no review reason');
   assert.equal(JSON.stringify(source), before);
   const sameLayout = { ...source, cases: applied.cases };
   assert.equal(Editor.getAppliedAutoPackOption(sameLayout, results, getCase), null,
@@ -2092,15 +2107,17 @@ test('C5 fresh unapplied incomplete Apply is exact, reassessed and blocked after
   assert.equal(Editor.prepareAutoPackResultApply(source, results, corrupt, getCase), null);
 });
 
-async function c5RunEngine(weight) {
+async function c5RunEngine(weight, { cases, lookup, truck } = {}) {
   const [E, , P] = await c5Modules();
-  const source = c5Pack([c5Instance('one')]);
+  const source = c5Pack(cases || [c5Instance('one')]);
+  if (truck !== undefined) source.truck = truck;
+  const toasts = [];
   const definition = c5Case('c', weight);
   let committed = structuredClone(source);
   const state = { currentPackId: source.id, currentScreen: 'editor', preferences: {} };
   const writes = [];
   const engine = E.createAutoPackEngine({
-    CaseLibrary: { getById: () => definition }, CaseScene: { getObject: () => null, setSelected() {} },
+    CaseLibrary: { getById: lookup || (() => definition) }, CaseScene: { getObject: () => null, setSelected() {} },
     PackLibrary: { ...P, getById: () => committed, update: (id, patch) => { writes.push(patch); committed = { ...committed, ...patch }; },
       computeStats: pack => ({ volumePercent: pack.cases.filter(i => i.placement === 'packed').length }) },
     StateStore: { get: key => state[key], set: patch => Object.assign(state, patch) },
@@ -2109,11 +2126,11 @@ async function c5RunEngine(weight) {
     runtimeWindow: { requestAnimationFrame: fn => fn(), __TP3D_BILLING: { getBillingState: () => ({ ok: true }) } },
     getActiveOrgIdForBilling: () => '', getOrgRoleHydrationState: () => 'ready', getProRuleSet: () => ({ canUseProFeature: true }),
     getWorkspaceSwitchState: () => null, normalizeOrgIdForBilling: value => value, maybeScheduleBillingRefresh() {}, openSettingsOverlay() {},
-    UIComponents: { showToast() {} }, toast() {}, SceneManager: {},
+    UIComponents: { showToast(message) { toasts.push(message); } }, toast(message) { toasts.push(message); }, SceneManager: {},
     Utils: { deepClone: structuredClone, volumeInCubicInches: d => d.length * d.width * d.height },
   });
   await engine.pack();
-  return { source, committed, writes, results: state.autoPackResults };
+  return { source, committed, writes, toasts, results: state.autoPackResults };
 }
 
 test('C5 initial engine adoption commits only VALID eligible and leaves incomplete source byte-equivalent', async () => {
@@ -2130,4 +2147,144 @@ test('C5 initial engine adoption commits only VALID eligible and leaves incomple
   assert.equal(unknown.results.minimized, false);
   assert.ok(unknown.results.options.every(o => o.assessment.primary === 'INCOMPLETE'));
   assert.ok(unknown.results.options.some(o => o.id === 'max-capacity'));
+  // The Standard strategies all produced the same plan: they collapse to one.
+  assert.equal(unknown.results.options.filter(o => o.id !== 'max-capacity').length, 1);
+  assert.ok(unknown.results.deduplicatedSolutionCount > 0);
+});
+
+test('C5 Test-01 preferred Balanced stays first and unapplied when incomplete despite a valid Floor First alternative', async () => {
+  const { createC5MixedLoadFixture } = await import('../fixtures/autopack-strategy-audit-fixtures.mjs');
+  const { pack, caseLibrary } = createC5MixedLoadFixture();
+  const lookup = id => caseLibrary.find(c => c.id === id);
+  const run = await c5RunEngine(10, { cases: pack.cases, truck: pack.truck, lookup });
+  const [, Editor] = await c5Modules();
+  const balanced = run.results.options[0];
+  assert.equal(balanced.id, 'default');
+  assert.equal(balanced.packedCount, 205);
+  assert.equal(balanced.stagedCount, 29);
+  assert.equal(balanced.assessment.primary, 'INCOMPLETE');
+  assert.equal(balanced.assessment.eligibility.state, 'eligible');
+  assert.equal(run.writes.length, 0);
+  assert.equal(JSON.stringify(run.committed), JSON.stringify(run.source));
+  assert.equal(run.results.selectedId, null);
+  assert.deepEqual(run.results.adoptedOptionIds, []);
+  assert.equal(run.results.minimized, false);
+  assert.equal(Editor.orderAutoPackResultOptions(run.results.options)[0], balanced);
+  assert.equal(Editor.getAppliedAutoPackOption(run.source, run.results, lookup), null);
+  assert.equal(Editor.describeAutoPackReviewReason(balanced.assessment), 'Some support information cannot be verified.');
+  const explicit = Editor.prepareAutoPackResultApply(run.source, run.results, balanced, lookup);
+  assert.equal(explicit.assessment.primary, 'INCOMPLETE', 'explicit Apply never upgrades the assessment');
+  const floor = run.results.options.find(o => o.id === 'floor-first');
+  assert.equal(floor.packedCount, 44);
+  assert.equal(floor.assessment.primary, 'VALID');
+  assert.ok(run.results.options.some(o => o.id === 'max-capacity'));
+});
+
+test('C5 recovery: unresolved source-staged cargo never aborts AutoPack, is never moved, and is never invented', async () => {
+  const [E, , P] = await c5Modules();
+  const definition = c5Case();
+  // geometry is unknowable: no Case definition and no persisted orientedDims
+  const orphan = { ...c5Instance('orphan', 'deleted-case', 'staged', -80), notes: 'keep', groupId: 'g1',
+    metadata: { label: 'orphan' }, packedProfile: 'max-capacity' };
+  const known = c5Instance('known', 'c', 'staged', -40);
+  const truck = c5Pack([]).truck;
+
+  // Staging map: the unresolved instance is skipped (no throw), the known one is reserved.
+  const items = [orphan, known].map(inst => ({ inst, caseData: inst.caseId === 'c' ? definition : null }));
+  let map;
+  assert.doesNotThrow(() => { map = E.buildAutoPackStagingMap(
+    items.filter(i => i.inst.id === 'known'), truck, P.findSafeStagingPosition, items); });
+  assert.equal(map.has('orphan'), false, 'no fabricated reservation or pose for unknowable geometry');
+  assert.equal(map.has('known'), true, 'resolvable source staging is still reserved');
+
+  // Whole run: AutoPack completes, adopts the valid candidate, and leaves the orphan alone.
+  const orphanBefore = structuredClone(orphan);
+  const run = await c5RunEngine(10, {
+    cases: [c5Instance('one'), known, orphan],
+    lookup: id => (id === 'c' ? definition : null),
+  });
+  assert.equal(run.writes.length, 1, 'AutoPack was not aborted by one unresolved staged Case');
+  assert.ok(run.results.options.length > 0, 'Results are produced for the resolvable cargo');
+  assert.deepEqual(run.committed.cases.find(i => i.id === 'orphan'), orphanBefore,
+    'unresolved staged cargo is preserved byte-equivalent: id, pose, metadata, profile marker');
+  assert.equal(run.committed.cases.length, 3, 'nothing was deleted');
+  for (const option of run.results.options) {
+    assert.deepEqual(option.nextCases.find(i => i.id === 'orphan'), orphanBefore, 'every option preserves it');
+  }
+});
+
+test('C5 metric exact source survives quantized solver placement with valid floor contact and rejects a real gap', async () => {
+  const [E, , , A] = await c5Modules();
+  const { SURFACE_CONTACT_EPS_INCHES } = await import('../../src/packing-core/validation.js');
+  const definition = { ...c5Case(), dimensions: { length: 80 / 2.54, width: 40 / 2.54, height: 40 / 2.54 } };
+  const source = c5Pack([c5Instance('metric')]);
+  const before = JSON.stringify({ definition, source });
+  const options = { cases: source.cases, lookup: () => definition };
+  const run = await c5RunEngine(10, options);
+  const repeated = await c5RunEngine(10, options);
+  const balanced = run.results.options[0];
+  assert.equal(balanced.id, 'default');
+  assert.equal(run.results.selectedId, 'default');
+  assert.equal(run.writes.length, 1);
+  assert.equal(balanced.assessment.primary, 'VALID');
+  assert.equal(balanced.assessment.eligibility.state, 'eligible');
+  assert.equal(E.isAutoPackAssessmentAdoptable(balanced.assessment), true);
+  assert.deepEqual(balanced.nextCases, repeated.results.options[0].nextCases, 'real solve is deterministic');
+  const candidate = { ...source, cases: balanced.nextCases };
+  const posed = candidate.cases[0];
+  assert.equal(definition.dimensions.height, 15.748031496062993);
+  assert.equal(posed.orientedDims.height, 15.748031, 'the real solver uses its quantized envelope');
+  const floorError = posed.transform.position.y - definition.dimensions.height / 2;
+  assert.ok(Math.abs(floorError) > 1e-9 && Math.abs(floorError) < SURFACE_CONTACT_EPS_INCHES,
+    'exact source and solver bearing plane genuinely differ');
+  assert.equal(A.assessCommittedPack(candidate, [definition]).hard.find(f => f.property === 'support.own-centered-hull').outcome, 'PASS');
+  for (const gap of [SURFACE_CONTACT_EPS_INCHES * 1.1, 0.01]) {
+    const floating = structuredClone(candidate);
+    floating.cases[0].transform.position.y = definition.dimensions.height / 2 + gap;
+    const assessment = A.assessCommittedPack(floating, [definition]);
+    assert.equal(assessment.primary, 'INVALID');
+    assert.equal(assessment.hard.find(f => f.property === 'support.own-centered-hull').outcome, 'FAIL');
+    assert.equal(assessment.gates.find(f => f.property === 'support50').outcome, 'FAIL');
+  }
+  assert.equal(JSON.stringify({ definition, source }), before, 'no source precision or instance mutation');
+});
+
+test('C5 recovery: AutoPack explains an unverifiable truck or unusable cargo ids instead of a silent dead end', async () => {
+  const [E] = await c5Modules();
+  // Duplicate / blank instance ids are refused up front with a plain message.
+  const context = ids => E.buildAutoPackPhysicalContext(
+    { id: 'p', truck: c5Pack([]).truck, cases: ids.map(id => ({ ...c5Instance('x'), id })) },
+    () => c5Case(), () => ({ ok: true, dims: { length: 10, width: 10, height: 10 } }), []);
+  assert.equal(context(['a', 'b']).ok, true);
+  const duplicate = context(['a', 'a']);
+  assert.equal(duplicate.ok, false);
+  assert.match(duplicate.reason, /1 cargo item has a missing or duplicate ID/);
+  assert.equal(context(['a', '']).ok, false);
+
+  // Truck settings that are not a verifiable physical source never reach the
+  // solver: the message names the setting, the Pack is untouched.
+  for (const [truck, field] of [
+    [{ length: 60, width: 20, height: 20 }, 'shapeMode'],
+    [{ length: '60', width: 20, height: 20, shapeMode: 'rect' }, 'length'],
+    [{ length: 60, width: 20, height: 20, shapeMode: 'wheelWells', shapeConfig: { wellHeight: null } }, 'shapeConfig.wellHeight'],
+  ]) {
+    const run = await c5RunEngine(10, { truck });
+    assert.equal(run.writes.length, 0, 'nothing is written');
+    assert.equal(run.results, undefined);
+    assert.ok(run.toasts.some(message => message.includes(`truck settings could not be verified (${field})`)),
+      `names ${field}: ${JSON.stringify(run.toasts)}`);
+    assert.equal(JSON.stringify(run.committed), JSON.stringify(run.source));
+  }
+
+  // The no-adoption explanation reads only shared assessment outcomes.
+  const finding = (property, outcome) => ({ property, outcome, subject: 's', evidence: {} });
+  const candidate = (primary, hard) => ({ assessment: { primary, hard } });
+  assert.match(E.explainAutoPackNoAdoption([candidate('INCOMPLETE', [finding('source.target-space', 'UNRESOLVED')])]),
+    /truck settings could not be verified/);
+  assert.match(E.explainAutoPackNoAdoption([candidate('INVALID', [finding('collision', 'FAIL')])]),
+    /passes the physical checks/);
+  assert.match(E.explainAutoPackNoAdoption([candidate('INCOMPLETE', [finding('geometry.source', 'UNRESOLVED')])]),
+    /missing or invalid information/);
+  assert.equal(E.explainAutoPackNoAdoption([candidate('VALID', [])]), E.AUTOPACK_NO_ADOPTION_DEFAULT);
+  assert.equal(E.explainAutoPackNoAdoption([]), E.AUTOPACK_NO_ADOPTION_DEFAULT);
 });

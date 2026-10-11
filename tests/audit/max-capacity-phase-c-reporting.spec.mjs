@@ -160,24 +160,29 @@ test('PHASE-C-RPT-7 Inspector Load Summary repeats no relaxed-profile notice; th
 
 // ── AutoPack Results panel (source-contract) ─────────────────────────────────
 
-test('PHASE-C-RPT-8 the Results card drops the redundant Max Capacity profile count and warns in visible text instead', async () => {
+test('PHASE-C-RPT-8 the Results card drops the redundant Max Capacity profile count and never shows a strategy-specific warning', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderAutoPackResultsPanel(pack)', 'function initEditorUI()');
   assert.doesNotMatch(block, /Max Capacity profile|maxCapacityChip|makeAutoPackResultChip/,
     'a candidate packedCount repeated as a profile count adds nothing to Packed and is not shown');
-  assert.match(block, /if \(viewedOption\.id === 'max-capacity'\) \{/, 'the warning is gated to the Max Capacity option');
-  const gated = sliceFn(block, "if (viewedOption.id === 'max-capacity') {", 'const actions = document.createElement');
-  assert.match(gated, /'Handling rules relaxed\. Review before transport\.'/);
+  // C5: Max uses the same physical rules and assessment authority as Standard,
+  // so the card has no Max-gated caution. The only caution is the plain
+  // needs-review note, driven by the assessment and shared by every strategy.
+  assert.doesNotMatch(block, /viewedOption\.id === 'max-capacity'\) \{\s*optionRow\.appendChild/,
+    'there is no Max-gated warning element');
+  assert.match(block, /describeAutoPackReviewReason\(assessment\)/, 'the single caution comes from the assessment');
+  assert.doesNotMatch(block, /Handling rules relaxed|Broader orientation search/, 'no relaxed-handling or engine copy');
 });
 
-test('PHASE-C-RPT-9 standard strategies never render the Max Capacity warning', async () => {
+test('PHASE-C-RPT-9 no strategy renders raw assessment vocabulary on the Results card', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderAutoPackResultsPanel(pack)', 'function initEditorUI()');
-  // The one warning call site sits inside the id === 'max-capacity' guard, so
-  // Balanced, Compact fill, Floor first, Stack priority and Constrained space
-  // first can never render it.
-  const callSites = block.match(/Handling rules relaxed\./g) || [];
-  assert.equal(callSites.length, 1, 'exactly one call site, the gated one asserted in PHASE-C-RPT-8');
+  // The card translates INCOMPLETE into one plain sentence and never lists
+  // findings, affected Cases, measurements or physical property names.
+  assert.doesNotMatch(block, /UNRESOLVED|UNVERIFIED|ADVISORY|assessment\.hard|assessment\.unverified|assessment\.advisory/,
+    'no raw finding dump on the card');
+  const reviewNotes = block.match(/Needs review/g) || [];
+  assert.equal(reviewNotes.length, 1, 'exactly one needs-review call site');
 });
 
 // ── PDF/report summary (source-contract) ─────────────────────────────────────

@@ -92,11 +92,16 @@ export function createTruckChangeController({
       : { pack: sourcePack, stagedIds: [], failedIds: [] };
     const excluded = new Set([...(excludedIds || []), ...(staged.failedIds || [])]);
     return {
+      // `pack` is for rendering ONLY: cargo that cannot be drawn (unresolved or
+      // malformed geometry) is omitted from the scene. `commitPack` is the Pack
+      // source and keeps EVERY instance exactly as reconciled - preview omission
+      // must never become deletion.
       pack: {
         ...staged.pack,
         truck: ctx.nextTruck,
         cases: (staged.pack.cases || []).filter(inst => !excluded.has(inst.id)),
       },
+      commitPack: { ...staged.pack, truck: ctx.nextTruck },
       stagedIds: staged.stagedIds || [],
       failedIds: staged.failedIds || [],
       excludedIds: [...excluded],
@@ -107,7 +112,21 @@ export function createTruckChangeController({
     if (typeof ctx.renderPreview === 'function') ctx.renderPreview(preview);
   }
 
-  function makeSummaryContent(recon, heading) {
+  // Truck Change decides about cargo that occupies the loaded truck. Staged
+  // cargo is outside loaded-Pack geometry, is never moved by this operation, and
+  // is preserved exactly even when its Case geometry is unresolved, so it is
+  // reported as information, never as a blocker.
+  function classifyIntegrity(pack, recon) {
+    const stagedIds = new Set((pack?.cases || [])
+      .filter(inst => inst && inst.placement === 'staged').map(inst => inst.id));
+    const split = entries => ({
+      loaded: (entries || []).filter(entry => !stagedIds.has(entry.id)),
+      staged: (entries || []).filter(entry => stagedIds.has(entry.id)),
+    });
+    return { unresolved: split(recon.unresolved), malformed: split(recon.malformed) };
+  }
+
+  function makeSummaryContent(recon, heading, integrity) {
     const content = documentRef.createElement('div');
     const intro = documentRef.createElement('div');
     intro.className = 'tp3d-editor-sub-sm';
@@ -125,8 +144,16 @@ export function createTruckChangeController({
       { count: recon.summary.stagedUnchanged, label: 'existing staged items unchanged' },
     ];
     if (recon.summary.stagedAdjusted) rows.push({ count: recon.summary.stagedAdjusted, label: 'unsafe staged items corrected' });
-    if (recon.summary.unresolved) rows.push({ count: recon.summary.unresolved, label: 'unresolved items require attention' });
-    if (recon.summary.malformed) rows.push({ count: recon.summary.malformed, label: 'malformed items require attention' });
+    if (integrity.unresolved.loaded.length) {
+      rows.push({ count: integrity.unresolved.loaded.length, label: 'unresolved items require attention' });
+    }
+    if (integrity.malformed.loaded.length) {
+      rows.push({ count: integrity.malformed.loaded.length, label: 'malformed items require attention' });
+    }
+    const stagedPreserved = integrity.unresolved.staged.length + integrity.malformed.staged.length;
+    if (stagedPreserved) {
+      rows.push({ count: stagedPreserved, label: 'staged items with unavailable case details left unchanged' });
+    }
     rows.forEach(row => {
       const li = documentRef.createElement('li');
       li.className = [
@@ -156,15 +183,15 @@ export function createTruckChangeController({
     });
     content.appendChild(list);
 
-    if (recon.unresolved.length || recon.malformed.length) {
+    if (integrity.unresolved.loaded.length || integrity.malformed.loaded.length) {
       const blocked = documentRef.createElement('div');
       blocked.className = 'muted tp3d-editor-sub-sm';
       const messages = [];
-      if (recon.unresolved.length) {
-        messages.push(`${recon.unresolved.length} unresolved item(s) reference missing case definitions`);
+      if (integrity.unresolved.loaded.length) {
+        messages.push(`${integrity.unresolved.loaded.length} unresolved item(s) reference missing case definitions`);
       }
-      if (recon.malformed.length) {
-        messages.push(`${recon.malformed.length} malformed item(s) have invalid physical data`);
+      if (integrity.malformed.loaded.length) {
+        messages.push(`${integrity.malformed.loaded.length} malformed item(s) have invalid physical data`);
       }
       blocked.textContent = `${messages.join('; ')}. Resolve or remove them before changing the truck.`;
       content.appendChild(blocked);
@@ -289,7 +316,7 @@ export function createTruckChangeController({
             }
             return commit(
               ctx,
-              preview.pack,
+              preview.commitPack,
               `Truck updated. ${outcome.repackedIds.length} repacked and ${outcome.failedIds.length} moved to staging.`
             );
           }),
@@ -301,7 +328,8 @@ export function createTruckChangeController({
 
   function showPreview(ctx) {
     const recon = ctx.reconciliation;
-    const blocked = recon.unresolved.length > 0 || recon.malformed.length > 0;
+    const integrity = classifyIntegrity(ctx.pack, recon);
+    const blocked = integrity.unresolved.loaded.length > 0 || integrity.malformed.loaded.length > 0;
     // DOM order is the reading and Tab order: decisions first, Cancel last.
     const actions = [];
     const excludedIds = [
@@ -329,7 +357,7 @@ export function createTruckChangeController({
           }
           return commit(
             ctx,
-            preview.pack,
+            preview.commitPack,
             recon.adjusted.length
               ? `${ctx.successMessage}. ${recon.adjusted.length} item(s) safely adjusted.`
               : ctx.successMessage
@@ -347,7 +375,7 @@ export function createTruckChangeController({
             if (finalPlan.failedIds.length) {
               throw new Error(`Could not safely stage ${finalPlan.failedIds.length} item(s). No changes were applied.`);
             }
-            return commit(ctx, finalPlan.pack, `Truck updated. ${outcome.repackedIds.length} item(s) repacked.`);
+            return commit(ctx, finalPlan.commitPack, `Truck updated. ${outcome.repackedIds.length} item(s) repacked.`);
           }
           ctx.inFlight = false;
           ctx.suppressRestoreOnce = true;
@@ -361,7 +389,7 @@ export function createTruckChangeController({
           if (preview.failedIds.length) {
             throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
           }
-          return commit(ctx, preview.pack, `Truck updated. ${recon.invalid.length} item(s) moved to staging.`);
+          return commit(ctx, preview.commitPack, `Truck updated. ${recon.invalid.length} item(s) moved to staging.`);
         }),
       });
     }
@@ -369,7 +397,7 @@ export function createTruckChangeController({
 
     const modalRef = showManagedModal(ctx, {
       title: 'Truck change',
-      content: makeSummaryContent(recon, 'Changing the truck affects placed cases:'),
+      content: makeSummaryContent(recon, 'Changing the truck affects placed cases:', integrity),
       actions,
     });
     modalRef.modal?.classList?.add('tp3d-truck-change-modal');

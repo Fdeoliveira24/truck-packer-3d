@@ -1025,3 +1025,87 @@ test('PHASE-C2 production solver gates floor, filler, lane, repeated, B2A/B2C, s
   const repackedInst = repacked.pack.cases.find(inst => inst.id === 'deck-invalid');
   assert.ok(repackedInst.transform.position.x <= 228, 'Repack Invalid places it on the main floor, not the empty deck');
 });
+
+// C5 recovery: staged cargo is outside loaded-Pack geometry, so unresolved
+// STAGED cargo is information, never a blocker, and is preserved exactly.
+async function stagedUnresolvedTruckChange({ unresolvedPlacement = 'staged', extraCases = [] } = {}) {
+  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
+  const library = [{ id: 'c', name: 'Carton', dimensions: { length: 24, width: 18, height: 16 }, weight: 20, orientationLock: 'any' }];
+  const stagedAt = (id, x, extra = {}) => ({
+    ...reconInst(id, x, 8, 160), placement: 'staged', orientedDims: { length: 24, width: 18, height: 16 }, ...extra,
+  });
+  const unresolved = {
+    ...stagedAt('gone-1', -150, { caseId: 'deleted-case', notes: 'keep me', hidden: true, groupId: 'g7',
+      metadata: { label: 'orphan' }, orientationLocked: true, lockedRotation: { x: 0, y: Math.PI / 2, z: 0 } }),
+    placement: unresolvedPlacement,
+  };
+  if (unresolvedPlacement === 'packed') Object.assign(unresolved.transform.position, { x: 60, y: 8, z: 0 });
+  const cases = [reconInst('packed-a', 100, 8, 0), stagedAt('staged-ok', 300, { notes: 'valid staged' }), unresolved,
+    stagedAt('gone-2', -200, { caseId: 'deleted-case' })];
+  cases.push(...extraCases);
+  const pack = { id: 'p', truck: RECON_RECT, cases };
+  const harness = makeTruckChangeHarness();
+  const commits = [];
+  const previews = [];
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+    CaseLibrary: { getCases: () => library },
+    UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef,
+  });
+  const before = structuredClone(pack);
+  controller.request({ pack, nextTruck: { ...RECON_RECT, length: 230 }, renderPreview: p => previews.push(p), restoreControls() {} });
+  return { harness, commits, previews, pack, before, library };
+}
+
+const truckChangeModalText = harness => {
+  const text = node => node.textContent;
+  return harness.modals[0].config.content.children.map(text).join(' | ');
+};
+
+test('RECON C5 recovery: unresolved STAGED cargo does not block Truck Change and survives commit byte-equivalent', async () => {
+  const { harness, commits, previews, pack, before } = await stagedUnresolvedTruckChange();
+  const labels = harness.modals[0].config.actions.map(action => action.label);
+  assert.deepEqual(labels, ['Apply change', 'Cancel'], 'a real path forward exists, not only Cancel');
+  const text = truckChangeModalText(harness);
+  assert.doesNotMatch(text, /Resolve or remove/, 'staged unresolved cargo is never described as a blocker');
+  assert.doesNotMatch(text, /unresolved items require attention/);
+  assert.match(text, /2 staged items with unavailable case details left unchanged/);
+
+  // Preview omission is rendering only.
+  assert.deepEqual(new Set(previews[0].excludedIds), new Set(['gone-1', 'gone-2']));
+  assert.equal(previews[0].pack.cases.some(inst => inst.id === 'gone-1'), false, 'unresolved cargo is not drawn');
+
+  harness.click(0, 'Apply change');
+  assert.equal(commits.length, 1);
+  const committed = commits[0].patch.cases;
+  assert.equal(committed.length, before.cases.length, 'preview filtering never deletes a Pack instance');
+  for (const id of ['gone-1', 'gone-2', 'staged-ok']) {
+    assert.deepEqual(committed.find(inst => inst.id === id), before.cases.find(inst => inst.id === id),
+      `${id} survives commit byte-equivalent`);
+  }
+  assert.deepEqual(pack, before, 'the source Pack is never mutated');
+  assert.deepEqual(commits[0].patch.truck, { ...RECON_RECT, length: 230 });
+});
+
+test('RECON C5 recovery: unresolved or malformed PACKED cargo still blocks Truck Change', async () => {
+  // Structural corruption of loaded cargo is never weakened: a packed instance
+  // with no usable position keeps the decision blocked.
+  const malformed = await stagedUnresolvedTruckChange({
+    extraCases: [{ ...reconInst('bad-pose', 40, 8, 0), transform: { position: { x: 'bad' } } }],
+  });
+  assert.deepEqual(malformed.harness.modals[0].config.actions.map(action => action.label), ['Cancel']);
+  assert.match(truckChangeModalText(malformed.harness), /1 malformed item\(s\) have invalid physical data/);
+  assert.equal(malformed.commits.length, 0);
+
+  const packed = await stagedUnresolvedTruckChange({ unresolvedPlacement: 'packed' });
+  assert.deepEqual(packed.harness.modals[0].config.actions.map(action => action.label), ['Cancel'],
+    'unresolved packed cargo cannot be safely reconciled, so only Cancel remains');
+  const text = truckChangeModalText(packed.harness);
+  assert.match(text, /1 unresolved items require attention/);
+  assert.match(text, /Resolve or remove them before changing the truck/);
+  assert.match(text, /1 staged items with unavailable case details left unchanged/,
+    'the remaining staged item is reported as information');
+  assert.equal(packed.commits.length, 0);
+});

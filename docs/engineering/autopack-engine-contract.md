@@ -44,8 +44,12 @@ Hard rules include:
 
 C5 materializes every candidate as the complete Pack that Apply would commit,
 then uses the shared C2/C4 assessment and separate operational eligibility.
-Only VALID + eligible candidates count as valid solutions or qualify for initial
-automatic adoption. Acceptable INCOMPLETE candidates require explicit Apply;
+Only VALID + eligible candidates count as valid solutions. Acceptable Results
+preserve the strategy portfolio order, with Balanced first when acceptable.
+Only a VALID + eligible first/preferred candidate qualifies for initial automatic
+adoption and Recommended. If it is INCOMPLETE, Results opens on it without a Pack
+mutation or Recommended label; a later VALID alternative is never auto-adopted
+in its place. Acceptable INCOMPLETE candidates require explicit Apply;
 INVALID and operationally blocked candidates cannot be adopted. A complete or
 partial packing population does not determine physical validity.
 

@@ -613,6 +613,10 @@ function compareScore(a, b) {
   return 0;
 }
 
+/**
+ * @param {any} zone
+ * @param {number | string} [index]
+ */
 function makeFreeRect(zone, index = 0) {
   return {
     id: `zone-${index}`,
@@ -678,6 +682,10 @@ function createRetentionContext(truck, zones, fixedPlacements = []) {
     zones,
     geometry: getFrontOverhangRetentionGeometry(truck, zones),
     fixedPlacements: Array.isArray(fixedPlacements) ? fixedPlacements : [],
+    // Physical wheel-well model (null for every other truck mode). Floor states
+    // read it so seam-spanning floor candidates compete in the ordinary passes.
+    wheelWell: getWheelWellGeometry(truck),
+    establishedRegionsOnly: false,
   };
 }
 
@@ -708,34 +716,15 @@ function placementsHaveRearRetention(placements, retentionContext) {
   );
 }
 
-// Computational rectangles may overlap: the channel continues across both
-// seams on the real truck floor. All floor passes consume this same region,
-// including repeated grids and compaction. No raised floor is manufactured.
-export function buildContinuousFloorZones(zones, truck) {
-  const geometry = getWheelWellGeometry(truck);
-  if (!geometry || geometry.betweenHalfW <= FREE_RECT_EPS) return zones;
-  const channel = {
-    min: { ...geometry.truckBox.min, z: -geometry.betweenHalfW },
-    max: { ...geometry.truckBox.max, z: geometry.betweenHalfW },
-  };
-  const ground = zones.filter(zone => Math.abs(zone.min.y - channel.min.y) <= CONTACT_EPS &&
-    zone.min.z <= channel.min.z && zone.max.z >= channel.max.z && zone.max.y >= channel.max.y)
-    .slice().sort((a, b) => a.min.x - b.min.x);
-  // Respect caller-supplied usable space as well as the physical blocked bodies.
-  let coveredTo = channel.min.x;
-  for (const zone of ground) {
-    if (zone.min.x > coveredTo) break;
-    coveredTo = Math.max(coveredTo, zone.max.x);
-  }
-  if (!isAabbWithinTruckMinusBlocked(channel, geometry) || coveredTo < channel.max.x) return zones;
-  return [...zones, channel];
-}
-
 function createFloorState(zones, frontSurfaceFirst = false, retentionContext = null) {
   return {
     freeRects: normalizeFreeRects(zones.map((zone, index) => makeFreeRect(zone, index))),
     frontSurfaceFirst: frontSurfaceFirst === true,
     retentionContext,
+    // Seam candidates need the caller's usable zones as well as the physical
+    // model; the free rects alone shrink as cargo is placed.
+    seam: retentionContext?.wheelWell ? { geometry: retentionContext.wheelWell, zones } : null,
+    establishedRegionsOnly: retentionContext?.establishedRegionsOnly === true,
   };
 }
 
@@ -770,7 +759,8 @@ export function occupyFloorSpace(floorState, placement) {
   if (!floorState || !placement?.aabb) return;
   const next = [];
   for (const rect of floorState.freeRects) {
-    if (Math.abs(rect.zone.min.y - placement.aabb.min.y) > CONTACT_EPS) {
+    if (floorState.establishedRegionsOnly ? rect.zone !== placement.zone
+      : Math.abs(rect.zone.min.y - placement.aabb.min.y) > CONTACT_EPS) {
       next.push(rect);
       continue;
     }
@@ -1099,10 +1089,114 @@ function buildFreeRectCandidates(orientation, floorState, loadFrontFirst, packed
   return placements;
 }
 
+// A floor span is covered when zones at the floor level (full height, spanning
+// the candidate's z range) are contiguous across the candidate's whole x range.
+// Honors caller-supplied usable space without requiring ONE zone to contain it.
+function isFloorSpanCoveredByZones(aabb, zones, floorY) {
+  const covering = (zones || []).filter(zone =>
+    Math.abs(zone.min.y - floorY) <= CONTACT_EPS &&
+    zone.max.y >= aabb.max.y - CONTAINMENT_EPS_INCHES &&
+    zone.min.z <= aabb.min.z + CONTAINMENT_EPS_INCHES &&
+    zone.max.z >= aabb.max.z - CONTAINMENT_EPS_INCHES
+  ).sort((a, b) => a.min.x - b.min.x);
+  let coveredTo = aabb.min.x;
+  for (const zone of covering) {
+    if (zone.min.x > coveredTo + CONTAINMENT_EPS_INCHES) return false;
+    coveredTo = Math.max(coveredTo, zone.max.x);
+    if (coveredTo >= aabb.max.x - CONTAINMENT_EPS_INCHES) return true;
+  }
+  return coveredTo >= aabb.max.x - CONTAINMENT_EPS_INCHES;
+}
+
+// Wheel Wells seam candidates. Free rects are computational zones (rear /
+// channel / front), so a rect candidate can never straddle a zone seam even
+// though the physical floor is continuous there; lengths that are not multiples
+// of the cargo length strand a strip at every seam. These floor-level poses
+// straddle a seam and are legal only by the independent physical union
+// (truck box minus the blocked well bodies), the caller's usable space, direct
+// collision, and the wheel-well support model. They are ordinary competitors in
+// findFloorPlacement's scoring - never raised, bridged, or placed in a body.
+function buildWheelWellSeamCandidates(orientation, floorState, packed, loadFrontFirst, item) {
+  const seam = floorState.seam;
+  if (!seam) return [];
+  const { geometry, zones } = seam;
+  const floorY = geometry.truckBox.min.y;
+  const { l, w, h } = orientation;
+  if (floorY + h > geometry.truckBox.max.y + CONTAINMENT_EPS_INCHES) return [];
+  if (w > geometry.betweenHalfW * 2 + CONTAINMENT_EPS_INCHES) return [];
+  const seams = [geometry.wx0, geometry.wx1];
+  const floorPlacements = physicalPlacements(packed)
+    .filter(placement => Math.abs(placement.aabb.min.y - floorY) <= CONTACT_EPS);
+  const xRaw = [];
+  for (const edge of seams) xRaw.push(edge - l / 2);
+  const zRaw = [-geometry.betweenHalfW, geometry.betweenHalfW - w];
+  for (const placement of floorPlacements) {
+    xRaw.push(placement.aabb.max.x, placement.aabb.min.x - l);
+    zRaw.push(placement.aabb.min.z, placement.aabb.max.z - w, placement.aabb.min.z - w, placement.aabb.max.z);
+  }
+  // Only genuinely seam-straddling poses: everything else is the ordinary
+  // floor pass's job. A straddler overlaps the well x-range, so it must sit
+  // inside the channel walls.
+  const xMins = uniqueSorted(xRaw, loadFrontFirst ? (a, b) => b - a : (a, b) => a - b)
+    .filter(xMin => seams.some(edge => xMin < edge - FREE_RECT_EPS && xMin + l > edge + FREE_RECT_EPS))
+    .slice(0, 16);
+  if (!xMins.length) return [];
+  const zMins = uniqueSorted(zRaw, (a, b) => a - b)
+    .filter(zMin => zMin >= -geometry.betweenHalfW - FREE_RECT_EPS &&
+      zMin + w <= geometry.betweenHalfW + FREE_RECT_EPS)
+    .slice(0, 12);
+
+  const out = [];
+  for (const xMin of xMins) {
+    for (const zMin of zMins) {
+      const position = { x: xMin + l / 2, y: floorY + h / 2, z: zMin + w / 2 };
+      const dims = { l, w, h };
+      const aabb = getAabb(position, dims);
+      if (!isAabbWithinTruckMinusBlocked(aabb, geometry)) continue;
+      if (!isFloorSpanCoveredByZones(aabb, zones, floorY)) continue;
+      if (collidesPacked(aabb, packed)) continue;
+      if (!isWheelWellSupportedAndStable(aabb, structuralPlacements(packed), geometry, item)) continue;
+      out.push({ position, dims, aabb, zone: null, freeRect: null, seam: true });
+    }
+  }
+  return out;
+}
+
+// Scoring-only stand-in for the zone/free rect a seam candidate has no single
+// owner for: the continuous centre channel across the full truck length.
+function seamScoringRegion(geometry) {
+  const zone = {
+    min: { x: geometry.truckBox.min.x, y: geometry.truckBox.min.y, z: -geometry.betweenHalfW },
+    max: { x: geometry.truckBox.max.x, y: geometry.truckBox.max.y, z: geometry.betweenHalfW },
+  };
+  return { zone, freeRect: makeFreeRect(zone, 'seam') };
+}
+
+// A stacked candidate directly above seam-straddling cargo is not contained in
+// any ONE computational zone, but it is a plain vertical continuation of a
+// column whose footprint is already physically legal. Accept it only when the
+// footprint stays inside the centre channel (so nothing overhangs a well or
+// bridges - that remains deferred), the zones cover it, and every direct
+// support is itself a seam placement. Normal support/weight rules still apply.
+function isSeamColumnContained(aabb, packed, zones, retentionContext) {
+  const geometry = retentionContext?.wheelWell;
+  if (!geometry) return false;
+  if (aabb.min.z < -geometry.betweenHalfW - FREE_RECT_EPS ||
+      aabb.max.z > geometry.betweenHalfW + FREE_RECT_EPS) return false;
+  if (!isAabbWithinTruckMinusBlocked(aabb, geometry)) return false;
+  if (!isFloorSpanCoveredByZones(aabb, zones, geometry.truckBox.min.y)) return false;
+  const supports = structuralPlacements(packed).filter(placement =>
+    Math.abs(placement.aabb.max.y - aabb.min.y) <= CONTACT_EPS &&
+    computeXzOverlapArea(placement.aabb, aabb) > 0.05
+  );
+  return supports.length > 0 && supports.every(placement => placement.seam === true);
+}
+
 function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = {}) {
   let best = null;
   let bestScore = null;
   const requiredFloorY = Number.isFinite(options.floorY) ? options.floorY : null;
+  const layoutQualityEnabled = options.layoutQualityEnabled === true;
 
   for (const orientation of item.candidates) {
     for (const candidate of buildFreeRectCandidates(orientation, floorState, loadFrontFirst, physicalPlacements(packed))) {
@@ -1117,7 +1211,32 @@ function findFloorPlacement(item, floorState, packed, loadFrontFirst, options = 
         floorState.frontSurfaceFirst,
         item,
         orientation,
-        options.layoutQualityEnabled === true
+        layoutQualityEnabled
+      );
+      if (!best || compareScore(score, bestScore) < 0) {
+        best = { ...candidate, orientation };
+        bestScore = score;
+      }
+    }
+
+    // Same orientation, same scoring: the seam candidate competes with the
+    // established region candidates instead of rescuing leftovers later.
+    const seamCandidates = floorState.seam
+      ? buildWheelWellSeamCandidates(orientation, floorState, packed, loadFrontFirst, item)
+      : [];
+    if (!seamCandidates.length) continue;
+    const region = seamScoringRegion(floorState.seam.geometry);
+    for (const candidate of seamCandidates) {
+      if (requiredFloorY !== null && Math.abs(candidate.aabb.min.y - requiredFloorY) > CONTACT_EPS) continue;
+      if (!candidateHasRearRetention(candidate.aabb, packed, floorState.retentionContext)) continue;
+      const score = scoreFreeRectCandidate(
+        { ...candidate, zone: region.zone, freeRect: region.freeRect },
+        loadFrontFirst,
+        packed,
+        floorState.frontSurfaceFirst,
+        item,
+        orientation,
+        layoutQualityEnabled
       );
       if (!best || compareScore(score, bestScore) < 0) {
         best = { ...candidate, orientation };
@@ -1876,7 +1995,13 @@ function findStackPlacement(
 
     for (const candidate of candidates) {
       const wheelWellCandidate = candidate.wheelWellCandidate === true;
-      const containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
+      let containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
+      let seamColumn = false;
+      if (!containedInUsableZone && !wheelWell &&
+          isSeamColumnContained(candidate.aabb, packed, zones, retentionContext)) {
+        containedInUsableZone = true;
+        seamColumn = true;
+      }
       if (wheelWell) {
         if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) continue;
         if (!isWheelWellSupportedAndStable(candidate.aabb, structural, wheelWell, item)) continue;
@@ -1899,7 +2024,7 @@ function findStackPlacement(
         : wheelWell
           ? computeWheelWellSupport(candidate.aabb, structural, wheelWell, item).fraction
         : computeSupportFraction(candidate.aabb, supports);
-      const scoredCandidate = { ...candidate, supportFraction, orientation };
+      const scoredCandidate = { ...candidate, supportFraction, orientation, ...(seamColumn ? { seam: true } : {}) };
       const groupScore = layoutQualityEnabled
         ? scoreLayoutGroupContinuity(
           candidate.aabb,
@@ -2017,7 +2142,12 @@ function stackBatchCellMins(rect, orientation, loadFrontFirst) {
 }
 
 function repeatedStackCandidateIsLegal(candidate, item, zones, packed, retentionContext, wheelWell) {
-  const containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
+  let containedInUsableZone = isAabbContainedInAnyZone(candidate.aabb, zones);
+  if (!containedInUsableZone && !wheelWell &&
+      isSeamColumnContained(candidate.aabb, packed, zones, retentionContext)) {
+    containedInUsableZone = true;
+    candidate.seam = true;
+  }
   if (wheelWell) {
     if (!isAabbWithinTruckMinusBlocked(candidate.aabb, wheelWell)) return false;
     if (!isWheelWellSupportedAndStable(candidate.aabb, structuralPlacements(packed), wheelWell, item)) return false;
@@ -2152,6 +2282,9 @@ function recordPlacement(output, packed, item, placement, phase) {
     phase,
     zone: placement.zone || null,
     lockedGrid: placement.lockedGrid === true,
+    // A seam placement has no single owning zone; floor-state rebuilds must
+    // still subtract its footprint from every region it intersects.
+    ...(placement.seam === true ? { seam: true } : {}),
   };
   packed.push(packedPlacement);
   output.placements.set(item.id, placement.position);
@@ -2644,7 +2777,7 @@ function rebuildFloorStateFromPacked(
 ) {
   const floorState = createFloorState(zones, frontSurfaceFirst, retentionContext);
   for (const placement of physicalPlacements(packed)) {
-    if (!isPlacementOnZoneFloor(placement.aabb, zones)) continue;
+    if (placement.seam !== true && !isPlacementOnZoneFloor(placement.aabb, zones)) continue;
     occupyFloorSpace(floorState, { ...placement, zone: getPlacementZone(placement, zones) });
   }
   return floorState;
@@ -3335,6 +3468,19 @@ export function placeLeftoverRecovery(
       ? findFloorPlacement(item, floorState, packed, loadFrontFirst, { layoutQualityEnabled })
       : null;
     let phase = 'filler';
+    if (!placement && wheelWell && !floorState.seam) {
+      // Retain the established C4 leftover seam opportunity. Ordinary seam
+      // competition is additive in the other solve variant; it must not remove
+      // this path or force its earlier local choices on the established plan.
+      const seamState = { seam: { geometry: wheelWell, zones: floorZones } };
+      const candidates = item.candidates.flatMap(orientation =>
+        buildWheelWellSeamCandidates(orientation, seamState, packed, loadFrontFirst, item)
+          .map(candidate => ({ ...candidate, orientation })));
+      candidates.sort((a, b) => compareScore(
+        [loadFrontFirst ? -a.aabb.max.x : a.aabb.min.x, a.aabb.min.z, a.dims.h],
+        [loadFrontFirst ? -b.aabb.max.x : b.aabb.min.x, b.aabb.min.z, b.dims.h]));
+      placement = candidates[0] || null;
+    }
     if (!placement && allowStack) {
       // Final safe stack/raised attempt against the FINAL layout: compaction and
       // earlier leftover rescues changed the world since the main stack phase, so
@@ -3448,6 +3594,27 @@ function diagnoseUnplacedItem(item, zones, wheelWell, fallbackDetail) {
 }
 
 export function solveAutoPack(input = {}) {
+  if (!getWheelWellGeometry(input.truck || {})) return solveAutoPackVariant(input, false);
+  // Compare complete validated solutions, not locally attractive seam poses.
+  // Both variants share one time budget; when it is spent the established plan
+  // is retained. Internal variants never become duplicate Results strategies.
+  const budget = createSolveBudget(input.solveBudgetMs, undefined, input.cleanupBudgetMs);
+  const established = solveAutoPackVariant(input, false, budget);
+  if (budget.expired()) return established;
+  const seamAware = solveAutoPackVariant(input, true, budget);
+  if (seamAware.placements.size !== established.placements.size) {
+    return seamAware.placements.size > established.placements.size ? seamAware : established;
+  }
+  const floorCount = result => result.phaseStats.laneCount + result.phaseStats.floorCount + result.phaseStats.fillerCount;
+  if (floorCount(seamAware) !== floorCount(established)) {
+    return floorCount(seamAware) > floorCount(established) ? seamAware : established;
+  }
+  const frontFirst = input.loadFrontFirst === true || input.loadDirection === 'front_to_rear';
+  const progress = result => [...result.placements.values()].reduce((sum, p) => sum + p.x, 0) * (frontFirst ? 1 : -1);
+  return progress(seamAware) > progress(established) + FREE_RECT_EPS ? seamAware : established;
+}
+
+function solveAutoPackVariant(input, seamAware, sharedBudget = null) {
   const truck = normalizeTruck(input.truck || {});
   const zones = normalizeZones(input.zones || []);
   const rawItems = Array.isArray(input.items) ? input.items : [];
@@ -3465,7 +3632,7 @@ export function solveAutoPack(input = {}) {
     : rawItems;
   const items = solverItems.map(normalizeItem);
   const loadFrontFirst = input.loadFrontFirst === true || input.loadDirection === 'front_to_rear';
-  const floorZones = sortZonesForFloor(buildContinuousFloorZones(zones, input.truck || {}), loadFrontFirst);
+  const floorZones = sortZonesForFloor(zones, loadFrontFirst);
   // Phase C: only a raised usable surface extending beyond the truck's main
   // high-X boundary changes floor/deck priority. Wheel-well raised zones remain
   // inside truck.length, so Standard and Wheel Wells retain byte-identical scores.
@@ -3483,6 +3650,8 @@ export function solveAutoPack(input = {}) {
     floorZones,
     fixedPlacements.length ? structuralFixed : input.retentionPlacements
   );
+  if (!seamAware) retentionContext.wheelWell = null;
+  retentionContext.establishedRegionsOnly = !seamAware;
   const floorState = createFloorState(floorZones, frontSurfaceFirst, retentionContext);
   const packed = [];
   if (fixedPlacements.length) {
@@ -3528,7 +3697,7 @@ export function solveAutoPack(input = {}) {
   // remaining items stage with honest reasons — but a BOUNDED cleanup window
   // still runs leftover recovery, compaction, and front compression so the
   // returned layout is never an abruptly-truncated, uncompacted mess.
-  const budget = createSolveBudget(input.solveBudgetMs, undefined, input.cleanupBudgetMs);
+  const budget = sharedBudget || createSolveBudget(input.solveBudgetMs, undefined, input.cleanupBudgetMs);
   let budgetExhausted = false;
   const stopForBudget = (remainingItems, phase) => {
     budgetExhausted = true;

@@ -304,7 +304,7 @@ async function openEditor(browser) {
       return route.fulfill({ status: 404, body: '' });
     }
     const text = /^\.(js|mjs|css|svg|json)$/.test(ext);
-    const body = await read(url.pathname.slice(1), text ? 'utf8' : undefined).catch(() => null);
+    const body = await read(url.pathname.slice(1), text ? 'utf8' : null).catch(() => null);
     return body === null
       ? route.fulfill({ status: 404, body: '' })
       : route.fulfill({ contentType: CONTENT_TYPES[ext], body });
@@ -315,6 +315,18 @@ async function openEditor(browser) {
 }
 
 const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+
+// Animation/adoption checks require a VALID preferred plan. Mixed footprints
+// can yield indeterminate multi-support stacks, which correctly await Apply.
+async function useDeterminateAutoPackFixture(page) {
+  await page.evaluate(() => {
+    const p = window.probe, pack = p.PackLibrary.getById('fixture-pack');
+    const only = p.CaseLibrary.getCases().find(c => c.name === 'Subwoofer Crate');
+    p.StateStore.set({ packLibrary: [{ ...pack, cases: pack.cases.map(inst => ({ ...inst, caseId: only.id })) }],
+      selectedInstanceIds: [], autoPackResults: null }, { skipHistory: true });
+    p.StateStore.resetHistory();
+  });
+}
 
 test('C3 browser Case mass uses blank unknown and rejects zero or negative input', { timeout: 120000 }, async () => {
   const browser = await launch();
@@ -1925,6 +1937,7 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    await useDeterminateAutoPackFixture(page);
     const totals = () => page.evaluate(() => {
       const body = document.querySelector('#inspector-body');
       const summary = body.querySelector('.tp3d-editor-stats-card');
@@ -2069,6 +2082,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    await useDeterminateAutoPackFixture(page);
     await page.locator('#btn-autopack').click();
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
@@ -2090,7 +2104,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
       const clean = el => (el ? el.textContent.replace(/\s+/g, ' ').trim() : null);
       const style = el => (el ? { bg: getComputedStyle(el).backgroundColor, color: getComputedStyle(el).color } : null);
       const status = pick('.tp3d-autopack-results__status');
-      const note = pick('.tp3d-autopack-results__relaxed-note');
+      const note = pick('.tp3d-autopack-results__review-note');
       return {
         counter: clean(pick('.tp3d-autopack-results__counter')),
         title: clean(pick('.tp3d-autopack-results__option-title')),
@@ -2164,12 +2178,11 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     const max = await step('results-next');
     assert.equal(max.counter, 'Option 2 of 3', 'B: Max Capacity is Option 2');
     assert.equal(max.title, 'Max Capacity', 'D: the right arrow shows the Max Capacity card');
-    assert.equal(max.description, 'Relaxed handling comparison');
-    assert.equal(max.note, 'Handling rules relaxed. Review before transport.', 'the warning is visible text');
-    assert.equal(max.noteFits, true, 'the warning is not clipped');
-    assert.equal(max.noteTitle, null, 'the warning does not rely on hover');
-    assert.equal(max.noteIconColor, 'rgb(232, 117, 0)', 'the warning icon carries the orange warning token');
-    assert.equal(max.noteColor, 'rgb(26, 26, 31)', 'the warning copy stays neutral, readable text');
+    assert.equal(max.description, 'Tries more allowed orientations to fit more cargo.');
+    // C5: Max uses the same physical rules and assessment authority as Standard,
+    // so it carries no strategy-specific warning and no engine vocabulary.
+    assert.equal(max.note, null, 'Max Capacity shows no relaxed-handling or engine warning');
+    assert.doesNotMatch(max.text, /relaxed|Broader orientation|UNRESOLVED|UNVERIFIED|ADVISORY|assessment/i);
     assert.equal(max.recommended, null, 'Max Capacity is never Recommended');
     assert.equal(max.applied, null);
     assert.doesNotMatch(max.text, /Max Capacity profile|Floor \d|Stacked/i, 'no Floor/Stacked or profile-count chips');
@@ -2347,8 +2360,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.equal(maxCommitted.showsPack && maxCommitted.showsOption && !maxCommitted.transient, true,
       'H: the committed scene now is the Max Capacity layout');
 
-    assert.equal(maxApplied.note, 'Handling rules relaxed. Review before transport.',
-      'the applied Max Capacity still warns on the Results card');
+    assert.equal(maxApplied.note, null, 'the applied Max Capacity card carries no relaxed-handling warning');
     const profile = () => page.evaluate(() => {
       const p = window.probe;
       const body = document.querySelector('#inspector-body');
@@ -2366,20 +2378,13 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.match(afterMax.summary, /^Load Summary In truck ?\d+ Staged ?\d+ Total weight ?[\d.,]+ ?(lb|kg)$/,
       'Load Summary shows only In truck, Staged and Total weight');
 
-    const darkNote = await page.evaluate(() => {
+    const darkTokens = await page.evaluate(() => {
       document.documentElement.setAttribute('data-theme', 'dark');
-      const note = document.querySelector('[data-role="autopack-results-panel"] .tp3d-autopack-results__relaxed-note');
-      const colors = {
-        icon: getComputedStyle(note.querySelector('i')).color,
-        text: getComputedStyle(note).color,
-        success: getComputedStyle(document.documentElement).getPropertyValue('--success-readable').trim(),
-      };
+      const success = getComputedStyle(document.documentElement).getPropertyValue('--success-readable').trim();
       document.documentElement.setAttribute('data-theme', 'light');
-      return colors;
+      return success;
     });
-    assert.equal(darkNote.icon, 'rgb(255, 189, 102)', 'dark theme warning icon uses the readable warning token');
-    assert.equal(darkNote.text, 'rgb(255, 255, 255)', 'dark theme warning copy stays neutral text');
-    assert.equal(darkNote.success, '#6ee7b7', 'dark theme switches the success text token');
+    assert.equal(darkTokens, '#6ee7b7', 'dark theme switches the success text token');
 
     await page.evaluate(() => {
       window.probe.StateStore.set({ autoPackResults: null }, { skipHistory: true });
@@ -2746,6 +2751,7 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    await useDeterminateAutoPackFixture(page);
 
     const probe = fn => page.evaluate(fn);
     const unplaced = () => probe(() => window.probe.unplaced());
@@ -2836,6 +2842,7 @@ test('P0-SM-OF-10B a selection change outside the Editor never touches the scene
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    await useDeterminateAutoPackFixture(page);
     const probe = fn => page.evaluate(fn);
     const target = 'cargo-7';
 
@@ -2942,18 +2949,20 @@ test('C5 browser incomplete Results stays neutral until explicit Apply and keeps
       return option.nextCases;
     });
     const panel = page.locator('[data-role="autopack-results-panel"]');
-    assert.match(await panel.innerText(), /INCOMPLETE/);
-    assert.match(await panel.innerText(), /unresolved/);
+    // One plain-language reason; the card never lists findings or property names.
+    assert.match(await panel.innerText(), /Needs review \u00b7 Weight information is missing\./);
+    assert.doesNotMatch(await panel.innerText(), /INCOMPLETE|UNRESOLVED|UNVERIFIED|ADVISORY|unresolved|Apply available/);
     assert.doesNotMatch(await panel.innerText(), /Recommended|Best|Outdated/);
     assert.equal(await page.locator('[data-focus-key="results-apply"]').isEnabled(), true);
     await page.locator('[data-focus-key="results-toggle"]').click();
-    assert.match(await panel.innerText(), /INCOMPLETE.*Apply available/s, 'collapsed card still explains adoption');
-    assert.equal(await page.locator('[data-role="autopack-assessment"]').evaluate(el =>
-      getComputedStyle(el).whiteSpace === 'normal' && el.scrollWidth <= el.clientWidth + 1), true,
-    'decisive reason wraps instead of disappearing behind an ellipsis');
     await page.locator('[data-focus-key="results-toggle"]').click();
+    assert.equal(await page.locator('[data-role="autopack-review-note"]').evaluate(el =>
+      getComputedStyle(el).whiteSpace === 'normal' && el.scrollWidth <= el.clientWidth + 1), true,
+    'the single reason wraps instead of disappearing behind an ellipsis');
     const bounds = await panel.boundingBox();
-    assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 900, 'evidence stays inside the existing card viewport');
+    assert.ok(bounds.y >= 0 && bounds.y + bounds.height <= 900, 'the card stays inside the existing viewport');
+    assert.equal(await panel.locator('.tp3d-autopack-results__option-desc').count(), 1,
+      'only the strategy description remains: no finding rows');
     await page.locator('[data-focus-key="results-apply"]').click();
     const applied = await page.evaluate(() => {
       const p = window.probe, pack = p.PackLibrary.getById('fixture-pack');
@@ -2980,7 +2989,10 @@ test('C5 browser carousel preserves source staging visually and blocks Apply aft
       const instance = (id, caseId, x, z) => ({ id, caseId, placement: 'staged', hidden: false, notes: 'user staging',
         transform: { position: { x, y: 10, z }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } } });
       const pack = { ...p.PackLibrary.getById('fixture-pack'),
-        cases: [instance('small', definition.id, -50, -50), instance('stay', large.id, 100, 130)],
+        // Nine cubes require stacking; Floor First fits only eight. Navigation
+        // therefore exercises different physical outcomes even after dedup.
+        cases: [...Array.from({ length: 9 }, (_, i) => instance(`small-${i}`, definition.id, -50 - i * 25, -50)),
+          instance('stay', large.id, 100, 130)],
         truck: { length: 80, width: 40, height: 40, shapeMode: 'rect' } };
       p.StateStore.set({ caseLibrary: [definition, large], packLibrary: [pack], selectedInstanceIds: [], autoPackResults: null });
       p.StateStore.resetHistory();
@@ -2991,10 +3003,24 @@ test('C5 browser carousel preserves source staging visually and blocks Apply aft
         pose: p.CaseScene.getObject('stay').position.toArray() };
     });
     await page.evaluate(() => window.probe.AutoPackEngine.pack());
+    const population = await page.evaluate(() => window.probe.StateStore.get('autoPackResults').options.map(o =>
+      ({ id: o.id, packed: o.packedCount, layout: o.layoutSignature })));
+    assert.ok(new Set(population.map(o => o.layout)).size >= 2, 'fixture intentionally generates different physical layouts');
+    assert.equal(population.find(o => o.id === 'default').packed, 9);
+    assert.equal(population.find(o => o.id === 'floor-first').packed, 8);
     await page.locator('[data-focus-key="results-toggle"]').click();
     const committed = await page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getById('fixture-pack')));
+    await page.evaluate(() => {
+      const s = window.probe.SceneManager, world = p => s.vecInchesToWorld(p);
+      s.applyEditorView({ target: world({ x: 90, y: 0, z: 70 }),
+        cameraPosition: world({ x: 270, y: 400, z: 450 }) });
+    });
+    await page.screenshot({ path: '/tmp/c5-carousel-balanced.png' });
     assert.equal(await page.locator('[data-focus-key="results-next"]').isEnabled(), true);
     await page.locator('[data-focus-key="results-next"]').click();
+    assert.match(await page.locator('[data-role="autopack-results-panel"]').innerText(), /Max Capacity/);
+    await page.locator('[data-focus-key="results-next"]').click();
+    assert.match(await page.locator('[data-role="autopack-results-panel"]').innerText(), /Floor first \(no stacking\)/);
     const preview = await page.evaluate(() => {
       const p = window.probe;
       return { pack: JSON.stringify(p.PackLibrary.getById('fixture-pack')),
@@ -3004,6 +3030,7 @@ test('C5 browser carousel preserves source staging visually and blocks Apply aft
     assert.equal(preview.pack, committed);
     assert.equal(preview.source, sourceStaged.source);
     assert.deepEqual(preview.pose, sourceStaged.pose);
+    await page.screenshot({ path: '/tmp/c5-carousel-staging.png' });
     await page.locator('[data-focus-key="results-apply"]').click();
     assert.equal(await page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getById('fixture-pack').cases.find(i => i.id === 'stay'))), sourceStaged.source);
     await page.evaluate(() => {
@@ -3013,6 +3040,93 @@ test('C5 browser carousel preserves source staging visually and blocks Apply aft
     });
     assert.match(await page.locator('[data-role="autopack-results-panel"]').innerText(), /Outdated/);
     assert.equal(await page.locator('[data-focus-key="results-apply"]').isDisabled(), true);
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('C5 browser Test-01 and Wheel-Well mixed Results open on incomplete Balanced without committing', { timeout: 120000 }, async () => {
+  const { createC5MixedLoadFixture } = await import('../fixtures/autopack-strategy-audit-fixtures.mjs');
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    for (const shapeMode of ['rect', 'wheelWells']) {
+      const fixture = createC5MixedLoadFixture(shapeMode);
+      const before = await page.evaluate(({ pack, caseLibrary }) => {
+        const p = window.probe;
+        const source = { ...pack, id: 'fixture-pack', title: 'Test-01 mixed load' };
+        p.StateStore.set({ caseLibrary, packLibrary: [source], selectedInstanceIds: [], autoPackResults: null });
+        p.StateStore.resetHistory();
+        return JSON.stringify(p.PackLibrary.getById('fixture-pack'));
+      }, fixture);
+      await page.evaluate(() => window.probe.AutoPackEngine.pack());
+      const evidence = await page.evaluate(() => {
+        const p = window.probe, r = p.StateStore.get('autoPackResults');
+        return { source: JSON.stringify(p.PackLibrary.getById('fixture-pack')), selected: r.selectedId,
+          adopted: r.adoptedOptionIds, first: r.options[0].id, packed: r.options[0].packedCount,
+          primary: r.options[0].assessment.primary, alternate: r.options.find(o => o.id === 'floor-first')?.packedCount,
+          transient: p.CaseScene.isTransientPreview() };
+      });
+      assert.equal(evidence.source, before);
+      assert.equal(evidence.selected, null);
+      assert.deepEqual(evidence.adopted, []);
+      assert.equal(evidence.first, 'default');
+      assert.equal(evidence.packed, shapeMode === 'rect' ? 205 : 224);
+      assert.equal(evidence.primary, 'INCOMPLETE');
+      assert.equal(evidence.alternate, shapeMode === 'rect' ? 44 : 65);
+      assert.equal(evidence.transient, true);
+      const panel = page.locator('[data-role="autopack-results-panel"]');
+      const text = await panel.innerText();
+      assert.match(text, /Balanced/);
+      assert.match(text, /Needs review · Some support information cannot be verified\./);
+      assert.doesNotMatch(text, /Recommended|Best|Applied|UNRESOLVED|UNVERIFIED|ADVISORY|support\.|load\.equilibrium|admissible-wrench/);
+      assert.equal(await page.locator('[data-role="autopack-review-note"]').count(), 1);
+      assert.equal(await page.locator('[data-focus-key="results-apply"]').isEnabled(), true);
+      await page.evaluate(() => {
+        const s = window.probe.SceneManager;
+        const length = s.toWorld(window.probe.PackLibrary.getById('fixture-pack').truck.length);
+        s.applyEditorView({ target: { x: length / 2, y: 0, z: 0 },
+          cameraPosition: { x: length / 2, y: length * 1.65, z: length * 0.5 } });
+      });
+      await page.screenshot({ path: `/tmp/c5-mixed-${shapeMode}.png` });
+    }
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('C5 browser Truck Change previews and commits while preserving unresolved staged source', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const before = await page.evaluate(() => {
+      const p = window.probe;
+      const definition = { id: 'known', name: 'Carton', shape: 'box', orientationLock: 'upright', weight: 10,
+        dimensions: { length: 20, width: 20, height: 20 } };
+      const pose = x => ({ position: { x, y: 10, z: 0 }, rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } });
+      const pack = { ...p.PackLibrary.getById('fixture-pack'), truck: { length: 100, width: 40, height: 40, shapeMode: 'rect' },
+        cases: [{ id: 'loaded', caseId: 'known', placement: 'packed', transform: pose(60) },
+          { id: 'orphan', caseId: 'deleted', placement: 'staged', transform: pose(-60), notes: 'Keep staged source',
+            metadata: { label: 'unchanged' } }] };
+      p.StateStore.set({ caseLibrary: [definition], packLibrary: [pack], selectedInstanceIds: [], autoPackResults: null });
+      return { pack: JSON.stringify(pack), orphan: JSON.stringify(pack.cases[1]) };
+    });
+    await page.locator('[data-focus-key="truck-length"]').fill('90');
+    await page.locator('#inspector-body button').filter({ hasText: 'Update truck' }).click();
+    const modal = page.locator('.tp3d-truck-change-modal');
+    await modal.waitFor();
+    assert.equal(await page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getById('fixture-pack'))), before.pack,
+      'preview does not commit the proposed truck');
+    assert.equal(await modal.getByRole('button', { name: 'Apply change', exact: true }).isEnabled(), true);
+    assert.doesNotMatch(await modal.innerText(), /Resolve or remove|unresolved items require attention/);
+    await page.screenshot({ path: '/tmp/c5-truck-change-staged.png' });
+    await modal.getByRole('button', { name: 'Apply change', exact: true }).click();
+    await modal.waitFor({ state: 'detached' });
+    const after = await page.evaluate(() => {
+      const pack = window.probe.PackLibrary.getById('fixture-pack');
+      return { length: pack.truck.length, orphan: JSON.stringify(pack.cases.find(i => i.id === 'orphan')), count: pack.cases.length };
+    });
+    assert.equal(after.length, 90);
+    assert.equal(after.orphan, before.orphan);
+    assert.equal(after.count, 2);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

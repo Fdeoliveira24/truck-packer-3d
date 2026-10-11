@@ -202,6 +202,7 @@ Not approved branches. Not active work. Require focused audits and product decis
 
 ## 8. Technical Debt / Security Follow-ups
 
+- **P0 follow-up after C5: transient billing unavailable on workspace/visibility rehydrate.** The C5 diagnostic established that the billing gate runs before Pack retrieval and the symptom is independent of Pack contents. Workspace/billing rehydrate timing is the suspected cause, not yet proven. Investigate separately; preserve entitlement checks and do not modify billing in C5. C6 report assessment and load/unload sequencing also remain deferred.
 - `.claude/settings.local.json` — git-ignored, previously flagged as potentially containing credential-bearing commands. Do not print or modify during normal sessions. Dedicated security/credential cleanup required before broad beta.
 - Development retains legacy schema differences (cases/packs, policy/function, billing ID). Separate audit required.
 - Workspace Slug Phase 2 (friendly slugs) remains required product work.

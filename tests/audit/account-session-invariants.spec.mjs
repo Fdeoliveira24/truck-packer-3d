@@ -1873,7 +1873,9 @@ test('AUTOPACK-MAX-A clones its effective rule profile and Phase A adds no packe
   }));
   const itemSnapshot = structuredClone(items);
   const result = Solver.solveAutoPack({ truck, zones, loadFrontFirst: true, items, maxCapacityMode: true });
-  assert.equal(result.placements.size, 2, 'fixture exercises relaxed stacking before checking immutability');
+  // C5: Max honours noStackOnTop / stackable:false / maxStackCount like Standard,
+  // so only one of the two cases is placed; immutability is still what is checked.
+  assert.equal(result.placements.size, 1, 'fixture solves without relaxed stacking before checking immutability');
   assert.deepEqual(items, itemSnapshot, 'solver does not mutate caller-owned items or nested instance locks');
 
   const cases = items.map(item => ({

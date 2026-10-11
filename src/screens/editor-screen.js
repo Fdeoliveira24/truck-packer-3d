@@ -201,30 +201,27 @@ export function prepareAutoPackResultApply(pack, results, option, getCaseById) {
   return isAutoPackAssessmentAdoptable(assessment) ? { cases, assessment } : null;
 }
 
-const AUTOPACK_EVIDENCE_LABELS = {
-  'source.case': 'Case physical information', 'source.instance': 'Cargo pose or membership',
-  'source.target-space': 'Truck geometry', 'geometry.source': 'Cargo geometry',
-  'orientation.permission': 'Case orientation permission', 'containment': 'Truck containment',
-  'collision': 'Cargo overlap', 'collision.completeness': 'Complete collision check',
-  'support.own-centered-hull': 'Centered cargo support', 'support.path': 'Support to the floor',
-  'support.loaded-resultant': 'Cargo mass or supported load', 'load.equilibrium': 'Support load balance',
-  'handling.no-top': 'No cargo on top', 'handling.direct-child-count': 'Stack count',
-  'front-overhang.rear-blocking': 'Front Overhang rear retention',
-  'support50': 'Support coverage gate', 'supportWeight': 'Support weight gate',
-  'wheelWellThird': 'Wheel-Well overhang gate',
-  'actual-center-of-mass': 'Actual center of mass', 'transport-securement': 'Transport securement',
-  'structural-top-load-capacity': 'Structural top load capacity',
-  'bridge-cantilever-strength': 'Bridge or cantilever strength',
-  'round-cargo-contact-and-restraint': 'Round cargo contact and restraint',
-  'front-overhang-structural-restraint': 'Front Overhang restraint strength',
-  'support.coverage': 'Support coverage', 'support.extension': 'Support extension',
-  'pallet.payload': 'Pallet payload',
-};
-
-export function describeAutoPackAssessment(assessment) {
-  const decisive = assessment?.eligibility?.blockedBy?.[0] || assessment?.hard?.find(f => f.outcome !== 'PASS');
-  const label = decisive && (AUTOPACK_EVIDENCE_LABELS[decisive.property] || decisive.property);
-  return label ? `${label}: ${decisive.outcome === 'UNRESOLVED' ? 'unresolved' : 'blocked'}.` : '';
+// One plain-language reason for an INCOMPLETE option. VALID / INCOMPLETE /
+// INVALID and every physical property name stay internal to the assessment: the
+// card never lists findings, affected Cases, or measurements.
+export function describeAutoPackReviewReason(assessment) {
+  if (assessment?.primary !== 'INCOMPLETE') return '';
+  const unresolved = (assessment.hard || [])
+    .filter(finding => finding.outcome === 'UNRESOLVED')
+    .map(finding => String(finding.property || ''));
+  const any = prefixes => unresolved.some(property => prefixes.some(prefix => property.startsWith(prefix)));
+  if (any(['source.case', 'source.instance', 'geometry.source', 'orientation.'])) {
+    return 'Some case information is missing.';
+  }
+  if (any(['source.target-space'])) return 'Some truck information is missing.';
+  if (assessment.measurements?.mass?.complete === false && any(['support.', 'load.'])) {
+    return 'Weight information is missing.';
+  }
+  if (any(['support.', 'load.', 'collision', 'containment', 'front-overhang.'])) {
+    return 'Some support information cannot be verified.';
+  }
+  if (any(['handling.'])) return 'Some handling information cannot be verified.';
+  return 'Some details could not be fully verified.';
 }
 
 export function getAppliedAutoPackOption(pack, results, getCaseById) {
@@ -245,7 +242,7 @@ export function getAppliedAutoPackOption(pack, results, getCaseById) {
 }
 
 // Display order only: Balanced (the first standard plan in solver order) leads,
-// Max Capacity follows as the relaxed handling comparison, then the remaining
+// Max Capacity follows as the orientation-search comparison, then the remaining
 // standard plans in their solver order. The stored options keep the solver
 // order, which the engine dedupe relies on so an identical standard plan always
 // outranks Max Capacity. Ranking, selectedId and Applied matching never read
@@ -4709,13 +4706,6 @@ export function createEditorScreen({
       title.textContent = 'AutoPack Results';
       titleWrap.appendChild(title);
       const assessment = viewedOption.assessment;
-      const assessmentSummary = document.createElement('div');
-      assessmentSummary.className = 'tp3d-autopack-results__option-desc';
-      assessmentSummary.dataset.role = 'autopack-assessment';
-      const availability = stale ? 'Apply unavailable' : isAutoPackAssessmentAdoptable(assessment)
-        ? (viewedOption === currentOption ? 'Applied' : 'Apply available') : 'Apply unavailable';
-      assessmentSummary.textContent = `${assessment?.primary || 'INCOMPLETE'} · ${availability}. ${describeAutoPackAssessment(assessment)}`;
-      titleWrap.appendChild(assessmentSummary);
       // Staleness must stay visible in every mode — the header renders in the
       // carousel, compact, and minimized states alike, so the badge lives here.
       if (stale) {
@@ -4808,7 +4798,7 @@ export function createEditorScreen({
       // A single incomplete option needs the same explicit Apply as a carousel.
       {
         const isViewedCurrent = viewedOption === currentOption;
-        // Only the best VALID + eligible materialized candidate is recommended.
+        // Only a VALID + eligible preferred candidate is recommended.
         const isViewedRecommended = viewedOption.id === results.selectedId && assessment?.primary === 'VALID' &&
           isAutoPackAssessmentAdoptable(assessment);
         const optionRow = document.createElement('div');
@@ -4843,13 +4833,17 @@ export function createEditorScreen({
         optionRow.appendChild(labelRow);
         const optionDescription = makeAutoPackResultDescription(viewedOption);
         if (optionDescription) optionRow.appendChild(optionDescription);
-        // Max's search context remains visible without implying relaxed physics.
-        if (viewedOption.id === 'max-capacity') {
-          optionRow.appendChild(makeAutoPackResultPill(
-            'tp3d-autopack-results__relaxed-note',
-            'Broader orientation search; the same physical assessment and adoption gates apply.',
+        // The only user-facing caution: an option that can be applied but still
+        // needs the planner's review gets ONE plain-language reason.
+        const reviewReason = describeAutoPackReviewReason(assessment);
+        if (reviewReason) {
+          const reviewNote = makeAutoPackResultPill(
+            'tp3d-autopack-results__review-note',
+            `Needs review \u00b7 ${reviewReason}`,
             'fa-solid fa-triangle-exclamation'
-          ));
+          );
+          reviewNote.dataset.role = 'autopack-review-note';
+          optionRow.appendChild(reviewNote);
         }
 
         const actions = document.createElement('div');
@@ -4878,33 +4872,6 @@ export function createEditorScreen({
         actions.appendChild(apply);
         optionRow.appendChild(actions);
         body.appendChild(optionRow);
-      }
-
-      // Evidence lives in the existing expanded card body. Group equal checks
-      // so a large load does not create one UI row per cargo instance.
-      const evidence = new Map();
-      for (const finding of [...(assessment?.hard || []).filter(f => f.outcome !== 'PASS'),
-        ...(assessment?.eligibility?.blockedBy || []), ...(assessment?.unverified || []), ...(assessment?.advisory || [])]) {
-        const key = `${finding.outcome}: ${AUTOPACK_EVIDENCE_LABELS[finding.property] || finding.property}`;
-        if (!evidence.has(key)) evidence.set(key, new Set());
-        for (const id of [finding.subject].flat()) evidence.get(key).add(id);
-      }
-      for (const [label, subjects] of evidence) {
-        const row = document.createElement('div');
-        row.className = 'tp3d-autopack-results__option-desc';
-        const affected = [...subjects].slice(0, 3).map(id => {
-          const inst = viewedOption.nextCases.find(item => item.id === id);
-          return inst ? (CaseLibrary.getById(inst.caseId)?.name || id) : id;
-        });
-        row.textContent = `${label} — ${affected.join(', ')}${subjects.size > 3 ? ` (+${subjects.size - 3})` : ''}`;
-        body.appendChild(row);
-      }
-      const explanation = formatAutoPackPartialReason(viewedOption);
-      if (explanation) {
-        const row = document.createElement('div');
-        row.className = 'tp3d-autopack-results__option-desc';
-        row.textContent = explanation;
-        body.appendChild(row);
       }
 
       // Dedupe transparency, single-option mode only: that is the case where a
@@ -5000,7 +4967,14 @@ export function createEditorScreen({
           const autoPackLoading = Boolean(operation && operation.kind === 'autopacking');
           const autoPackLoadingChanged = autoPackLoading !== autoPackLoadingShown;
           autoPackLoadingShown = autoPackLoading;
-          const fullRenderDue = selectionRenderPending && !OperationLifecycle.isBusy();
+          // An incomplete preferred result makes no Pack write or selection
+          // change. Its initial preview was suppressed while AutoPack owned the
+          // scene; start it only once that operation has released the scene.
+          const idle = !OperationLifecycle.isBusy();
+          const resultsPreviewDue = idle && autoPackLoadingChanged && !autoPackLoading &&
+            StateStore.get('currentScreen') === 'editor' &&
+            Boolean(getAutoPackResultsPreviewPack(PackLibrary.getById(StateStore.get('currentPackId'))));
+          const fullRenderDue = idle && (selectionRenderPending || resultsPreviewDue);
           if (StateStore.get('currentScreen') === 'editor') {
             refreshActionButtons();
             const pack = PackLibrary.getById(StateStore.get('currentPackId'));

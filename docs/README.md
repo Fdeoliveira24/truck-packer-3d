@@ -10,6 +10,12 @@ Use [`product/PRODUCT-STRATEGY-DEBRIEF-2026-07.md`](product/PRODUCT-STRATEGY-DEB
 
 Use the [`Pricing Operations Runbook`](billing/PRICING-OPERATIONS-RUNBOOK.md) for the current pricing change procedure and the append-only [`Pricing Change Log`](billing/PRICING-CHANGE-LOG.md) for future approved change evidence. Neither document makes a commercial pricing decision.
 
+## Key Authority Documents
+
+- **Editor Authority and AutoPack Assistant Model:** [`engineering/autopack-engine-contract.md`](engineering/autopack-engine-contract.md) — Read the "Editor Authority and Automation Boundary" section before any AutoPack, manual placement, or editor-lifecycle work.
+- **Phase C Execution Status (Editor Authority & Workflow Continuity):** [`product/TP3D-MASTER-TODO-V6.md` Section 5.5](product/TP3D-MASTER-TODO-V6.md#55-phase-c--editor-authority--workflow-continuity-c5-cycle)
+- **Billing Entitlement Rules:** [`product/BILLING_ENTITLEMENT_RULES.md`](product/BILLING_ENTITLEMENT_RULES.md)
+
 - `product/`: current product rules, entitlement rules, product comparisons, and active planning docs that should guide implementation.
 - `billing/`: current pricing operations procedures and change-evidence templates.
 - `dev/`: developer setup, operational references, and command playbooks.
@@ -20,6 +26,7 @@ Use the [`Pricing Operations Runbook`](billing/PRICING-OPERATIONS-RUNBOOK.md) fo
 Authority is defined by document purpose, not folder location alone:
 
 - [Master TODO V6](product/TP3D-MASTER-TODO-V6.md) controls current operational status, blockers, and the approved execution queue.
+- [Editor Authority and Automation Boundary](engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary) controls the Editor/AutoPack/manual-placement behavior boundary.
 - Named domain contracts control behavior within their defined scope.
 - The [July 2026 Product Strategy Debrief](product/PRODUCT-STRATEGY-DEBRIEF-2026-07.md) preserves strategy context; it does not override V6, domain contracts, or branch approval.
 - `AGENTS.md`, `CLAUDE.md`, and scoped agent guides control working rules.

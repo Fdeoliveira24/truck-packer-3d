@@ -136,6 +136,67 @@ Section 4 only when that happens.
 
 ---
 
+## 5.5. Phase C — Editor Authority & Workflow Continuity (C5 Cycle)
+
+**Status:** Locked product contract; documentation checkpoint (C5-0).
+
+### Phase C Milestones
+
+| Phase | Title | Status | Approved Order | Key Outcomes |
+|---|---|---|---|---|
+| C1 | Canonical Source Semantics | ✅ COMPLETE / MERGED | 1 | Unified object naming, authoritative identifiers |
+| C2 | Shared Measurements + Assessment Core | ✅ COMPLETE / MERGED | 2 | Physical measurements, assessment contract |
+| C3 | Mass + Orientation Runtime Cutover | ✅ COMPLETE / MERGED | 3 | Runtime mass/orientation handling |
+| C4 | Assessment + Lifecycle Cutover | ✅ COMPLETE / MERGED | 4 | Assessment integration, lifecycle safety |
+| C5-0 | Editor Authority Contract | 🔒 LOCKED | — | Documentation checkpoint (this update) |
+| C5A | Normal AutoPack Assessment + Results/Apply Authority | ⏭️ NEXT | 5 | AutoPack results → manual authority integration |
+| C5B | Staging Preservation + Inspector Coherence | 📋 PENDING | 6 | Staging lifecycle, inspector consistency |
+| C5M | Manual Editor Authority Hardening | 📋 PENDING | 7 | Manual drag/move/rotate authority, M-01/M-02/M-03 fixes |
+| C5T | Truck Change Workflow Continuity | 📋 PENDING | 8 | Unresolved cargo fallback, no silent deletion |
+| C5C | Max Capacity Policy | 📋 PENDING | 9 | Relaxed handling profile enforcement |
+| C5D | Packing Quality + Wheel-Well Search | 📋 PENDING | 10 | Quality scoring, wheel-well geometry |
+| C5E | Bounded AutoPack Presentation | 📋 PENDING | 11 | AutoPack UI/UX polish, final snap |
+| C6 | Reporting + Integrated Closure | 📋 PENDING | 12 | Report generation, phase closure |
+
+### C5-0 Product Contract (Locked)
+
+See [AutoPack Engine Contract — Editor Authority and Automation Boundary](../engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary) for the full contract.
+
+**Core Principle:** Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant, not an override.
+
+- Manual Editor is user-authoritative.
+- AutoPack is assistant/recommendation.
+- Hard physical geometry remains enforced for new manual placement.
+- Handling/planning rules generally assess/warn rather than block manual editing.
+- Manual VALID/INCOMPLETE/INVALID layouts may remain saved.
+- Assessment does not grant/revoke editing permission.
+- No silent repair.
+- Missing definitions degrade physical certainty, not workflow availability.
+- Untrusted unresolved cargo falls back to staging during geometry changes.
+- Future load/unload sequence remains manually overridable.
+- Automated solutions may be stricter than manual authoring.
+
+### C5M Manual Editor Findings Registry
+
+| ID | Finding | Status | Notes |
+|---|---|---|---|
+| M-01 | Manual drop may commit collision/occupied-space problems | RETAIN | Focused C5M verification required |
+| M-02 | Staged cargo sometimes refuses an apparently valid truck-floor drop | RETAIN | User-observed; latest controlled QA did not reliably reproduce; do not rewrite drag architecture speculatively |
+| M-03 | Manual action sometimes receives unrelated vertical-move messages | RETAIN | User-observed; latest controlled QA did not reproduce; investigate when reproducible |
+| M-04 | AutoPack planning state must never become a permanent manual movement restriction | 🔒 LOCKED | Product invariant |
+| M-05 | Handling rules should evaluate manual layouts, not generally block authoring | 🔒 LOCKED | Product decision |
+| M-06 | Impossible physical geometry remains blocked | 🔒 LOCKED | Product decision |
+| M-07 | Manual INVALID/INCOMPLETE layouts remain editable and saveable | 🔒 LOCKED | Product decision |
+
+### Execution Notes
+
+- Keep C5A narrow — do not fold C5M or C5T implementation into C5A.
+- C5M owns manual drag/move/rotate/stage/unstage authority and handling rules warning behavior.
+- C5T owns unresolved cargo preservation and fallback behavior.
+- Do NOT implement C5A/C5B/C5M/C5T/C5C/C5D/C5E without explicit approval.
+
+---
+
 ## 6. Deferred / Future Work
 
 Not approved branches. Not active work. Require focused audits and product decisions before implementation.

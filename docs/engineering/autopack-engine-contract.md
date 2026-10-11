@@ -4,6 +4,82 @@
 
 This document defines the permanent engineering contract for Truck Packer 3D AutoPack, editor placement, packing geometry, support validation, and load-plan mutation behavior. It must be read before changing AutoPack, Wheel Wells, Front Overhang, stacking, support, manual placement, delete/revalidation, AutoPack/Unpack, or editor selection behavior.
 
+---
+
+## EDITOR AUTHORITY AND AUTOMATION BOUNDARY
+
+**Core Principle:** Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant/recommendation, not an override.
+
+### Manual Editor Authority
+
+- The 3D Editor is manually authoritative. The user owns the arrangement.
+- Manual interactions must support: staged → move within staging, staged → manually place in truck, packed → manually reposition, packed → move back to staging, rotate/turn/tip through supported geometry, rearrange stacks, manually improve or replace an AutoPack layout, continue editing VALID, INCOMPLETE or INVALID Packs.
+- AutoPack state, Results state, stale selection, orientation-planning metadata or assessment must not silently make ordinary cargo immovable.
+- No separate "Manual Mode" is required. **The Editor itself is manually authoritative.**
+
+### Hard Physical Geometry (Always Enforced)
+
+Manual placement still respects hard physical impossibilities:
+
+- truck/container boundaries (containment);
+- collision with other packed cargo;
+- Wheel Well solid bodies;
+- Front Overhang blocked volume;
+- physically unsupported/floating final placements.
+
+### Handling and Planning Rules (Generally Warn, Not Block)
+
+Handling, planning, and assessment rules should generally WARN or ASSESS rather than prevent ordinary manual authoring. Examples include:
+
+- no-top-load preference;
+- heavy-on-bottom preference;
+- stack preferences/counts;
+- handling preferences;
+- grouping;
+- loading priority;
+- future load/unload sequence;
+- AutoPack orientation planning metadata.
+
+### Assessment Does Not Own Editing
+
+Assessment answers "What do we know about this load?" — not "Is the user allowed to edit this load?"
+
+- VALID, INCOMPLETE and INVALID Packs may all exist as saved manually-authored work.
+- No silent repair on open/save/reload.
+- Check Load Plan remains read-only.
+- AutoPack must not automatically commit a known INVALID automated candidate.
+
+### Interaction vs Final Placement
+
+- Dragging/exploration and final commit validation are distinct.
+- The user may visually drag through invalid areas while positioning.
+- Final placement may reject: outside-truck position, overlap, Wheel Well penetration, Front Overhang blocked-body penetration, unsupported floating placement.
+
+### AutoPack as Assistant
+
+AutoPack must obey its selected automated policy:
+
+- Normal AutoPack remains conservative.
+- Max Capacity uses its explicitly approved relaxed handling profile but still obeys hard physical geometry.
+- A human may manually create a different arrangement afterward.
+- AutoPack Results are suggestions inside the Editor, not authority over it.
+
+### Workflow Continuity
+
+- Missing Case definitions must not block the entire truck/configuration workflow.
+- Unresolved staged cargo: preserve instance, preserve available source data, do not fabricate dimensions, exclude from physical truck reconciliation, do not block Truck Change.
+- Unresolved packed cargo with untrustworthy geometry during Truck Change: preserve instance, fall back to unresolved staging, remove from loaded-truck reconciliation, do not fabricate geometry, tell the user what happened, allow Truck Change to continue.
+- **Missing definition alone is not a reason to disable the workflow.** Fallback to staging must never mean deletion. Only fundamental Pack/truck structural corruption may justify blocking.
+
+### Future Load/Unload Sequence
+
+- Future stop/sequence metadata must guide automation and communicate conflicts.
+- It must NOT make manual cargo physically immovable.
+- Sequence can constrain AutoPack more strongly than manual editing.
+- Example: a manually moved Stop 3 Case behind Stop 7 cargo may produce "Unload sequence conflict" but the user may still leave it, move it, change its stop, or ask AutoPack to repack.
+
+---
+
 ## Coordinate System
 
 - X = trailer/space length.

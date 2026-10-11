@@ -40,6 +40,16 @@ Default scope for operation lifecycle work:
 
 ---
 
+## Editor Authority Implementation Guard
+
+Before editing AutoPack, manual placement, Truck Change, handling rules, assessment, or drag/move/rotate behavior, read [docs/engineering/autopack-engine-contract.md — Editor Authority and Automation Boundary](../docs/engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary).
+
+**Key principle:** Do not convert assessment/handling rules into manual mutation locks unless the current authoritative contract explicitly classifies the condition as hard physical geometry (truck/container boundaries, collision, Wheel Wells, Front Overhang, unsupported placement).
+
+This guard prevents accidentally restricting user authorship when only a warning or assessment should be produced.
+
+---
+
 ## Debug Tools
 
 - `localStorage.tp3dDebug = "1"` — enables verbose console logs.

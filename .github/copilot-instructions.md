@@ -16,6 +16,17 @@ source files when (a) modifying/debugging specific code, (b) the graph lacks the
 
 Type `/graphify` in Copilot Chat to build or update the graph.
 
+## Editor Authority and AutoPack/Manual Placement Work
+
+Before editing AutoPack, manual placement, editor drag/rotate, Truck Change, handling rules, assessment, or any operation-lifecycle work:
+
+1. **Read first:** `docs/engineering/autopack-engine-contract.md` — specifically the "Editor Authority and Automation Boundary" section.
+2. **Understand:** Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant. Hard physical geometry is always enforced, but handling/planning rules should warn rather than block.
+3. **Reference:** `docs/product/TP3D-MASTER-TODO-V6.md` Section 5.5 for Phase C execution status.
+4. **Implementation guard:** Load the `tp3d-autopack-guard` skill before implementing AutoPack/editor/manual-placement work.
+
+Key principle: Do not convert assessment/handling rules into manual mutation locks unless the contract explicitly classifies the condition as hard physical geometry (truck/container boundaries, collision, Wheel Wells, Front Overhang, unsupported placement).
+
 ## project-memory routing
 
 - History/prior decision/previous fix/"why did we": run `bash tools/project-memory query "<question>"`.

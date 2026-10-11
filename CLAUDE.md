@@ -54,6 +54,8 @@ Never load full `graph.json`, `GRAPH_REPORT.md`, or entire vault folders.
 
 ## Critical Invariants (summary — full list in AGENTS.md)
 
+- **Editor Authority:** Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant. Hard physical geometry remains enforced, but handling, sequencing and assessment rules must not generally take ownership of ordinary manual editing. See [docs/engineering/autopack-engine-contract.md](./docs/engineering/autopack-engine-contract.md).
+- **Workflow Continuity:** Unresolved/missing cargo data reduces what can be physically verified; it must not unnecessarily stop truck/configuration workflow. See [docs/product/TP3D-MASTER-TODO-V6.md — Phase C](./docs/product/TP3D-MASTER-TODO-V6.md#55-phase-c--editor-authority--workflow-continuity-c5-cycle).
 - Auth, billing, workspace switching, cross-tab state, and storage are **P0 risk.**
 - Use `src/core/operation-lifecycle.js` for all mutating editor operations.
 - AutoPack / Unpack / Truck Change / preview capture are mutually disruptive — guard all paths.

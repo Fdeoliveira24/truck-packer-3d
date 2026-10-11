@@ -5,9 +5,13 @@ description: Load before editing Truck Packer 3D AutoPack, packing geometry, edi
 
 # TP3D AutoPack Guard
 
-Before editing AutoPack, packing geometry, editor placement, selection mutation, AutoPack/Unpack, Wheel Wells, Front Overhang, or support/stacking behavior, first confirm repo state, then read the source-of-truth contract:
+Before editing AutoPack, packing geometry, editor placement, selection mutation, AutoPack/Unpack, Wheel Wells, Front Overhang, or support/stacking behavior, first confirm repo state, then read BOTH source-of-truth contracts:
 
-`docs/engineering/autopack-engine-contract.md`
+1. **Editor Authority and Automation Boundary** (MUST READ FIRST):
+   `docs/engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary`
+
+2. **Full AutoPack Engine Contract**:
+   `docs/engineering/autopack-engine-contract.md`
 
 Start every scoped change with:
 
@@ -21,6 +25,7 @@ If the working tree has unrelated dirty files, stop and report before editing.
 
 ## Rules
 
+- **Do not convert assessment/handling rules into manual mutation locks** unless the contract explicitly classifies the condition as hard physical geometry.
 - Do not implement before identifying whether the change affects hard rules, quality scoring, editor state, or UI explanation.
 - Do not hardcode one screenshot size or one fixture dimension.
 - Do not weaken hard rules to improve visuals.

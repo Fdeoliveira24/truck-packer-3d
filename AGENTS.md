@@ -83,7 +83,25 @@ Current source wins over stale memory or Graphify results.
 
 ---
 
-## Pending Truck vs. Committed Truck
+## Editor Authority and AutoPack Assistant Model
+
+**Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant, not an override.**
+
+- The 3D Editor is manually authoritative. The user owns the arrangement.
+- AutoPack is assistant/recommendation. Results are suggestions, not authority over the Editor.
+- Hard physical geometry remains enforced for new manual placement (truck/container boundaries, collision, Wheel Wells, Front Overhang, unsupported placement).
+- Handling, planning, and assessment rules must generally WARN or ASSESS rather than prevent ordinary manual authoring (no-top-load, heavy-on-bottom, stack preferences, handling preferences, grouping, loading priority, future sequence, orientation metadata).
+- Manual VALID, INCOMPLETE, and INVALID layouts may remain saved. No silent repair on open/save/reload.
+- Assessment does not grant/revoke editing permission.
+- Missing Case definitions reduce physical certainty, not workflow availability. Unresolved cargo falls back to staging rather than stopping the workflow.
+- Future load/unload sequence must remain manually overridable. Sequence can constrain AutoPack more strongly than manual editing.
+- Automated solutions may be stricter than manual authoring.
+
+See [docs/engineering/autopack-engine-contract.md — Editor Authority and Automation Boundary](./docs/engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary) for the full contract and [docs/product/TP3D-MASTER-TODO-V6.md — Phase C (C5-0)](./docs/product/TP3D-MASTER-TODO-V6.md#55-phase-c--editor-authority--workflow-continuity-c5-cycle) for execution status.
+
+---
+
+## Workflow Continuity Invariants
 
 - Form state changes update pending state only — do not update the 3D scene until confirmed.
 - The Truck Change preview opens only on explicit **Update truck** click.

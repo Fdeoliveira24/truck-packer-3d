@@ -2195,16 +2195,24 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.deepEqual(await changesSince(browseStart), ['autoPackResults'],
       'F: browsing writes only transient Results state (no Pack, history, autosave or lastEdited write)');
 
-    // Minimize, close and reopen restore and resume the preview from the same viewed option.
+    // Minimize and close are presentation-only: the viewed option's preview (scene,
+    // Load Summary and Space Utilization) stays exactly as it was, with no Pack write.
     await page.locator('[data-focus-key="results-toggle"]').click();
-    assert.equal((await sceneState('max-capacity')).showsPack, true, 'minimized Results restore the committed scene');
+    const minimizedScene = await sceneState('max-capacity');
+    assert.equal(minimizedScene.showsOption, true, 'minimized Results keep the viewed option in the scene');
+    assert.equal(minimizedScene.showsPack, false, 'minimized Results do not restore the committed scene');
+    assert.equal(minimizedScene.transient, true);
+    assert.equal(minimizedScene.summary, maxScene.summary, 'minimized Results keep the preview Load Summary');
     await page.locator('[data-focus-key="results-toggle"]').click();
-    assert.equal((await sceneState('max-capacity')).showsOption, true, 'expanding resumes the viewed option');
+    assert.equal((await sceneState('max-capacity')).showsOption, true, 'expanding shows the same viewed option');
     await page.locator('[data-focus-key="results-close"]').click();
     const closedScene = await sceneState('max-capacity');
-    assert.equal(closedScene.showsPack, true, 'closed Results restore the committed scene');
-    assert.equal(closedScene.summary, balancedScene.summary, 'closed Results restore canonical Load Summary');
-    assert.equal(closedScene.gauge, balancedScene.gauge, 'closed Results restore canonical Space Utilization');
+    assert.equal(closedScene.showsOption, true, 'closed Results keep the viewed option in the scene');
+    assert.equal(closedScene.showsPack, false, 'closed Results do not restore the committed scene');
+    assert.equal(closedScene.transient, true);
+    assert.equal(closedScene.summary, maxScene.summary, 'closed Results keep the preview Load Summary');
+    assert.equal(closedScene.gauge, maxScene.gauge, 'closed Results keep the preview Space Utilization');
+    assert.equal(await packJson(), balancedPack, 'minimize and close write no Pack source');
     await page.locator('#btn-autopack-results-reopen').click();
     assert.equal((await view()).counter, 'Option 2 of 3', 'reopening keeps the viewed option');
     assert.equal((await sceneState('max-capacity')).showsOption, true, 'and its live preview');
@@ -2409,6 +2417,9 @@ test('Results preview ends before Unpack and Truck Change claim the Editor; ever
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    // An adopted (VALID) preferred plan starts collapsed with an Applied option
+    // to land on; the mixed default fixture is incomplete and awaits Apply.
+    await useDeterminateAutoPackFixture(page);
     await page.locator('#btn-autopack').click();
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 1, null, { timeout: 90000 });

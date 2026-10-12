@@ -160,6 +160,8 @@ A user must explicitly select and approve a workstream before any branch opens; 
 | C5E | Bounded AutoPack Presentation | 📋 PENDING | 11 | Adaptive bounded loading presentation without persistence authority |
 | C6 | Reporting + Integrated Closure | 📋 PENDING | 12 | Reporting, integrated validation and Phase C closure |
 
+**C5D recorded transport-realism finding:** Normal AutoPack can produce tall exposed stack faces without meaningful longitudinal blocking. Balanced optimizes packing/layout heuristics but does not establish truck-wide braking restraint or complete transport securement. C5D should investigate passive restraint and layout realism without claiming to certify tiedowns, friction, load bars or regulatory securement. This is recorded for future investigation; C5A introduces no transport-restraint solver behavior.
+
 ### C5-0 Product Contract (Locked)
 
 See [AutoPack Engine Contract — Editor Authority and Automation Boundary](../engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary) for the full contract.

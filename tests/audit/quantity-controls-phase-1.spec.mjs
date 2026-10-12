@@ -2796,6 +2796,7 @@ async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
   const drafts = new Map();
   const toasts = [];
   const busy = { value: false };
+  const previewEnds = { count: 0 };
   const MIN = 1;
   const MAX = 10000;
   const build = runInNewContext(`(${source})`, {
@@ -2814,6 +2815,7 @@ async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
       return clamped;
     },
     editorMutationBlocked: () => busy.value,
+    endAutoPackResultsPreview: () => { previewEnds.count++; },
     pruneSelectionAfterRemoval: editor.pruneSelectionAfterRemoval,
     getStagingAddFailureFeedback: editor.getStagingAddFailureFeedback,
     getStagingRemoveFeedback: editor.getStagingRemoveFeedback,
@@ -2830,7 +2832,7 @@ async function createQtyRowHarness({ PackLibrary, StateStore, guard }) {
     const unstageBtn = actions.children.length === 2 ? actions.children[0] : null;
     return { section, readout, input, minusBtn, plusBtn, addBtn, unstageBtn };
   };
-  return { mount, drafts, toasts, busy };
+  return { mount, drafts, toasts, busy, previewEnds };
 }
 
 const INVALID_QTY_MESSAGE = 'Enter a whole quantity from 1 to 10,000.';
@@ -2924,6 +2926,7 @@ test('P1-B Q4: a fractional visible Qty reaches readLiveQty on Add and Unstage â
   writes.stop();
 
   assert.equal(writes.count(), 0, 'no Pack write for either rejected action');
+  assert.equal(h.previewEnds.count, 0, 'invalid Qty never reaches the preview-ending mutation boundary');
   assert.deepEqual(StateStore.snapshot(), before, 'nothing else changed');
   assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, 2, 'no instance was added or removed');
   assert.equal(StateStore.undo(), false, 'no history entry was created');
@@ -2952,6 +2955,7 @@ test('P1-B Q5: a second Add click on the REBUILT card inside the duplicate windo
 
   assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, 5, 'not Add(5) + Add(1)');
   assert.equal(writes.count(), 1, 'one Pack write');
+  assert.equal(h.previewEnds.count, 1, 'only the accepted Add reaches the preview-ending boundary');
   assert.equal(h.toasts.filter(t => t.tone === 'success').length, 1, 'one success action');
   assert.equal(StateStore.undo(), true);
   assert.equal(PackLibrary.getCaseInstanceCounts('pack-1', 'case-a').staged, 0, 'one Undo removes the whole +5');
@@ -3007,6 +3011,9 @@ test('P1-B Q7: ONE guard is wired at the actual Add and Unstage click boundaries
     const dup = click.indexOf(`stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.${kind}, packId, c.id)`);
     const live = click.indexOf('readLiveQty()');
     assert.ok(busy >= 0 && dup > busy && live > dup, `${name}: busy guard -> duplicate check -> live-Qty validation -> service`);
+    const previewEnd = click.indexOf('endAutoPackResultsPreview()');
+    const service = click.indexOf(kind === 'ADD' ? 'PackLibrary.addInstancesToStaging(' : 'PackLibrary.removeCaseInstancesFromStaging(');
+    assert.ok(previewEnd > live && service > previewEnd, `${name}: committed scene restored before staging membership mutation`);
     const okAt = click.indexOf("result.reason !== 'ok'");
     const recordAt = click.indexOf(`stagingActionGuard.recordSuccess(STAGING_ACTION_KIND.${kind}, packId, c.id);`);
     assert.ok(okAt > 0 && recordAt > okAt && recordAt < click.indexOf(flag), `${name}: armed only after a successful result`);
@@ -3091,6 +3098,7 @@ test('P1-B Q9: replay of the confirmed Unstage double-click â€” 15/12/3, Qty 2 -
 
   assert.equal(counts(), '13/12/1', 'not Unstage(2) + Unstage(1) = 12/12/0');
   assert.equal(writes.count(), 1, 'one Pack write');
+  assert.equal(h.previewEnds.count, 1, 'only the accepted Unstage reaches the preview-ending boundary');
   assert.deepEqual(h.toasts.filter(t => t.tone === 'info'), [{ message: 'Removed 2 cases from staging.', tone: 'info' }], 'exactly one info toast');
   assert.equal(StateStore.undo(), true);
   assert.equal(counts(), '15/12/3', 'one Undo restores the baseline');

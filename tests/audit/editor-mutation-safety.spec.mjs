@@ -1495,8 +1495,10 @@ test('P0 EDITOR UNDO ATOMICITY: Hide/Show commits the whole selection in one Pac
     'Hide/Show must not loop PackLibrary.updateInstance() once per selected instance');
   const updateCalls = block.match(/PackLibrary\.update\(pack\.id/g) || [];
   assert.equal(updateCalls.length, 1, 'Hide/Show must call PackLibrary.update() exactly once for the whole selection');
-  assert.match(block, /if \(editorMutationBlocked\(\)\) return;/,
-    'Hide/Show must keep its existing mutation-blocked guard');
+  assert.match(block, /if \(editorMutationBlocked\(\{ endPreview: true \}\)\) return;/,
+    'Hide/Show must refuse busy state and end transient preview before its atomic write');
+  assert.ok(block.indexOf('editorMutationBlocked({ endPreview: true })') < block.indexOf('PackLibrary.update(pack.id'),
+    'the authority guard precedes the one Pack write');
 });
 
 test('P0 CASE/CATEGORY ATOMICITY: Editor Set Category wiring uses the atomic commit, not per-case upsert', async () => {
@@ -1864,7 +1866,8 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
     src.indexOf('function makeVisibilityButton('),
     src.indexOf('function duplicateSelection(', src.indexOf('function makeVisibilityButton(')),
   );
-  assert.ok(visibility.indexOf('editorMutationBlocked()') < visibility.indexOf('PackLibrary.update(pack.id'),
+  const visibilityGuard = visibility.indexOf('editorMutationBlocked({ endPreview: true })');
+  assert.ok(visibilityGuard >= 0 && visibilityGuard < visibility.indexOf('PackLibrary.update(pack.id'),
     'visibility mutation is guarded before any instance write');
 
   const category = src.slice(
@@ -1875,6 +1878,8 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
     'Set Category entry is guarded');
   assert.ok(category.lastIndexOf('editorMutationBlocked()') < category.indexOf('CaseLibrary.commitCasesWithCategory'),
     'Set Category Apply re-checks before its atomic Case + category commit');
+  assert.doesNotMatch(category, /endPreview: true|endAutoPackResultsPreview\(/,
+    'category presentation edits do not end Results preview');
 
   const notesSave = src.slice(
     src.indexOf("label: 'Save'", src.indexOf('function openNotesModal(')),
@@ -1882,6 +1887,8 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
   );
   assert.ok(notesSave.indexOf('editorMutationBlocked()') < notesSave.indexOf('PackLibrary.updateInstance'),
     'Item Notes Save re-checks before the instance write');
+  assert.doesNotMatch(notesSave, /endPreview: true|endAutoPackResultsPreview\(/,
+    'Item Notes edits do not end Results preview');
 
   const packNotesAdapter = src.slice(
     src.indexOf('function openPackNotesModal('),
@@ -1896,7 +1903,7 @@ test('APP-STABILIZATION-PHASE3 remaining editor mutation commits reuse editorMut
     src.indexOf("savePos.addEventListener('click'"),
     src.indexOf('transformCard.appendChild(savePos)', src.indexOf("savePos.addEventListener('click'")),
   );
-  assert.match(applyPosition, /savePos\.addEventListener\('click', \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;/,
+  assert.match(applyPosition, /savePos\.addEventListener\('click', \(\) => \{\s*if \(editorMutationBlocked\(\{ endPreview: true \}\)\) return;/,
     'manual position Apply rejects busy state before scene or pack mutation');
 });
 

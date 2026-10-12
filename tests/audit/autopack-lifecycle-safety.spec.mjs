@@ -124,10 +124,10 @@ async function withFixture(options, run) {
   const stateWrites = [];
   const StateStore = {
     get: key => state[key],
-    set(patch) {
+    set(patch, setOptions = {}) {
       Object.assign(state, patch);
       stateWrites.push(patch);
-      for (const listener of listeners) listener(patch, state);
+      if (!setOptions.skipNotify) for (const listener of listeners) listener(patch, state);
     },
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
   };
@@ -184,6 +184,7 @@ async function withFixture(options, run) {
   const toasts = [];
   const overlays = [];
   const diagnostics = [];
+  const sceneSyncs = [];
   const runtimeWindow = {
     performance: { now: () => clock.now },
     requestAnimationFrame(callback) { frames.push(callback); },
@@ -201,7 +202,12 @@ async function withFixture(options, run) {
   };
   const engine = Engine.createAutoPackEngine({
     CaseLibrary: { getById: id => id === 'c' ? caseData : null, getCases: () => [caseData] },
-    CaseScene: { getObject: id => objects.get(id) || null },
+    CaseScene: { getObject: id => objects.get(id) || null,
+      setSelected() { if (options.throwPresentation) throw new Error('injected candidate presentation failure'); },
+      sync(pack, syncOptions) {
+        sceneSyncs.push({ pack, options: syncOptions });
+        if (options.throwPresentation) throw new Error('injected candidate presentation failure');
+      } },
     OperationLifecycle: options.operationLifecycle || lifecycle,
     capturePackPreview: (id, captureOptions) => previews.push({ id, captureOptions }),
     getActiveOrgIdForBilling: () => '', getOrgRoleHydrationState: () => 'ready',
@@ -227,8 +233,8 @@ async function withFixture(options, run) {
     Utils: { deepClone: value => structuredClone(value), volumeInCubicInches: dims => dims.length * dims.width * dims.height },
   });
   const fixture = {
-    engine, clock, state, StateStore, packs, packWrites, stateWrites, objects,
-    frames, tweenCompletes, tweenState, lifecycle, previews, overlays, diagnostics, toasts,
+    engine, clock, state, StateStore, packs, packWrites, stateWrites, objects, caseData,
+    frames, tweenCompletes, tweenState, lifecycle, previews, overlays, diagnostics, toasts, sceneSyncs,
     listenerCount: () => listeners.size,
     get solveCalls() { return solveCalls; },
     async frame() {
@@ -255,6 +261,135 @@ async function withFixture(options, run) {
     globalThis.__tp3dLifecycleTestSolve = originalSolver;
   }
 }
+
+test('C5A eligible INCOMPLETE Balanced stays preferred, animates without adoption, and keeps Max available', async () => {
+  await withFixture({ caseCount: 2, tween: 'none', solve: args => {
+    const balanced = solutionFor(args.items, { count: 1 }).selectedSolution;
+    const compact = { ...solutionFor(args.items).selectedSolution, id: 'compact-fill' };
+    const floor = { ...solutionFor(args.items, { count: 0 }).selectedSolution, id: 'floor-first' };
+    const max = { ...compact, id: 'max-capacity' };
+    return { solutions: [balanced, compact, floor, max], selected: compact.id, selectedSolution: compact };
+  } }, async f => {
+    f.caseData.weight = null;
+    const before = structuredClone(f.packs.get('a'));
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    assert.equal(f.packWrites.length, 0, 'INCOMPLETE is not adopted before animation');
+    assert.equal(f.state.autoPackResults?.preferredId, 'default', 'Results identity exists while presentation is still running');
+    await f.finish(promise);
+    const results = f.state.autoPackResults;
+    assert.deepEqual(f.packs.get('a'), before, 'membership, poses and timestamps remain source');
+    assert.equal(f.packWrites.length, 0, 'no source write means no cargo history or autosave request');
+    assert.equal(results.preferredId, 'default');
+    assert.equal(results.selectedId, null, 'no Recommended candidate');
+    assert.deepEqual(results.adoptedOptionIds, [], 'animation is not Apply evidence');
+    assert.equal(results.options[0].assessment.primary, 'INCOMPLETE');
+    assert.equal(results.options[0].assessment.eligibility.state, 'eligible');
+    assert.equal(results.options.find(option => option.id === 'floor-first').assessment.primary, 'VALID');
+    assert.equal(results.options.find(option => option.id === 'compact-fill').packedCount, 2);
+    assert.equal(f.objects.get('i0').position.x, 5000, 'preferred candidate received placement presentation');
+    assert.ok(f.overlays[0].messages.includes('Placing cargo in the truck...'));
+    assert.equal(f.sceneSyncs.length, 1);
+    assert.equal(f.sceneSyncs[0].options.transientPreview, true, 'candidate cannot acquire thumbnail/export scene authority');
+    assert.deepEqual(f.sceneSyncs[0].pack.cases, results.options[0].nextCases);
+    assert.ok(results.options.some(option => option.id === 'max-capacity' && option.assessment === null), 'Max bypasses normal assessment');
+    const Editor = await import('../../src/screens/editor-screen.js');
+    assert.equal(Editor.getAppliedAutoPackOption(before, results, () => f.caseData), null);
+    assert.ok(Editor.prepareNormalAutoPackResultApply(before, results, results.options[0], () => f.caseData), 'fresh INCOMPLETE is explicitly applyable without an Applied match');
+  });
+});
+
+test('C5A VALID Balanced adopts exactly once even when a later normal candidate packs more', async () => {
+  await withFixture({ caseCount: 2, tween: 'none', solve: args => {
+    const balanced = solutionFor(args.items, { count: 1 }).selectedSolution;
+    const compact = { ...solutionFor(args.items).selectedSolution, id: 'compact-fill' };
+    return { solutions: [balanced, compact], selected: compact.id, selectedSolution: compact };
+  } }, async f => {
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    assert.equal(f.packWrites.length, 1, 'adoption precedes animation');
+    await f.finish(promise);
+    const results = f.state.autoPackResults;
+    assert.equal(f.packWrites.length, 1, 'completion creates no second adoption');
+    assert.equal(results.preferredId, 'default');
+    assert.equal(results.selectedId, 'default');
+    assert.deepEqual(results.adoptedOptionIds, ['default']);
+    assert.equal(f.packs.get('a').cases.filter(inst => inst.placement === 'packed').length, 1);
+    const Editor = await import('../../src/screens/editor-screen.js');
+    assert.equal(Editor.getAppliedAutoPackOption(f.packs.get('a'), results, () => f.caseData)?.id, 'default');
+  });
+});
+
+test('C5A physical INVALID normals leave source unchanged and do not remove legacy Max', async () => {
+  await withFixture({ tween: 'none', solve: args => {
+    const invalid = solutionFor(args.items).selectedSolution;
+    invalid.placements.set('i0', { x: 5000, y: 30, z: 0 });
+    return { solutions: [invalid, { ...invalid, id: 'max-capacity' }], selected: 'default', selectedSolution: invalid };
+  } }, async f => {
+    const before = structuredClone(f.packs.get('a'));
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    await f.finish(promise);
+    assert.equal(f.packWrites.length, 0);
+    assert.deepEqual(f.packs.get('a'), before);
+    assert.equal(f.state.autoPackResults.preferredId, null);
+    assert.deepEqual(f.state.autoPackResults.options.map(option => option.id), ['max-capacity']);
+    assert.ok(f.toasts.some(([message]) => message.includes('load plan is unchanged')));
+  });
+});
+
+test('C5A post-decision presentation failure preserves VALID adoption and unadopted INCOMPLETE Results', async () => {
+  for (const primary of ['VALID', 'INCOMPLETE']) {
+    await withFixture({ throwPresentation: true }, async f => {
+      if (primary === 'INCOMPLETE') f.caseData.weight = null;
+      const before = structuredClone(f.packs.get('a'));
+      const promise = f.engine.pack();
+      await f.initialFrames();
+      await f.finish(promise);
+      const results = f.state.autoPackResults;
+      const option = results.options.find(o => o.id === results.preferredId);
+      assert.ok(results.runId, 'failure cannot erase the assessed Results run');
+      assert.equal(option.assessment.primary, primary);
+      assert.ok(f.toasts.some(([message]) => message === 'AutoPack failed'), 'the injected presentation failure was exercised');
+      const Editor = await import('../../src/screens/editor-screen.js');
+      if (primary === 'VALID') {
+        assert.equal(f.packWrites.length, 1);
+        assert.deepEqual(f.packs.get('a').cases, option.nextCases);
+        assert.equal(Editor.getAppliedAutoPackOption(f.packs.get('a'), results, () => f.caseData), option);
+      } else {
+        assert.equal(f.packWrites.length, 0);
+        assert.deepEqual(f.packs.get('a'), before);
+        assert.equal(Editor.getAppliedAutoPackOption(before, results, () => f.caseData), null);
+        assert.deepEqual(results.adoptedOptionIds, []);
+        assert.equal(results.selectedId, null);
+      }
+      assert.equal(f.lifecycle.isBusy(), false);
+    });
+  }
+});
+
+test('C5A normal materialization, presentation and Apply preserve source-staged leftovers with exact freshness', async () => {
+  await withFixture({ caseCount: 2, tween: 'none', solve: args => solutionFor(args.items, { count: 1 }) }, async f => {
+    const source = f.packs.get('a').cases[1];
+    source.transform = { position: { x: -134, y: 5, z: 82 }, rotation: { x: 0, y: Math.PI / 2, z: 0 } };
+    source.orientedDims = { length: 10, width: 10, height: 10 };
+    const before = structuredClone(source);
+    const promise = f.engine.pack();
+    await f.initialFrames();
+    await f.finish(promise);
+    const results = f.state.autoPackResults;
+    const option = results.options.find(o => o.id === 'default');
+    assert.deepEqual(option.nextCases[1], before, 'assessment materializes the existing staged source pose');
+    assert.deepEqual(f.packs.get('a').cases[1], before, 'auto-adoption preserves staging ownership');
+    assert.equal(f.objects.get('i1').position.x, before.transform.position.x, 'presentation settles on the same staged pose');
+    const Editor = await import('../../src/screens/editor-screen.js');
+    const prepared = Editor.prepareNormalAutoPackResultApply(f.packs.get('a'), results, option, () => f.caseData);
+    assert.deepEqual(prepared.cases, option.nextCases, 'preview and Apply agree with the assessed candidate');
+    f.packs.get('a').cases[1].transform.position.x += 0.00001;
+    assert.equal(Editor.prepareNormalAutoPackResultApply(f.packs.get('a'), results, option, () => f.caseData), null,
+      'a later tiny staged source edit stales normal Results');
+  });
+});
 
 test('10A: rejected operation acquisition changes no Results, Pack, scene, loading, or newer token', async () => {
   const newer = createOperationLifecycle();
@@ -509,7 +644,7 @@ test('10A: token taken by another operation mid-animation stops scene writes and
     await f.clock.advanceBy(2000);
     await promise;
     assert.deepEqual([...f.objects.values()].map(obj => obj.writes.length), writes);
-    assert.equal(f.state.autoPackResults, null);
+    assert.equal(f.state.autoPackResults?.packId, 'a', 'presentation token loss does not erase existing Results authority');
     assert.equal(f.previews.length, 0);
     assert.equal(f.engine.running, false);
     assert.equal(f.lifecycle.isCurrent(newerToken), true, 'stale AutoPack never releases a newer token');
@@ -596,7 +731,7 @@ test('10B: the status is the only running-progress channel; outcome, warning, an
       options: { solve: args => solutionFor(args.items, { count: 0, warnings: ['time budget reached'] }) },
       expected: [
         ['Packed 0 of 1 cases (25.0% volume). 1 moved to staging.', 'warning'],
-        ['AutoPack reached its time budget; remaining items were staged. The placed layout is fully validated.', 'warning'],
+        ['AutoPack reached its time budget; remaining items are staged in this option.', 'warning'],
       ],
     },
     unresolved: {
@@ -714,7 +849,7 @@ test('A3 unresolved packed unknown geometry refuses before any AutoPack mutation
   });
 });
 
-test('A3 unresolved packed blocker is preserved, warned, and passed to every solve without output ownership', async () => {
+test('A3 unresolved packed blocker remains fixed context while incomplete blocked normal adoption is refused', async () => {
   let fixedSeen = null;
   await withFixture({ caseCount: 2, tween: 'none', solve: args => {
     fixedSeen = args.fixedPlacements;
@@ -725,16 +860,18 @@ test('A3 unresolved packed blocker is preserved, warned, and passed to every sol
     pack.cases[0].placement = 'packed';
     pack.cases[0].orientedDims = { length: 10, width: 10, height: 10 };
     const before = JSON.stringify(pack.cases[0]);
+    const beforePack = structuredClone(pack);
     const promise = f.engine.pack();
     await f.initialFrames();
     await f.finish(promise);
     assert.equal(fixedSeen?.length, 1);
     assert.equal(fixedSeen[0].collisionOnly, true);
     assert.equal(JSON.stringify(f.packs.get('a').cases[0]), before);
-    assert.equal(JSON.stringify(f.state.autoPackResults.options[0].nextCases[0]), before);
-    assert.deepEqual(f.state.autoPackResults.options[0].movableIds, ['i1']);
+    assert.equal(f.packWrites.length, 0, 'shared assessment cannot certify the missing loaded source');
+    assert.deepEqual(f.packs.get('a'), beforePack, 'fixed and movable source both remain unchanged');
+    assert.equal(f.state.autoPackResults, null, 'the solver fixture supplied no acceptable normal or Max alternative');
     assert.ok(f.toasts.some(([message]) => /preserved as fixed physical blockers/.test(message)));
-    assert.ok(f.toasts.some(([message]) => /Packed 1 of 1 eligible cases/.test(message)));
+    assert.ok(f.toasts.some(([message]) => /No acceptable normal AutoPack result/.test(message)));
   });
 });
 

@@ -1,10 +1,9 @@
 import { buildLegacyAutoPackItems } from './autopack-item-builder.js';
 import { canonicalCargoForStorage } from '../core/cargo-canonical.js';
-// AutoPack routes through the packing-core strategy runner: the core owns
-// strategy orchestration and the solution envelope; the selected default
-// solution is byte-equivalent to a direct solveAutoPack call, so the engine
-// stays a thin orchestrator. (Supersedes the direct-solver-call wiring the
-// A1-R6 source contract pinned — update that spec on the validation branch.)
+import { assessPhysicalSubject } from '../packing-core/assessment.js';
+import { captureScopeContext, isScopeContextCurrent } from '../core/storage.js';
+// The core generates candidates. Normal adoption is decided only after the
+// engine materializes and assesses each complete Pack; Max keeps its C4 path.
 import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
 import { getOrientedDimsForRotation, getActualPoseDimensions } from '../core/oriented-dims.js';
@@ -79,6 +78,17 @@ const CARGO_RULE_FIELDS = [
   'shape',
 ];
 
+// Current Case-level planning fallbacks and item-builder volume ordering belong
+// to exact normal authority. Keep the legacy C4/Max field set unchanged.
+const NORMAL_CASE_AUTHORITY_FIELDS = [
+  ...CARGO_RULE_FIELDS,
+  'mustLoadLast',
+  'mustUnloadFirst',
+  'stopGroup',
+  'keepTogetherGroup',
+  'volume',
+];
+
 const AUTOPACK_RESULT_SIGNATURE_PRECISION = 1000;
 
 function normalizeSignatureNumber(value) {
@@ -144,15 +154,15 @@ function exactRuleSignatureValue(value) {
   return value;
 }
 
-function getSignatureCaseRules(caseData) {
+function getSignatureCaseRules(caseData, exact = false) {
   if (!caseData) return null;
   const rules = {
     id: caseData.id || null,
-    dimensions: getSignatureDims(caseData.dimensions),
+    dimensions: exact ? exactRuleSignatureValue(caseData.dimensions) : getSignatureDims(caseData.dimensions),
     weight: exactRuleSignatureValue(caseData.weight),
   };
-  CARGO_RULE_FIELDS.forEach(field => {
-    if (hasOwn(caseData, field)) rules[field] = caseData[field];
+  (exact ? NORMAL_CASE_AUTHORITY_FIELDS : CARGO_RULE_FIELDS).forEach(field => {
+    if (hasOwn(caseData, field)) rules[field] = exact ? exactRuleSignatureValue(caseData[field]) : caseData[field];
   });
   return rules;
 }
@@ -226,9 +236,9 @@ export function buildAutoPackResultSignature(pack, packedProfileOverride, profil
  * rules} — just assigned to a different permutation of interchangeable instance
  * ids — hash identically here, so the portfolio dedupe (buildAutoPackResultsState)
  * can collapse them into one option. Staleness detection
- * (isAutoPackResultsStale in editor-screen.js) uses the strict, id-aware
- * buildAutoPackResultSignature, whose staged cases intentionally omit pose-only
- * fields while preserving membership, identity, hidden state, and cargo rules.
+ * uses the exact normal source signature. Max and legacy Results keep the
+ * strict, id-aware buildAutoPackResultSignature, whose staged cases intentionally
+ * omit pose-only fields while preserving membership, identity and cargo rules.
  */
 export function buildAutoPackLayoutSignature(pack) {
   const truck = normalizeSignatureValue((pack && pack.truck) || {});
@@ -238,7 +248,7 @@ export function buildAutoPackLayoutSignature(pack) {
   return stableSignature({ truck, cases });
 }
 
-export function buildAutoPackCaseRuleSignature(pack, getCaseById) {
+export function buildAutoPackCaseRuleSignature(pack, getCaseById, { exact = false } = {}) {
   const caseIds = Array.from(new Set(
     (Array.isArray(pack && pack.cases) ? pack.cases : [])
       .map(inst => inst && inst.caseId ? String(inst.caseId) : '')
@@ -246,9 +256,73 @@ export function buildAutoPackCaseRuleSignature(pack, getCaseById) {
   )).sort();
   const cases = caseIds.map(caseId => {
     const caseData = typeof getCaseById === 'function' ? getCaseById(caseId) : null;
-    return getSignatureCaseRules(caseData) || { id: caseId, missing: true };
+    return getSignatureCaseRules(caseData, exact) || { id: caseId, missing: true };
   });
   return stableSignature({ cases });
+}
+
+// C5A normal freshness has no display rounding. Keep the C4 signature above
+// unchanged for Max and legacy Results, including its staged-pose compatibility.
+export function buildAutoPackSourceSignature(pack) {
+  const cases = (pack?.cases || []).map(inst => ({
+    id: inst.id, caseId: inst.caseId, placement: inst.placement, hidden: Boolean(inst.hidden),
+    transform: inst.transform, orientedDims: inst.orientedDims,
+    packedProfile: inst.packedProfile,
+    rules: Object.fromEntries([...CARGO_RULE_FIELDS, 'orientationLocked', 'lockedRotation',
+      'mustLoadLast', 'mustUnloadFirst', 'stopGroup', 'keepTogetherGroup', 'deliverySequence']
+      .filter(field => hasOwn(inst, field)).map(field => [field, inst[field]])),
+  })).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return JSON.stringify(exactRuleSignatureValue({ truck: pack?.truck, cases }));
+}
+
+export function assessNormalAutoPackCandidate(pack, cases) {
+  return assessPhysicalSubject({ cases, instances: pack.cases, targetSpace: pack.truck,
+    context: { scope: 'loaded-pack' } });
+}
+
+export function isNormalAutoPackCandidateAcceptable(option) {
+  return option?.id !== 'max-capacity' &&
+    ['VALID', 'INCOMPLETE'].includes(option?.assessment?.primary) &&
+    option.assessment.eligibility.state === 'eligible';
+}
+
+export function selectPreferredNormalAutoPackOption(options) {
+  const normal = options.filter(isNormalAutoPackCandidateAcceptable);
+  return normal.find(option => option.id === 'default') || normal[0] || null;
+}
+
+export function deduplicateAutoPackResultOptions(rawOptions) {
+  const acceptable = rawOptions.filter(option => option.id === 'max-capacity' || isNormalAutoPackCandidateAcceptable(option));
+  const seen = new Set();
+  const options = acceptable.filter(option => {
+    const a = option.assessment;
+    const evidence = a ? [...(a.hard || []), ...(a.gates || []), ...(a.unverified || []), ...(a.advisory || [])]
+      .filter(finding => finding.outcome !== 'PASS' && finding.outcome !== 'NOT_APPLICABLE')
+      .map(finding => JSON.stringify([finding.property, finding.outcome, finding.active, finding.evidence?.reason])).sort() : null;
+    const key = JSON.stringify([option.layoutSignature, option.fixedLayoutSignature,
+      option.id === 'max-capacity', a?.primary, a?.eligibility.state, evidence]);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return { options, deduplicatedSolutionCount: acceptable.length - options.length };
+}
+
+export function isAutoPackResultsFresh(pack, results, getCaseById, { maxCapacity = false } = {}) {
+  if (!pack || results?.packId !== pack.id || !results.options?.length ||
+      (results.scope && !isScopeContextCurrent(results.scope))) return false;
+  if (maxCapacity || !results.sourceSignature) {
+    if (buildAutoPackCaseRuleSignature(pack, getCaseById) !== results.caseRuleSignature) return false;
+    const signature = buildAutoPackResultSignature(pack);
+    return signature === results.sourceLegacySignature || results.options.some(option => option.signature === signature);
+  }
+  if (buildAutoPackCaseRuleSignature(pack, getCaseById, { exact: true }) !== results.caseAuthoritySignature) return false;
+  const signature = buildAutoPackSourceSignature(pack);
+  return signature === results.sourceSignature || results.options.some(option =>
+    results.adoptedOptionIds?.includes(option.id) &&
+    (option.id === 'max-capacity'
+      ? option.signature === buildAutoPackResultSignature(pack)
+      : option.sourceSignature === signature));
 }
 
 function animationNumber(value, fallback = 0) {
@@ -685,6 +759,15 @@ export function createAutoPackEngine({
     if (!run || run.invalidated) return;
     run.invalidated = true;
     settleRunEffects(run);
+    // Losing presentation ownership alone cannot erase an assessed run. A
+    // departure or source change may clear only this run's transient Results.
+    const contextChanged = run.workspaceGeneration !== workspaceGeneration || !isScopeContextCurrent(run.scope) ||
+      StateStore.get('currentPackId') !== run.packId || StateStore.get('currentScreen') !== 'editor' ||
+      buildAutoPackSourceSignature(PackLibrary.getById(run.packId)) !== run.sourceSignature ||
+      buildAutoPackCaseRuleSignature(PackLibrary.getById(run.packId), id => CaseLibrary.getById(id), { exact: true }) !== run.caseAuthoritySignature;
+    if (contextChanged && run.resultsRunId && StateStore.get('autoPackResults')?.runId === run.resultsRunId) {
+      StateStore.set({ autoPackResults: null }, { skipHistory: true });
+    }
   }
 
   function releaseRunWatch(run) {
@@ -703,7 +786,10 @@ export function createAutoPackEngine({
       if (
         (changes && changes._replace) ||
         StateStore.get('currentPackId') !== run.packId ||
-        StateStore.get('currentScreen') !== 'editor'
+        StateStore.get('currentScreen') !== 'editor' ||
+        ((changes?.packLibrary || changes?.caseLibrary) &&
+          (buildAutoPackSourceSignature(PackLibrary.getById(run.packId)) !== run.sourceSignature ||
+           buildAutoPackCaseRuleSignature(PackLibrary.getById(run.packId), caseId => CaseLibrary.getById(caseId), { exact: true }) !== run.caseAuthoritySignature))
       ) {
         invalidateRun(run);
       }
@@ -714,6 +800,7 @@ export function createAutoPackEngine({
     if (!run || run.invalidated || activeRun !== run) return false;
     if (
       run.workspaceGeneration !== workspaceGeneration ||
+      !isScopeContextCurrent(run.scope) ||
       StateStore.get('currentPackId') !== run.packId ||
       StateStore.get('currentScreen') !== 'editor' ||
       (OperationLifecycle && !OperationLifecycle.isCurrent(run.token))
@@ -746,6 +833,7 @@ export function createAutoPackEngine({
   }
 
   function buildAutoPackResultOption(solution, index, packData, stagingMap, movableIds, excludedIds) {
+    const id = String(solution.id || solution.strategy || `option-${index + 1}`);
     const nextCases = buildAutoPackNextCases(
       packData.cases || [],
       solution.placements,
@@ -753,7 +841,16 @@ export function createAutoPackEngine({
       solution.orientedDims,
       stagingMap,
       excludedIds
-    );
+    ).map((next, itemIndex) => {
+      const source = packData.cases[itemIndex];
+      if (id === 'max-capacity' || source.placement !== 'staged' || next.placement !== 'staged') return next;
+      // Match the existing Results Apply ownership: already-staged cargo keeps
+      // its source pose. C5B still owns staging allocation/reservation redesign.
+      const preserved = { ...next, transform: source.transform };
+      if (hasOwn(source, 'orientedDims')) preserved.orientedDims = source.orientedDims;
+      else delete preserved.orientedDims;
+      return preserved;
+    });
     const optionPack = { ...packData, cases: nextCases };
     const stats = PackLibrary.computeStats(optionPack);
     const stagedCount = Math.max(0, movableIds.size - solution.placements.size);
@@ -761,7 +858,6 @@ export function createAutoPackEngine({
       ? solution.solveStatus.complete === true
       : !(Array.isArray(solution.unpacked) && solution.unpacked.length);
     const complete = solverComplete && stagedCount === 0;
-    const id = String(solution.id || solution.strategy || `option-${index + 1}`);
     // Placement-level split from the solver's phase stats: lane/floor/filler are
     // all floor-level phases, stack is the only raised phase.
     const phase = solution.phaseStats && typeof solution.phaseStats === 'object' ? solution.phaseStats : {};
@@ -770,6 +866,9 @@ export function createAutoPackEngine({
     const partialCauses = solution.solveStatus && Array.isArray(solution.solveStatus.partialCauses)
       ? [...solution.solveStatus.partialCauses]
       : [];
+    const definitions = CaseLibrary.getCases?.() || [...new Set((packData.cases || []).map(inst => inst.caseId))]
+      .map(caseId => CaseLibrary.getById(caseId)).filter(Boolean);
+    const assessment = id === 'max-capacity' ? null : assessNormalAutoPackCandidate(optionPack, definitions);
     return {
       id,
       label: getSolutionLabel(solution, index),
@@ -783,8 +882,11 @@ export function createAutoPackEngine({
       status: complete ? 'complete' : 'partial',
       statusLabel: complete ? 'Complete' : 'Partial',
       partialCauses,
+      assessment,
+      sourceSignature: id === 'max-capacity' ? null : buildAutoPackSourceSignature(optionPack),
       signature: buildAutoPackResultSignature(optionPack, id === 'max-capacity' ? 'max-capacity' : null, movableIds),
       layoutSignature: buildAutoPackLayoutSignature(optionPack),
+      fixedLayoutSignature: buildAutoPackLayoutSignature({ ...optionPack, cases: nextCases.filter(inst => !movableIds.has(inst.id)) }),
       nextCases: cloneForAutoPackResults(nextCases),
       movableIds: [...movableIds],
     };
@@ -803,52 +905,32 @@ export function createAutoPackEngine({
       .map((solution, index) => buildAutoPackResultOption(solution, index, packData, stagingMap, movableIds, excludedIds));
     if (!rawOptions.length) return null;
 
-    const selectedRawId = String(
-      (selectedSolution && selectedSolution.id) ||
-      (packingSolution && packingSolution.selected) ||
-      rawOptions[0].id
-    );
-    const selectedRaw = rawOptions.find(option => option.id === selectedRawId) || rawOptions[0];
-
-    // Dedupe by physical layout, not raw instance id: two strategies that place
-    // the same {caseId, placement, position, rotation, orientedDims, rules} set
-    // — just assigned to a different permutation of interchangeable instances —
-    // are the same option to the user. The selected solver result owns its
-    // duplicate group so an earlier equivalent option cannot steal the applied
-    // id or strict staleness signature; every other group keeps its first option.
-    const options = [];
-    const layoutSignatureToId = new Map();
-    rawOptions.forEach(option => {
-      if (layoutSignatureToId.has(option.layoutSignature)) {
-        if (option.id !== selectedRaw.id) return;
-        const survivorIndex = options.findIndex(
-          survivor => survivor.layoutSignature === option.layoutSignature
-        );
-        if (survivorIndex >= 0) options[survivorIndex] = option;
-        layoutSignatureToId.set(option.layoutSignature, option.id);
-        return;
-      }
-      layoutSignatureToId.set(option.layoutSignature, option.id);
-      options.push(option);
-    });
+    // Interchangeable IDs may collapse, but Max's profile and materially
+    // different assessment outcomes must remain distinct. Keep portfolio order.
+    const { options, deduplicatedSolutionCount } = deduplicateAutoPackResultOptions(rawOptions);
     if (!options.length) return null;
-
-    const selectedId = selectedRaw && layoutSignatureToId.has(selectedRaw.layoutSignature)
-      ? layoutSignatureToId.get(selectedRaw.layoutSignature)
-      : options[0].id;
-    const selectedOption = options.find(option => option.id === selectedId) || options[0];
+    const preferred = selectPreferredNormalAutoPackOption(options);
+    const selectedId = preferred?.assessment.primary === 'VALID' ? preferred.id : null;
 
     return {
       runId: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       packId,
-      selectedId: selectedOption.id,
-      currentSignature: selectedOption.signature,
+      preferredId: preferred?.id || null,
+      selectedId,
+      adoptedOptionIds: selectedId ? [selectedId] : [],
+      sourceSignature: buildAutoPackSourceSignature(packData),
+      sourceLegacySignature: buildAutoPackResultSignature(packData),
+      currentSignature: options.find(option => option.id === selectedId)?.signature || null,
+      caseAuthoritySignature: buildAutoPackCaseRuleSignature(packData, caseId => CaseLibrary.getById(caseId), { exact: true }),
       caseRuleSignature: buildAutoPackCaseRuleSignature(packData, caseId => CaseLibrary.getById(caseId)),
+      scope: captureScopeContext(),
       expanded: false,
       closed: false,
-      minimized: true,
+      minimized: selectedId !== null,
+      previewEnded: !preferred,
       position: null,
       attemptedSolutionCount: rawOptions.length,
+      deduplicatedSolutionCount,
       hasAlternates: options.length > 1,
       options,
     };
@@ -994,7 +1076,8 @@ export function createAutoPackEngine({
     }
 
     const packId = StateStore.get('currentPackId');
-    const packData = PackLibrary.getById(packId);
+    const committedPack = PackLibrary.getById(packId);
+    const packData = committedPack ? cloneForAutoPackResults(committedPack) : null;
     if (!packData) {
       UIComponents.showToast('Open a pack first', 'warning');
       return;
@@ -1038,7 +1121,11 @@ export function createAutoPackEngine({
       token: opToken,
       packId,
       workspaceGeneration,
+      scope: captureScopeContext(),
+      sourceSignature: buildAutoPackSourceSignature(packData),
+      caseAuthoritySignature: buildAutoPackCaseRuleSignature(packData, caseId => CaseLibrary.getById(caseId), { exact: true }),
       invalidated: false,
+      resultsRunId: null,
       effects: new Set(),
       unsubscribe: null,
     };
@@ -1154,9 +1241,8 @@ export function createAutoPackEngine({
       const solverStartedAt = nowMs();
       // Adaptive production entry: default strategy first; bounded real-strategy
       // recovery only when the default legitimately could not place everything
-      // (never on budget-caused or statically impossible misses). The selected
-      // solution is the best practical result by packed count, ties keeping the
-      // default's layout-quality plan.
+      // (never on budget-caused or statically impossible misses). Its core
+      // selected hint is independent of the assessed normal preference below.
       const packingSolution = runAdaptiveAutoPack({
         truck,
         zones,
@@ -1195,11 +1281,24 @@ export function createAutoPackEngine({
           };
         }),
       });
-      // Current UI consumes the selected default solution; additional
-      // strategies stay available on packingSolution.solutions for future UI.
-      const solverResult = packingSolution ? packingSolution.selectedSolution : null;
       solverMs = nowMs() - solverStartedAt;
-      if (!solverResult || isRunStale()) return;
+      if (isRunStale()) return;
+      const results = buildAutoPackResultsState({
+        packId, packData, packingSolution, selectedSolution: packingSolution?.selectedSolution,
+        stagingMap, movableIds: new Set(packItems.map(item => item.inst.id)), excludedIds: physicalContext.excludedIds,
+      });
+      // Establish authority before any post-decision presentation. Defer the
+      // full scene render until the lifecycle releases its presentation slot.
+      StateStore.set({ autoPackResults: results }, { skipHistory: true, skipNotify: true });
+      run.resultsRunId = results?.runId || null;
+      const preferred = results?.options.find(option => option.id === results.preferredId);
+      if (!preferred) {
+        applyScenePoseFromCases(packData.cases);
+        toast('No acceptable normal AutoPack result. The load plan is unchanged.', 'warning', { title: 'AutoPack' });
+        return;
+      }
+      const solverResult = packingSolution.solutions.find(solution => solution.id === preferred.id);
+      const adopted = results.selectedId === preferred.id;
 
       const placements = solverResult.placements;
       const rotations = solverResult.rotations;
@@ -1213,15 +1312,17 @@ export function createAutoPackEngine({
       animationMetrics.placementCount = packedCount;
       const largeLoadSnap = shouldSnapLargeAutoPackLoad(packedCount);
 
-      const nextCases = buildAutoPackNextCases(
-        packData.cases || [],
-        placements,
-        rotations,
-        orientedDimsMap,
-        stagingMap,
-        physicalContext.excludedIds
-      );
-      PackLibrary.update(packId, { cases: nextCases });
+      const nextCases = cloneForAutoPackResults(preferred.nextCases);
+      if (adopted) {
+        StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true, skipNotify: true });
+        run.sourceSignature = buildAutoPackSourceSignature({ ...packData, cases: nextCases });
+        PackLibrary.update(packId, { cases: nextCases });
+        CaseScene.setSelected?.([]);
+      } else {
+        // Mark the scene transient before releasing the lifecycle slot: a
+        // pending thumbnail must never capture an uncommitted animated layout.
+        CaseScene.sync?.({ ...packData, cases: nextCases }, { transientPreview: true });
+      }
 
       cancelAllTweens();
       const animationStartedAt = nowMs();
@@ -1237,8 +1338,8 @@ export function createAutoPackEngine({
           });
         }
       } else {
-        // The final pack state was already committed. Reset only the live meshes
-        // to their staging pose so the legacy small-load animation can still run.
+        // VALID is already committed; INCOMPLETE is scene-only. Both use the
+        // same existing loading presentation, without making animation authority.
         updateLoadingOverlay('Placing cargo in the truck...');
         stageInstant(stagingMap);
         animationCompleted = await animatePlacements(
@@ -1260,40 +1361,35 @@ export function createAutoPackEngine({
       // committed, but it grants no authority over whatever scene is now current.
       if (isRunStale()) return;
       if (!animationCompleted) {
-        // Same context, incomplete animation: sync the scene to the committed Pack.
+        // Same context: settle the preferred presentation without a source write.
         applyScenePoseFromCases(nextCases);
-        return;
+      } else if (!largeLoadSnap) {
+        // Leftovers show the same source-owned staged pose as preview and Apply.
+        applyScenePoseFromCases(nextCases.filter(inst => inst.placement === 'staged'));
       }
 
-      const stats = PackLibrary.computeStats(PackLibrary.getById(packId));
+      const stats = PackLibrary.computeStats({ ...packData, cases: nextCases });
       const totalPackable = packItems.length;
       const stagedCount = Math.max(0, totalPackable - packedCount);
       const stagedSuffix = stagedCount > 0 ? ` ${stagedCount} moved to staging.` : '';
-      UIComponents.showToast(
-        `Packed ${packedCount} of ${totalPackable} ${physicalContext.fixedPlacements.length || physicalContext.excludedIds.size ? 'eligible ' : ''}cases (${stats.volumePercent.toFixed(1)}% volume).${stagedSuffix}`,
-        packedCount === totalPackable ? 'success' : 'warning',
-        { title: 'AutoPack' }
-      );
+      if (adopted) {
+        UIComponents.showToast(
+          `Packed ${packedCount} of ${totalPackable} ${physicalContext.fixedPlacements.length || physicalContext.excludedIds.size ? 'eligible ' : ''}cases (${stats.volumePercent.toFixed(1)}% volume).${stagedSuffix}`,
+          packedCount === totalPackable ? 'success' : 'warning',
+          { title: 'AutoPack' }
+        );
+      } else {
+        toast('Needs review. Review the preferred option before applying.', 'warning', { title: 'AutoPack' });
+      }
       const budgetWarning = Array.isArray(solverResult.warnings) &&
         solverResult.warnings.some(w => String(w).includes('time budget'));
       if (budgetWarning) {
         UIComponents.showToast(
-          'AutoPack reached its time budget; remaining items were staged. The placed layout is fully validated.',
+          'AutoPack reached its time budget; remaining items are staged in this option.',
           'warning',
           { title: 'AutoPack' }
         );
       }
-      StateStore.set({
-        autoPackResults: buildAutoPackResultsState({
-          packId,
-          packData,
-          packingSolution,
-          selectedSolution: solverResult,
-          stagingMap,
-          movableIds: new Set(packItems.map(item => item.inst.id)),
-          excludedIds: physicalContext.excludedIds,
-        }),
-      }, { skipHistory: true });
 
       try {
         if (diag && typeof diag.autopackEnd === 'function') {
@@ -1338,6 +1434,14 @@ export function createAutoPackEngine({
       closeLoadingOverlay();
       isRunning = false;
       if (opToken && OperationLifecycle) OperationLifecycle.finishOperation(opToken);
+      const results = StateStore.get('autoPackResults');
+      if (run.resultsRunId && results?.runId === run.resultsRunId &&
+          run.workspaceGeneration === workspaceGeneration &&
+          StateStore.get('currentPackId') === packId && StateStore.get('currentScreen') === 'editor' &&
+          !(OperationLifecycle && OperationLifecycle.isBusy()) &&
+          isAutoPackResultsFresh(PackLibrary.getById(packId), results, id => CaseLibrary.getById(id))) {
+        StateStore.set({ autoPackResults: results }, { skipHistory: true });
+      }
     }
   }
 

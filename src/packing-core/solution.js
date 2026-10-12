@@ -39,7 +39,7 @@ export const PACKING_STRATEGIES = Object.freeze([
     id: 'default',
     strategy: 'front-first-balanced',
     label: 'Balanced',
-    description: 'Best overall load quality; tidy rows, wheel-well aware.',
+    description: 'General-purpose strategy for orderly rows, stacking, and space use.',
     options: Object.freeze({}),
   }),
   Object.freeze({

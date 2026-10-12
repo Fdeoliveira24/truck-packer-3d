@@ -20,7 +20,11 @@ import {
 } from '../ui/space-utilization-gauge.js';
 import * as CoreStorage from '../core/storage.js';
 import { editorViewSignature, normalizeEditorView } from '../core/normalizer.js';
-import { buildAutoPackCaseRuleSignature, buildAutoPackLayoutSignature, buildAutoPackResultSignature } from '../services/autopack-engine.js';
+import {
+  assessNormalAutoPackCandidate, buildAutoPackCaseRuleSignature, buildAutoPackLayoutSignature,
+  buildAutoPackResultSignature, buildAutoPackSourceSignature, isAutoPackResultsFresh,
+  isNormalAutoPackCandidateAcceptable,
+} from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
 import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
 import { isCasePhysicalOrientationAllowed } from '../core/orientation.js';
@@ -159,8 +163,8 @@ export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.par
     const chosen = proposedById.get(inst.id);
     if (inst.caseId !== chosen.caseId || Boolean(inst.hidden) !== Boolean(chosen.hidden)) return null;
     if (movableIds && !movableIds.has(inst.id)) return inst;
-    // buildAutoPackNextCases owns placement and packed pose. It does not own
-    // other instance metadata, or a staged pose edited after this result ran.
+    // Packed poses and packed-to-staged transitions belong to the candidate.
+    // An already-staged source pose and current metadata retain manual ownership.
     const next = { ...inst, placement: chosen.placement };
     if (chosen.placement === 'packed' || (chosen.placement === 'staged' && inst.placement !== 'staged')) {
       if (!chosen.transform?.position || !chosen.transform?.rotation) return null;
@@ -186,7 +190,12 @@ export function getAppliedAutoPackOption(pack, results, getCaseById) {
   if (!pack || !results || results.packId !== pack.id || !Array.isArray(results.options)) return null;
   if (buildAutoPackCaseRuleSignature(pack, getCaseById) !== results.caseRuleSignature) return null;
   const signature = buildAutoPackResultSignature(pack);
-  const matches = results.options.filter(option => option.signature === signature);
+  const matches = results.options.filter(option => {
+    if (Array.isArray(results.adoptedOptionIds) && !results.adoptedOptionIds.includes(option.id)) return false;
+    if (option.id === 'max-capacity' || !option.sourceSignature) return option.signature === signature;
+    return option.sourceSignature === buildAutoPackSourceSignature(pack) &&
+      buildAutoPackCaseRuleSignature(pack, getCaseById, { exact: true }) === results.caseAuthoritySignature;
+  });
   if (matches.length === 1) return matches[0];
   if (matches.length > 1) {
     // Strict signatures intentionally omit staged pose. The existing layout
@@ -198,12 +207,32 @@ export function getAppliedAutoPackOption(pack, results, getCaseById) {
   return null;
 }
 
+export function prepareNormalAutoPackResultApply(pack, results, option, getCaseById) {
+  if (option?.id === 'max-capacity' || !results?.options.includes(option) ||
+      !isAutoPackResultsFresh(pack, results, getCaseById)) return null;
+  const cases = buildAppliedAutoPackCases(option, undefined, pack.cases);
+  if (!cases || (option.sourceSignature &&
+      buildAutoPackSourceSignature({ ...pack, cases }) !== option.sourceSignature)) return null;
+  const definitions = [...new Set(cases.map(inst => inst.caseId))].map(getCaseById).filter(Boolean);
+  const assessment = assessNormalAutoPackCandidate({ ...pack, cases }, definitions);
+  return isNormalAutoPackCandidateAcceptable({ ...option, assessment }) ? { cases, assessment } : null;
+}
+
+export function describeAutoPackReviewReason(assessment) {
+  if (assessment?.primary !== 'INCOMPLETE') return '';
+  const unresolved = (assessment.hard || []).filter(finding => finding.outcome === 'UNRESOLVED');
+  if (unresolved.some(finding => /^(source.case|source.instance|geometry.source|orientation\.)/.test(finding.property))) {
+    return 'Some case information is missing.';
+  }
+  if (unresolved.some(finding => finding.property === 'source.target-space')) return 'Some truck information is missing.';
+  if (assessment.measurements?.mass?.complete === false) return 'Weight information is missing.';
+  return 'Some support information cannot be verified.';
+}
+
 // Display order only: Balanced (the first standard plan in solver order) leads,
 // Max Capacity follows as the relaxed handling comparison, then the remaining
-// standard plans in their solver order. The stored options keep the solver
-// order, which the engine dedupe relies on so an identical standard plan always
-// outranks Max Capacity. Ranking, selectedId and Applied matching never read
-// this order.
+// standard plans in their solver order. Stored options retain portfolio order;
+// Max remains distinct. Preference and Applied matching never read this order.
 export function orderAutoPackResultOptions(options) {
   const list = Array.isArray(options) ? options : [];
   const standard = list.filter(option => !option || option.id !== 'max-capacity');
@@ -2119,6 +2148,11 @@ export function createInteractionManager({
     function operationsBusy() {
       return Boolean(OperationLifecycle && OperationLifecycle.isBusy()) || scenePreviewOnly();
     }
+    let beforeSceneMutation = null;
+    function prepareSceneMutation() {
+      if (!(OperationLifecycle && OperationLifecycle.isBusy()) && scenePreviewOnly()) beforeSceneMutation?.();
+      return operationsBusy();
+    }
     function showOperationsBusyToast() {
       UIComponents.showToast(scenePreviewOnly()
         ? 'Previewing an AutoPack option. Apply it or return to the Applied option to edit cargo.'
@@ -2472,7 +2506,7 @@ export function createInteractionManager({
     // Exact orientation is AutoPack planning intent. Read only the committed
     // single selection after the same strict refusal gates used by rotation.
     function setSelectionOrientationConstraint(active, expectedId = null) {
-      if (operationsBusy()) {
+      if (prepareSceneMutation()) {
         showOperationsBusyToast();
         return false;
       }
@@ -2507,7 +2541,7 @@ export function createInteractionManager({
      * Rotate selected instances by delta on given axis, then apply gravity.
      */
     function rotateSelection(axis, delta) {
-      if (operationsBusy()) {
+      if (prepareSceneMutation()) {
         showOperationsBusyToast();
         return;
       }
@@ -2604,7 +2638,7 @@ export function createInteractionManager({
      * Nudge selected instances by delta inches on given world axis.
      */
     function nudgeSelection(axis, deltaInches) {
-      if (operationsBusy()) {
+      if (prepareSceneMutation()) {
         showOperationsBusyToast();
         return;
       }
@@ -2654,7 +2688,7 @@ export function createInteractionManager({
      * back down on commit.
      */
     function moveSelectionVertical(mode) {
-      if (operationsBusy()) {
+      if (prepareSceneMutation()) {
         showOperationsBusyToast();
         return;
       }
@@ -2974,13 +3008,14 @@ export function createInteractionManager({
      * the gizmo's target case started.
      */
     function beginGizmoDrag() {
-      if (operationsBusy()) return false;
+      if (OperationLifecycle && OperationLifecycle.isBusy()) return false;
       const camera = SceneManager.getCamera();
       const handles = CaseScene.getGizmoHandleMeshes();
       if (!camera || !handles.length) return false;
       raycaster.setFromCamera(pointer, camera);
       const hits = raycaster.intersectObjects(handles, false);
       if (!hits.length) return false;
+      if (prepareSceneMutation()) return false;
       const targetId = CaseScene.getGizmoTargetId();
       const obj = targetId ? CaseScene.getObject(targetId) : null;
       if (!obj) return false;
@@ -3309,7 +3344,7 @@ export function createInteractionManager({
       if (!pressed || !pressed.instanceId) return;
       // Do not begin moving a case while a mutating operation owns the editor. Click
       // selection (handled in onUp) still works; camera orbit is unaffected.
-      if (operationsBusy()) return;
+      if (prepareSceneMutation()) return;
       if (gizmoPending) cancelPendingPose();
       draggingId = pressed.instanceId;
       dragStartPosWorld = CaseScene.getObject(draggingId).position.clone();
@@ -3836,7 +3871,7 @@ export function createInteractionManager({
     }
 
     function deleteSelection() {
-      if (operationsBusy()) {
+      if (prepareSceneMutation()) {
         showOperationsBusyToast();
         return;
       }
@@ -3855,6 +3890,7 @@ export function createInteractionManager({
     return {
       init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical,
       setSelectionOrientationConstraint,
+      setBeforeSceneMutation: callback => { beforeSceneMutation = callback; },
       hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending || revertHolds > 0),
     };
   })();
@@ -3986,6 +4022,13 @@ export function createEditorScreen({
           (previewScene && StateStore.get('currentPackId') !== previewScene.pack.id)) {
         previewScene = null;
       }
+      const results = getAutoPackResultsState();
+      if (results && results.previewEnded !== true && (changes._replace ||
+          StateStore.get('currentScreen') !== 'editor' || StateStore.get('currentPackId') !== results.packId)) {
+        // Context departure ends the preview monotonically. Returning to this
+        // Pack can show the same Results, but cannot silently resume the scene.
+        StateStore.set({ autoPackResults: { ...results, previewEnded: true } }, { skipHistory: true, skipNotify: true });
+      }
       // Leaving the Editor ends a transient Results preview: back to the Pack.
       if (StateStore.get('currentScreen') !== 'editor' && CaseScene.isTransientPreview()) {
         CaseScene.sync(PackLibrary.getById(StateStore.get('currentPackId')));
@@ -4015,7 +4058,9 @@ export function createEditorScreen({
       if (!getAutoPackResultsPreviewPack(pack)) return;
       const view = resolveAutoPackResultsView(pack);
       const appliedIndex = view.options.indexOf(view.currentOption);
-      if (appliedIndex >= 0) patchAutoPackResultsState({ viewIndex: appliedIndex }, view.results.runId);
+      patchAutoPackResultsState(appliedIndex >= 0
+        ? { viewIndex: appliedIndex, previewEnded: false }
+        : { previewEnded: true }, view.results.runId);
     }
 
     // Visual export and whole-Pack operations (Unpack, Truck Change) start from
@@ -4352,7 +4397,7 @@ export function createEditorScreen({
     function resolveAutoPackResultsView(pack) {
       const results = getAutoPackResultsState();
       const options = orderAutoPackResultOptions(results && results.options);
-      if (!pack || !results || results.closed || results.packId !== pack.id || !options.length) {
+      if (!pack || !results || results.packId !== pack.id || !options.length) {
         return { results, options, open: false };
       }
       const currentOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
@@ -4369,10 +4414,11 @@ export function createEditorScreen({
         ? Math.min(Math.max(0, requestedIndex), options.length - 1)
         : selectedIndex;
       const viewedOption = hasAlternates ? (options[viewIndex] || options[0]) : (currentOption || options[0]);
-      return { results, options, open: true, currentOption, hasAlternates, viewIndex, viewedOption };
+      return { results, options, open: results.closed !== true, currentOption, hasAlternates, viewIndex, viewedOption };
     }
 
-    // Transient live preview: while the open, expanded Results card views a
+    // Transient live preview: the run's viewed option is independent of card
+    // visibility. Closing/minimizing never adopts or ends the candidate. The
     // non-Applied option of a current (not Outdated) run, the scene and the
     // Inspector totals show that option through the same projection Apply
     // commits. Presentation only — the Pack, history, autosave, thumbnail and
@@ -4384,21 +4430,24 @@ export function createEditorScreen({
       const operation = OperationLifecycle && OperationLifecycle.currentOperation();
       if (!pack || (operation && operation.busy && operation.kind !== 'capturingPreview')) return null;
       const results = getAutoPackResultsState();
+      const view = resolveAutoPackResultsView(pack);
+      if (!view.viewedOption || !isAutoPackResultsFresh(pack, results, caseId => CaseLibrary.getById(caseId),
+        { maxCapacity: view.viewedOption.id === 'max-capacity' })) return null;
       const caseLibrary = StateStore.get('caseLibrary');
       const memo = autoPackResultsPreview;
       if (memo && memo.pack === pack && memo.results === results && memo.caseLibrary === caseLibrary) {
         return memo.previewPack;
       }
-      const view = resolveAutoPackResultsView(pack);
-      const option = view.open && view.results.minimized !== true && view.currentOption &&
+      const option = view.results.previewEnded !== true &&
         view.viewedOption !== view.currentOption ? view.viewedOption : null;
       const cases = option ? buildAppliedAutoPackCases(option, cloneAutoPackCases, pack.cases) : null;
       autoPackResultsPreview = { pack, results, caseLibrary, previewPack: cases ? { ...pack, cases } : null };
       return autoPackResultsPreview.previewPack;
     }
 
-    function isAutoPackResultsStale(pack, results) {
-      return !getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
+    function isAutoPackResultsStale(pack, results, option = null) {
+      return !isAutoPackResultsFresh(pack, results, caseId => CaseLibrary.getById(caseId),
+        { maxCapacity: option?.id === 'max-capacity' });
     }
 
     function formatAutoPackResultNumber(value) {
@@ -4431,31 +4480,50 @@ export function createEditorScreen({
         return;
       }
       const pack = PackLibrary.getById(StateStore.get('currentPackId'));
-      if (!results || !pack || results.packId !== pack.id) return;
-      if (isAutoPackResultsStale(pack, results)) {
+      if (!pack || results.packId !== pack.id || StateStore.get('currentScreen') !== 'editor') return;
+      const option = (results.options || []).find(item => item.id === optionId);
+      if (!option || !Array.isArray(option.nextCases)) return;
+      if (isAutoPackResultsStale(pack, results, option)) {
         UIComponents.showToast('Rerun AutoPack after edits.', 'info', { title: 'AutoPack Results' });
         return;
       }
-      const option = (results.options || []).find(item => item.id === optionId);
-      if (!option || !Array.isArray(option.nextCases)) return;
       const appliedOption = getAppliedAutoPackOption(pack, results, caseId => CaseLibrary.getById(caseId));
       if (option === appliedOption) return;
 
-      const appliedCases = buildAppliedAutoPackCases(option, cloneAutoPackCases, pack.cases);
+      // Max deliberately retains its existing C4 projection/check, not the new
+      // normal assessment policy. C5C owns atomic Max policy integration.
+      const prepared = option.id === 'max-capacity' ? null
+        : prepareNormalAutoPackResultApply(pack, results, option, caseId => CaseLibrary.getById(caseId));
+      const appliedCases = option.id === 'max-capacity'
+        ? buildAppliedAutoPackCases(option, cloneAutoPackCases, pack.cases) : prepared?.cases;
       if (!appliedCases) {
         UIComponents.showToast('Rerun AutoPack after edits.', 'info', { title: 'AutoPack Results' });
         return;
       }
       const projectedPack = { ...pack, cases: appliedCases };
-      if (getAppliedAutoPackOption(projectedPack, results, caseId => CaseLibrary.getById(caseId)) !== option) {
+      const adoptedOptionIds = [...new Set([...(results.adoptedOptionIds || []), appliedOption?.id, option.id].filter(Boolean))];
+      if (getAppliedAutoPackOption(projectedPack, { ...results, adoptedOptionIds }, caseId => CaseLibrary.getById(caseId)) !== option) {
         UIComponents.showToast('Rerun AutoPack after edits.', 'info', { title: 'AutoPack Results' });
         return;
       }
       StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true, skipNotify: true });
       CaseScene.setSelected([]);
-      PackLibrary.update(pack.id, {
-        cases: appliedCases,
-      });
+      // Publish action evidence with the commit notification, without a second
+      // render/history step or an intermediate Outdated scene. Roll back only
+      // this transient metadata if the Pack commit does not land.
+      StateStore.set({ autoPackResults: { ...results, adoptedOptionIds,
+        options: prepared && option.assessment
+          ? results.options.map(item => item === option ? { ...item, assessment: prepared.assessment } : item) : results.options,
+      } }, { skipHistory: true, skipNotify: true });
+      let committed = null;
+      try {
+        committed = PackLibrary.update(pack.id, { cases: appliedCases });
+      } finally {
+        if (!committed && getAutoPackResultsState()?.runId === results.runId) {
+          StateStore.set({ autoPackResults: results }, { skipHistory: true, skipNotify: true });
+        }
+      }
+      if (!committed) return;
       UIComponents.showToast(`Applied ${option.label || 'load option'}.`, 'success', { title: 'AutoPack Results' });
     }
 
@@ -4603,7 +4671,7 @@ export function createEditorScreen({
       }
 
       const { currentOption, hasAlternates, viewIndex, viewedOption } = view;
-      const stale = !currentOption;
+      const stale = isAutoPackResultsStale(pack, results, viewedOption);
       // minimized is UI-only panel state (never persisted, never in the result
       // payload): collapse the panel to a small draggable chip separate from close.
       const minimized = results.minimized === true;
@@ -4660,7 +4728,7 @@ export function createEditorScreen({
       titleWrap.className = 'tp3d-autopack-results__title-wrap';
       const title = document.createElement('div');
       title.className = 'tp3d-autopack-results__title';
-      title.textContent = hasAlternates ? 'AutoPack Results' : 'Best load selected';
+      title.textContent = 'AutoPack Results';
       titleWrap.appendChild(title);
       // Staleness must stay visible in every mode — the header renders in the
       // carousel, compact, and minimized states alike, so the badge lives here.
@@ -4720,7 +4788,7 @@ export function createEditorScreen({
         prevBtn.dataset.focusKey = 'results-prev';
         prevBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
         prevBtn.disabled = viewIndex <= 0;
-        prevBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.max(0, viewIndex - 1) }, results.runId));
+        prevBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.max(0, viewIndex - 1), previewEnded: false }, results.runId));
 
         const counter = document.createElement('span');
         counter.className = 'tp3d-autopack-results__counter';
@@ -4733,7 +4801,7 @@ export function createEditorScreen({
         nextBtn.dataset.focusKey = 'results-next';
         nextBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
         nextBtn.disabled = viewIndex >= options.length - 1;
-        nextBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.min(options.length - 1, viewIndex + 1) }, results.runId));
+        nextBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.min(options.length - 1, viewIndex + 1), previewEnded: false }, results.runId));
 
         nav.appendChild(prevBtn);
         nav.appendChild(counter);
@@ -4753,7 +4821,7 @@ export function createEditorScreen({
 
       // Single-option mode has no option title row; the strategy description
       // still explains what kind of load the user is looking at.
-      if (!hasAlternates) {
+      if (!hasAlternates && !viewedOption.assessment && currentOption) {
         const compactDescription = makeAutoPackResultDescription(viewedOption);
         if (compactDescription) body.appendChild(compactDescription);
       }
@@ -4761,12 +4829,11 @@ export function createEditorScreen({
       // Multiple results: name the viewed option, show its status, mark the
       // run's Recommended plan and the Applied one (independent states), and
       // keep Apply on the existing validated apply path.
-      if (hasAlternates) {
+      if (hasAlternates || viewedOption.assessment || !currentOption) {
         const isViewedCurrent = viewedOption === currentOption;
-        // Recommended is the standard plan the normal solver portfolio selected
-        // for this run (results.selectedId). Max Capacity is never ranked, so it
-        // can never carry it.
-        const isViewedRecommended = viewedOption.id === results.selectedId && viewedOption.id !== 'max-capacity';
+        // Only the preferred VALID + eligible normal candidate is Recommended.
+        const isViewedRecommended = viewedOption.id === results.selectedId && viewedOption.id !== 'max-capacity' &&
+          (!viewedOption.assessment || (viewedOption.assessment.primary === 'VALID' && isNormalAutoPackCandidateAcceptable(viewedOption)));
         const optionRow = document.createElement('div');
         optionRow.className = 'tp3d-autopack-results__carousel-body';
 
@@ -4799,6 +4866,13 @@ export function createEditorScreen({
         optionRow.appendChild(labelRow);
         const optionDescription = makeAutoPackResultDescription(viewedOption);
         if (optionDescription) optionRow.appendChild(optionDescription);
+        const reviewReason = describeAutoPackReviewReason(viewedOption.assessment);
+        if (reviewReason) {
+          const review = makeAutoPackResultPill('tp3d-autopack-results__relaxed-note',
+            `Needs review · ${reviewReason}`, 'fa-solid fa-triangle-exclamation');
+          review.dataset.role = 'autopack-review-note';
+          optionRow.appendChild(review);
+        }
         // Max Capacity relaxes handling preferences: say so in visible text,
         // never only in a tooltip or accessible label.
         if (viewedOption.id === 'max-capacity') {
@@ -4815,7 +4889,8 @@ export function createEditorScreen({
         apply.type = 'button';
         apply.dataset.focusKey = 'results-apply';
         apply.className = `btn btn-sm btn-primary tp3d-autopack-results__apply-btn${isViewedCurrent ? ' tp3d-autopack-results__apply-btn--applied' : ''}`;
-        apply.disabled = isViewedCurrent || stale;
+        apply.disabled = isViewedCurrent || stale ||
+          (viewedOption.id !== 'max-capacity' && viewedOption.assessment && !isNormalAutoPackCandidateAcceptable(viewedOption));
         if (isViewedCurrent) {
           apply.innerHTML = '<i class="fa-solid fa-check"></i> Applied';
         } else {
@@ -4833,6 +4908,15 @@ export function createEditorScreen({
         }
         apply.addEventListener('click', () => applyAutoPackResultOption(viewedOption.id, results.runId));
         actions.appendChild(apply);
+        if (results.previewEnded === true && !isViewedCurrent) {
+          const preview = document.createElement('button');
+          preview.type = 'button';
+          preview.className = 'btn btn-sm';
+          preview.textContent = 'Preview this option';
+          preview.disabled = stale;
+          preview.addEventListener('click', () => patchAutoPackResultsState({ previewEnded: false }, results.runId));
+          actions.appendChild(preview);
+        }
         optionRow.appendChild(actions);
         body.appendChild(optionRow);
       }
@@ -4840,7 +4924,8 @@ export function createEditorScreen({
       // Dedupe transparency, single-option mode only: that is the case where a
       // user genuinely wonders where the other options went. With alternates
       // visible the carousel already tells the story, so the note stays quiet.
-      if (!hasAlternates && Number(results.attemptedSolutionCount) > options.length) {
+      if (!hasAlternates && (results.deduplicatedSolutionCount !== undefined
+        ? results.deduplicatedSolutionCount > 0 : Number(results.attemptedSolutionCount) > options.length)) {
         const dedupeNote = document.createElement('div');
         dedupeNote.className = 'tp3d-autopack-results__dedupe-note';
         dedupeNote.textContent = 'Other strategies produced the same layout.';
@@ -5063,6 +5148,7 @@ export function createEditorScreen({
         },
       });
       InteractionManager.init(SceneManager.getRenderer().domElement);
+      InteractionManager.setBeforeSceneMutation?.(endAutoPackResultsPreview);
       wireDropToViewport(SceneManager.getRenderer().domElement);
       initialized = true;
     }
@@ -5757,6 +5843,7 @@ export function createEditorScreen({
         addBtn.disabled = true;
         let added = false;
         try {
+          endAutoPackResultsPreview();
           // Reset the draft BEFORE the mutating call: addInstancesToStaging's
           // Pack update triggers a synchronous StateStore-driven re-render
           // that rebuilds this card from caseQtyDrafts immediately, so the
@@ -5803,6 +5890,7 @@ export function createEditorScreen({
           if (qty === null) return;
           let removed = false;
           try {
+            endAutoPackResultsPreview();
             // Same ordering as Add: a successful removal re-renders this card
             // synchronously from caseQtyDrafts, so the reset must already be in place.
             setCaseQtyDraft(c.id, CASE_QTY_MIN);
@@ -6012,11 +6100,12 @@ export function createEditorScreen({
 
     // True (and toasts) when a mutating editor operation owns the editor, so direct
     // case-list mutations (add / duplicate / delete) from the panels are blocked.
-    function editorMutationBlocked() {
+    function editorMutationBlocked({ endPreview = false } = {}) {
       if (OperationLifecycle && OperationLifecycle.isBusy()) {
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
         return true;
       }
+      if (endPreview) endAutoPackResultsPreview();
       return false;
     }
 
@@ -6029,6 +6118,7 @@ export function createEditorScreen({
     function deleteInstancesWithFeedback(packId, instanceIds) {
       const ids = Array.isArray(instanceIds) ? instanceIds : [];
       if (!ids.length) return null;
+      if (editorMutationBlocked({ endPreview: true })) return null;
       const result = PackLibrary.removeInstances(packId, ids);
       setSelectionFromDeleteResult(result);
       if (!result) {
@@ -6040,7 +6130,7 @@ export function createEditorScreen({
     }
 
     function addCaseToPack(caseId, positionInches) {
-      if (editorMutationBlocked()) return;
+      if (editorMutationBlocked({ endPreview: true })) return;
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
       if (!pack) {
@@ -6429,7 +6519,7 @@ export function createEditorScreen({
         iconClass: showSelection ? 'fa-solid fa-eye' : 'fa-solid fa-eye-slash',
         disabled: !instances.length,
         onClick: () => {
-          if (editorMutationBlocked()) return;
+          if (editorMutationBlocked({ endPreview: true })) return;
           const targetIds = new Set(instances.map(inst => inst.id));
           const livePack = PackLibrary.getById(pack.id);
           if (!livePack) return;
@@ -6442,7 +6532,7 @@ export function createEditorScreen({
     }
 
     function duplicateSelection(pack, selectedIds) {
-      if (editorMutationBlocked()) return;
+      if (editorMutationBlocked({ endPreview: true })) return;
       const ids = Array.isArray(selectedIds) ? selectedIds : [];
       if (!pack || !ids.length) return;
       const source = ids
@@ -7634,7 +7724,7 @@ export function createEditorScreen({
       savePos.type = 'button';
       savePos.innerHTML = '<i class="fa-solid fa-location-crosshairs"></i> Apply position';
       savePos.addEventListener('click', () => {
-        if (editorMutationBlocked()) return;
+        if (editorMutationBlocked({ endPreview: true })) return;
         const nextPos = {
           x: Utils.unitToInches(Number(fX.input.value) || 0, lengthUnit),
           y: Utils.unitToInches(Number(fY.input.value) || 0, lengthUnit),

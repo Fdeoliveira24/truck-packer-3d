@@ -2182,16 +2182,16 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.deepEqual(await changesSince(browseStart), ['autoPackResults'],
       'F: browsing writes only transient Results state (no Pack, history, autosave or lastEdited write)');
 
-    // Minimize, close and reopen restore and resume the preview from the same viewed option.
+    // Visibility never changes the viewed candidate or committed source.
     await page.locator('[data-focus-key="results-toggle"]').click();
-    assert.equal((await sceneState('max-capacity')).showsPack, true, 'minimized Results restore the committed scene');
+    assert.equal((await sceneState('max-capacity')).showsOption, true, 'minimized Results retain the viewed candidate');
     await page.locator('[data-focus-key="results-toggle"]').click();
     assert.equal((await sceneState('max-capacity')).showsOption, true, 'expanding resumes the viewed option');
     await page.locator('[data-focus-key="results-close"]').click();
     const closedScene = await sceneState('max-capacity');
-    assert.equal(closedScene.showsPack, true, 'closed Results restore the committed scene');
-    assert.equal(closedScene.summary, balancedScene.summary, 'closed Results restore canonical Load Summary');
-    assert.equal(closedScene.gauge, balancedScene.gauge, 'closed Results restore canonical Space Utilization');
+    assert.equal(closedScene.showsOption && closedScene.transient && !closedScene.showsPack, true, 'closed Results retain an uncommitted candidate');
+    assert.equal(closedScene.summary, maxScene.summary, 'closing keeps the candidate Load Summary');
+    assert.equal(closedScene.gauge, maxScene.gauge, 'closing keeps the candidate Space Utilization');
     await page.locator('#btn-autopack-results-reopen').click();
     assert.equal((await view()).counter, 'Option 2 of 3', 'reopening keeps the viewed option');
     assert.equal((await sceneState('max-capacity')).showsOption, true, 'and its live preview');
@@ -2316,26 +2316,21 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.equal(maxAgain.title, 'Max Capacity');
     assert.equal((await sceneState('max-capacity')).showsOption, true);
     assert.equal(await packJson(), floorPack, 'H: viewing Max Capacity commits nothing');
-    // The previewed scene is not the Pack: scene edits are refused, selection still works.
-    const refused = await page.evaluate(async () => {
+    // Selection is view-only. A deliberate manual mutation instead ends the
+    // preview on committed authority (covered by the focused C5A Node test).
+    const selectionOnly = await page.evaluate(async () => {
       const p = window.probe;
       const id = p.PackLibrary.getById(p.StateStore.get('currentPackId')).cases[0].id;
-      p.InteractionManager.setSelection([id]);
       const before = p.casesJson();
-      const toastsBefore = p.toasts.length;
-      p.InteractionManager.rotateSelection('y', Math.PI / 2);
-      p.InteractionManager.setSelectionOrientationConstraint(true);
-      p.InteractionManager.deleteSelection();
+      p.InteractionManager.setSelection([id]);
       await new Promise(resolve => setTimeout(resolve, 0));
-      const result = { unchanged: p.casesJson() === before, selected: p.selection(), toasts: p.toasts.slice(toastsBefore) };
+      const result = { unchanged: p.casesJson() === before, selected: p.selection(), transient: p.CaseScene.isTransientPreview() };
       p.InteractionManager.setSelection([]);
-      return { ...result, stillPreview: p.CaseScene.isTransientPreview() };
+      return result;
     });
-    assert.equal(refused.unchanged, true, 'rotate and delete never commit from a previewed scene');
-    assert.equal(refused.selected.length, 1, 'selection still works during a preview');
-    assert.ok(refused.toasts.some(text => /Previewing an AutoPack option\. Apply it or return to the Applied option to edit cargo\./.test(text)),
-      `the refusal explains itself (${JSON.stringify(refused.toasts)})`);
-    assert.equal(refused.stillPreview, true, 'selecting keeps the preview');
+    assert.equal(selectionOnly.unchanged, true, 'selection never commits previewed poses');
+    assert.equal(selectionOnly.selected.length, 1);
+    assert.equal(selectionOnly.transient, true, 'selection alone keeps the viewed candidate');
     const applyStart = await changeCount();
     await page.locator('[data-focus-key="results-apply"]').click();
     const maxApplied = await view();

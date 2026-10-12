@@ -205,6 +205,11 @@ export function hasStackCapacity(placement, packed) {
 // Legacy CONTACT_EPS permits visible gaps and must not manufacture C2 contact.
 export const MEASUREMENT_EPS = 1e-9;
 
+// Solver envelopes are quantized to 1e-6 inches while C2 keeps exact Case
+// dimensions. Match only bearing planes within that computational allowance;
+// collision, containment, footprint union and stability keep their own checks.
+export const SURFACE_CONTACT_EPS_INCHES = 1e-6;
+
 /** Exact interval union; never close a real gap between intervals. */
 export function measureIntervalUnion(intervals) {
   const merged = [];
@@ -271,7 +276,7 @@ export function measureSupportContacts(aabb, surfaces) {
   const bearingPlane = aabb.min.y;
   const patches = [];
   for (const surface of surfaces) {
-    if (Math.abs(surface.y - bearingPlane) > MEASUREMENT_EPS) continue;
+    if (Math.abs(surface.y - bearingPlane) > SURFACE_CONTACT_EPS_INCHES) continue;
     const patch = { supportId: surface.supportId, y: bearingPlane,
       minX: Math.max(aabb.min.x, surface.minX), maxX: Math.min(aabb.max.x, surface.maxX),
       minZ: Math.max(aabb.min.z, surface.minZ), maxZ: Math.min(aabb.max.z, surface.maxZ) };

@@ -3,6 +3,8 @@
 A professional 3D truck packing visualization tool for planning equipment loads, tours, and
 logistics. Built with Three.js for real-time 3D rendering and interactive packing simulations.
 
+**Cargo Planner 3D supports both manual load planning and automated AutoPack recommendations.** The Editor remains manually authorable while the application separately evaluates physical and handling concerns. You can author, revise, and save loads freely—whether they assess as valid, incomplete, or needing attention—while AutoPack assists with suggestions and planning optimizations.
+
 ![Truck Packer 3D](https://img.shields.io/badge/Three.js-0.185.1-049EF4?logo=three.js&logoColor=white)
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 

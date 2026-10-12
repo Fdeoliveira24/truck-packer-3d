@@ -4,6 +4,82 @@
 
 This document defines the permanent engineering contract for Truck Packer 3D AutoPack, editor placement, packing geometry, support validation, and load-plan mutation behavior. It must be read before changing AutoPack, Wheel Wells, Front Overhang, stacking, support, manual placement, delete/revalidation, AutoPack/Unpack, or editor selection behavior.
 
+---
+
+## EDITOR AUTHORITY AND AUTOMATION BOUNDARY
+
+**Core Principle:** Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant/recommendation, not an override.
+
+### Manual Editor Authority
+
+- The 3D Editor is manually authoritative. The user owns the arrangement.
+- Manual interactions must support: staged → move within staging, staged → manually place in truck, packed → manually reposition, packed → move back to staging, rotate/turn/tip through supported geometry, rearrange stacks, manually improve or replace an AutoPack layout, continue editing VALID, INCOMPLETE or INVALID Packs.
+- AutoPack state, Results state, stale selection, orientation-planning metadata or assessment must not silently make ordinary cargo immovable.
+- No separate "Manual Mode" is required. **The Editor itself is manually authoritative.**
+
+### Hard Physical Geometry (Always Enforced)
+
+Manual placement still respects hard physical impossibilities:
+
+- truck/container boundaries (containment);
+- collision with other packed cargo;
+- Wheel Well solid bodies;
+- Front Overhang blocked volume;
+- physically unsupported/floating final placements.
+
+### Handling and Planning Rules (Generally Warn, Not Block)
+
+Handling, planning, and assessment rules should generally WARN or ASSESS rather than prevent ordinary manual authoring. Examples include:
+
+- no-top-load preference;
+- heavy-on-bottom preference;
+- stack preferences/counts;
+- handling preferences;
+- grouping;
+- loading priority;
+- future load/unload sequence;
+- AutoPack orientation planning metadata.
+
+### Assessment Does Not Own Editing
+
+Assessment answers "What do we know about this load?" — not "Is the user allowed to edit this load?"
+
+- VALID, INCOMPLETE and INVALID Packs may all exist as saved manually-authored work.
+- No silent repair on open/save/reload.
+- Check Load Plan remains read-only.
+- AutoPack must not automatically commit a known INVALID automated candidate.
+
+### Interaction vs Final Placement
+
+- Dragging/exploration and final commit validation are distinct.
+- The user may visually drag through invalid areas while positioning.
+- Final placement may reject: outside-truck position, overlap, Wheel Well penetration, Front Overhang blocked-body penetration, unsupported floating placement.
+
+### AutoPack as Assistant
+
+AutoPack must obey its selected automated policy:
+
+- Normal AutoPack remains conservative.
+- Max Capacity uses its explicitly approved relaxed handling profile but still obeys hard physical geometry.
+- A human may manually create a different arrangement afterward.
+- AutoPack Results are suggestions inside the Editor, not authority over it.
+
+### Workflow Continuity
+
+- Missing Case definitions must not block the entire truck/configuration workflow.
+- Unresolved staged cargo: preserve instance, preserve available source data, do not fabricate dimensions, exclude from physical truck reconciliation, do not block Truck Change.
+- Unresolved packed cargo with untrustworthy geometry during Truck Change: preserve instance, fall back to unresolved staging, remove from loaded-truck reconciliation, do not fabricate geometry, tell the user what happened, allow Truck Change to continue.
+- **Missing definition alone is not a reason to disable the workflow.** Fallback to staging must never mean deletion. Only fundamental Pack/truck structural corruption may justify blocking.
+
+### Future Load/Unload Sequence
+
+- Future stop/sequence metadata must guide automation and communicate conflicts.
+- It must NOT make manual cargo physically immovable.
+- Sequence can constrain AutoPack more strongly than manual editing.
+- Example: a manually moved Stop 3 Case behind Stop 7 cargo may produce "Unload sequence conflict" but the user may still leave it, move it, change its stop, or ask AutoPack to repack.
+
+---
+
 ## Coordinate System
 
 - X = trailer/space length.
@@ -118,14 +194,30 @@ Rules:
 
 ## AutoPack and Unpack Product Contract
 
+**AUTOPACK:**
+
 - AutoPack is currently a whole-pack re-solve of eligible non-hidden cases.
-- AutoPack may move existing packed and staged cases because it generates a new load plan.
+- AutoPack may generate new packed poses for cargo selected into the truck.
 - Hidden packed cases may be retained as physical blockers/support context depending on current engine behavior.
 - AutoPack must not leave stale selected IDs after solve.
-- Unpack is currently whole-pack staging.
+
+**Staging Preservation (C5B contract):**
+
+- Source-staged → packed: use the candidate packed pose.
+- Source-staged → staged: preserve its existing manual staging position and rotation whenever that staging pose remains trustworthy/safe.
+- Packed → staged because of a candidate: allocate deterministic staging without unnecessarily relocating existing staged cargo.
+- Hidden/excluded staged cargo: preserve it and reserve trustworthy staging footprints.
+- Missing/unresolved geometry: preserve the instance; do not fabricate geometry merely to reposition it.
+- AutoPack must not use ordinary candidate generation as permission to reorganize cargo that remains staged.
+
+**UNPACK:**
+
+- Unpack is the explicit user-requested staging organizer.
+- Unpack remains whole-pack staging.
 - Unpack should not be confused with partial unpack unless a future feature explicitly adds selected unpack behavior.
 - Organized Unpack is implemented: Unpack stages Cases grouped by case type (`groupInstancesForUnpackStaging`) in contiguous bands laid out by `buildOrganizedUnpackStagingCases` (`src/screens/editor-screen.js`). It remains whole-pack staging and must not change solver behavior.
-- If AutoPack/Unpack movement surprises users, fix the UX/copy/selection contract before changing solver behavior.
+- Unpack may deliberately reorganize eligible cargo into deterministic staging.
+- Do not confuse Unpack's staging ownership with AutoPack's staging behavior.
 
 ## AutoPack Results Authority
 
@@ -136,14 +228,40 @@ Rules:
 - Apply must respect `OperationLifecycle` busy ownership.
 - Apply commits through canonical Pack mutation authority.
 - Browsing must not mutate history, `lastEdited`, export authority, or saved Pack state.
-- The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
+- The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview.
+- Results panel visibility is presentation-only.
+- Closing Results must not change the currently viewed transient candidate scene.
+- Minimizing Results must not change the currently viewed transient candidate scene.
+- Reopening/restoring Results returns to the same viewed candidate.
+- The candidate remains transient/uncommitted.
+- Source Pack, history, lastEdited, export authority and persistence remain unchanged.
+- A preview ends only through a deliberate lifecycle transition such as: selecting another Result, returning explicitly to the committed/Applied option, Apply, source-changing edit that invalidates Results, new AutoPack, Unpack, Truck Change, or navigation/context departure.
 
 ## Manual Vertical Placement Authority
 
 - `PackLibrary.findManualVerticalPlacement` is the authority for vertical Case moves.
 - Keyboard, gizmo, drag-release, and Inspector vertical placement paths must route through that authority.
 - Staged Cases are not eligible for vertical moves.
-- Existing support, Wheel Wells, Front Overhang, and handling-rule validation remain authoritative.
+
+**Hard final-placement authority remains:**
+- containment
+- collision
+- Wheel Well solid bodies
+- Front Overhang blocked geometry
+- real physical support / no floating cargo
+
+**Handling/planning/assessment rules generally:**
+- warn
+- assess
+- record the resulting state
+
+They must not become manual mutation locks unless the authoritative contract explicitly classifies the rule as hard physical geometry.
+
+**Distinction preserved:**
+- Case physical orientation permission
+- AutoPack instance planning/orientation metadata
+
+AutoPack planning metadata must not permanently lock manual editing.
 
 ## Known Deferred / Non-Features
 
@@ -176,9 +294,7 @@ During implementation:
 Before commit:
 
 - run targeted tests for the changed area;
-- run `npm test` for code changes unless explicitly docs-only;
 - run `npm run -s typecheck`;
-- run `npm run lint`;
 - run `git diff --check`;
 - run `git diff --cached --check` when staged;
 - browser verification is required for editor/3D behavior.

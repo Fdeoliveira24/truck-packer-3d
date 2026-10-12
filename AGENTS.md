@@ -83,7 +83,25 @@ Current source wins over stale memory or Graphify results.
 
 ---
 
-## Pending Truck vs. Committed Truck
+## Editor Authority and AutoPack Assistant Model
+
+**Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant, not an override.**
+
+- The 3D Editor is manually authoritative. The user owns the arrangement.
+- AutoPack is assistant/recommendation. Results are suggestions, not authority over the Editor.
+- Hard physical geometry remains enforced for new manual placement (truck/container boundaries, collision, Wheel Wells, Front Overhang, unsupported placement).
+- Handling, planning, and assessment rules must generally WARN or ASSESS rather than prevent ordinary manual authoring (no-top-load, heavy-on-bottom, stack preferences, handling preferences, grouping, loading priority, future sequence, orientation metadata).
+- Manual VALID, INCOMPLETE, and INVALID layouts may remain saved. No silent repair on open/save/reload.
+- Assessment does not grant/revoke editing permission.
+- Missing Case definitions reduce physical certainty, not workflow availability. Unresolved cargo falls back to staging rather than stopping the workflow.
+- Future load/unload sequence must remain manually overridable. Sequence can constrain AutoPack more strongly than manual editing.
+- Automated solutions may be stricter than manual authoring.
+
+See [docs/engineering/autopack-engine-contract.md — Editor Authority and Automation Boundary](./docs/engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary) for the full contract and [docs/product/TP3D-MASTER-TODO-V6.md — Phase C (C5-0)](./docs/product/TP3D-MASTER-TODO-V6.md#55-phase-c--editor-authority--workflow-continuity-c5-cycle) for execution status.
+
+---
+
+## Workflow Continuity Invariants
 
 - Form state changes update pending state only — do not update the 3D scene until confirmed.
 - The Truck Change preview opens only on explicit **Update truck** click.
@@ -126,12 +144,38 @@ Prefer the owner layer for bugs. Do not broaden scope beyond the owning file(s) 
 
 ## Testing
 
-- Report: files changed, why, risk level, lint/test results, manual checklist.
-- Commands: `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`.
-- Required PR quality gate: `.github/workflows/quality-gate.yml` runs lint, typecheck, the full audit test suite in deterministic CI mode (`npm run test:ci`), build, and `npm audit --omit=dev`, plus `git diff --check` on the PR patch. `npm run quality:ci` is its local mirror — keep the two in sync.
-- Documentation-only changes: skip full test suite locally; GitHub CI is authoritative when it runs.
-- Billing/workspace changes: full checklist — owner 1 workspace, owner multiple, non-owner member, same-tab switch, cross-tab switch, AutoPack gate, PDF gate, Settings Billing, Settings Members (if org scope touched).
-- AutoPack lifecycle changes: verify all mutating paths blocked while busy, camera still usable, Truck Change preview only on explicit click, Cancel restores scene.
+**During implementation:**
+- Run directly affected focused tests only (normally 1–3 focused files or tight patterns)
+- Do NOT run the complete local Node suite
+- Do NOT run the complete local browser suite
+- Do NOT run npm run test:ci:node or npm run test:ci:browser
+- Do NOT run npm run quality:ci as routine local validation
+- Do NOT repeat broad local + CI coverage
+
+**Before push:**
+- Directly affected focused tests
+- `npm run -s typecheck`
+- `git diff --check`
+- Inspect git diff / git diff --stat
+- Lint/build only when the production change warrants them
+
+**GitHub:**
+- The full Quality Gate owns broad regression coverage
+- Run it once per finished reviewable PR/checkpoint
+- If CI fails, diagnose reported failures with focused local reproduction
+- Do not respond to CI failure by blindly running every suite locally
+
+**Browser:**
+- One narrowly defined manual acceptance scenario per checkpoint when relevant
+
+**Documentation-only:**
+- `git diff --check`
+- Diff/status inspection
+- No application test suite required locally
+
+Human QA can veto merge even if CI is green.
+
+**Report:** files changed, why, risk level, focused test results, manual checklist.
 
 ---
 

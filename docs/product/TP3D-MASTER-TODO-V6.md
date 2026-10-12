@@ -1,6 +1,6 @@
 # Truck Packer 3D — Master TODO V6
 
-**Last updated:** 2026-10-03
+**Last updated:** 2026-10-11
 **Status:** Active operational roadmap.
 
 ---
@@ -64,20 +64,22 @@
 
 | Field | Current value |
 |---|---|
-| Task | None active — awaiting explicit user selection |
-| Branch | None active on `main` |
-| Outcome | A prior attempt at Professional 3D Editor Visual Foundation (PR #29 `fix/editor-visual-resource-ownership`, PR #31 `feat/editor-cargo-visual-language`, PR #33 `feat/editor-typography-annotation-foundation`) was rejected and reverted in PR #34 `revert/rejected-editor-visual-experiments` (`6c305fc`). No replacement milestone has been approved. |
-| Blocker state | Unblocked — pending user decision |
-| Scope | To be defined when the user selects the next milestone from Section 5 or elsewhere. Do not infer or start a milestone on this basis alone. |
+| Task | C5-0 — Editor Authority Contract / documentation authority rebaseline |
+| Branch | `docs/editor-authority-c5-rebaseline` (PR #110) |
+| Outcome | Documentation checkpoint establishes the Manual Editor / AutoPack / Assessment authority model. No runtime C5 implementation active. |
+| Blocker state | Unblocked — awaiting merge |
+| Next after merge | C5A — Normal AutoPack Assessment + Results/Apply Authority (requires explicit implementation approval after C5-0 merges) |
+| Scope | See Section 5.5 Phase C Milestones and Execution Notes. C5A implementation still requires explicit user approval / implementation prompt after the documentation checkpoint merges. Do not infer C5A code branch already exists. |
 
 ---
 
 ## 5. Candidate Workstreams (Unapproved)
 
-These are unapproved candidate workstreams, not an approved queue. **No next milestone has been
-selected.** List order reflects prior discussion priority only — it does not imply approval or
-sequencing. A user must explicitly select and approve a workstream before any branch opens; update
-Section 4 only when that happens.
+These are unapproved candidate workstreams **outside the locked Phase C sequence**, not an approved queue.
+
+**The approved Phase C sequence is governed by Section 5.5.** Nothing in Section 5 becomes active merely because it is listed. List order reflects prior discussion priority only — it does not imply approval or sequencing.
+
+A user must explicitly select and approve a workstream before any branch opens; update Section 4 only when that happens.
 
 1. **Professional 3D Editor Visual Foundation**
    - Cargo box presentation, edges/lines, labels, materials
@@ -133,6 +135,67 @@ Section 4 only when that happens.
     - Code and security review
     - Server/deployment review
     - Production hardening
+
+---
+
+## 5.5. Phase C — Editor Authority & Workflow Continuity (C5 Cycle)
+
+**Status:** Locked product contract; documentation checkpoint (C5-0).
+
+### Phase C Milestones
+
+| Phase | Title | Status | Approved Order | Key Outcomes |
+|---|---|---|---|---|
+| C1 | Canonical Source Semantics | ✅ COMPLETE / MERGED | 1 | Canonical mass, orientation and physical-input primitives |
+| C2 | Shared Measurements + Assessment Core | ✅ COMPLETE / MERGED | 2 | Support geometry, load transfer and shared assessment/eligibility semantics |
+| C3 | Mass + Orientation Runtime Cutover | ✅ COMPLETE / MERGED | 3 | Runtime adoption of canonical mass/orientation semantics |
+| C4 | Assessment + Lifecycle Cutover | ✅ COMPLETE / MERGED | 4 | Read-only assessment and removal of hidden lifecycle repair |
+| C5-0 | Editor Authority Contract | 🔒 LOCKED | — | Documentation checkpoint (this update) |
+| C5A | Normal AutoPack Assessment + Results/Apply Authority | ⏭️ NEXT | 5 | Candidate assessment, Balanced preference, transient Results authority and Apply |
+| C5B | Staging Preservation + Inspector Coherence | 📋 PENDING | 6 | Preserve manual staging and make preview metrics use one authority |
+| C5M | Manual Editor Authority Hardening | 📋 PENDING | 7 | Manual drag/move/rotate/stage/unstage and warning-vs-hard-rule boundary |
+| C5T | Truck Change Workflow Continuity | 📋 PENDING | 8 | Unresolved cargo preservation/fallback-to-staging without workflow blockage |
+| C5C | Max Capacity Policy | 📋 PENDING | 9 | Preserve relaxed Max handling with profile-aware assessment and Apply |
+| C5D | Packing Quality + Wheel-Well Search | 📋 PENDING | 10 | Avoidable-gap recovery, leftover-fit search and Wheel-Well seam competition |
+| C5E | Bounded AutoPack Presentation | 📋 PENDING | 11 | Adaptive bounded loading presentation without persistence authority |
+| C6 | Reporting + Integrated Closure | 📋 PENDING | 12 | Reporting, integrated validation and Phase C closure |
+
+### C5-0 Product Contract (Locked)
+
+See [AutoPack Engine Contract — Editor Authority and Automation Boundary](../engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary) for the full contract.
+
+**Core Principle:** Cargo Planner 3D is a manual load-planning workspace first. AutoPack is an assistant, not an override.
+
+- Manual Editor is user-authoritative.
+- AutoPack is assistant/recommendation.
+- Hard physical geometry remains enforced for new manual placement.
+- Handling/planning rules generally assess/warn rather than block manual editing.
+- Manual VALID/INCOMPLETE/INVALID layouts may remain saved.
+- Assessment does not grant/revoke editing permission.
+- No silent repair.
+- Missing definitions degrade physical certainty, not workflow availability.
+- Untrusted unresolved cargo falls back to staging during geometry changes.
+- Future load/unload sequence remains manually overridable.
+- Automated solutions may be stricter than manual authoring.
+
+### C5M Manual Editor Findings Registry
+
+| ID | Finding | Status | Notes |
+|---|---|---|---|
+| M-01 | Manual drop may commit collision/occupied-space problems | RETAIN | Focused C5M verification required |
+| M-02 | Staged cargo sometimes refuses an apparently valid truck-floor drop | RETAIN | User-observed; latest controlled QA did not reliably reproduce; do not rewrite drag architecture speculatively |
+| M-03 | Manual action sometimes receives unrelated vertical-move messages | RETAIN | User-observed; latest controlled QA did not reproduce; investigate when reproducible |
+| M-04 | AutoPack planning state must never become a permanent manual movement restriction | 🔒 LOCKED | Product invariant |
+| M-05 | Handling rules should evaluate manual layouts, not generally block authoring | 🔒 LOCKED | Product decision |
+| M-06 | Impossible physical geometry remains blocked | 🔒 LOCKED | Product decision |
+| M-07 | Manual INVALID/INCOMPLETE layouts remain editable and saveable | 🔒 LOCKED | Product decision |
+
+### Execution Notes
+
+- Keep C5A narrow — do not fold C5M or C5T implementation into C5A.
+- C5M owns manual drag/move/rotate/stage/unstage authority and handling rules warning behavior.
+- C5T owns unresolved cargo preservation and fallback behavior.
+- Do NOT implement C5A/C5B/C5M/C5T/C5C/C5D/C5E without explicit approval.
 
 ---
 
@@ -263,6 +326,7 @@ Vault:     Truck-Packer-3D Obsidian Markdown vault (path in .ai/memory.json)
 | ⏭️ | Next milestone (explicitly approved by the user) |
 | 📋 | Candidate workstream (unapproved, not yet started) |
 | 🔮 | Deferred — not yet approved |
+| 🔒 | Locked product contract / decision |
 
 ---
 

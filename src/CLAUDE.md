@@ -35,8 +35,18 @@ Default scope for operation lifecycle work:
 2. **Locate:** UI entrypoint → state update → side effects → render.
 3. **Fix:** Smallest safe change at the root cause, not symptoms.
 4. **Guard:** Add epoch/version checks for stale async; debounce for noisy events; single-flight for duplicate calls.
-5. **Validate:** `npm test`, `npm run lint`, `git diff --check`, manual checklist.
+5. **Validate:** Focused tests (directly affected files only), `npm run -s typecheck`, `git diff --check`, manual checklist.
 6. **Summarize:** Files changed, why, risk level, follow-ups.
+
+---
+
+## Editor Authority Implementation Guard
+
+Before editing AutoPack, manual placement, Truck Change, handling rules, assessment, or drag/move/rotate behavior, read [docs/engineering/autopack-engine-contract.md — Editor Authority and Automation Boundary](../docs/engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary).
+
+**Key principle:** Do not convert assessment/handling rules into manual mutation locks unless the current authoritative contract explicitly classifies the condition as hard physical geometry (truck/container boundaries, collision, Wheel Wells, Front Overhang, unsupported placement).
+
+This guard prevents accidentally restricting user authorship when only a warning or assessment should be produced.
 
 ---
 

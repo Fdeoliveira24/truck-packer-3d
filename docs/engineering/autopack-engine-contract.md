@@ -212,14 +212,40 @@ Rules:
 - Apply must respect `OperationLifecycle` busy ownership.
 - Apply commits through canonical Pack mutation authority.
 - Browsing must not mutate history, `lastEdited`, export authority, or saved Pack state.
-- The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview. Returning to the Applied option or closing Results restores the committed scene; Apply commits the selected option through canonical Pack authority.
+- The transient live 3D Results preview is implemented and remains presentation-only until Apply: browsing an option may transiently preview that solution in the 3D scene without mutating the committed Pack, history, export authority, `lastEdited`, or saved preview.
+- Results panel visibility is presentation-only.
+- Closing Results must not change the currently viewed transient candidate scene.
+- Minimizing Results must not change the currently viewed transient candidate scene.
+- Reopening/restoring Results returns to the same viewed candidate.
+- The candidate remains transient/uncommitted.
+- Source Pack, history, lastEdited, export authority and persistence remain unchanged.
+- A preview ends only through a deliberate lifecycle transition such as: selecting another Result, returning explicitly to the committed/Applied option, Apply, source-changing edit that invalidates Results, new AutoPack, Unpack, Truck Change, or navigation/context departure.
 
 ## Manual Vertical Placement Authority
 
 - `PackLibrary.findManualVerticalPlacement` is the authority for vertical Case moves.
 - Keyboard, gizmo, drag-release, and Inspector vertical placement paths must route through that authority.
 - Staged Cases are not eligible for vertical moves.
-- Existing support, Wheel Wells, Front Overhang, and handling-rule validation remain authoritative.
+
+**Hard final-placement authority remains:**
+- containment
+- collision
+- Wheel Well solid bodies
+- Front Overhang blocked geometry
+- real physical support / no floating cargo
+
+**Handling/planning/assessment rules generally:**
+- warn
+- assess
+- record the resulting state
+
+They must not become manual mutation locks unless the authoritative contract explicitly classifies the rule as hard physical geometry.
+
+**Distinction preserved:**
+- Case physical orientation permission
+- AutoPack instance planning/orientation metadata
+
+AutoPack planning metadata must not permanently lock manual editing.
 
 ## Known Deferred / Non-Features
 
@@ -252,9 +278,7 @@ During implementation:
 Before commit:
 
 - run targeted tests for the changed area;
-- run `npm test` for code changes unless explicitly docs-only;
 - run `npm run -s typecheck`;
-- run `npm run lint`;
 - run `git diff --check`;
 - run `git diff --cached --check` when staged;
 - browser verification is required for editor/3D behavior.

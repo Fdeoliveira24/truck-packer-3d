@@ -144,12 +144,38 @@ Prefer the owner layer for bugs. Do not broaden scope beyond the owning file(s) 
 
 ## Testing
 
-- Report: files changed, why, risk level, lint/test results, manual checklist.
-- Commands: `npm test`, `npm run lint`, `npm run -s typecheck`, `git diff --check`.
-- Required PR quality gate: `.github/workflows/quality-gate.yml` runs lint, typecheck, the full audit test suite in deterministic CI mode (`npm run test:ci`), build, and `npm audit --omit=dev`, plus `git diff --check` on the PR patch. `npm run quality:ci` is its local mirror — keep the two in sync.
-- Documentation-only changes: skip full test suite locally; GitHub CI is authoritative when it runs.
-- Billing/workspace changes: full checklist — owner 1 workspace, owner multiple, non-owner member, same-tab switch, cross-tab switch, AutoPack gate, PDF gate, Settings Billing, Settings Members (if org scope touched).
-- AutoPack lifecycle changes: verify all mutating paths blocked while busy, camera still usable, Truck Change preview only on explicit click, Cancel restores scene.
+**During implementation:**
+- Run directly affected focused tests only (normally 1–3 focused files or tight patterns)
+- Do NOT run the complete local Node suite
+- Do NOT run the complete local browser suite
+- Do NOT run npm run test:ci:node or npm run test:ci:browser
+- Do NOT run npm run quality:ci as routine local validation
+- Do NOT repeat broad local + CI coverage
+
+**Before push:**
+- Directly affected focused tests
+- `npm run -s typecheck`
+- `git diff --check`
+- Inspect git diff / git diff --stat
+- Lint/build only when the production change warrants them
+
+**GitHub:**
+- The full Quality Gate owns broad regression coverage
+- Run it once per finished reviewable PR/checkpoint
+- If CI fails, diagnose reported failures with focused local reproduction
+- Do not respond to CI failure by blindly running every suite locally
+
+**Browser:**
+- One narrowly defined manual acceptance scenario per checkpoint when relevant
+
+**Documentation-only:**
+- `git diff --check`
+- Diff/status inspection
+- No application test suite required locally
+
+Human QA can veto merge even if CI is green.
+
+**Report:** files changed, why, risk level, focused test results, manual checklist.
 
 ---
 

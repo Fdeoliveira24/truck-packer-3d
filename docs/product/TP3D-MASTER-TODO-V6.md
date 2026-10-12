@@ -1,6 +1,6 @@
 # Truck Packer 3D — Master TODO V6
 
-**Last updated:** 2026-10-03
+**Last updated:** 2026-10-11
 **Status:** Active operational roadmap.
 
 ---
@@ -64,20 +64,22 @@
 
 | Field | Current value |
 |---|---|
-| Task | None active — awaiting explicit user selection |
-| Branch | None active on `main` |
-| Outcome | A prior attempt at Professional 3D Editor Visual Foundation (PR #29 `fix/editor-visual-resource-ownership`, PR #31 `feat/editor-cargo-visual-language`, PR #33 `feat/editor-typography-annotation-foundation`) was rejected and reverted in PR #34 `revert/rejected-editor-visual-experiments` (`6c305fc`). No replacement milestone has been approved. |
-| Blocker state | Unblocked — pending user decision |
-| Scope | To be defined when the user selects the next milestone from Section 5 or elsewhere. Do not infer or start a milestone on this basis alone. |
+| Task | C5-0 — Editor Authority Contract / documentation authority rebaseline |
+| Branch | `docs/editor-authority-c5-rebaseline` (PR #110) |
+| Outcome | Documentation checkpoint establishes the Manual Editor / AutoPack / Assessment authority model. No runtime C5 implementation active. |
+| Blocker state | Unblocked — awaiting merge |
+| Next after merge | C5A — Normal AutoPack Assessment + Results/Apply Authority (requires explicit implementation approval after C5-0 merges) |
+| Scope | See Section 5.5 Phase C Milestones and Execution Notes. C5A implementation still requires explicit user approval / implementation prompt after the documentation checkpoint merges. Do not infer C5A code branch already exists. |
 
 ---
 
 ## 5. Candidate Workstreams (Unapproved)
 
-These are unapproved candidate workstreams, not an approved queue. **No next milestone has been
-selected.** List order reflects prior discussion priority only — it does not imply approval or
-sequencing. A user must explicitly select and approve a workstream before any branch opens; update
-Section 4 only when that happens.
+These are unapproved candidate workstreams **outside the locked Phase C sequence**, not an approved queue.
+
+**The approved Phase C sequence is governed by Section 5.5.** Nothing in Section 5 becomes active merely because it is listed. List order reflects prior discussion priority only — it does not imply approval or sequencing.
+
+A user must explicitly select and approve a workstream before any branch opens; update Section 4 only when that happens.
 
 1. **Professional 3D Editor Visual Foundation**
    - Cargo box presentation, edges/lines, labels, materials
@@ -144,19 +146,19 @@ Section 4 only when that happens.
 
 | Phase | Title | Status | Approved Order | Key Outcomes |
 |---|---|---|---|---|
-| C1 | Canonical Source Semantics | ✅ COMPLETE / MERGED | 1 | Unified object naming, authoritative identifiers |
-| C2 | Shared Measurements + Assessment Core | ✅ COMPLETE / MERGED | 2 | Physical measurements, assessment contract |
-| C3 | Mass + Orientation Runtime Cutover | ✅ COMPLETE / MERGED | 3 | Runtime mass/orientation handling |
-| C4 | Assessment + Lifecycle Cutover | ✅ COMPLETE / MERGED | 4 | Assessment integration, lifecycle safety |
+| C1 | Canonical Source Semantics | ✅ COMPLETE / MERGED | 1 | Canonical mass, orientation and physical-input primitives |
+| C2 | Shared Measurements + Assessment Core | ✅ COMPLETE / MERGED | 2 | Support geometry, load transfer and shared assessment/eligibility semantics |
+| C3 | Mass + Orientation Runtime Cutover | ✅ COMPLETE / MERGED | 3 | Runtime adoption of canonical mass/orientation semantics |
+| C4 | Assessment + Lifecycle Cutover | ✅ COMPLETE / MERGED | 4 | Read-only assessment and removal of hidden lifecycle repair |
 | C5-0 | Editor Authority Contract | 🔒 LOCKED | — | Documentation checkpoint (this update) |
-| C5A | Normal AutoPack Assessment + Results/Apply Authority | ⏭️ NEXT | 5 | AutoPack results → manual authority integration |
-| C5B | Staging Preservation + Inspector Coherence | 📋 PENDING | 6 | Staging lifecycle, inspector consistency |
-| C5M | Manual Editor Authority Hardening | 📋 PENDING | 7 | Manual drag/move/rotate authority, M-01/M-02/M-03 fixes |
-| C5T | Truck Change Workflow Continuity | 📋 PENDING | 8 | Unresolved cargo fallback, no silent deletion |
-| C5C | Max Capacity Policy | 📋 PENDING | 9 | Relaxed handling profile enforcement |
-| C5D | Packing Quality + Wheel-Well Search | 📋 PENDING | 10 | Quality scoring, wheel-well geometry |
-| C5E | Bounded AutoPack Presentation | 📋 PENDING | 11 | AutoPack UI/UX polish, final snap |
-| C6 | Reporting + Integrated Closure | 📋 PENDING | 12 | Report generation, phase closure |
+| C5A | Normal AutoPack Assessment + Results/Apply Authority | ⏭️ NEXT | 5 | Candidate assessment, Balanced preference, transient Results authority and Apply |
+| C5B | Staging Preservation + Inspector Coherence | 📋 PENDING | 6 | Preserve manual staging and make preview metrics use one authority |
+| C5M | Manual Editor Authority Hardening | 📋 PENDING | 7 | Manual drag/move/rotate/stage/unstage and warning-vs-hard-rule boundary |
+| C5T | Truck Change Workflow Continuity | 📋 PENDING | 8 | Unresolved cargo preservation/fallback-to-staging without workflow blockage |
+| C5C | Max Capacity Policy | 📋 PENDING | 9 | Preserve relaxed Max handling with profile-aware assessment and Apply |
+| C5D | Packing Quality + Wheel-Well Search | 📋 PENDING | 10 | Avoidable-gap recovery, leftover-fit search and Wheel-Well seam competition |
+| C5E | Bounded AutoPack Presentation | 📋 PENDING | 11 | Adaptive bounded loading presentation without persistence authority |
+| C6 | Reporting + Integrated Closure | 📋 PENDING | 12 | Reporting, integrated validation and Phase C closure |
 
 ### C5-0 Product Contract (Locked)
 

@@ -74,7 +74,7 @@ Short version:
 1. Identify symptom and owning module.
 2. Read only the owner file and relevant tests — not the full app.
 3. Make the smallest safe fix.
-4. Run `npm test` / `npm run lint` / `git diff --check`.
+4. Run focused tests (directly affected files only), `npm run -s typecheck`, and `git diff --check`.
 5. Summarize: files changed, why, risk, manual checklist.
 
 For large files (`src/app.js`, `src/screens/editor-screen.js`, `src/ui/overlays/settings-overlay.js`): read targeted line ranges only.

@@ -35,7 +35,7 @@ Default scope for operation lifecycle work:
 2. **Locate:** UI entrypoint → state update → side effects → render.
 3. **Fix:** Smallest safe change at the root cause, not symptoms.
 4. **Guard:** Add epoch/version checks for stale async; debounce for noisy events; single-flight for duplicate calls.
-5. **Validate:** `npm test`, `npm run lint`, `git diff --check`, manual checklist.
+5. **Validate:** Focused tests (directly affected files only), `npm run -s typecheck`, `git diff --check`, manual checklist.
 6. **Summarize:** Files changed, why, risk level, follow-ups.
 
 ---

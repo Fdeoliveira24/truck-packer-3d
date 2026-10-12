@@ -326,6 +326,7 @@ Vault:     Truck-Packer-3D Obsidian Markdown vault (path in .ai/memory.json)
 | ⏭️ | Next milestone (explicitly approved by the user) |
 | 📋 | Candidate workstream (unapproved, not yet started) |
 | 🔮 | Deferred — not yet approved |
+| 🔒 | Locked product contract / decision |
 
 ---
 

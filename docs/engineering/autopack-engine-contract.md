@@ -194,14 +194,30 @@ Rules:
 
 ## AutoPack and Unpack Product Contract
 
+**AUTOPACK:**
+
 - AutoPack is currently a whole-pack re-solve of eligible non-hidden cases.
-- AutoPack may move existing packed and staged cases because it generates a new load plan.
+- AutoPack may generate new packed poses for cargo selected into the truck.
 - Hidden packed cases may be retained as physical blockers/support context depending on current engine behavior.
 - AutoPack must not leave stale selected IDs after solve.
-- Unpack is currently whole-pack staging.
+
+**Staging Preservation (C5B contract):**
+
+- Source-staged → packed: use the candidate packed pose.
+- Source-staged → staged: preserve its existing manual staging position and rotation whenever that staging pose remains trustworthy/safe.
+- Packed → staged because of a candidate: allocate deterministic staging without unnecessarily relocating existing staged cargo.
+- Hidden/excluded staged cargo: preserve it and reserve trustworthy staging footprints.
+- Missing/unresolved geometry: preserve the instance; do not fabricate geometry merely to reposition it.
+- AutoPack must not use ordinary candidate generation as permission to reorganize cargo that remains staged.
+
+**UNPACK:**
+
+- Unpack is the explicit user-requested staging organizer.
+- Unpack remains whole-pack staging.
 - Unpack should not be confused with partial unpack unless a future feature explicitly adds selected unpack behavior.
 - Organized Unpack is implemented: Unpack stages Cases grouped by case type (`groupInstancesForUnpackStaging`) in contiguous bands laid out by `buildOrganizedUnpackStagingCases` (`src/screens/editor-screen.js`). It remains whole-pack staging and must not change solver behavior.
-- If AutoPack/Unpack movement surprises users, fix the UX/copy/selection contract before changing solver behavior.
+- Unpack may deliberately reorganize eligible cargo into deterministic staging.
+- Do not confuse Unpack's staging ownership with AutoPack's staging behavior.
 
 ## AutoPack Results Authority
 

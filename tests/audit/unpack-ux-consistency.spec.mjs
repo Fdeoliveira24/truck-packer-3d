@@ -258,6 +258,15 @@ window.probe = {
   mark() { log.length = 0; this.toasts.length = 0; },
   results: () => StateStore.get('autoPackResults'),
   resultsJson: () => JSON.stringify(StateStore.get('autoPackResults')),
+  resultsAuthority() {
+    const results = this.results();
+    if (!results) return null;
+    // Only scene/card lifecycle state may change on context departure. Retain
+    // every authority field, including full candidates, assessments and scope.
+    const { previewEnded, minimized, closed, viewIndex, position, expanded, ...authority } = results;
+    return structuredClone(authority);
+  },
+  transient: () => CaseScene.isTransientPreview(),
   panelCount: () => document.querySelectorAll('[data-role="autopack-results-panel"]').length,
   casesJson: () => JSON.stringify(livePack().cases),
   cases: () => JSON.parse(JSON.stringify(livePack().cases)),
@@ -346,12 +355,33 @@ async function previewQuiet(page) {
   await page.waitForFunction(() => window.probe.previewQuiet(), null, { timeout: 10000 });
 }
 
-// AutoPack the fixture with the real engine and wait for published Results.
-async function autoPack(page) {
+// AutoPack publishes an INCOMPLETE candidate without adopting it. Tests of
+// Unpack on packed cargo explicitly Apply before establishing their baseline.
+async function autoPack(page, { apply = false } = {}) {
+  const source = await page.evaluate(() => window.probe.casesJson());
   await page.click('#btn-autopack');
   await page.waitForFunction(() => (window.probe.results()?.options || []).length > 0 && window.probe.op() === 'idle',
     null, { timeout: 60000 });
   await settle(page);
+  const candidate = await page.evaluate(() => {
+    const p = window.probe;
+    const r = p.results();
+    return { preferred: r.preferredId, selected: r.selectedId, adopted: r.adoptedOptionIds,
+      primary: r.options.find(option => option.id === r.preferredId).assessment.primary,
+      cases: p.casesJson(), transient: p.transient() };
+  });
+  assert.equal(candidate.preferred, 'default');
+  assert.equal(candidate.primary, 'INCOMPLETE');
+  assert.equal(candidate.selected, null);
+  assert.deepEqual(candidate.adopted, []);
+  assert.equal(candidate.cases, source);
+  assert.equal(candidate.transient, true);
+  if (apply) {
+    await page.getByRole('button', { name: 'Apply this option', exact: true }).click();
+    await settle(page);
+    assert.ok(await page.evaluate(() => window.probe.counts().packed > 0), 'explicit Apply creates packed cargo');
+    assert.equal(await page.evaluate(() => window.probe.transient()), false);
+  }
 }
 
 function stagedAabb(inst) {
@@ -421,7 +451,7 @@ test('P0-UNPACK-UX successful Unpack clears Results in its one commit render and
     const { page, errors } = await openEditor(browser);
     const probe = fn => page.evaluate(fn);
 
-    await autoPack(page);
+    await autoPack(page, { apply: true });
     const before = await probe(() => ({
       counts: window.probe.counts(),
       results: window.probe.results(),
@@ -573,21 +603,21 @@ test('P0-UNPACK-UX a rejected or failed Unpack keeps the Pack and its Results in
   try {
     const { page, errors } = await openEditor(browser);
     const probe = fn => page.evaluate(fn);
-    await autoPack(page);
-    const baseline = await probe(() => ({ results: window.probe.resultsJson(), cases: window.probe.casesJson() }));
-    assert.ok(JSON.parse(baseline.results).options.length > 0);
+    await autoPack(page, { apply: true });
+    const baseline = await probe(() => ({ results: window.probe.resultsAuthority(), cases: window.probe.casesJson() }));
+    assert.ok(baseline.results.options.length > 0);
 
     const expectIntact = async label => {
       await page.waitForFunction(() => window.probe.op() === 'idle');
       const state = await probe(() => ({
-        results: window.probe.resultsJson(),
+        results: window.probe.resultsAuthority(),
         cases: window.probe.casesJson(),
         panel: window.probe.panelCount(),
         renders: window.probe.log.filter(e => e.type === 'render').length,
         notifies: window.probe.log.filter(e => e.type === 'notify' && e.keys !== 'selectedInstanceIds').map(e => e.keys),
         toasts: window.probe.toasts.slice(),
       }));
-      assert.equal(state.results, baseline.results, `${label}: Results unchanged`);
+      assert.deepEqual(state.results, baseline.results, `${label}: complete Results authority unchanged`);
       assert.equal(state.cases, baseline.cases, `${label}: Pack unchanged, no partial staging`);
       return state;
     };
@@ -605,7 +635,7 @@ test('P0-UNPACK-UX a rejected or failed Unpack keeps the Pack and its Results in
       renders: window.probe.log.filter(e => e.type === 'render').length,
       notifies: window.probe.log.filter(e => e.type === 'notify').length,
       toasts: window.probe.toasts.slice(),
-      results: window.probe.resultsJson(),
+      results: window.probe.resultsAuthority(),
       cases: window.probe.casesJson(),
       panel: window.probe.panelCount(),
     }));
@@ -613,7 +643,7 @@ test('P0-UNPACK-UX a rejected or failed Unpack keeps the Pack and its Results in
     assert.equal(rejected.renders, 0, 'rejected Unpack renders nothing');
     assert.equal(rejected.notifies, 0, 'rejected Unpack writes no state');
     assert.ok(rejected.toasts.some(text => text.includes('Another operation is in progress')));
-    assert.equal(rejected.results, baseline.results, 'rejected: Results unchanged');
+    assert.deepEqual(rejected.results, baseline.results, 'rejected: Results authority unchanged');
     assert.equal(rejected.cases, baseline.cases, 'rejected: Pack unchanged');
     assert.equal(rejected.panel, 1, 'rejected: Results panel still shown');
     await probe(() => window.probe.OperationLifecycle.finishOperation(window.probe.heldToken));
@@ -668,12 +698,12 @@ test('P0-UNPACK-UX a rejected or failed Unpack keeps the Pack and its Results in
     await page.waitForFunction(() => window.probe.log.some(e => e.type === 'op' && e.kind === 'unpacking') &&
       window.probe.op() === 'idle');
     const unbuilt = await probe(() => ({
-      results: window.probe.resultsJson(),
+      results: window.probe.resultsAuthority(),
       counts: window.probe.counts(),
       panel: window.probe.panelCount(),
       toasts: window.probe.toasts.slice(),
     }));
-    assert.equal(unbuilt.results, baseline.results, 'no staged move: Results unchanged');
+    assert.deepEqual(unbuilt.results, baseline.results, 'no staged move: Results authority unchanged');
     assert.equal(unbuilt.panel, 1, 'no staged move: Results panel still shown');
     assert.ok(unbuilt.toasts.some(text => text.includes('Moved 0 cases to staging.')));
     t.diagnostic(`layout failure: packed ${unbuilt.counts.packed}, staged ${unbuilt.counts.staged}`);
@@ -691,7 +721,12 @@ test('P0-UNPACK-UX Unpack keeps Results that describe a different Pack', { timeo
     const { page, errors } = await openEditor(browser);
     const probe = fn => page.evaluate(fn);
     await autoPack(page);
-    const results = await probe(() => window.probe.resultsJson());
+    const before = await probe(() => ({
+      results: window.probe.resultsAuthority(),
+      cases: JSON.stringify(window.probe.CorePackLibrary.getById(window.probe.packId).cases),
+      transient: window.probe.transient(),
+    }));
+    assert.equal(before.transient, true, 'Pack A starts with an uncommitted candidate scene');
     // Open the other Pack, give it cargo, and Unpack it.
     await probe(() => {
       const p = window.probe;
@@ -708,8 +743,12 @@ test('P0-UNPACK-UX Unpack keeps Results that describe a different Pack', { timeo
     await page.waitForFunction(() => window.probe.log.some(e => e.type === 'op' && e.kind === 'unpacking') &&
       window.probe.op() === 'idle');
     assert.equal(await probe(() => window.probe.counts().staged), 1, 'the other Pack was unpacked');
-    assert.equal(await probe(() => window.probe.resultsJson()), results,
+    assert.deepEqual(await probe(() => window.probe.resultsAuthority()), before.results,
       'Results that describe another Pack are not the solution this Unpack discarded');
+    assert.equal(await probe(() => JSON.stringify(window.probe.CorePackLibrary.getById(window.probe.packId).cases)), before.cases,
+      'Pack B Unpack never mutates Pack A source');
+    assert.equal(await probe(() => window.probe.transient()), false, 'Pack A transient scene is not resurrected over Pack B');
+    assert.deepEqual(await probe(() => window.probe.sceneMismatches()), [], 'the scene shows committed Pack B');
     await settle(page);
     assert.deepEqual(errors, []);
   } finally {

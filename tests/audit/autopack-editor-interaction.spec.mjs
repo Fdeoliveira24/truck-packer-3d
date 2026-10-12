@@ -5,7 +5,7 @@ import { chromium } from 'playwright';
 
 // P0-SM-OF-10B: the non-modal AutoPack status keeps the Editor interactive, so
 // an interaction during the small-load animation must never re-sync the meshes
-// AutoPack is animating to their already-committed poses.
+// AutoPack is animating to their presented candidate poses.
 //
 // This drives the REAL Editor runtime in Chromium: index.html markup, main.css,
 // three r185 + OrbitControls, SceneManager, CaseScene, InteractionManager,
@@ -18,7 +18,7 @@ import { chromium } from 'playwright';
 const ORIGIN = 'http://localhost:5599';
 const CARGO_COUNT = 60;
 // AutoPack lands at most four instances per 276 ms batch. Between two animation
-// frames the count of instances still short of their committed pose can drop
+// frames the count of instances still short of their presented pose can drop
 // by at most one batch more than the elapsed batch periods allow, however long
 // a frame stalls; a scene re-sync lands every remaining instance at once.
 const BATCH_SIZE = 4;
@@ -55,7 +55,7 @@ import { createOperationLifecycle } from '/src/core/operation-lifecycle.js';
 import { TrailerPresets } from '/src/data/trailer-presets.js';
 import { createSceneRuntime } from '/src/editor/scene-runtime.js';
 import { createTrailerGeometry } from '/src/editor/trailer-geometry.js';
-import { createCaseScene, createInteractionManager, createEditorScreen } from '/src/screens/editor-screen.js';
+import { createCaseScene, createInteractionManager, createEditorScreen, orderAutoPackResultOptions } from '/src/screens/editor-screen.js';
 import { createTruckChangeController } from '/src/ui/truck-change-controller.js';
 import * as CoreUtils from '/src/core/utils/index.js';
 import * as BrowserUtils from '/src/core/browser.js';
@@ -185,20 +185,35 @@ window.probe = {
   selection: () => (StateStore.get('selectedInstanceIds') || []).slice(),
   casesJson: () => JSON.stringify(livePack().cases),
   poses: () => JSON.stringify(livePack().cases.map(inst => CaseScene.getObject(inst.id).position.toArray())),
-  // Meshes not yet at their committed pose: AutoPack's remaining visual work.
-  unplaced() {
-    return livePack().cases.filter(inst => {
+  committedCases: () => structuredClone(livePack().cases),
+  viewedCandidate() {
+    const results = StateStore.get('autoPackResults');
+    if (!results || results.packId !== livePack().id) return null;
+    if (this.op() === 'autopacking') return results.options.find(option => option.id === results.preferredId);
+    const options = orderAutoPackResultOptions(results.options);
+    return options[Number.isInteger(results.viewIndex) ? results.viewIndex : 0] || null;
+  },
+  transient: () => CaseScene.isTransientPreview(),
+  remainingAt(cases) {
+    return cases.filter(inst => {
       const obj = CaseScene.getObject(inst.id);
       return obj && obj.position.distanceTo(SceneManager.vecInchesToWorld(inst.transform.position)) > 0.05;
     }).length;
+  },
+  committedRemaining() { return this.remainingAt(livePack().cases); },
+  // Presentation progress follows the viewed candidate while the scene is
+  // transient. Committed Pack poses are a separate authority and oracle.
+  presentationRemaining() {
+    const candidate = this.transient() ? this.viewedCandidate() : null;
+    return this.remainingAt(candidate ? candidate.nextCases : livePack().cases);
   },
   // Per-frame landing rate while watching: animation lands batch by batch, so
   // each sample may drop by at most the batches that fit in its elapsed time
   // (plus one in flight); a scene re-sync lands everything at once.
   watch() {
-    const state = { last: this.unplaced(), lastAt: performance.now(), maxDrop: 0, maxExcess: -Infinity, running: true };
+    const state = { last: this.presentationRemaining(), lastAt: performance.now(), maxDrop: 0, maxExcess: -Infinity, running: true };
     const sample = () => {
-      const now = this.unplaced();
+      const now = this.presentationRemaining();
       const at = performance.now();
       const drop = state.last - now;
       const allowed = ${BATCH_SIZE} * (Math.ceil((at - state.lastAt) / ${BATCH_MS}) + 1);
@@ -315,6 +330,29 @@ async function openEditor(browser) {
 }
 
 const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+
+// Gesture/Unpack tests require a packed committed baseline, so obtain it via
+// the same explicit Apply boundary the user must use for INCOMPLETE Results.
+async function applyPreferredNormalResult(page) {
+  const before = await page.evaluate(() => {
+    const p = window.probe;
+    const r = p.StateStore.get('autoPackResults');
+    return { cases: p.casesJson(), selected: r.selectedId, adopted: r.adoptedOptionIds,
+      assessment: r.options.find(option => option.id === r.preferredId).assessment.primary,
+      minimized: r.minimized, transient: p.transient() };
+  });
+  assert.equal(before.assessment, 'INCOMPLETE');
+  assert.equal(before.selected, null);
+  assert.deepEqual(before.adopted, []);
+  assert.equal(before.minimized, false, 'unadopted Results start reviewable');
+  assert.equal(before.transient, true);
+  const apply = page.locator('[data-focus-key="results-apply"]');
+  assert.equal(await apply.isEnabled(), true, 'the preferred INCOMPLETE candidate is eligible');
+  await apply.click();
+  assert.notEqual(await page.evaluate(() => window.probe.casesJson()), before.cases);
+  assert.equal(await page.evaluate(() => window.probe.committedRemaining()), 0);
+  assert.equal(await page.evaluate(() => window.probe.transient()), false);
+}
 
 test('C3 browser Case mass uses blank unknown and rejects zero or negative input', { timeout: 120000 }, async () => {
   const browser = await launch();
@@ -1942,13 +1980,14 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
       return { op: window.probe.op(), summary: clean(summary), gaugeState: gauge?.dataset.state ?? null, gauge: clean(gauge),
         headlineIndent, gaugeFont: font(headline), summaryFont: font(summary?.querySelector('[data-role="load-summary-updating"]')) };
     });
+    const source = await page.evaluate(() => window.probe.casesJson());
     await page.locator('#btn-autopack').click();
     await page.waitForFunction(count => document.querySelector('.autopack-loading-message')?.textContent ===
-      'Placing cargo in the truck...' && window.probe.unplaced() < count && window.probe.unplaced() > 0, CARGO_COUNT);
+      'Placing cargo in the truck...' && window.probe.presentationRemaining() < count && window.probe.presentationRemaining() > 0, CARGO_COUNT);
     const loading = await totals();
     assert.equal(loading.op, 'autopacking', 'sampled while AutoPack still owns the Editor');
     assert.equal(loading.summary, 'Load Summary Updating…',
-      'Load Summary stays present but holds the already-committed totals until the cargo lands');
+      'Load Summary stays present and coherent while the operation owns the Editor');
     assert.equal(loading.gaugeState, 'updating', 'Space Utilization reads Updating while cargo is visibly loading');
     assert.equal(loading.headlineIndent, 0, 'Updating… is left-aligned with the Space Utilization title');
     assert.ok(loading.summaryFont, 'Load Summary shows its Updating… line');
@@ -1957,16 +1996,28 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
     assert.doesNotMatch(loading.gauge, /%|ft³|previous/, 'no interim, fake progressive or previous utilization');
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
-    const committed = await page.evaluate(() => {
+    const candidate = await page.evaluate(() => {
       const p = window.probe;
-      const stats = p.PackLibrary.computeStats(p.PackLibrary.getById(p.StateStore.get('currentPackId')));
-      return { packed: stats.packedCases, staged: stats.stagedCases, percent: stats.volumePercent.toFixed(1) };
+      const pack = p.PackLibrary.getById(p.StateStore.get('currentPackId'));
+      const r = p.StateStore.get('autoPackResults');
+      const option = p.viewedCandidate();
+      const stats = p.PackLibrary.computeStats({ ...pack, cases: option.nextCases });
+      return { packed: stats.packedCases, staged: stats.stagedCases, percent: stats.volumePercent.toFixed(1),
+        preferred: r.preferredId, selected: r.selectedId, adopted: r.adoptedOptionIds,
+        assessment: option.assessment.primary, cases: p.casesJson(), transient: p.transient(), remaining: p.presentationRemaining() };
     });
+    assert.equal(candidate.preferred, 'default');
+    assert.equal(candidate.assessment, 'INCOMPLETE');
+    assert.equal(candidate.selected, null);
+    assert.deepEqual(candidate.adopted, []);
+    assert.equal(candidate.cases, source, 'the committed Pack stays unchanged');
+    assert.equal(candidate.transient, true);
+    assert.equal(candidate.remaining, 0, 'presentation reaches the preferred candidate');
     const done = await totals();
-    assert.match(done.summary, new RegExp(`^Load Summary In truck ?${committed.packed} Staged ?${committed.staged} Total weight ?\\d`),
-      'the canonical committed Load Summary returns when the operation ends');
+    assert.match(done.summary, new RegExp(`^Load Summary In truck ?${candidate.packed} Staged ?${candidate.staged} Total weight ?\\d`),
+      'the existing C5A preview Load Summary describes the viewed candidate');
     assert.equal(done.gaugeState, 'valid');
-    assert.ok(done.gauge.includes(`${committed.percent}% Occupied`), `the canonical utilization returns (${done.gauge})`);
+    assert.ok(done.gauge.includes(`${candidate.percent}% Occupied`), `the viewed candidate utilization returns (${done.gauge})`);
     await page.setViewportSize({ width: 320, height: 568 });
     const resultsFit = await page.locator('[data-role="autopack-results-panel"]').evaluate(panel => {
       const rect = panel.getBoundingClientRect();
@@ -2069,6 +2120,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
+    const source = await page.evaluate(() => window.probe.casesJson());
     await page.locator('#btn-autopack').click();
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
@@ -2083,7 +2135,20 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     });
     const changesSince = start => page.evaluate(from => window.probe.changeLog.slice(from), start);
     const changeCount = () => page.evaluate(() => window.probe.changeLog.length);
-    await page.locator('[data-focus-key="results-toggle"]').click();
+    const initial = await page.evaluate(() => {
+      const p = window.probe;
+      const r = p.StateStore.get('autoPackResults');
+      return { preferred: r.preferredId, selected: r.selectedId, adopted: r.adoptedOptionIds,
+        primary: r.options.find(option => option.id === r.preferredId).assessment.primary,
+        minimized: r.minimized, cases: p.casesJson(), transient: p.transient() };
+    });
+    assert.equal(initial.preferred, 'default');
+    assert.equal(initial.selected, null);
+    assert.deepEqual(initial.adopted, []);
+    assert.equal(initial.primary, 'INCOMPLETE');
+    assert.equal(initial.minimized, false);
+    assert.equal(initial.cases, source);
+    assert.equal(initial.transient, true);
     const view = () => page.evaluate(() => {
       const panel = document.querySelector('[data-role="autopack-results-panel"]');
       const pick = selector => panel.querySelector(selector);
@@ -2140,23 +2205,23 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
         `${label}: Space Utilization matches the layout in the scene (${scene.gauge})`);
     };
     const packJson = () => page.evaluate(() => window.probe.casesJson());
-    const balancedPack = await packJson();
+    let balancedPack = await packJson();
 
     // A + C: the default starting view (First option) opens on Balanced, Option 1.
     const balanced = await view();
     assert.equal(balanced.counter, 'Option 1 of 3', 'A: Balanced is Option 1');
     assert.equal(balanced.title, 'Balanced', 'C: the fresh default view shows Balanced, with no hard-coded "(recommended)"');
-    assert.equal(balanced.recommended, 'Recommended');
-    assert.equal(balanced.applied, 'Applied');
+    assert.equal(balanced.recommended, null, 'INCOMPLETE is not Recommended');
+    assert.equal(balanced.applied, null, 'INCOMPLETE is not auto-adopted');
+    assert.match(balanced.text, /Needs review/);
     assert.equal(balanced.status, 'Complete');
     assert.match(balanced.statusClass, /tp3d-autopack-results__status--complete/);
-    assert.deepEqual(balanced.appliedStyle, { bg: 'rgb(255, 159, 28)', color: 'rgb(255, 255, 255)' },
-      'Applied keeps the brand orange/white treatment');
     assert.equal(balanced.statusStyle.color, 'rgb(4, 120, 87)', 'Complete reads in the success colour');
     assert.doesNotMatch(balanced.text, /\bFloor\b|\bStacked\b|profile/, 'no Floor/Stacked or profile-count chips');
     const balancedScene = await sceneState('default');
-    assert.equal(balancedScene.showsPack, true, 'viewing the Applied option shows the committed Pack');
-    assert.equal(balancedScene.transient, false);
+    assert.equal(balancedScene.showsOption, true, 'the scene shows the preferred candidate');
+    assert.equal(balancedScene.showsPack, false, 'the source Pack has not adopted that candidate');
+    assert.equal(balancedScene.transient, true);
     showsInspector(balancedScene, 'Balanced');
 
     // B + D + E + F: the right arrow shows the Max Capacity card AND its 3D load.
@@ -2175,7 +2240,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.doesNotMatch(max.text, /Max Capacity profile|Floor \d|Stacked/i, 'no Floor/Stacked or profile-count chips');
     const maxScene = await sceneState('max-capacity');
     assert.equal(maxScene.showsOption, true, 'E: the 3D scene shows the Max Capacity layout');
-    assert.equal(maxScene.showsPack, false, 'E: the scene no longer shows the committed Balanced layout');
+    assert.equal(maxScene.showsPack, false, 'E: the scene differs from the committed source layout');
     assert.equal(maxScene.transient, true, 'E: the scene is marked as a transient preview');
     showsInspector(maxScene, 'Max Capacity preview');
     assert.equal(await packJson(), balancedPack, 'F: Pack.cases is unchanged while browsing');
@@ -2196,18 +2261,31 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.equal((await view()).counter, 'Option 2 of 3', 'reopening keeps the viewed option');
     assert.equal((await sceneState('max-capacity')).showsOption, true, 'and its live preview');
 
-    // G: the left arrow restores Balanced, the committed scene and canonical Inspector values.
+    // G: the left arrow restores the preferred transient Balanced candidate.
     const back = await step('results-prev');
     assert.equal(back.counter, 'Option 1 of 3', 'G: the left arrow returns to Balanced');
-    assert.equal(back.applied, 'Applied');
+    assert.equal(back.applied, null);
+    assert.equal(back.recommended, null);
     const backScene = await sceneState('default');
-    assert.equal(backScene.showsPack, true, 'G: the committed Balanced scene is restored');
-    assert.equal(backScene.transient, false);
-    assert.equal(backScene.summary, balancedScene.summary, 'G: canonical Load Summary returns');
-    assert.equal(backScene.gauge, balancedScene.gauge, 'G: canonical Space Utilization returns');
+    assert.equal(backScene.showsOption, true, 'G: the Balanced candidate is restored');
+    assert.equal(backScene.showsPack, false);
+    assert.equal(backScene.transient, true);
+    assert.equal(backScene.summary, balancedScene.summary, 'G: the preferred candidate Load Summary returns');
+    assert.equal(backScene.gauge, balancedScene.gauge, 'G: the preferred candidate Space Utilization returns');
     assert.equal(await packJson(), balancedPack, 'G: still no Pack change');
     assert.deepEqual([...new Set(await changesSince(browseStart))], ['autoPackResults'],
       'minimize, close, reopen and browsing only ever wrote Results state');
+    assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'AutoPack and browsing created no Undo');
+
+    const balancedApplyStart = await changeCount();
+    await page.locator('[data-focus-key="results-apply"]').click();
+    assert.equal((await changesSince(balancedApplyStart)).filter(keys => keys.split(',').includes('packLibrary')).length, 1,
+      'explicit Apply commits the preferred INCOMPLETE candidate exactly once');
+    assert.equal((await view()).applied, 'Applied');
+    const committedBalancedScene = await sceneState('default');
+    assert.equal(committedBalancedScene.showsPack && committedBalancedScene.showsOption && !committedBalancedScene.transient, true);
+    balancedPack = await packJson();
+    assert.notEqual(balancedPack, source, 'only explicit Apply adopted Balanced');
 
     await step('results-next');
     const floor = await step('results-next');
@@ -2223,6 +2301,8 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     const floorApplied = await view();
     assert.equal(floorApplied.counter, 'Option 3 of 3', 'an explicit browse stays put after Apply');
     assert.equal(floorApplied.applied, 'Applied', 'Floor first is now Applied');
+    assert.deepEqual(floorApplied.appliedStyle, { bg: 'rgb(255, 159, 28)', color: 'rgb(255, 255, 255)' },
+      'Applied keeps the brand orange/white treatment');
     assert.equal(floorApplied.recommended, null, 'Applied does not make it Recommended');
     const floorScene = await sceneState('floor-first');
     assert.equal(floorScene.showsPack && floorScene.showsOption && !floorScene.transient, true,
@@ -2271,7 +2351,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.equal(maxBetween.counter, 'Option 2 of 3');
     await step('results-prev');
     const recommendedOnly = await view();
-    assert.equal(recommendedOnly.recommended, 'Recommended', 'Balanced stays the run Recommended plan');
+    assert.equal(recommendedOnly.recommended, null, 'explicit Apply does not upgrade the run assessment to Recommended');
     assert.equal(recommendedOnly.applied, null, 'without being Applied');
 
     // Starting view preference over the real render: each simulated NEW run
@@ -2302,8 +2382,8 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
     assert.equal(startApplied.counter, 'Option 3 of 3', 'Applied option opens on the committed Floor first plan');
     assert.equal(startApplied.applied, 'Applied');
     const startRecommended = await newRun('recommended');
-    assert.equal(startRecommended.counter, 'Option 1 of 3', 'Recommended option opens on the run selectedId');
-    assert.equal(startRecommended.recommended, 'Recommended');
+    assert.equal(startRecommended.counter, 'Option 1 of 3', 'Recommended starting view falls back without a selected normal Result');
+    assert.equal(startRecommended.recommended, null, 'Recommended starting view falls back without a VALID auto-adopted result');
     assert.equal(startRecommended.applied, null, 'the Recommended plan is not Applied');
     await setStartView('applied');
     assert.equal((await view()).counter, 'Option 1 of 3', 'a preference change never moves an open run');
@@ -2402,7 +2482,7 @@ test('Results preview ends before Unpack and Truck Change claim the Editor; ever
     await page.locator('#btn-autopack').click();
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 1, null, { timeout: 90000 });
-    await page.locator('[data-focus-key="results-toggle"]').click();
+    await applyPreferredNormalResult(page);
     // Record what the scene shows at the instant an operation claims the Editor,
     // and every StateStore change (to prove restoration writes nothing durable).
     await page.evaluate(() => {
@@ -2692,6 +2772,7 @@ test('Editor fixture cancels a selected cargo-group pointer stroke without a Pac
     await page.locator('#btn-autopack').click();
     await page.waitForFunction(() => window.probe.op() === 'idle' &&
       (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0, null, { timeout: 90000 });
+    await applyPreferredNormalResult(page);
     await page.locator('[data-focus-key="results-close"]').click();
     const cargo = await page.evaluate(() => window.probe.cargoPoint());
     assert.ok(cargo, 'a visible cargo mesh is available for the disposable gesture');
@@ -2743,29 +2824,31 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
     const { page, errors } = await openEditor(browser);
 
     const probe = fn => page.evaluate(fn);
-    const unplaced = () => probe(() => window.probe.unplaced());
+    const presentationRemaining = () => probe(() => window.probe.presentationRemaining());
     // Interact, then prove the interaction caused no scene re-sync and no snap.
     const noSnap = async (label, interact) => {
       const before = await probe(() => {
         window.probe.watch();
-        return { unplaced: window.probe.unplaced(), syncs: window.probe.syncCalls };
+        return { presentationRemaining: window.probe.presentationRemaining(), syncs: window.probe.syncCalls };
       });
-      assert.ok(before.unplaced >= MIN_REMAINING, `${label}: enough animation remains to observe a snap (${before.unplaced})`);
+      assert.ok(before.presentationRemaining >= MIN_REMAINING, `${label}: enough animation remains to observe a snap (${before.presentationRemaining})`);
       await interact();
       const after = await probe(() => ({
-        ...window.probe.unwatch(), unplaced: window.probe.unplaced(), syncs: window.probe.syncCalls, op: window.probe.op(),
+        ...window.probe.unwatch(), presentationRemaining: window.probe.presentationRemaining(), syncs: window.probe.syncCalls, op: window.probe.op(),
       }));
       assert.ok(after.maxExcess <= 0,
-        `${label}: cargo lands batch by batch, no mass snap (largest one-frame drop ${after.maxDrop}; ${before.unplaced} -> ${after.unplaced})`);
+        `${label}: cargo lands batch by batch, no mass snap (largest one-frame drop ${after.maxDrop}; ${before.presentationRemaining} -> ${after.presentationRemaining})`);
       assert.equal(after.syncs, before.syncs, `${label}: no CaseScene.sync while AutoPack animates`);
       assert.equal(after.op, 'autopacking', `${label}: AutoPack still owns the operation`);
       return after;
     };
 
+    const source = await probe(() => window.probe.casesJson());
     await page.click('#btn-autopack');
     await page.waitForFunction(count => document.querySelector('.autopack-loading-message')?.textContent ===
-      'Placing cargo in the truck...' && window.probe.unplaced() < count, CARGO_COUNT);
+      'Placing cargo in the truck...' && window.probe.presentationRemaining() < count, CARGO_COUNT);
     const committed = await probe(() => window.probe.casesJson());
+    assert.equal(committed, source, 'INCOMPLETE presentation begins without a Pack commit');
 
     const empty = await probe(() => window.probe.pointFor(null));
     assert.ok(empty, 'an empty canvas point outside the status card exists');
@@ -2808,11 +2891,12 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
       'selected highlight updates without a pose re-sync');
 
     // AutoPack keeps animating on its own schedule, then completes normally.
-    const progress = [await unplaced()];
+    const progress = [await presentationRemaining()];
     await page.waitForFunction(() => window.probe.op() === 'idle', null, { timeout: 60000 });
-    progress.push(await unplaced());
+    progress.push(await presentationRemaining());
     assert.ok(progress[0] > 0 && progress[1] === 0, `final layout reached (${progress.join(' -> ')})`);
-    assert.equal(await probe(() => window.probe.casesJson()), committed, 'no Pack mutation besides the AutoPack commit');
+    assert.equal(await probe(() => window.probe.casesJson()), committed, 'interaction and INCOMPLETE presentation never commit the candidate');
+    assert.equal(await probe(() => window.probe.transient()), true, 'the final candidate stays transient');
     assert.equal(await page.locator('[data-tp3d-autopack-loading]').count(), 0, 'status closed by run cleanup');
     assert.ok(await probe(() => (window.probe.StateStore.get('autoPackResults')?.options || []).length > 0), 'Results published');
     assert.deepEqual(await probe(() => window.probe.selection()), [cargo.id], 'selection kept through completion');
@@ -2820,7 +2904,8 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
       .some(button => button.textContent.trim() === 'Duplicate'));
     const toasts = await probe(() => window.probe.toasts.slice());
     assert.deepEqual(toasts.filter(text => PROGRESS_TOAST.test(text)), [], 'the status card is the only running-progress channel');
-    assert.ok(toasts.some(text => /Packed \d+ of \d+ cases/.test(text)), `completion toast remains (${toasts.join(' | ')})`);
+    assert.ok(toasts.some(text => /Needs review\. Review the preferred option before applying\./.test(text)),
+      `INCOMPLETE completion requests review (${toasts.join(' | ')})`);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();
@@ -2836,7 +2921,7 @@ test('P0-SM-OF-10B a selection change outside the Editor never touches the scene
 
     await page.click('#btn-autopack');
     await page.waitForFunction(count => document.querySelector('.autopack-loading-message')?.textContent ===
-      'Placing cargo in the truck...' && window.probe.unplaced() < count, CARGO_COUNT);
+      'Placing cargo in the truck...' && window.probe.presentationRemaining() < count, CARGO_COUNT);
 
     // Leave the Editor mid-animation and change the selection while the in-flight
     // batch wait still owns the operation: the busy path must not run off-screen.
@@ -2887,7 +2972,8 @@ test('P0-SM-OF-10B a selection change outside the Editor never touches the scene
     await page.waitForFunction(() => [...document.querySelectorAll('#editor-right button')]
       .some(button => button.textContent.trim() === 'Duplicate'));
     const back = await page.evaluate(id => ({
-      unplaced: window.probe.unplaced(),
+      committedRemaining: window.probe.committedRemaining(),
+      transient: window.probe.transient(),
       selection: window.probe.selection(),
       emissive: window.probe.emissive(id),
       accent: window.probe.accent(),
@@ -2895,7 +2981,8 @@ test('P0-SM-OF-10B a selection change outside the Editor never touches the scene
       autopackButton: document.getElementById('btn-autopack').textContent.trim(),
     }), target);
     assert.equal(back.synced, true, 're-entry runs the normal Editor render');
-    assert.equal(back.unplaced, 0, 're-entry shows the committed Pack');
+    assert.equal(back.committedRemaining, 0, 're-entry shows the committed Pack');
+    assert.equal(back.transient, false, 'the departed candidate is not resurrected');
     assert.deepEqual(back.selection, [target]);
     assert.equal(back.emissive, back.accent, 're-entry highlights the current selection');
     assert.equal(back.autopackButton, 'AutoPack', 're-entry shows the idle operation state');

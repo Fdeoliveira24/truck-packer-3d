@@ -246,6 +246,8 @@ EditorUI.init();
 KeyboardManager.init();
 
 const log = [];
+let committedWrites = 0;
+window.__TP3D_DIAG__ = { isActive: () => true, autopackEnd: data => log.push({ type: 'autopackEnd', data }) };
 const now = () => performance.now();
 // Every full Editor render with an open Pack calls SceneManager.setTruck exactly
 // once (render() is its only caller on this path), whoever triggered it.
@@ -278,7 +280,10 @@ const createAppSubscriber = new Function('deps', \`
   let prevScreen = StateStore.get('currentScreen');
   return (\${APP_SUBSCRIBER});
 \`);
-StateStore.subscribe(changes => log.push({ type: 'notify', at: now(), keys: Object.keys(changes).sort().join(',') }));
+StateStore.subscribe((changes, _nextState, notification) => {
+  if (changes.packLibrary && notification?.type !== 'pack-preview') committedWrites++;
+  log.push({ type: 'notify', at: now(), keys: Object.keys(changes).sort().join(',') });
+});
 StateStore.subscribe(createAppSubscriber({
   Storage, StateStore, PreferencesManager, SceneManager,
   EditorUI: { ...EditorUI, render: () => { log.push({ type: 'subscriberRender', at: now() }); EditorUI.render(); } },
@@ -309,6 +314,18 @@ window.probe = {
   panelCount: () => document.querySelectorAll('[data-role="autopack-results-panel"]').length,
   casesJson: () => JSON.stringify(livePack().cases),
   cases: () => JSON.parse(JSON.stringify(livePack().cases)),
+  committedWrites: () => committedWrites,
+  autoPackAuthority() {
+    const r = this.results();
+    const preferred = r.options.find(option => option.id === r.preferredId);
+    return { preferred: r.preferredId, selected: r.selectedId, adopted: r.adoptedOptionIds,
+      primary: preferred.assessment.primary, packed: preferred.packedCount,
+      transient: CaseScene.isTransientPreview(), cases: this.casesJson(),
+      candidateMismatches: preferred.nextCases.filter(inst => {
+        const obj = CaseScene.getObject(inst.id);
+        return !obj || obj.position.distanceTo(SceneManager.vecInchesToWorld(inst.transform.position)) > 1e-6;
+      }).map(inst => inst.id) };
+  },
   counts() {
     const list = livePack().cases;
     return {
@@ -1377,21 +1394,41 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       }
     });
 
-    await t.test('PR-B animated AutoPack and Unpack each capture quietly once without preview render', async () => {
+    await t.test('PR-B INCOMPLETE animated AutoPack captures nothing; explicit Apply and Unpack each capture quietly once', async () => {
       await page.evaluate(() => window.probe.reset());
       await openPack(page);
+      await settlePreview(page);
+      const source = await page.evaluate(() => ({ cases: window.probe.casesJson(), writes: window.probe.committedWrites() }));
       await page.evaluate(() => window.probe.mark());
       await page.click('#btn-autopack');
       await page.waitForFunction(() => window.probe.op() === 'idle' && window.probe.results()?.options?.length > 0);
       await settlePreview(page);
       const animated = await counts(page);
       const attempts = await page.evaluate(() => window.probe.log.filter(e => e.type === 'request'));
-      assert.equal(attempts.length, 1);
-      assert.equal(attempts[0].busy, false);
-      assert.equal(animated.readbacks, 1);
-      assert.equal(animated.writes, 1);
+      assert.equal(attempts.length, 0, 'a transient candidate schedules no committed preview capture');
+      assert.equal(animated.readbacks, 0);
+      assert.equal(animated.writes, 0);
       assert.equal(animated.successes, 0);
+      const candidate = await page.evaluate(() => window.probe.autoPackAuthority());
+      assert.equal(candidate.primary, 'INCOMPLETE');
+      assert.equal(candidate.preferred, 'default');
+      assert.equal(candidate.selected, null);
+      assert.deepEqual(candidate.adopted, []);
+      assert.equal(candidate.transient, true);
+      assert.deepEqual(candidate.candidateMismatches, []);
+      assert.equal(candidate.cases, source.cases);
+      assert.equal(await page.evaluate(() => window.probe.committedWrites()), source.writes);
       t.diagnostic('Animated AutoPack: ' + JSON.stringify(animated));
+      await page.evaluate(() => window.probe.mark());
+      await page.getByRole('button', { name: 'Apply this option', exact: true }).click();
+      await settlePreview(page);
+      const applied = await counts(page);
+      assert.equal(await page.evaluate(() => window.probe.committedWrites()), source.writes + 1, 'Apply commits exactly once');
+      assert.equal(applied.requests, 1);
+      assert.equal(applied.readbacks, 1);
+      assert.equal(applied.writes, 1);
+      assert.equal(applied.successes, 0);
+      assert.deepEqual(await page.evaluate(() => window.probe.sceneMismatches()), []);
       await page.evaluate(() => window.probe.mark());
       await page.click('#btn-unpack');
       await settlePreview(page);
@@ -1403,7 +1440,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       assert.equal(await page.evaluate(() => window.probe.results()), null);
       assert.deepEqual(await page.evaluate(() => window.probe.sceneMismatches()), []);
     });
-    await t.test('301-case instant AutoPack keeps one valid preview', async () => {
+    await t.test('301-case instant INCOMPLETE AutoPack stays transient until explicit Apply persists one preview', async () => {
       await page.evaluate(() => {
         const q = window.probe;
         q.reset();
@@ -1411,17 +1448,42 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         const base = seed.packLibrary[0].cases[0];
         seed.packLibrary[0].cases = Array.from({ length: 301 }, (_, i) => ({ ...structuredClone(base), id: 'instant-' + i }));
         q.StateStore.replace(seed);
-        q.PackLibrary.open(q.packId); q.AppShell.navigate('editor'); q.mark();
-        document.getElementById('btn-autopack').click();
+        q.PackLibrary.open(q.packId); q.AppShell.navigate('editor');
       });
+      await settlePreview(page);
+      const source = await page.evaluate(() => ({ cases: window.probe.casesJson(), writes: window.probe.committedWrites() }));
+      await page.evaluate(() => window.probe.mark());
+      await page.click('#btn-autopack');
       await page.waitForFunction(() => window.probe.op() === 'idle' && window.probe.results()?.options?.length > 0);
       await settlePreview(page);
       const instant = await counts(page);
-      assert.equal(instant.readbacks, 1);
-      assert.equal(instant.writes, 1);
-      assert.equal(instant.requests, 1);
+      assert.equal(instant.readbacks, 0);
+      assert.equal(instant.writes, 0);
+      assert.equal(instant.requests, 0);
       assert.equal(instant.successes, 0);
+      const candidate = await page.evaluate(() => ({ ...window.probe.autoPackAuthority(),
+        animation: window.probe.log.find(entry => entry.type === 'autopackEnd').data.animation }));
+      assert.equal(candidate.packed, 301, 'all 301 Cases are packed in the candidate');
+      assert.equal(candidate.animation.strategy, 'instant');
+      assert.equal(candidate.animation.skipped, true);
+      assert.equal(candidate.primary, 'INCOMPLETE');
+      assert.equal(candidate.selected, null);
+      assert.deepEqual(candidate.adopted, []);
+      assert.equal(candidate.transient, true);
+      assert.deepEqual(candidate.candidateMismatches, []);
+      assert.equal(candidate.cases, source.cases);
+      assert.equal(await page.evaluate(() => window.probe.committedWrites()), source.writes);
+      assert.equal(await page.evaluate(() => window.probe.counts().packed), 0, 'instant presentation grants no adoption authority');
+      await page.evaluate(() => window.probe.mark());
+      await page.getByRole('button', { name: 'Apply this option', exact: true }).click();
+      await settlePreview(page);
+      const applied = await counts(page);
+      assert.equal(await page.evaluate(() => window.probe.committedWrites()), source.writes + 1);
+      assert.equal(applied.requests, 1);
+      assert.equal(applied.readbacks, 1);
+      assert.equal(applied.writes, 1);
       assert.equal(await page.evaluate(() => window.probe.counts().packed), 301);
+      assert.deepEqual(await page.evaluate(() => window.probe.sceneMismatches()), []);
     });
 
     await t.test('PR-B updatePreview ignores non-object patches without changing preview metadata', async () => {
@@ -2322,17 +2384,35 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       await page.evaluate(() => window.probe.reset());
       await openPack(page, A);
       await settleExport(page);
+      const snapshot = () => page.evaluate(() => {
+        const q = window.probe;
+        return { shot: q.screenshotUrl(), pdf: q.pdfImages(), cases: q.casesJson(), truck: q.SceneManager.getTruckBoundsWorld().max.toArray() };
+      });
+      const source = await snapshot();
+      const sourceWrites = await page.evaluate(() => window.probe.committedWrites());
       await page.click('#btn-autopack');
       await page.waitForFunction(() => window.probe.op() === 'autopacking');
       expectRejected(await page.evaluate(() => window.probe.attemptExports()), BUSY, 'AutoPack animation');
       await page.waitForFunction(() => window.probe.op() === 'idle' && window.probe.results()?.options?.length > 1);
       await settleExport(page);
-      const snapshot = () => page.evaluate(() => {
-        const q = window.probe;
-        return { shot: q.screenshotUrl(), pdf: q.pdfImages(), cases: q.casesJson(), truck: q.SceneManager.getTruckBoundsWorld().max.toArray() };
-      });
+      const candidate = await page.evaluate(() => window.probe.autoPackAuthority());
+      assert.equal(candidate.primary, 'INCOMPLETE');
+      assert.equal(candidate.selected, null);
+      assert.deepEqual(candidate.adopted, []);
+      assert.equal(candidate.transient, true);
+      assert.deepEqual(candidate.candidateMismatches, []);
+      assert.equal(candidate.cases, source.cases, 'animation does not adopt the preferred candidate');
+      assert.deepEqual(await snapshot(), source, 'Screenshot and PDF export committed source while an INCOMPLETE candidate is viewed');
+      assert.equal(await page.evaluate(() => window.probe.committedWrites()), sourceWrites, 'export and presentation created no Pack write');
+      assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false, 'export restored committed scene authority');
+      assert.equal(await page.getByRole('button', { name: 'Apply this option' }).count(), 1,
+        'ending presentation does not falsely mark the unadopted Result Applied');
+      await page.getByRole('button', { name: 'Apply this option', exact: true }).click();
+      await settleExport(page);
+      assert.equal(await page.evaluate(() => window.probe.committedWrites()), sourceWrites + 1, 'explicit preferred Apply commits once');
       const a = await snapshot();
-      assert.ok(a.shot && a.pdf, 'fixture: committed AutoPack layout exports');
+      assert.ok(a.shot && a.pdf, 'fixture: explicitly applied normal layout exports');
+      assert.notEqual(a.cases, source.cases);
 
       await page.getByRole('combobox', { name: /Trailer preset/ }).click();
       await page.getByRole('option', { name: '53 ft Dry Van (US)', exact: true }).click();
@@ -2363,8 +2443,11 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       await settleExport(page);
       const apply = page.getByRole('button', { name: 'Apply this option' });
       assert.equal(await apply.isEnabled(), true, 'fixture: the browsed option is applicable');
+      const writesBeforeApply = await page.evaluate(() => window.probe.committedWrites());
       await apply.click();
       await settleExport(page);
+      assert.equal(await page.evaluate(() => window.probe.committedWrites()), writesBeforeApply + 1,
+        'applying the browsed candidate changes committed/export authority exactly once');
       const b = await snapshot();
       assert.notEqual(b.cases, a.cases, 'fixture: B is a different committed layout');
       assert.notEqual(b.shot, a.shot);

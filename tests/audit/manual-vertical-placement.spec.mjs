@@ -1530,8 +1530,10 @@ test('MANUAL-VERTICAL gizmo drag reuses the Alt-drag math and the validated rele
   assert.ok(start >= 0 && end > start, 'gizmo drag functions must exist before onDblClick');
   const block = src.slice(start, end);
 
-  assert.match(block, /if \(operationsBusy\(\)\) return false;/,
-    'gizmo drags must respect the operation lifecycle lock');
+  assert.match(block, /function beginGizmoDrag\(\) \{\s*if \(OperationLifecycle && OperationLifecycle\.isBusy\(\)\) return false;/,
+    'busy gizmo attempts must stop before hit-testing or ending preview');
+  assert.match(block, /if \(prepareSceneMutation\(\)\) return false;[\s\S]*gizmoDragging = true;/,
+    'gizmo drags must refuse busy state and restore committed scene authority before starting');
   assert.match(block, /controls\.enabled = false;/,
     'gizmo drags must disable OrbitControls for the stroke');
   assert.match(block, /updateDrag\(\{ altKey: true \}\);/,

@@ -1583,8 +1583,28 @@ test('AUTO-PACK-A1-R6 live AutoPack routes through the logistics solver from the
     'A1-R6 must route runtime AutoPack through the packing-core solution runner');
   assert.match(engineSrc, /const packingSolution = runAdaptiveAutoPack\(\{/,
     'runtime AutoPack must call the adaptive core-engine path for live placement');
-  assert.match(engineSrc, /const solverResult = packingSolution \? packingSolution\.selectedSolution : null;/,
-    'runtime AutoPack must apply the selected core solution to the scene');
+  const optionStart = engineSrc.indexOf('function buildAutoPackResultOption(');
+  const resultsStart = engineSrc.indexOf('function buildAutoPackResultsState(');
+  assert.ok(optionStart >= 0 && resultsStart > optionStart, 'runtime Results materializers must exist');
+  const optionBlock = engineSrc.slice(optionStart, resultsStart);
+  const resultsBlock = engineSrc.slice(resultsStart, engineSrc.indexOf('\n  function cancelAllTweens', resultsStart));
+  const packBlock = engineSrc.slice(engineSrc.indexOf('async function pack()'));
+  assert.match(optionBlock, /const nextCases = buildAutoPackNextCases\(\s*packData\.cases \|\| \[\],\s*solution\.placements,\s*solution\.rotations,\s*solution\.orientedDims,\s*stagingMap,\s*excludedIds/,
+    'each Result must materialize the complete Pack membership');
+  assert.match(optionBlock, /const optionPack = \{ \.\.\.packData, cases: nextCases \};[\s\S]*assessNormalAutoPackCandidate\(optionPack, definitions\)/,
+    'normal Results must assess the complete materialized candidate against Case authority');
+  assert.match(resultsBlock, /\.map\(\(solution, index\) => buildAutoPackResultOption\(solution, index, packData, stagingMap, movableIds, excludedIds\)\)/,
+    'Results must materialize the solver portfolio before selecting a preference');
+  assert.match(resultsBlock, /const preferred = selectPreferredNormalAutoPackOption\(options\);\s*const selectedId = preferred\?\.assessment\.primary === 'VALID' \? preferred\.id : null;/,
+    'normal preference must resolve from assessed Results and only VALID preference is adopted');
+  assert.match(packBlock, /const results = buildAutoPackResultsState\([\s\S]*const preferred = results\?\.options\.find\(option => option\.id === results\.preferredId\);/,
+    'runtime must resolve the preferred normal candidate from Results');
+  assert.match(packBlock, /const solverResult = packingSolution\.solutions\.find\(solution => solution\.id === preferred\.id\);/,
+    'presentation must use the solver solution matching the assessed preferred Result');
+  assert.match(packBlock, /const adopted = results\.selectedId === preferred\.id;[\s\S]*const placements = solverResult\.placements;[\s\S]*const nextCases = cloneForAutoPackResults\(preferred\.nextCases\);/,
+    'the assessed preferred candidate must supply presentation poses and adoption identity');
+  assert.match(packBlock, /if \(adopted\) \{[\s\S]*PackLibrary\.update\(packId, \{ cases: nextCases \}\);[\s\S]*\} else \{[\s\S]*CaseScene\.sync\?\.\(\{ \.\.\.packData, cases: nextCases \}, \{ transientPreview: true \}\);/,
+    'the preferred candidate must drive canonical adoption or transient presentation');
   assert.match(solutionSrc, /export function runPackingStrategies\(input, strategyIds = \['default'\], solve = solveAutoPack\)/,
     'packing-core must own strategy execution and keep solveAutoPack injectable');
   assert.match(solutionSrc, /export function runAdaptiveAutoPack\(input, solve = solveAutoPack\)/,
@@ -3362,8 +3382,11 @@ test('AUTO-PACK-A1-ANIM-1 AutoPack diagnostics report solver and animation timin
   // them without an initializer is runtime-equivalent.
   assert.match(src, /let runStartedAt;[\s\S]*let solverMs;[\s\S]*let animationMs;[\s\S]*const animationMetrics = \{ animated: 0, batches: 0, fallbackCount: 0 \};[\s\S]*runStartedAt = nowMs\(\);/,
     'AutoPack must initialize timing and animation metrics for each run');
-  assert.match(src, /const solverStartedAt = nowMs\(\);[\s\S]*const packingSolution = runAdaptiveAutoPack\(\{[\s\S]*const solverResult = packingSolution \? packingSolution\.selectedSolution : null;[\s\S]*solverMs = nowMs\(\) - solverStartedAt;/,
+  assert.match(src, /const solverStartedAt = nowMs\(\);[\s\S]*const packingSolution = runAdaptiveAutoPack\(\{[\s\S]*solverMs = nowMs\(\) - solverStartedAt;/,
     'AutoPack must measure synchronous adaptive solver time');
+  // solverMs measures the core runner; Results assessment and preference follow it.
+  assert.match(src, /solverMs = nowMs\(\) - solverStartedAt;[\s\S]*const results = buildAutoPackResultsState\([\s\S]*const preferred = results\?\.options\.find\([\s\S]*const solverResult = packingSolution\.solutions\.find\(solution => solution\.id === preferred\.id\);/,
+    'timed solving must feed assessed Results preference before animation');
   assert.match(src, /const animationStartedAt = nowMs\(\);[\s\S]*animatePlacements\([\s\S]*animationMetrics[\s\S]*animationMs = nowMs\(\) - animationStartedAt;/,
     'AutoPack must measure animation time');
   assert.match(endBlock, /timings: \{[\s\S]*solverMs: Math\.round\(solverMs\),[\s\S]*animationMs: Math\.round\(animationMs\),[\s\S]*totalMs: Math\.round\(nowMs\(\) - runStartedAt\),[\s\S]*\}/,
@@ -3886,13 +3909,45 @@ test('OPERATION-LIFECYCLE-AMEND InteractionManager receives the lifecycle and gu
     'OperationLifecycle must be created before InteractionManager',
   );
 
-  // Each mutating InteractionManager action checks the lock.
-  const guarded = ['function rotateSelection(', 'function nudgeSelection(', 'function deleteSelection(', 'function startDrag('];
+  const boundaryStart = editorSrc.indexOf('function scenePreviewOnly()');
+  const boundaryEnd = editorSrc.indexOf('function showOperationsBusyToast()', boundaryStart);
+  assert.ok(boundaryStart >= 0 && boundaryEnd > boundaryStart, 'scene mutation authority boundary must exist');
+  const state = { busy: false, preview: false, clearPreview: true };
+  const calls = { busy: 0, previewEnd: 0, packWrites: 0, historyWrites: 0 };
+  const prepare = runInNewContext(`${editorSrc.slice(boundaryStart, boundaryEnd)}
+    beforeSceneMutation = endPreview;
+    prepareSceneMutation;`, {
+    OperationLifecycle: { isBusy() { calls.busy++; return state.busy; } },
+    CaseScene: { isTransientPreview: () => state.preview },
+    endPreview() { calls.previewEnd++; if (state.clearPreview) state.preview = false; },
+    PackLibrary: { update() { calls.packWrites++; } },
+    StateStore: { set() { calls.historyWrites++; } },
+  });
+  for (const scenario of [
+    { label: 'busy preview', busy: true, preview: true, clearPreview: true, blocked: true, ends: 0 },
+    { label: 'busy committed scene', busy: true, preview: false, clearPreview: true, blocked: true, ends: 0 },
+    { label: 'idle preview', busy: false, preview: true, clearPreview: true, blocked: false, ends: 1 },
+    { label: 'idle committed scene', busy: false, preview: false, clearPreview: true, blocked: false, ends: 0 },
+    { label: 'preview remains', busy: false, preview: true, clearPreview: false, blocked: true, ends: 1 },
+  ]) {
+    Object.assign(state, scenario);
+    Object.keys(calls).forEach(key => { calls[key] = 0; });
+    assert.equal(prepare(), scenario.blocked, `${scenario.label}: mutation authority`);
+    assert.equal(calls.busy, 1, `${scenario.label}: one lifecycle busy query`);
+    assert.equal(calls.previewEnd, scenario.ends, `${scenario.label}: preview ends only when idle`);
+    assert.equal(calls.packWrites, 0, `${scenario.label}: ending preview does not write the Pack`);
+    assert.equal(calls.historyWrites, 0, `${scenario.label}: ending preview does not write history`);
+  }
+
+  // Geometry mutations share the busy refusal and preview-to-committed boundary.
+  const guarded = ['function rotateSelection(', 'function nudgeSelection(', 'function deleteSelection(',
+    'function startDrag(', 'function beginGizmoDrag(', 'function moveSelectionVertical('];
   for (const fn of guarded) {
     const start = editorSrc.indexOf(fn);
     assert.ok(start >= 0, `${fn} must exist`);
-    const block = editorSrc.slice(start, start + 400);
-    assert.match(block, /operationsBusy\(\)/, `${fn.trim()} must early-out while an operation is busy`);
+    const end = editorSrc.indexOf('\n    function ', start + fn.length);
+    const block = editorSrc.slice(start, end > start ? end : undefined);
+    assert.match(block, /if \(prepareSceneMutation\(\)\)/, `${fn.trim()} must use the scene mutation authority boundary`);
   }
 });
 
@@ -3919,14 +3974,33 @@ test('OPERATION-LIFECYCLE-AMEND global keyboard mutations are blocked while busy
 
 test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are blocked while busy', async () => {
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
-  assert.match(editorSrc, /function editorMutationBlocked\(\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
+  assert.match(editorSrc, /function editorMutationBlocked\(\{ endPreview = false \} = \{\}\)[\s\S]*?OperationLifecycle\.isBusy\(\)/,
     'editor must have a busy-guard helper backed by the lifecycle');
+  const guardStart = editorSrc.indexOf('function editorMutationBlocked(');
+  const guardEnd = editorSrc.indexOf('\n    function setSelectionFromDeleteResult', guardStart);
+  const state = { busy: true, ends: 0 };
+  const guard = runInNewContext(`(${editorSrc.slice(guardStart, guardEnd).trim()})`, {
+    OperationLifecycle: { isBusy: () => state.busy },
+    UIComponents: { showToast() {} },
+    endAutoPackResultsPreview() { state.ends++; },
+  });
+  assert.equal(guard({ endPreview: true }), true, 'busy lifecycle refuses geometry mutation');
+  assert.equal(state.ends, 0, 'busy refusal precedes ending preview');
+  state.busy = false;
+  assert.equal(guard({ endPreview: true }), false, 'idle geometry mutation may proceed');
+  assert.equal(state.ends, 1, 'geometry mutation restores committed scene first');
+  assert.equal(guard(), false, 'idle non-geometric action may proceed');
+  assert.equal(state.ends, 1, 'non-geometric actions leave preview alone');
   const addStart = editorSrc.indexOf('function addCaseToPack(');
-  assert.match(editorSrc.slice(addStart, addStart + 220), /if \(editorMutationBlocked\(\)\) return;/,
+  assert.match(editorSrc.slice(addStart, addStart + 220), /if \(editorMutationBlocked\(\{ endPreview: true \}\)\) return;/,
     'addCaseToPack must be blocked while busy');
   const dupStart = editorSrc.indexOf('function duplicateSelection(');
-  assert.match(editorSrc.slice(dupStart, dupStart + 220), /if \(editorMutationBlocked\(\)\) return;/,
+  assert.match(editorSrc.slice(dupStart, dupStart + 220), /if \(editorMutationBlocked\(\{ endPreview: true \}\)\) return;/,
     'duplicateSelection must be blocked while busy');
+  const deleteStart = editorSrc.indexOf('function deleteInstancesWithFeedback(');
+  const deleteBlock = editorSrc.slice(deleteStart, editorSrc.indexOf('\n    function addCaseToPack', deleteStart));
+  assert.match(deleteBlock, /if \(editorMutationBlocked\(\{ endPreview: true \}\)\) return null;\s*const result = PackLibrary\.removeInstances\(/,
+    'the shared delete boundary restores committed authority before membership mutation');
   // Inspector "Delete item/Delete" buttons guard the shared delete feedback path.
   const guardedDeletes = editorSrc.match(/onClick: \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;\s*deleteInstancesWithFeedback\(/g) || [];
   assert.ok(guardedDeletes.length >= 2, 'inspector delete buttons must guard deleteInstancesWithFeedback with the busy check');

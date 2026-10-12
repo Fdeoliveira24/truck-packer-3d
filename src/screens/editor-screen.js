@@ -2150,8 +2150,9 @@ export function createInteractionManager({
     }
     let beforeSceneMutation = null;
     function prepareSceneMutation() {
-      if (!(OperationLifecycle && OperationLifecycle.isBusy()) && scenePreviewOnly()) beforeSceneMutation?.();
-      return operationsBusy();
+      if (OperationLifecycle && OperationLifecycle.isBusy()) return true;
+      if (scenePreviewOnly()) beforeSceneMutation?.();
+      return scenePreviewOnly();
     }
     function showOperationsBusyToast() {
       UIComponents.showToast(scenePreviewOnly()

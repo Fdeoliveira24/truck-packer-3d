@@ -64,12 +64,12 @@
 
 | Field | Current value |
 |---|---|
-| Task | C5-0 — Editor Authority Contract / documentation authority rebaseline |
-| Branch | `docs/editor-authority-c5-rebaseline` (PR #110) |
-| Outcome | Documentation checkpoint establishes the Manual Editor / AutoPack / Assessment authority model. No runtime C5 implementation active. |
-| Blocker state | Unblocked — awaiting merge |
-| Next after merge | C5A — Normal AutoPack Assessment + Results/Apply Authority (requires explicit implementation approval after C5-0 merges) |
-| Scope | See Section 5.5 Phase C Milestones and Execution Notes. C5A implementation still requires explicit user approval / implementation prompt after the documentation checkpoint merges. Do not infer C5A code branch already exists. |
+| Task | C5B — Staging Preservation + Inspector Coherence |
+| Branch | `feat/phase-c5b-staging-inspector-coherence` |
+| Outcome | C5A merged through PR #111 at `e46acd3d548ce6a89f9f1036ee0ff684fc50e838`. C5B preserves authored staging, reserves existing footprints before allocation, and aligns preview Inspector metrics. |
+| Blocker state | C5B implemented locally; awaiting final consolidated review. Not committed or pushed. |
+| Next after merge | C5M — Manual Editor Authority Hardening (requires explicit implementation approval) |
+| Scope | C5B staging handoff and Inspector display authority only. C5A assessment/Apply authority, Max C4 policy, Unpack organization and committed persistence/export authority remain protected. |
 
 ---
 
@@ -140,7 +140,7 @@ A user must explicitly select and approve a workstream before any branch opens; 
 
 ## 5.5. Phase C — Editor Authority & Workflow Continuity (C5 Cycle)
 
-**Status:** Locked product contract; documentation checkpoint (C5-0).
+**Status:** Locked product contract; C5A merged (PR #111). C5B implemented locally, awaiting final review.
 
 ### Phase C Milestones
 
@@ -151,8 +151,8 @@ A user must explicitly select and approve a workstream before any branch opens; 
 | C3 | Mass + Orientation Runtime Cutover | ✅ COMPLETE / MERGED | 3 | Runtime adoption of canonical mass/orientation semantics |
 | C4 | Assessment + Lifecycle Cutover | ✅ COMPLETE / MERGED | 4 | Read-only assessment and removal of hidden lifecycle repair |
 | C5-0 | Editor Authority Contract | 🔒 LOCKED | — | Documentation checkpoint (this update) |
-| C5A | Normal AutoPack Assessment + Results/Apply Authority | ⏭️ NEXT | 5 | Candidate assessment, Balanced preference, transient Results authority and Apply |
-| C5B | Staging Preservation + Inspector Coherence | 📋 PENDING | 6 | Preserve manual staging and make preview metrics use one authority |
+| C5A | Normal AutoPack Assessment + Results/Apply Authority | ✅ COMPLETE / MERGED (PR #111) | 5 | Candidate assessment, Balanced preference, transient Results authority and Apply |
+| C5B | Staging Preservation + Inspector Coherence | 🔍 IMPLEMENTED / AWAITING REVIEW | 6 | Manual staged poses and footprint reservations; coherent preview counts, loaded mass and utilization |
 | C5M | Manual Editor Authority Hardening | 📋 PENDING | 7 | Manual drag/move/rotate/stage/unstage and warning-vs-hard-rule boundary |
 | C5T | Truck Change Workflow Continuity | 📋 PENDING | 8 | Unresolved cargo preservation/fallback-to-staging without workflow blockage |
 | C5C | Max Capacity Policy | 📋 PENDING | 9 | Preserve relaxed Max handling with profile-aware assessment and Apply |
@@ -194,10 +194,10 @@ See [AutoPack Engine Contract — Editor Authority and Automation Boundary](../e
 
 ### Execution Notes
 
-- Keep C5A narrow — do not fold C5M or C5T implementation into C5A.
+- C5A merged through PR #111. C5B local implementation awaits review; no commit or push yet. Keep C5M and C5T separate.
 - C5M owns manual drag/move/rotate/stage/unstage authority and handling rules warning behavior.
 - C5T owns unresolved cargo preservation and fallback behavior.
-- Do NOT implement C5A/C5B/C5M/C5T/C5C/C5D/C5E without explicit approval.
+- C5B is explicitly approved for implementation. C5M/C5T/C5C/C5D/C5E still require explicit approval.
 
 ---
 

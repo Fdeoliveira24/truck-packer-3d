@@ -60,8 +60,8 @@ test('F06 current Results producer records movement identity while legacy whole-
   ]);
   const optionBuilder = sliceFn(engineSource, 'function buildAutoPackResultOption(', 'function buildAutoPackResultsState(');
   const resultsBuilder = sliceFn(engineSource, 'function buildAutoPackResultsState(', 'function cancelAllTweens(');
-  assert.match(optionBuilder, /movableIds: \[\.\.\.movableIds\]/,
-    'every current engine option must carry its exact movable population');
+  assert.match(optionBuilder, /movableIds: \[\.\.\.resolvedMovableIds\]/,
+    'every current engine option must carry its exact physically resolved movable population');
   assert.match(resultsBuilder, /buildAutoPackResultOption\(solution, index, packData, stagingMap, movableIds, excludedIds\)/,
     'all current result options share that producer');
 
@@ -486,7 +486,7 @@ test('AUTOPACK-STALE packed pose and packed Max Capacity profile remain protecte
   const engineSrc = await fs.readFile(enginePath, 'utf8');
   const optionBlock = sliceFn(engineSrc, 'function buildAutoPackResultOption(', '\n  function buildAutoPackResultsState');
   assert.match(optionBlock,
-    /signature: buildAutoPackResultSignature\(optionPack, id === 'max-capacity' \? 'max-capacity' : null, movableIds\),/,
+    /signature: buildAutoPackResultSignature\(optionPack, id === 'max-capacity' \? 'max-capacity' : null, resolvedMovableIds\),/,
     'option signatures must project the packed profile only for cargo that Apply may change');
 });
 
@@ -641,6 +641,123 @@ function autoPackStagedAabbsOverlap(a, b, tolerance = 1e-9) {
     a.min.z < b.max.z - tolerance && a.max.z > b.min.z + tolerance;
 }
 
+test('C5B staging reserves authored, hidden and excluded footprints before any new allocation', async () => {
+  const [Engine, PackLibrary] = await Promise.all([import(enginePath.href), import(packLibraryPath.href)]);
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+  const caseData = { id: 'c', dimensions: { length: 30, width: 10, height: 20 } };
+  const incoming = makeAutoPackStagingItem('incoming', caseData);
+  const authored = makeAutoPackStagingItem('authored', caseData, { x: 0, y: Math.PI / 2, z: 0 });
+  authored.inst.placement = 'staged';
+  authored.inst.transform.position = { x: 15, y: 10, z: 57 };
+  const hidden = structuredClone(authored);
+  hidden.inst.id = 'hidden';
+  hidden.inst.hidden = true;
+  hidden.inst.transform.position.x = 57;
+  const excluded = structuredClone(authored);
+  excluded.inst.id = 'excluded';
+  excluded.inst.transform.position.x = 99;
+  const sourceItems = [incoming, authored, hidden, excluded];
+  const before = structuredClone(sourceItems);
+  const options = { sourceItems, excludedIds: new Set(['excluded']) };
+  const map = Engine.buildAutoPackStagingMap([incoming, authored, excluded], truck,
+    PackLibrary.findSafeStagingPosition, options);
+  assert.deepEqual(map.get('authored'), {
+    position: authored.inst.transform.position, rotation: authored.inst.transform.rotation,
+    orientedDims: { length: 10, width: 30, height: 20 },
+  }, 'authored staging keeps its transform and derives bounds from actual rotation, never the stale cache');
+  for (const item of [authored, hidden, excluded]) {
+    assert.equal(autoPackStagedAabbsOverlap(autoPackStagedAabb(map.get('incoming')), autoPackStagedAabb({
+      position: item.inst.transform.position, orientedDims: { length: 10, width: 30, height: 20 },
+    })), false, `newly staged cargo avoids ${item.inst.id}`);
+  }
+  assert.equal(map.has('hidden'), false, 'hidden poses are reserved without taking mutation ownership');
+  assert.equal(map.has('excluded'), false, 'excluded poses are reserved without taking mutation ownership');
+  const reversed = Engine.buildAutoPackStagingMap([excluded, authored, incoming], truck,
+    PackLibrary.findSafeStagingPosition, { ...options, sourceItems: [...sourceItems].reverse() });
+  assert.deepEqual([...reversed].sort(), [...map].sort(), 'reservation and allocation are independent of item order');
+  const next = Engine.buildAutoPackNextCases(sourceItems.map(item => item.inst), new Map(), new Map(), new Map(), map, options.excludedIds);
+  assert.deepEqual(next[2], hidden.inst, 'hidden source is byte-equivalent');
+  assert.deepEqual(next[3], excluded.inst, 'excluded source is byte-equivalent');
+  assert.deepEqual(sourceItems, before, 'allocation never mutates source data');
+});
+
+test('C5B unsafe eligible staging falls back without guessing unresolved geometry or resetting authored rotation', async () => {
+  const [Engine, PackLibrary, Editor] = await Promise.all([
+    import(enginePath.href), import(packLibraryPath.href), import(editorScreenPath.href),
+  ]);
+  const truck = { length: 120, width: 60, height: 60, shapeMode: 'rect' };
+  const caseData = { id: 'c', dimensions: { length: 30, width: 10, height: 20 } };
+  const unsafe = makeAutoPackStagingItem('unsafe', caseData, { x: Math.PI / 2, y: 0, z: Math.PI / 2 });
+  unsafe.inst.placement = 'staged';
+  unsafe.inst.transform.position = { x: 50, y: 90, z: 100 };
+  const missing = { inst: { ...structuredClone(unsafe.inst), id: 'missing', caseId: 'deleted' }, caseData: null };
+  const malformed = { inst: { ...structuredClone(unsafe.inst), id: 'malformed' },
+    caseData: { ...caseData, dimensions: { ...caseData.dimensions, length: Infinity } } };
+  const invalidRotation = structuredClone(unsafe);
+  invalidRotation.inst.id = 'invalid-rotation';
+  invalidRotation.inst.transform.rotation.x = 0.3;
+  const invalidPackedRotation = structuredClone(invalidRotation);
+  invalidPackedRotation.inst.id = 'invalid-packed-rotation';
+  invalidPackedRotation.inst.placement = 'packed';
+  const invalidPosition = structuredClone(unsafe);
+  invalidPosition.inst.id = 'invalid-position';
+  invalidPosition.inst.transform.position.x = NaN;
+  const items = [unsafe, missing, malformed, invalidRotation, invalidPosition, invalidPackedRotation];
+  const source = items.map(item => item.inst);
+  const before = structuredClone(source);
+  const map = Engine.buildAutoPackStagingMap(items, truck, PackLibrary.findSafeStagingPosition);
+  for (const item of [unsafe, invalidPosition]) {
+    const pose = map.get(item.inst.id);
+    assert.deepEqual(pose.rotation, item.inst.transform.rotation, 'fallback retains a trustworthy authored rotation');
+    assert.deepEqual(pose.orientedDims, { length: 20, width: 30, height: 10 });
+    assert.equal(pose.position.y, 5, 'fallback is grounded');
+    assert.ok(pose.position.z - pose.orientedDims.width / 2 > truck.width / 2);
+  }
+  assert.equal(autoPackStagedAabbsOverlap(...[...map.values()].map(autoPackStagedAabb)), false);
+  for (const item of [missing, malformed, invalidRotation, invalidPackedRotation]) assert.equal(map.has(item.inst.id), false,
+    `${item.inst.id}: no invented footprint or staging pose`);
+  const next = Engine.buildAutoPackNextCases(source, new Map(), new Map(), new Map(), map);
+  for (const index of [1, 2, 3, 5]) assert.deepEqual(next[index], source[index], 'unresolved source stays exact');
+  const applied = Editor.buildAppliedAutoPackCases({ id: 'default', nextCases: next,
+    movableIds: ['unsafe', 'invalid-position'], stagingSourceSignatures: Object.fromEntries(source
+      .map(inst => [inst.id, Engine.buildAutoPackSourceSignature({ cases: [inst] })])) }, structuredClone, source);
+  assert.deepEqual(applied, next, 'normal Apply carries the exact resolved atomic staging poses');
+  assert.deepEqual(source, before, 'fallback does not rewrite source');
+});
+
+test('C5B candidate materialization and Apply retain unresolved instances without acquiring staging ownership', async () => {
+  const [Engine, Editor, PackLibrary, engineSource] = await Promise.all([
+    import(enginePath.href), import(editorScreenPath.href), import(packLibraryPath.href), fs.readFile(enginePath, 'utf8'),
+  ]);
+  const caseData = { id: 'malformed', dimensions: { length: 0, width: 10, height: 20 }, weight: null };
+  const missing = { id: 'missing', caseId: 'deleted', placement: 'staged', hidden: false,
+    packedProfile: 'max-capacity', transform: { position: { x: -40, y: 7, z: 80 }, rotation: { x: 0.3, y: 0, z: 0 } },
+    orientedDims: { length: 99, width: 98, height: 97 }, notes: 'unresolved source' };
+  const malformed = { ...structuredClone(missing), id: 'malformed', caseId: caseData.id };
+  const pack = { id: 'p', truck: { length: 120, width: 60, height: 60, shapeMode: 'rect', shapeConfig: {} },
+    cases: [missing, malformed] };
+  const dependencies = {
+    buildAutoPackNextCases: Engine.buildAutoPackNextCases,
+    getSolutionLabel: solution => solution.id, getSolutionDescription: () => '',
+    PackLibrary: { computeStats: subject => PackLibrary.computeStats(subject, [caseData]) },
+    CaseLibrary: { getCases: () => [caseData] },
+    assessNormalAutoPackCandidate: Engine.assessNormalAutoPackCandidate,
+    buildAutoPackSourceSignature: Engine.buildAutoPackSourceSignature,
+    buildAutoPackResultSignature: Engine.buildAutoPackResultSignature,
+    buildAutoPackLayoutSignature: Engine.buildAutoPackLayoutSignature,
+    cloneForAutoPackResults: structuredClone,
+  };
+  const buildOption = new Function(...Object.keys(dependencies),
+    `${sliceFn(engineSource, 'function buildAutoPackResultOption(', 'function buildAutoPackResultsState(')}\nreturn buildAutoPackResultOption;`)(...Object.values(dependencies));
+  const option = buildOption({ id: 'default', placements: new Map(), unpacked: ['malformed'] },
+    0, pack, new Map(), new Set(['malformed']), new Set(['missing']));
+  assert.deepEqual(option.nextCases, pack.cases, 'candidate keeps unresolved source geometry and metadata exactly');
+  assert.deepEqual(option.movableIds, [], 'no guessed geometry earns mutation authority');
+  assert.deepEqual(option.stagingSourceSignatures, {});
+  assert.deepEqual(Editor.buildAppliedAutoPackCases(option, structuredClone, pack.cases), pack.cases,
+    'Apply cannot reset rotation, dimensions, profile or instance membership');
+});
+
 test('AUTOPACK-STAGING identity pose ignores prior and candidate rotations', async () => {
   const Engine = await import(`${enginePath.href}?t=${Date.now()}-${Math.random()}`);
   const caseData = {
@@ -660,7 +777,7 @@ test('AUTOPACK-STAGING identity pose ignores prior and candidate rotations', asy
   for (const item of [identityPrior, rotatedPrior]) {
     const pose = Engine.buildStagedPose(item);
     assert.deepEqual(pose.rotation, { x: 0, y: 0, z: 0 },
-      'AutoPack leftovers must use the Organized Unpack identity staging rotation');
+      'newly staged packed cargo uses identity staging rotation');
     assert.deepEqual(pose.dims, caseData.dimensions,
       'staging dimensions must derive from the identity rotation and real case dimensions');
     assert.notDeepEqual(pose.rotation, {
@@ -816,8 +933,8 @@ test('AUTOPACK-STAGING Results preview and Apply share poses while packed solver
     'unresolved instances without a staging pose must keep their transform');
   assert.deepEqual(previewCases[2].orientedDims, sourceCases[2].orientedDims,
     'unresolved instances must not receive fabricated dimensions');
-  assert.equal(Object.hasOwn(previewCases[2], 'packedProfile'), false,
-    'unresolved staged output must still drop a stale Max Capacity marker');
+  assert.deepEqual(previewCases[2], sourceCases[2],
+    'an unresolved instance with no staging pose stays byte-equivalent, including metadata');
 });
 
 test('AUTOPACK-CAROUSEL layout signature ignores interchangeable instance id permutation; strict signature does not', async () => {
@@ -1917,6 +2034,15 @@ test('C5A a normal source signature cannot take ownership of an existing staged 
   const applied = Editor.buildAppliedAutoPackCases(option, structuredClone, [source]);
   assert.deepEqual(applied, [source], 'position, rotation and dimensional cache remain source-owned');
   assert.equal(proposed.transform.position.x, -200, 'projection does not rewrite the stored candidate');
+  const resolved = { ...option, stagingSourceSignatures: {
+    [source.id]: Engine.buildAutoPackSourceSignature({ cases: [source] }),
+  } };
+  const edited = structuredClone(source);
+  edited.transform.position.z += 10;
+  assert.deepEqual(Editor.buildAppliedAutoPackCases(resolved, structuredClone, [edited]), [edited],
+    'allocator evidence cannot overwrite a subsequent manual staged edit, including after legacy Max adoption');
+  assert.deepEqual(Editor.buildAppliedAutoPackCases({ ...resolved, id: 'max-capacity' }, structuredClone, [source]), [source],
+    'Max retains its legacy staged-pose ownership even when allocator evidence exists');
 });
 
 test('C5A Inspector Apply Position restores committed scene before validation and adds only one history action', async () => {
@@ -2137,8 +2263,13 @@ test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspecto
   assert.match(render, /const view = resolveAutoPackResultsView\(pack\);/, 'the card reads the same view resolution');
   const preview = sliceFn(src, 'function getAutoPackResultsPreviewPack(pack) {', 'function isAutoPackResultsStale(');
   assert.match(preview, /const view = resolveAutoPackResultsView\(pack\);/, 'the scene reads the same view resolution');
-  assert.equal((src.match(/buildSpaceUtilizationResult\(getAutoPackResultsPreviewPack\(pack\) \|\| pack, PackLibrary\)/g) || []).length, 2,
-    'Load Summary and Space Utilization read the layout the scene shows');
+  const inspector = sliceFn(src, 'function renderTruckInspector(pack, prefs)', 'function renderMultiInspector(');
+  assert.match(inspector, /const viewedPack = getAutoPackResultsPreviewPack\(pack\) \|\| pack;/);
+  assert.match(inspector, /PackLibrary\.computeStats\(viewedPack\)/, 'loaded mass uses the viewed subject');
+  assert.match(inspector, /buildSpaceUtilizationResult\(viewedPack, PackLibrary\)/, 'counts use that same subject');
+  assert.match(sliceFn(src, 'function renderSpaceUtilizationSection(pack)', 'function renderUnresolvedCaseInspector('),
+    /buildSpaceUtilizationResult\(getAutoPackResultsPreviewPack\(pack\) \|\| pack, PackLibrary\)/,
+    'Space Utilization uses the same candidate-or-committed resolution');
   assert.doesNotMatch(src, /relaxed-handling-profile|Relaxed handling profile/,
     'the Inspector repeats no relaxed-profile notice; the Results card carries the Max Capacity warning');
 });

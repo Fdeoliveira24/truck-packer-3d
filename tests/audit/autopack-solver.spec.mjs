@@ -428,12 +428,14 @@ test('A1.1B AutoPack engine defaults every truck mode to front-first loading', a
 
 test('AUTO-PACK-A1-3 AutoPack staging delegates to the canonical staging helper', async () => {
   const engineSrc = await fs.readFile(autoPackEnginePath, 'utf8');
-  const stagingStart = engineSrc.indexOf('function buildStagingMap(packItems, truck)');
+  const stagingStart = engineSrc.indexOf('function buildStagingMap(packItems, packData, excludedIds)');
   const stagingEnd = engineSrc.indexOf('\n  async function animatePlacements', stagingStart);
   const stagingBlock = stagingStart >= 0 && stagingEnd > stagingStart ? engineSrc.slice(stagingStart, stagingEnd) : '';
 
-  assert.match(stagingBlock, /buildAutoPackStagingMap\(packItems, truck, PackLibrary\.findSafeStagingPosition\)/,
+  assert.match(stagingBlock, /buildAutoPackStagingMap\(packItems, packData\.truck, PackLibrary\.findSafeStagingPosition,/,
     'staged/unpacked items must delegate to the canonical staging-map helper');
+  assert.match(stagingBlock, /sourceItems: \(packData\.cases \|\| \[\]\)\.map/,
+    'the allocator receives every source instance, including hidden and excluded staging');
 });
 
 test('AUTO-PACK-A1-R1 normalizers add logistics defaults and preserve explicit values', async () => {
@@ -3511,14 +3513,11 @@ test('AUTO-PACK-A0C staged unpacked items use an atomic pose (position+rotation+
     'buildStagedPose must not read stale inst.orientedDims from a previous AutoPack run (RC-4 fix)');
   assert.doesNotMatch(stagingBlock, /item\.orientations\[0\]/,
     'visual staging does not inherit solver orientation-policy candidates');
-  assert.match(stagingBlock, /item && item\.caseData && item\.caseData\.dimensions/,
-    'staging starts from the real case dimensions');
-  assert.match(stagingBlock, /rotation = \{ x: 0, y: 0, z: 0 \}/,
-    'staging uses the deterministic identity rotation');
-  assert.match(stagingBlock, /getOrientedDimsForRotation\(base, rotation\)/,
-    'staging dimensions are derived from the exact stored staging rotation');
-  // The staged item persists the same identity pose that produced its staging
-  // position, not its prior packed rotation.
+  assert.match(stagingBlock, /getActualPoseDimensions\(item\?\.caseData, \{ transform: \{ rotation \} \}\)/,
+    'staging derives dimensions from the real Case and chosen actual rotation');
+  assert.match(stagingBlock, /placement === 'staged'\s*\? item\.inst\.transform\?\.rotation : \{ x: 0, y: 0, z: 0 \}/,
+    'authored staging keeps its rotation; newly staged packed cargo uses identity');
+  // The staged item persists the exact pose that produced its staging position.
   assert.match(persistBlock, /rot = staged\.rotation/,
     'unpacked staged items take the staging-orientation rotation, keeping the pose atomic');
   assert.match(persistBlock, /od = staged\.orientedDims/,

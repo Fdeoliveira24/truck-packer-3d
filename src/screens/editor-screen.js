@@ -164,9 +164,18 @@ export function buildAppliedAutoPackCases(option, cloneCases = value => JSON.par
     if (inst.caseId !== chosen.caseId || Boolean(inst.hidden) !== Boolean(chosen.hidden)) return null;
     if (movableIds && !movableIds.has(inst.id)) return inst;
     // Packed poses and packed-to-staged transitions belong to the candidate.
-    // An already-staged source pose and current metadata retain manual ownership.
+    // C5B's allocator preserves trustworthy authored staging and resolves only
+    // eligible unsafe poses. Carry its atomic pose/cache through preview/Apply.
+    // Older Results without allocator evidence retain source-staged ownership.
     const next = { ...inst, placement: chosen.placement };
-    if (chosen.placement === 'packed' || (chosen.placement === 'staged' && inst.placement !== 'staged')) {
+    const resolvedStaging = chosen.placement === 'staged' && inst.placement === 'staged' &&
+      !isMaxCapacity && option.stagingSourceSignatures && (
+      ['position', 'rotation'].every(field => ['x', 'y', 'z'].every(axis =>
+        inst.transform?.[field]?.[axis] === chosen.transform?.[field]?.[axis])) ||
+      option.stagingSourceSignatures[inst.id] === buildAutoPackSourceSignature({ cases: [inst] })
+    );
+    if (chosen.placement === 'packed' || (chosen.placement === 'staged' &&
+      (inst.placement !== 'staged' || resolvedStaging))) {
       if (!chosen.transform?.position || !chosen.transform?.rotation) return null;
       next.transform = {
         ...inst.transform,
@@ -6266,9 +6275,8 @@ export function createEditorScreen({
       restoreEditorFocus(previousFocus, inspectorEl, btnRight);
     }
 
-    // AutoPack commits its Pack before the cargo animation finishes. While it
-    // owns the Editor, placement-derived Inspector totals read "Updating…" and
-    // the committed values return when the operation ends (no interim values).
+    // While AutoPack owns the Editor, placement-derived totals read Updating….
+    // Once it releases ownership, all totals follow the same viewed subject.
     function isAutoPackLoadingCargo() {
       return Boolean(OperationLifecycle && typeof OperationLifecycle.currentOperation === 'function' &&
         OperationLifecycle.currentOperation().kind === 'autopacking');
@@ -7032,7 +7040,8 @@ export function createEditorScreen({
       card.className = 'card';
       card.classList.add('tp3d-editor-card-grid-gap-12');
 
-      const stats = PackLibrary.computeStats(pack);
+      const viewedPack = getAutoPackResultsPreviewPack(pack) || pack;
+      const stats = PackLibrary.computeStats(viewedPack);
       const truckHeader = document.createElement('div');
       truckHeader.className = 'row space-between tp3d-editor-inspector-title-row';
       const truckTitle = document.createElement('div');
@@ -7300,11 +7309,10 @@ export function createEditorScreen({
       statsEl.className = 'card';
       statsEl.classList.add('tp3d-editor-stats-card');
       const autoPackLoading = isAutoPackLoadingCargo();
-      // In/Staged follow the layout the scene shows (a transient Results preview
-      // included). The Max Capacity handling warning lives only on the Results
-      // card; Load Summary carries no relaxed-profile notice.
+      // Counts, loaded mass and utilization share the scene's viewed subject.
+      // computeStats preserves nullable mass; this projection never writes Pack.
       const utilization = autoPackLoading ? null
-        : buildSpaceUtilizationResult(getAutoPackResultsPreviewPack(pack) || pack, PackLibrary);
+        : buildSpaceUtilizationResult(viewedPack, PackLibrary);
       statsEl.innerHTML = autoPackLoading ? `
               <div class="tp3d-editor-fw-semibold">Load Summary</div>
               <div class="muted tp3d-editor-fs-sm tp3d-editor-stats-updating" data-role="load-summary-updating">Updating…</div>

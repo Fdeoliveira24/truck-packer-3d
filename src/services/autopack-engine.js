@@ -6,10 +6,11 @@ import { captureScopeContext, isScopeContextCurrent } from '../core/storage.js';
 // engine materializes and assesses each complete Pack; Max keeps its C4 path.
 import { getPackingStrategy, runAdaptiveAutoPack } from '../packing-core/solution.js';
 import { DEFAULT_SOLVE_BUDGET_MS } from '../packing-core/budget.js';
-import { getOrientedDimsForRotation, getActualPoseDimensions } from '../core/oriented-dims.js';
+import { getActualPoseDimensions } from '../core/oriented-dims.js';
 import { getAabb } from './autopack-solver.js';
 import {
   CONTACT_EPS,
+  aabbsOverlap,
   MIN_SUPPORT_FRACTION,
   canSupportCandidateWeight,
   canSupportStack,
@@ -24,32 +25,59 @@ import {
   isAabbWithinTruckMinusBlocked,
   isWheelWellSupportedAndStable,
 } from '../packing-core/wheel-well-model.js';
-import { evaluateFrontOverhangRearRetention, projectMaxCapacitySupportRecords } from './pack-library.js';
+import {
+  evaluateFrontOverhangRearRetention, projectMaxCapacitySupportRecords,
+  getTrailerUsableZones, getFrontBonusBlockedZones, getWheelWellsBlockedZones,
+} from './pack-library.js';
 
 // The staged pose MUST be atomic: position, rotation and orientedDims all describe
-// the SAME deterministic physical orientation. Staging is outside the truck and
-// uses the same identity-orientation rule as Organized Unpack; cargo orientation
-// policy continues to apply only when the solver places the item inside the truck.
-// Do NOT read solver candidates or stale prior orientedDims for staged leftovers.
+// the SAME physical orientation. Newly staged packed cargo uses identity;
+// source-staged cargo retains its authored rotation. Neither uses solver
+// orientation candidates or cached orientedDims to establish physical geometry.
 export function buildStagedPose(item) {
-  const base = item && item.caseData && item.caseData.dimensions;
-  if (!base || !(Number(base.length) > 0) || !(Number(base.width) > 0) || !(Number(base.height) > 0)) {
-    return null;
-  }
-  const rotation = { x: 0, y: 0, z: 0 };
-  const dims = getOrientedDimsForRotation(base, rotation);
-  if (!(dims.length > 0) || !(dims.width > 0) || !(dims.height > 0)) return null;
-  return {
-    dims: { length: dims.length, width: dims.width, height: dims.height },
-    rotation,
-  };
+  if (item?.inst?.placement === 'packed' && !getActualPoseDimensions(item.caseData, item.inst).valid) return null;
+  const rotation = item?.inst?.placement === 'staged'
+    ? item.inst.transform?.rotation : { x: 0, y: 0, z: 0 };
+  const actual = getActualPoseDimensions(item?.caseData, { transform: { rotation } });
+  return actual.valid ? { dims: actual.value, rotation } : null;
 }
 
-export function buildAutoPackStagingMap(packItems, truck, findSafeStagingPosition) {
+export function buildAutoPackStagingMap(packItems, truck, findSafeStagingPosition,
+  { sourceItems = packItems, excludedIds = new Set() } = {}) {
   const acceptedAabbs = [];
   const map = new Map();
   if (typeof findSafeStagingPosition !== 'function') return map;
-  for (const item of Array.isArray(packItems) ? packItems : []) {
+  const eligible = (Array.isArray(packItems) ? packItems : [])
+    .filter(item => !item.inst.hidden && !excludedIds.has(item.inst.id));
+  const eligibleIds = new Set(eligible.map(item => item.inst.id));
+  const truckBodies = [...getTrailerUsableZones(truck), ...getFrontBonusBlockedZones(truck),
+    ...getWheelWellsBlockedZones(truck)];
+  const originals = (Array.isArray(sourceItems) ? sourceItems : []).flatMap(item => {
+    if (item.inst?.placement !== 'staged') return [];
+    const pose = buildStagedPose(item);
+    const position = item.inst.transform?.position;
+    if (!pose || !position || !['x', 'y', 'z'].every(axis =>
+      typeof position[axis] === 'number' && Number.isFinite(position[axis]))) return [];
+    const aabb = getAabb(position, { l: pose.dims.length, w: pose.dims.width, h: pose.dims.height });
+    if (![aabb.min, aabb.max].every(point => Object.values(point).every(Number.isFinite))) return [];
+    return [{ item, pose, position, aabb }];
+  });
+  // Reserve ALL trustworthy originals before allocating anything. A hidden or
+  // excluded instance never moves; known bounds still obstruct new staging even
+  // when its source pose needs review. Unresolved geometry is never fabricated.
+  for (const original of originals) {
+    const { item, pose, position, aabb } = original;
+    const fixed = !eligibleIds.has(item.inst.id);
+    const safe = Math.abs(aabb.min.y) <= CONTACT_EPS &&
+      !truckBodies.some(body => aabbsOverlap(aabb, body)) &&
+      !originals.some(other => other !== original && aabbsOverlap(aabb, other.aabb));
+    if (!fixed && !safe) continue;
+    acceptedAabbs.push(aabb);
+    if (!fixed) map.set(item.inst.id, { position, rotation: pose.rotation, orientedDims: pose.dims });
+  }
+  // Stable instance ordering makes allocation independent of solver/item sorting.
+  for (const item of [...eligible].sort((a, b) => String(a.inst.id).localeCompare(String(b.inst.id)))) {
+    if (map.has(item.inst.id)) continue;
     const pose = buildStagedPose(item);
     if (!pose) continue;
     const staged = findSafeStagingPosition({ truck }, pose.dims, acceptedAabbs);
@@ -639,14 +667,7 @@ export function buildAutoPackNextCases(
 ) {
   return (cases || []).map(inst => {
     if (excludedIds.has(inst.id)) return inst;
-    if (inst.hidden) {
-      if (inst.placement === 'staged' && inst.packedProfile !== undefined) {
-        const next = { ...inst };
-        delete next.packedProfile;
-        return next;
-      }
-      return inst;
-    }
+    if (inst.hidden) return inst;
     const isPacked = placements instanceof Map && placements.has(inst.id);
     const currentRotation =
       inst.transform && inst.transform.rotation
@@ -666,11 +687,7 @@ export function buildAutoPackNextCases(
       // the staging position, so the rendered item rests on the staging floor
       // instead of floating (Repair 1B).
       const staged = stagingMap instanceof Map ? stagingMap.get(inst.id) : null;
-      if (!staged || !staged.position) {
-        const next = { ...inst };
-        delete next.packedProfile;
-        return next;
-      }
+      if (!staged || !staged.position) return inst;
       pos = staged.position;
       rot = staged.rotation || currentRotation;
       od = staged.orientedDims || null;
@@ -834,6 +851,10 @@ export function createAutoPackEngine({
 
   function buildAutoPackResultOption(solution, index, packData, stagingMap, movableIds, excludedIds) {
     const id = String(solution.id || solution.strategy || `option-${index + 1}`);
+    // An item with neither a solver placement nor trustworthy staging geometry
+    // remains source-owned, including all unresolved instance metadata.
+    const resolvedMovableIds = new Set([...movableIds].filter(instanceId =>
+      solution.placements.has(instanceId) || stagingMap.has(instanceId)));
     const nextCases = buildAutoPackNextCases(
       packData.cases || [],
       solution.placements,
@@ -841,16 +862,7 @@ export function createAutoPackEngine({
       solution.orientedDims,
       stagingMap,
       excludedIds
-    ).map((next, itemIndex) => {
-      const source = packData.cases[itemIndex];
-      if (id === 'max-capacity' || source.placement !== 'staged' || next.placement !== 'staged') return next;
-      // Match the existing Results Apply ownership: already-staged cargo keeps
-      // its source pose. C5B still owns staging allocation/reservation redesign.
-      const preserved = { ...next, transform: source.transform };
-      if (hasOwn(source, 'orientedDims')) preserved.orientedDims = source.orientedDims;
-      else delete preserved.orientedDims;
-      return preserved;
-    });
+    );
     const optionPack = { ...packData, cases: nextCases };
     const stats = PackLibrary.computeStats(optionPack);
     const stagedCount = Math.max(0, movableIds.size - solution.placements.size);
@@ -884,11 +896,17 @@ export function createAutoPackEngine({
       partialCauses,
       assessment,
       sourceSignature: id === 'max-capacity' ? null : buildAutoPackSourceSignature(optionPack),
-      signature: buildAutoPackResultSignature(optionPack, id === 'max-capacity' ? 'max-capacity' : null, movableIds),
+      signature: buildAutoPackResultSignature(optionPack, id === 'max-capacity' ? 'max-capacity' : null, resolvedMovableIds),
       layoutSignature: buildAutoPackLayoutSignature(optionPack),
-      fixedLayoutSignature: buildAutoPackLayoutSignature({ ...optionPack, cases: nextCases.filter(inst => !movableIds.has(inst.id)) }),
+      fixedLayoutSignature: buildAutoPackLayoutSignature({ ...optionPack, cases: nextCases.filter(inst => !resolvedMovableIds.has(inst.id)) }),
       nextCases: cloneForAutoPackResults(nextCases),
-      movableIds: [...movableIds],
+      movableIds: [...resolvedMovableIds],
+      // A fallback may replace only the staged source it was allocated from.
+      // This also protects later manual staging edits allowed by Max's legacy
+      // freshness path. Reuse exact source authority rather than rounding poses.
+      stagingSourceSignatures: Object.fromEntries((packData.cases || [])
+        .filter(inst => inst.placement === 'staged' && stagingMap.has(inst.id))
+        .map(inst => [inst.id, buildAutoPackSourceSignature({ cases: [inst] })])),
     };
   }
 
@@ -1212,7 +1230,7 @@ export function createAutoPackEngine({
         );
       }
 
-      const stagingMap = buildStagingMap(packItems, truck);
+      const stagingMap = buildStagingMap(packItems, packData, physicalContext.excludedIds);
       stageInstant(stagingMap);
       // Yield a frame so the staged poses and the status card's solve stage paint
       // BEFORE the synchronous solver locks the main thread — otherwise large packs
@@ -1470,8 +1488,11 @@ export function createAutoPackEngine({
     });
   }
 
-  function buildStagingMap(packItems, truck) {
-    return buildAutoPackStagingMap(packItems, truck, PackLibrary.findSafeStagingPosition);
+  function buildStagingMap(packItems, packData, excludedIds) {
+    return buildAutoPackStagingMap(packItems, packData.truck, PackLibrary.findSafeStagingPosition, {
+      sourceItems: (packData.cases || []).map(inst => ({ inst, caseData: CaseLibrary.getById(inst.caseId) })),
+      excludedIds,
+    });
   }
 
   async function animatePlacements(

@@ -920,7 +920,7 @@ test('placement-safety-P0B applyTransform resets halfWorld to base dims when ori
     'applyTransform must spread baseHalfWorld into halfWorld on the reset path');
 });
 
-test('placement-safety-P0C buildStagedPose derives an atomic identity pose from real case dimensions', async () => {
+test('placement-safety-P0C buildStagedPose derives atomic staging geometry without discarding authored staged rotation', async () => {
   const src = await fs.readFile(autoPackEnginePath, 'utf8');
   const stagingStart = src.indexOf('export function buildStagedPose(item)');
   const stagingEnd = src.indexOf('\nexport function createAutoPackEngine', stagingStart);
@@ -931,12 +931,10 @@ test('placement-safety-P0C buildStagedPose derives an atomic identity pose from 
     'buildStagedPose must not read stale inst.orientedDims from a previous AutoPack run (RC-4)');
   assert.doesNotMatch(stagingBlock, /item\.orientations\[0\]/,
     'buildStagedPose must not use packing-policy orientation candidates');
-  assert.match(stagingBlock, /item && item\.caseData && item\.caseData\.dimensions/,
-    'buildStagedPose must use real base case dimensions');
-  assert.match(stagingBlock, /rotation = \{ x: 0, y: 0, z: 0 \}/,
-    'the staged pose must carry deterministic identity rotation');
-  assert.match(stagingBlock, /getOrientedDimsForRotation\(base, rotation\)/,
-    'the staged pose dimensions must be derived from that identity rotation');
+  assert.match(stagingBlock, /getActualPoseDimensions\(item\?\.caseData, \{ transform: \{ rotation \} \}\)/,
+    'staging uses strict real Case dimensions and its actual selected rotation');
+  assert.match(stagingBlock, /placement === 'staged'\s*\? item\.inst\.transform\?\.rotation : \{ x: 0, y: 0, z: 0 \}/,
+    'source-staged rotation is preserved; newly staged packed cargo still uses identity');
 });
 
 test('placement-safety-P0C nextCases applies an atomic staged pose (rotation + orientedDims agree with position)', async () => {

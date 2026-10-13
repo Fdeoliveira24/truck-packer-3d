@@ -1039,11 +1039,11 @@ test('G1.2C-INSPECTOR-CARD-POLISH Load Summary uses the approved neutral label/v
     'Stats card must not invent packed/capacity ft³ values');
 });
 
-test('G1.2C-INSPECTOR-CARD-POLISH PackLibrary.computeStats(pack) usage is unchanged', async () => {
+test('G1.2C-INSPECTOR-CARD-POLISH Inspector keeps one canonical stats calculation for the viewed Pack', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
 
-  const calls = src.match(/PackLibrary\.computeStats\(pack\)/g) || [];
-  assert.equal(calls.length, 1, 'PackLibrary.computeStats(pack) must still be called exactly once in renderTruckInspector');
+  const calls = src.match(/PackLibrary\.computeStats\(viewedPack\)/g) || [];
+  assert.equal(calls.length, 1, 'renderTruckInspector must compute canonical viewed-Pack stats exactly once');
 });
 
 test('G1.2C-INSPECTOR-CARD-POLISH Rotate/Flip buttons keep the same axes/deltas and InteractionManager.rotateSelection routing', async () => {

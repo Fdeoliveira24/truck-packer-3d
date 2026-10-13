@@ -150,10 +150,12 @@ function sliceFn(src, startNeedle, endNeedle) {
 test('PHASE-C-RPT-7 Inspector Load Summary repeats no relaxed-profile notice; the Results card is the only warning surface', async () => {
   const src = await fs.readFile(editorScreenPath, 'utf8');
   const block = sliceFn(src, 'function renderTruckInspector(pack, prefs)', 'function renderMultiInspector(pack, selected)');
-  assert.match(block, /const stats = PackLibrary\.computeStats\(pack\);/, 'Load Summary still reads canonical stats (Total weight)');
+  assert.match(block, /const viewedPack = getAutoPackResultsPreviewPack\(pack\) \|\| pack;/,
+    'Load Summary resolves the same viewed subject as the scene');
+  assert.match(block, /const stats = PackLibrary\.computeStats\(viewedPack\);/, 'Total weight uses canonical stats for that subject');
   assert.doesNotMatch(block, /maxCapacityProfileCount|relaxed-handling-profile|Relaxed handling profile|Still part of the applied Max Capacity plan/,
     'the Inspector does not duplicate the Results-card Max Capacity warning');
-  assert.equal(block.includes('autoPackResults'), false, 'the Inspector never reads transient Results');
+  assert.equal(block.includes("StateStore.get('autoPackResults')"), false, 'the Inspector does not calculate metrics directly from raw Results');
   // The canonical membership count itself stays (PHASE-C-RPT tests above);
   // only its Inspector presentation is removed.
 });

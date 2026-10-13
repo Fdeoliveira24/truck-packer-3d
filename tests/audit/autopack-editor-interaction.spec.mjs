@@ -2116,6 +2116,126 @@ test('Editor fixture holds Inspector totals at Updating… while AutoPack loads,
   }
 });
 
+test('C5B authored staging survives every frame and normal Result; preview mass stays unknown through Apply and history', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const source = await page.evaluate(() => {
+      const p = window.probe;
+      const pack = p.PackLibrary.getById(p.StateStore.get('currentPackId'));
+      const definition = { ...p.CaseLibrary.getCases()[0], id: 'oversized', name: 'Authored staging',
+        dimensions: { length: 800, width: 10, height: 20 }, volume: 160000, orientationLock: 'upright', weight: 200 };
+      const staged = { id: 'authored', caseId: definition.id, placement: 'staged', hidden: false,
+        transform: { position: { x: 400, y: 10, z: 463 }, rotation: { x: 0, y: Math.PI / 2, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+        orientedDims: { length: 999, width: 998, height: 997 } };
+      const incoming = { ...structuredClone(staged), id: 'formerly-packed', placement: 'packed',
+        transform: { ...structuredClone(staged.transform), position: { x: 400, y: 10, z: 0 } } };
+      const hidden = { ...structuredClone(staged), id: 'hidden-staged', hidden: true,
+        transform: { ...structuredClone(staged.transform), position: { x: 400, y: 10, z: 1300 } } };
+      p.StateStore.set({ caseLibrary: [...p.CaseLibrary.getCases().map((c, index) => index === 0 ? { ...c, weight: null } : c), definition],
+        packLibrary: [{ ...pack, cases: [...pack.cases, staged, incoming, hidden] }], selectedInstanceIds: [] }, { skipHistory: true });
+      p.StateStore.resetHistory();
+      p.c5bWrites = 0;
+      p.StateStore.subscribe(changes => { if (changes.packLibrary) p.c5bWrites++; });
+      p.c5bFrames = [];
+      p.c5bWatching = true;
+      const sample = () => {
+        const object = p.CaseScene.getObject('authored');
+        p.c5bFrames.push({ position: object.position.toArray(), rotation: [object.rotation.x, object.rotation.y, object.rotation.z],
+          halfWorld: { ...object.userData.halfWorld } });
+        if (p.c5bWatching) requestAnimationFrame(sample);
+      };
+      sample();
+      return JSON.stringify(p.PackLibrary.getById(pack.id));
+    });
+    await page.locator('#btn-autopack').click();
+    await page.waitForFunction(() => window.probe.op() === 'idle' &&
+      window.probe.StateStore.get('autoPackResults')?.options?.length > 0, null, { timeout: 90000 });
+    const after = await page.evaluate(() => {
+      const p = window.probe;
+      p.c5bWatching = false;
+      const r = p.StateStore.get('autoPackResults');
+      return { frames: p.c5bFrames, writes: p.c5bWrites, selected: r.selectedId,
+        source: JSON.stringify(p.PackLibrary.getById(p.StateStore.get('currentPackId'))),
+        normalIds: r.options.filter(option => option.id !== 'max-capacity').map(option => option.id) };
+    });
+    assert.equal(after.selected, null, 'INCOMPLETE results require explicit Apply');
+    assert.equal(after.source, source, 'the entire committed Pack, stats and lastEdited stay unchanged');
+    assert.equal(after.writes, 0);
+    assert.ok(after.frames.length > 2, 'real animation frames were observed');
+    for (const frame of after.frames) assert.deepEqual(frame, after.frames[0],
+      'pre-solve staging, animation and final presentation never jump the authored leftover');
+    assert.ok(after.normalIds.length >= 2, 'multiple real normal solver options exercise shared staging');
+    const read = () => page.evaluate(async () => {
+      const p = window.probe;
+      const { buildAppliedAutoPackCases } = await import('/src/screens/editor-screen.js');
+      const { getActualPoseDimensions } = await import('/src/core/oriented-dims.js');
+      const { getAabb, aabbsOverlap } = await import('/src/services/autopack-solver.js');
+      const pack = p.PackLibrary.getById(p.StateStore.get('currentPackId'));
+      const option = p.viewedCandidate();
+      const cases = buildAppliedAutoPackCases(option, structuredClone, pack.cases);
+      const candidate = { ...pack, cases };
+      const stats = p.PackLibrary.computeStats(candidate);
+      const authored = cases.find(inst => inst.id === 'authored');
+      const hidden = cases.find(inst => inst.id === 'hidden-staged');
+      const incoming = cases.find(inst => inst.id === 'formerly-packed');
+      const bounds = inst => {
+        const dims = getActualPoseDimensions(p.CaseLibrary.getById(inst.caseId), inst).value;
+        return getAabb(inst.transform.position, { l: dims.length, w: dims.width, h: dims.height });
+      };
+      const body = document.querySelector('#inspector-body');
+      return { authored, hidden, incoming, stats: { packed: stats.packedCases, staged: stats.stagedCases,
+        totalWeight: stats.totalWeight, weightComplete: stats.weightComplete, percent: stats.volumePercent.toFixed(1) },
+        overlap: [authored, hidden].some(inst => aabbsOverlap(bounds(incoming), bounds(inst))),
+        sceneMatches: cases.filter(inst => !inst.hidden).every(inst => p.CaseScene.getObject(inst.id).position
+          .distanceTo(p.SceneManager.vecInchesToWorld(inst.transform.position)) < 1e-6),
+        counts: [...body.querySelectorAll('.tp3d-editor-stats-card .row b')].map(el => el.textContent),
+        gauge: body.querySelector('[data-role="space-utilization-gauge"]').textContent,
+        writes: p.c5bWrites };
+    });
+    const original = JSON.parse(source);
+    const authored = original.cases.find(inst => inst.id === 'authored');
+    const hidden = original.cases.find(inst => inst.id === 'hidden-staged');
+    for (const id of after.normalIds) {
+      // Use the existing Results controls to reach each normal strategy.
+      while (await page.evaluate(target => window.probe.viewedCandidate().id !== target, id)) {
+        const currentIndex = await page.evaluate(() => window.probe.StateStore.get('autoPackResults').viewIndex || 0);
+        const targetIndex = await page.evaluate(async target => {
+          const { orderAutoPackResultOptions } = await import('/src/screens/editor-screen.js');
+          return orderAutoPackResultOptions(window.probe.StateStore.get('autoPackResults').options).findIndex(o => o.id === target);
+        }, id);
+        await page.locator(`[data-focus-key="results-${targetIndex > currentIndex ? 'next' : 'prev'}"]`).click();
+      }
+      const viewed = await read();
+      assert.deepEqual(viewed.authored.transform, authored.transform);
+      assert.deepEqual(viewed.authored.orientedDims, { length: 10, width: 800, height: 20 });
+      assert.deepEqual(viewed.hidden, hidden);
+      assert.equal(viewed.incoming.placement, 'staged');
+      assert.equal(viewed.overlap, false, 'new staging avoids existing visible and hidden footprints');
+      assert.equal(viewed.sceneMatches, true);
+      assert.equal(viewed.stats.totalWeight, null);
+      assert.equal(viewed.stats.weightComplete, false);
+      assert.deepEqual(viewed.counts, [String(viewed.stats.packed), String(viewed.stats.staged), '—']);
+      assert.ok(viewed.gauge.includes(`${viewed.stats.percent}%`));
+      assert.equal(viewed.writes, 0, 'browsing leaves persistence untouched');
+    }
+    assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'preview creates no history');
+    await page.locator('[data-focus-key="results-apply"]').click();
+    const applied = await read();
+    assert.equal(applied.writes, 1, 'Apply makes one canonical commit');
+    assert.deepEqual(applied.authored.transform, authored.transform);
+    const committed = await page.evaluate(() => window.probe.casesJson());
+    assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true);
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), JSON.stringify(original.cases));
+    assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true);
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), committed);
+    assert.equal((await read()).sceneMatches, true);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 test('Results carousel: Balanced leads, arrows live-preview the 3D load and Inspector without touching the Pack, Apply commits', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
@@ -2185,6 +2305,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
       const atPose = list => list.every(inst => p.CaseScene.getObject(inst.id).position
         .distanceTo(p.SceneManager.vecInchesToWorld(inst.transform.position)) <= 0.05);
       const expected = Gauge.buildSpaceUtilizationResult({ ...pack, cases }, p.PackLibrary);
+      const expectedStats = p.PackLibrary.computeStats({ ...pack, cases });
       const body = document.querySelector('#inspector-body');
       const clean = el => (el ? el.textContent.replace(/\s+/g, ' ').trim() : '');
       return {
@@ -2192,10 +2313,12 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
         showsPack: atPose(pack.cases),
         transient: p.CaseScene.isTransientPreview(),
         summary: clean(body.querySelector('.tp3d-editor-stats-card')),
+        displayedWeight: clean(body.querySelector('.tp3d-editor-stats-card .row:last-child b')),
         gauge: clean(body.querySelector('[data-role="space-utilization-gauge"]')),
         expectedInTruck: expected.loadedCount,
         expectedStaged: expected.stagedCount,
         expectedPercent: expected.percentage.toFixed(1),
+        expectedWeight: p.Utils.formatWeight(expectedStats.totalWeight, 'lb'),
       };
     }, optionId);
     const showsInspector = (scene, label) => {
@@ -2203,6 +2326,8 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
         `${label}: Load Summary matches the layout in the scene`);
       assert.ok(scene.gauge.includes(`${scene.expectedPercent}% Occupied`),
         `${label}: Space Utilization matches the layout in the scene (${scene.gauge})`);
+      assert.equal(scene.displayedWeight, scene.expectedWeight,
+        `${label}: loaded weight matches the same viewed candidate (${scene.summary})`);
     };
     const packJson = () => page.evaluate(() => window.probe.casesJson());
     let balancedPack = await packJson();

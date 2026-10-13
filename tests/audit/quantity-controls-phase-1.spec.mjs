@@ -3011,7 +3011,7 @@ test('P1-B Q7: ONE guard is wired at the actual Add and Unstage click boundaries
     const dup = click.indexOf(`stagingActionGuard.isDuplicate(STAGING_ACTION_KIND.${kind}, packId, c.id)`);
     const live = click.indexOf('readLiveQty()');
     assert.ok(busy >= 0 && dup > busy && live > dup, `${name}: busy guard -> duplicate check -> live-Qty validation -> service`);
-    const previewEnd = click.indexOf('endAutoPackResultsPreview()');
+    const previewEnd = click.indexOf('endAutoPackResultsPreview({ forManualEdit: true })');
     const service = click.indexOf(kind === 'ADD' ? 'PackLibrary.addInstancesToStaging(' : 'PackLibrary.removeCaseInstancesFromStaging(');
     assert.ok(previewEnd > live && service > previewEnd, `${name}: committed scene restored before staging membership mutation`);
     const okAt = click.indexOf("result.reason !== 'ok'");

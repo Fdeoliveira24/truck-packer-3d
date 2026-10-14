@@ -1029,7 +1029,8 @@ export function createSceneRuntime({
       ).normalize();
       const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), direction).normalize();
       const up = new THREE.Vector3().crossVectors(direction, right).normalize();
-      const size = containerEl ? getContainerSize() : viewSize;
+      const measuredSize = containerEl ? getContainerSize() : null;
+      const size = measuredSize && measuredSize.width > 10 && measuredSize.height > 10 ? measuredSize : viewSize;
       const tanVertical = Math.tan(((camera?.fov || 40) * Math.PI / 180) / 2);
       const tanHorizontal = tanVertical * (size.width / size.height);
       let distance = 0;

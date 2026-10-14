@@ -3048,14 +3048,16 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
     assert.deepEqual(await probe(() => window.probe.selection()), [], 'status card click selects nothing');
     assert.deepEqual(await probe(() => window.probe.camera()), cameraBeforeCard, 'status card click moves no camera');
 
-    const cameraBeforeDrag = await probe(() => window.probe.camera());
+    const viewBeforeDrag = await probe(() => window.probe.SceneManager.getEditorView());
     await noSnap('camera drag outside the card', async () => {
       await page.mouse.move(empty.x, empty.y);
       await page.mouse.down();
       await page.mouse.move(empty.x + 140, empty.y + 30, { steps: 8 });
       await page.mouse.up();
     });
-    assert.notDeepEqual(await probe(() => window.probe.camera()), cameraBeforeDrag, 'camera orbit still works');
+    assert.notDeepEqual(await probe(() => window.probe.camera()), viewBeforeDrag.cameraPosition, 'camera orbit still works');
+    // Keep the subsequent cargo-click probe truck-facing after the orbit check.
+    await page.evaluate(view => window.probe.SceneManager.applyEditorView(view), viewBeforeDrag);
 
     await page.evaluate(() => document.activeElement && document.activeElement.blur && document.activeElement.blur());
     await noSnap('Ctrl+A select all', () => page.keyboard.press('Control+a'));

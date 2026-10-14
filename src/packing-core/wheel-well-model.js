@@ -246,7 +246,7 @@ function hasDisqualifiedDirectCargoSupport(candidateAabb, packed, candidateItem)
   return supports.some(support => {
     if (!support || !support.aabb) return false;
     if (Math.abs(bottom - support.aabb.max.y) > CONTACT_EPS) return false;
-    if (computeXzOverlapArea(candidateAabb, support.aabb) <= 0.05) return false;
+    if (computeXzOverlapArea(candidateAabb, support.aabb) <= 0) return false;
     return !canSupportStack(support) ||
       !hasStackCapacity(support, supports) ||
       !canSupportCandidateWeight(candidateItem, support);

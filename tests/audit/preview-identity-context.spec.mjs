@@ -609,6 +609,7 @@ test('C5T browser confirms unresolved staged Truck Changes without cargo loss an
     const chooseShape = async label => {
       await page.locator('[data-focus-key="truck-shape"]').click();
       await page.getByRole('listbox', { name: 'Trailer Shape Mode' }).getByRole('option', { name: label, exact: true }).click();
+      await settlePreview(page);
       await page.locator('#inspector-body button').filter({ hasText: 'Update truck' }).click();
       const modal = page.getByRole('dialog', { name: 'Truck change', exact: true });
       await modal.waitFor();

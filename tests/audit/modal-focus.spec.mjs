@@ -862,6 +862,7 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
         CaseLibrary: { getCases: () => [] },
         PackLibrary: {
           reconcilePlacementsForTruck: () => ({ nextPack: pack, kept: [], adjusted: [], invalid: ['case'], unresolved: [], malformed: [], summary: {} }),
+          getPackedReconciliationCompleteness: () => ({ validationComplete: true }),
           stagePlacementIds: source => ({ pack: source, stagedIds: ['case'], failedIds: [] }),
           repackInvalidPlacements: () => ({ pack, repackedIds: [], failedIds: ['case'] }),
           update: () => { throw Error('Cancel must not commit'); },

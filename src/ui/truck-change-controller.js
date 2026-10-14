@@ -166,7 +166,7 @@ export function createTruckChangeController({
       blocked.className = 'muted tp3d-editor-sub-sm';
       const messages = [];
       if (recon.unresolved.length) {
-        messages.push(`${recon.unresolved.length} unresolved item(s) reference missing case definitions`);
+        messages.push(`${recon.unresolved.length} unresolved item(s) require source data or assessment`);
       }
       if (recon.malformed.length) {
         messages.push(`${recon.malformed.length} malformed item(s) have invalid physical data`);

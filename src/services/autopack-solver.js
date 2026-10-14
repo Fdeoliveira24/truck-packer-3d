@@ -1980,20 +1980,46 @@ function stackBatchLayerLevels(packed) {
   );
 }
 
-function stackBatchCellMins(rect, orientation, loadFrontFirst) {
+function stackBatchCellMins(rect, orientation, loadFrontFirst, supportEdges = []) {
   const cols = Math.floor((freeRectLength(rect) + FREE_RECT_EPS) / orientation.l);
   const rows = Math.floor((freeRectWidth(rect) + FREE_RECT_EPS) / orientation.w);
   if (cols <= 0 || rows <= 0) return [];
 
   const cells = [];
+  const gridXMins = [];
   for (let col = 0; col < cols; col++) {
     const xMin = loadFrontFirst
       ? rect.maxX - (col + 1) * orientation.l
       : rect.minX + col * orientation.l;
+    gridXMins.push(xMin);
     for (let row = 0; row < rows; row++) {
       cells.push({ xMin, zMin: rect.minZ + row * orientation.w });
     }
   }
+  if (!supportEdges.length || !loadFrontFirst || cols < 2) return cells;
+
+  // A merged layer rect hides the edges of its individual supporters. When a
+  // front-first grid cell is illegal because its footprint also touches an
+  // already-full supporter, the next grid cell can leave a large gap. Try one
+  // supporter-aligned anchor within each grid interval, then let the unchanged
+  // hard-rule predicate reject any collision or insufficient support.
+  for (let row = 0; row < rows; row++) {
+    const zMin = rect.minZ + row * orientation.w;
+    const alignedByGap = new Map();
+    for (const edge of supportEdges) {
+      if (edge.maxZ <= zMin + FREE_RECT_EPS || edge.minZ >= zMin + orientation.w - FREE_RECT_EPS) continue;
+      const xMin = edge.maxX - orientation.l;
+      if (xMin < rect.minX - FREE_RECT_EPS || xMin + orientation.l > rect.maxX + FREE_RECT_EPS) continue;
+      for (let col = 0; col < cols - 1; col++) {
+        if (xMin < gridXMins[col] - FREE_RECT_EPS && xMin > gridXMins[col + 1] + FREE_RECT_EPS) {
+          if (!alignedByGap.has(col) || xMin > alignedByGap.get(col)) alignedByGap.set(col, xMin);
+          break;
+        }
+      }
+    }
+    for (const xMin of alignedByGap.values()) cells.push({ xMin, zMin });
+  }
+  cells.sort((a, b) => b.xMin - a.xMin || a.zMin - b.zMin);
   return cells;
 }
 
@@ -2024,7 +2050,8 @@ function placeRepeatedStackGroup(
   retentionContext,
   wheelWell,
   budget = null,
-  useCleanupBudget = false
+  useCleanupBudget = false,
+  useSupportEdgeAnchors = false
 ) {
   const queue = [...(group || [])];
   let placed = 0;
@@ -2036,9 +2063,19 @@ function placeRepeatedStackGroup(
 
     for (const yLevel of levels) {
       if (!queue.length || stackBatchBudgetExpired(budget, useCleanupBudget)) break;
-      const layerRects = buildStackLayerFreeRects(structuralPlacements(packed), yLevel);
+      const structural = structuralPlacements(packed);
+      const layerRects = buildStackLayerFreeRects(structural, yLevel);
       const orientations = rankedRepeatedStackOrientations(queue, layerRects);
       if (!orientations.length) continue;
+      const supportEdges = useSupportEdgeAnchors
+        ? structural.filter(placement => placement?.aabb &&
+          Math.abs(placement.aabb.max.y - yLevel) <= CONTACT_EPS && canSupportStack(placement))
+          .map(placement => ({
+            maxX: placement.aabb.max.x,
+            minZ: placement.aabb.min.z,
+            maxZ: placement.aabb.max.z,
+          }))
+        : [];
 
       const rects = [...layerRects].sort((a, b) => {
         const ax = loadFrontFirst ? -a.maxX : a.minX;
@@ -2054,7 +2091,7 @@ function placeRepeatedStackGroup(
           if (orientation.l > freeRectLength(rect) + FREE_RECT_EPS) continue;
           if (orientation.w > freeRectWidth(rect) + FREE_RECT_EPS) continue;
 
-          for (const { xMin, zMin } of stackBatchCellMins(rect, orientation, loadFrontFirst)) {
+          for (const { xMin, zMin } of stackBatchCellMins(rect, orientation, loadFrontFirst, supportEdges)) {
             if (!queue.length || stackBatchBudgetExpired(budget, useCleanupBudget)) break;
             const item = queue[0];
             const dims = { l: orientation.l, w: orientation.w, h: orientation.h };
@@ -2096,7 +2133,8 @@ function placeRepeatedStackBatches(
   retentionContext,
   wheelWell,
   budget = null,
-  useCleanupBudget = false
+  useCleanupBudget = false,
+  useSupportEdgeAnchors = false
 ) {
   const remaining = new Set(items || []);
   for (const group of buildRepeatedBatches(items, layoutQualityEnabled)) {
@@ -2112,7 +2150,8 @@ function placeRepeatedStackBatches(
       retentionContext,
       wheelWell,
       budget,
-      useCleanupBudget
+      useCleanupBudget,
+      useSupportEdgeAnchors
     );
     const stillRemaining = new Set(result.remaining);
     for (const item of activeGroup) {
@@ -3613,6 +3652,12 @@ export function solveAutoPack(input = {}) {
   //   final stack phase (favors vertical use over floor spread).
   const stackPhaseEnabled = input.enableStackPhase !== false;
   const stackFallbackImmediate = stackPhaseEnabled && input.stackFallbackImmediate === true;
+  // Only the ordinary Standard/Balanced path gets the support-edge tie break.
+  // Other truck geometries and strategy policies keep their existing search.
+  const useStandardBalancedSupportEdgeAnchors =
+    (!input.truck?.shapeMode || input.truck.shapeMode === 'rect') &&
+    loadFrontFirst && layoutQualityEnabled && !wheelWell && !retentionContext?.geometry &&
+    input.maxCapacityMode !== true && !stackFallbackImmediate && input.constrainedSpaceFirst !== true;
   const wheelWellBridgeGeometry = input.enableWheelWellBridge === true ? wheelWell : null;
   const tryImmediateStack = item => {
     if (!stackFallbackImmediate) return false;
@@ -3785,7 +3830,9 @@ export function solveAutoPack(input = {}) {
       layoutQualityEnabled,
       retentionContext,
       wheelWellBridgeGeometry,
-      budget
+      budget,
+      false,
+      useStandardBalancedSupportEdgeAnchors
     );
     stackCount += beforeBatch - stackQueue.length;
   }

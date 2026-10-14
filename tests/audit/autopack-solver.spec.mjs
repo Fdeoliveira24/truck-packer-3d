@@ -2,6 +2,7 @@
 
 import { runInNewContext } from 'node:vm';
 import { runAdaptiveAutoPack } from '../../src/packing-core/solution.js';
+import { createAutoPackStrategyAuditFixtures } from '../fixtures/autopack-strategy-audit-fixtures.mjs';
 
 import {
   PHB_DIMS,
@@ -1501,6 +1502,72 @@ test('AUTO-PACK-A1-R6.4 repeated batch compaction does not break shelf rows', as
     'floor compaction must not split a deterministic repeated-case row');
   assert.equal(output.phaseStats.floorCount, 52);
   assert.equal(output.phaseStats.stackCount, 26);
+});
+
+test('C5D-S1 Standard Balanced closes avoidable longitudinal stack gaps without losing cargo', async () => {
+  const [Solver, PackLib, Engine] = await Promise.all([
+    import(autoPackSolverPath.href),
+    import(packLibraryPath.href),
+    import(autoPackEnginePath.href),
+  ]);
+  const fixture = createAutoPackStrategyAuditFixtures().find(entry => entry.id === 'mixed-sku-fragmentation');
+  const input = {
+    truck: fixture.truck,
+    zones: PackLib.getTrailerUsableZones(fixture.truck),
+    items: fixture.items,
+    ...fixture.inputOptions,
+  };
+  const balanced = Solver.solveAutoPack(input);
+  const compact = Solver.solveAutoPack({ ...input, layoutQuality: false });
+  const repeated = Solver.solveAutoPack(input);
+  const signature = result => JSON.stringify([...result.placements].map(([id, position]) => [
+    id, position, result.rotations.get(id), result.orientedDims.get(id),
+  ]));
+  assert.equal(signature(balanced), signature(repeated), 'the same input produces the same physical poses');
+
+  const forwardGap = result => {
+    const bodies = [...result.placements].map(([id, position]) => {
+      const dims = result.orientedDims.get(id);
+      return { id, aabb: Solver.getAabb(position, { l: dims.length, w: dims.width, h: dims.height }) };
+    });
+    let faceArea = 0;
+    let areaTimesGap = 0;
+    for (const body of bodies) {
+      const face = body.aabb;
+      if (face.min.y <= 0.05 || Math.abs(face.max.x - fixture.truck.length) <= 0.05) continue;
+      const ahead = bodies.filter(other => other.id !== body.id &&
+        other.aabb.min.x >= face.max.x - 0.05 &&
+        other.aabb.max.y > face.min.y + 0.05 && other.aabb.min.y < face.max.y - 0.05 &&
+        other.aabb.max.z > face.min.z + 0.05 && other.aabb.min.z < face.max.z - 0.05);
+      const gap = ahead.length
+        ? Math.min(...ahead.map(other => Math.max(0, other.aabb.min.x - face.max.x)))
+        : fixture.truck.length - face.max.x;
+      const area = (face.max.y - face.min.y) * (face.max.z - face.min.z);
+      faceArea += area;
+      areaTimesGap += area * gap;
+    }
+    return areaTimesGap / faceArea;
+  };
+  assert.equal(compact.placements.size, 14, 'the existing compact policy remains the control');
+  assert.equal(forwardGap(compact), 30, 'control leaves a 30-inch forward gap on stacked faces');
+  assert.equal(balanced.placements.size, 18, 'support-edge anchors recover four valid placements');
+  assert.equal(balanced.unpacked.length, 38);
+  assert.equal(forwardGap(balanced), 10, 'stacked faces sit 10 inches from the next overlapping cargo');
+
+  const pack = { truck: fixture.truck, cases: fixture.items.map(item => {
+    const position = balanced.placements.get(item.instanceId);
+    return {
+      id: item.instanceId, caseId: item.caseId, placement: position ? 'packed' : 'staged',
+      transform: {
+        position: position || { x: -100, y: 0, z: 0 },
+        rotation: balanced.rotations.get(item.instanceId) || { x: 0, y: 0, z: 0 },
+      },
+    };
+  }) };
+  const definitions = fixture.caseLibrary.map(caseData => ({ ...caseData, shape: caseData.shape || 'box' }));
+  const assessment = Engine.assessNormalAutoPackCandidate(pack, definitions);
+  assert.equal(assessment.primary, 'VALID');
+  assert.equal(assessment.eligibility.state, 'eligible');
 });
 
 test('AUTO-PACK-A1-R6.5 repeated flippable flat panels prefer low shelf orientation when the batch fits', async () => {

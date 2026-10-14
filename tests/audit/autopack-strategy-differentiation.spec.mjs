@@ -153,8 +153,8 @@ test('STRATEGY-AUDIT intentional convergence and physical dedupe are recognized'
   }
   assert.equal(
     report.aggregate.pairSummary['default__compact-fill'].exactPhysicalLayoutFixtures,
-    14,
-    'Compact fill converges broadly but differs on the dedicated Wheel Wells yaw-control fixture'
+    13,
+    'Compact fill differs on the Wheel Wells yaw control and Standard mixed-SKU longitudinal stack fixture'
   );
   const yawControl = fixture('layout-quality-yaw-control');
   assert.notEqual(

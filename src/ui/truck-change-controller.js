@@ -95,7 +95,6 @@ export function createTruckChangeController({
       pack: {
         ...staged.pack,
         truck: ctx.nextTruck,
-        cases: (staged.pack.cases || []).filter(inst => !excluded.has(inst.id)),
       },
       stagedIds: staged.stagedIds || [],
       failedIds: staged.failedIds || [],
@@ -104,10 +103,16 @@ export function createTruckChangeController({
   }
 
   function renderPreview(ctx, preview) {
-    if (typeof ctx.renderPreview === 'function') ctx.renderPreview(preview);
+    if (typeof ctx.renderPreview !== 'function') return;
+    // Excluding untrustworthy geometry is a scene concern, never deletion from
+    // the full Pack transaction that confirmation will commit.
+    const excluded = new Set(preview.excludedIds || []);
+    ctx.renderPreview({ ...preview, pack: { ...preview.pack,
+      cases: (preview.pack.cases || []).filter(inst => !excluded.has(inst.id)),
+    } });
   }
 
-  function makeSummaryContent(recon, heading) {
+  function makeSummaryContent(recon, heading, unresolvedPackedCount = 0) {
     const content = documentRef.createElement('div');
     const intro = documentRef.createElement('div');
     intro.className = 'tp3d-editor-sub-sm';
@@ -166,7 +171,13 @@ export function createTruckChangeController({
       if (recon.malformed.length) {
         messages.push(`${recon.malformed.length} malformed item(s) have invalid physical data`);
       }
-      blocked.textContent = `${messages.join('; ')}. Resolve or remove them before changing the truck.`;
+      const completeness = PackLibrary.getPackedReconciliationCompleteness(recon.nextPack, recon);
+      blocked.textContent = `${messages.join('; ')}. ${completeness.validationComplete
+        ? 'These items are preserved in staging and still require attention.'
+        : 'Packed physical data must be resolved before changing the truck.'}`;
+      if (unresolvedPackedCount) {
+        blocked.textContent += ` ${unresolvedPackedCount} packed item(s) will move to unresolved staging.`;
+      }
       content.appendChild(blocked);
     }
     const previewNote = documentRef.createElement('div');
@@ -301,7 +312,7 @@ export function createTruckChangeController({
 
   function showPreview(ctx) {
     const recon = ctx.reconciliation;
-    const blocked = recon.unresolved.length > 0 || recon.malformed.length > 0;
+    const blocked = !PackLibrary.getPackedReconciliationCompleteness(recon.nextPack, recon).validationComplete;
     // DOM order is the reading and Tab order: decisions first, Cancel last.
     const actions = [];
     const excludedIds = [
@@ -369,7 +380,7 @@ export function createTruckChangeController({
 
     const modalRef = showManagedModal(ctx, {
       title: 'Truck change',
-      content: makeSummaryContent(recon, 'Changing the truck affects placed cases:'),
+      content: makeSummaryContent(recon, 'Changing the truck affects placed cases:', ctx.unresolvedPackedIds.length),
       actions,
     });
     modalRef.modal?.classList?.add('tp3d-truck-change-modal');
@@ -407,11 +418,31 @@ export function createTruckChangeController({
 
     let caseLibrary;
     let reconciliation;
+    let unresolvedPackedIds = [];
     try {
       caseLibrary = CaseLibrary.getCases();
       reconciliation = (pack.cases || []).length
         ? PackLibrary.reconcilePlacementsForTruck(pack, nextTruck, caseLibrary)
         : null;
+      if (reconciliation) {
+        const caseIds = new Set(caseLibrary.map(caseData => caseData.id));
+        const untrustedIds = new Set([
+          ...reconciliation.unresolved.filter(entry => !caseIds.has(entry.caseId)).map(entry => entry.id),
+          ...reconciliation.malformed.map(entry => entry.id),
+        ]);
+        unresolvedPackedIds = (pack.cases || [])
+          .filter(inst => inst && inst.placement !== 'staged' && untrustedIds.has(inst.id))
+          .map(inst => inst.id);
+        if (unresolvedPackedIds.length) {
+          const fallbackIds = new Set(unresolvedPackedIds);
+          // No trusted envelope exists to allocate a physical staging pose.
+          // Preserve source data and change only placement state, then rerun
+          // reconciliation so these items cannot block or support resolved cargo.
+          const stagedPack = { ...pack, cases: pack.cases.map(inst => fallbackIds.has(inst.id)
+            ? { ...inst, placement: 'staged' } : inst) };
+          reconciliation = PackLibrary.reconcilePlacementsForTruck(stagedPack, nextTruck, caseLibrary);
+        }
+      }
     } catch (error) {
       UIComponents.showToast(
         error && error.message ? error.message : 'Truck change could not be previewed.',
@@ -424,6 +455,7 @@ export function createTruckChangeController({
       pack,
       nextTruck,
       caseLibrary,
+      unresolvedPackedIds,
       commit: options.commit,
       onCommitted: options.onCommitted,
       restoreControls: options.restoreControls,

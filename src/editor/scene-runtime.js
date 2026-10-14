@@ -1022,12 +1022,36 @@ export function createSceneRuntime({
       const widthW = toWorld(Number(truckInches?.width) || 102);
       const heightW = toWorld(Number(truckInches?.height) || 98);
       const target = { x: lengthW / 2, y: Math.min(6, heightW / 2), z: 0 };
+      const direction = new THREE.Vector3(
+        Math.max(12, lengthW * 0.42),
+        Math.max(12, heightW * 2.8),
+        Math.max(16, widthW * 3.8)
+      ).normalize();
+      const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), direction).normalize();
+      const up = new THREE.Vector3().crossVectors(direction, right).normalize();
+      const measuredSize = containerEl ? getContainerSize() : null;
+      const size = measuredSize && measuredSize.width > 10 && measuredSize.height > 10 ? measuredSize : viewSize;
+      const tanVertical = Math.tan(((camera?.fov || 40) * Math.PI / 180) / 2);
+      const tanHorizontal = tanVertical * (size.width / size.height);
+      let distance = 0;
+      for (const x of [0, lengthW]) {
+        for (const y of [0, heightW]) {
+          for (const z of [-widthW / 2, widthW / 2]) {
+            const corner = new THREE.Vector3(x - target.x, y - target.y, z);
+            const depth = corner.dot(direction);
+            distance = Math.max(distance,
+              depth + Math.abs(corner.dot(right)) / tanHorizontal,
+              depth + Math.abs(corner.dot(up)) / tanVertical);
+          }
+        }
+      }
+      distance = Math.max(controls?.minDistance || 6, distance * 1.12);
       return normalizeEditorView({
         target,
         cameraPosition: {
-          x: target.x + Math.max(12, lengthW * 0.42),
-          y: target.y + Math.max(12, heightW * 2.8),
-          z: Math.max(16, widthW * 3.8),
+          x: target.x + direction.x * distance,
+          y: target.y + direction.y * distance,
+          z: direction.z * distance,
         },
       });
     }

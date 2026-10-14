@@ -262,18 +262,66 @@ window.probe = {
       !(avoid && x > avoid.left - 24 && x < avoid.right + 24 && y > avoid.top - 24 && y < avoid.bottom + 24);
     const candidates = [];
     if (id) {
-      const v = CaseScene.getObject(id).position.clone().project(camera);
+      const object = CaseScene.getObject(id);
+      const v = object.position.clone().project(camera);
       candidates.push([rect.left + ((v.x + 1) / 2) * rect.width, rect.top + ((1 - v.y) / 2) * rect.height]);
+      // The center can be off-canvas or under the status card while another part
+      // of the same cargo is visible: also sample its projected bounds, clipped
+      // to the canvas. The center stays first, so any cargo it already found
+      // resolves to the same point.
+      const box = new THREE.Box3().setFromObject(object);
+      const xs = [];
+      const ys = [];
+      for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+        const p = new THREE.Vector3(x, y, z).project(camera);
+        xs.push(rect.left + ((p.x + 1) / 2) * rect.width);
+        ys.push(rect.top + ((1 - p.y) / 2) * rect.height);
+      }
+      const x0 = Math.max(rect.left, Math.min(...xs));
+      const x1 = Math.min(rect.right, Math.max(...xs));
+      const y0 = Math.max(rect.top, Math.min(...ys));
+      const y1 = Math.min(rect.bottom, Math.max(...ys));
+      if (x1 > x0 && y1 > y0) {
+        for (let gy = 1; gy < 6; gy += 1) for (let gx = 1; gx < 6; gx += 1) {
+          candidates.push([x0 + ((x1 - x0) * gx) / 6, y0 + ((y1 - y0) * gy) / 6]);
+        }
+      }
     } else {
       for (let gy = 1; gy < 10; gy += 1) for (let gx = 1; gx < 16; gx += 1) {
         candidates.push([rect.left + (rect.width * gx) / 16, rect.top + (rect.height * gy) / 10]);
       }
     }
-    const found = candidates.find(([x, y]) => usable(x, y) && hitAt(x, y) === id);
+    // A bounds-sampled point must sit inside the cargo's silhouette, not on its
+    // edge where a sub-pixel difference decides the hit. The center is unchanged.
+    const solid = (x, y) => [[2, 0], [-2, 0], [0, 2], [0, -2]].every(([dx, dy]) =>
+      usable(x + dx, y + dy) && hitAt(x + dx, y + dy) === id);
+    const found = candidates.find(([x, y], index) => usable(x, y) && hitAt(x, y) === id &&
+      (!id || index === 0 || solid(x, y)));
     return found ? { x: found[0], y: found[1] } : null;
   },
   cargoPoint() {
     for (const inst of livePack().cases) {
+      const point = this.pointFor(inst.id);
+      if (point) return { id: inst.id, ...point };
+    }
+    return null;
+  },
+  // A cargo point that stays valid for the click that follows: the cargo already
+  // rests at its presented pose (it cannot move again during this run) and the
+  // camera has not moved since the previous call (orbit damping has settled).
+  settledCargoPoint() {
+    const camera = SceneManager.getCamera();
+    const last = this.lastCamera;
+    this.lastCamera = { position: camera.position.clone(), quaternion: camera.quaternion.clone() };
+    if (!last || last.position.distanceTo(camera.position) > 1e-3 ||
+        1 - Math.abs(last.quaternion.dot(camera.quaternion)) > 1e-8) return null;
+    const candidate = this.transient() ? this.viewedCandidate() : null;
+    const presented = new Map((candidate ? candidate.nextCases : livePack().cases).map(inst => [inst.id, inst]));
+    for (const inst of livePack().cases) {
+      const target = presented.get(inst.id);
+      const object = CaseScene.getObject(inst.id);
+      if (!target || !object ||
+          object.position.distanceTo(SceneManager.vecInchesToWorld(target.transform.position)) > 0.05) continue;
       const point = this.pointFor(inst.id);
       if (point) return { id: inst.id, ...point };
     }
@@ -1436,9 +1484,16 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
       })));
     assert.ok(names.every(item => item.name && item.id), 'Inspector controls have accessible names');
 
-    // The scene settles after the drawer toggle before cargo is raycastable.
-    await page.waitForFunction(() => window.probe.cargoPoint() !== null);
-    const cargo = await page.evaluate(() => window.probe.cargoPoint());
+    // After closing the drawer, require the same raycastable cargo point across
+    // three frames so an in-flight layout/scene update cannot stale the click.
+    const cargo = await (await page.waitForFunction(() => {
+      const point = window.probe.settledCargoPoint();
+      const previous = window.probe.accessibilityPoint;
+      const stable = point && previous && point.id === previous.id &&
+        Math.hypot(point.x - previous.x, point.y - previous.y) < 0.5;
+      window.probe.accessibilityPoint = point ? { ...point, frames: stable ? previous.frames + 1 : 1 } : null;
+      return window.probe.accessibilityPoint?.frames >= 3 ? point : null;
+    })).jsonValue();
     await page.mouse.click(cargo.x, cargo.y);
     assert.deepEqual(await page.evaluate(() => window.probe.selection()), [cargo.id]);
     assert.equal(await page.getByLabel('Select placed case').count(), 0);
@@ -2993,14 +3048,16 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
     assert.deepEqual(await probe(() => window.probe.selection()), [], 'status card click selects nothing');
     assert.deepEqual(await probe(() => window.probe.camera()), cameraBeforeCard, 'status card click moves no camera');
 
-    const cameraBeforeDrag = await probe(() => window.probe.camera());
+    const viewBeforeDrag = await probe(() => window.probe.SceneManager.getEditorView());
     await noSnap('camera drag outside the card', async () => {
       await page.mouse.move(empty.x, empty.y);
       await page.mouse.down();
       await page.mouse.move(empty.x + 140, empty.y + 30, { steps: 8 });
       await page.mouse.up();
     });
-    assert.notDeepEqual(await probe(() => window.probe.camera()), cameraBeforeDrag, 'camera orbit still works');
+    assert.notDeepEqual(await probe(() => window.probe.camera()), viewBeforeDrag.cameraPosition, 'camera orbit still works');
+    // Keep the subsequent cargo-click probe truck-facing after the orbit check.
+    await page.evaluate(view => window.probe.SceneManager.applyEditorView(view), viewBeforeDrag);
 
     await page.evaluate(() => document.activeElement && document.activeElement.blur && document.activeElement.blur());
     await noSnap('Ctrl+A select all', () => page.keyboard.press('Control+a'));
@@ -3008,8 +3065,15 @@ test('P0-SM-OF-10B Editor interaction during an animated AutoPack never re-syncs
     await noSnap('Escape deselect', () => page.keyboard.press('Escape'));
     assert.deepEqual(await probe(() => window.probe.selection()), [], 'Escape cleared the selection');
 
-    const cargo = await probe(() => window.probe.cargoPoint());
-    assert.ok(cargo, 'a visible cargo item outside the status card exists');
+    // AutoPack keeps authored staging where it was authored, so cargo reaches
+    // the visible canvas only as it lands. Wait for one visible, unobstructed
+    // cargo that is already at rest (a moving one is gone before the click)
+    // while enough animation remains to observe a snap (a batch of margin
+    // covers the frames between this probe and noSnap's own check), then assert.
+    const found = await page.waitForFunction(min => window.probe.settledCargoPoint() ||
+      (window.probe.presentationRemaining() < min ? 'animation exhausted' : null), MIN_REMAINING + BATCH_SIZE);
+    const cargo = await found.jsonValue();
+    assert.ok(cargo && cargo.id, 'a visible cargo item outside the status card exists');
     await noSnap('cargo click', () => page.mouse.click(cargo.x, cargo.y));
     assert.deepEqual(await probe(() => window.probe.selection()), [cargo.id], 'cargo click selects that case');
     assert.equal(await page.evaluate(id => window.probe.emissive(id), cargo.id), await probe(() => window.probe.accent()),

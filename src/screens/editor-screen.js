@@ -2308,6 +2308,7 @@ export function createInteractionManager({
         return false;
       }
       const desiredPosition = SceneManager.vecWorldToInches(obj.position);
+      if (!stagedCandidateIsInsideUsableTruckZone(pack, inst, desiredPosition)) return false;
       const resolved = PackLibrary.findManualVerticalPlacement(
         pack, CaseLibrary.getCases(), inst.id,
         { mode: 'resolve', desiredPosition, exact: true }
@@ -4077,11 +4078,15 @@ export function createEditorScreen({
     // the committed scene: a transient Results preview ends first through the
     // landing above, and the committed Pack is rendered synchronously, before
     // any operation claims the lifecycle slot. Returns true when it ended one.
-    function endAutoPackResultsPreview() {
+    function endAutoPackResultsPreview({ forManualEdit = false } = {}) {
       if (!CaseScene.isTransientPreview()) return false;
       landAutoPackResultsViewOnApplied();
       if (CaseScene.isTransientPreview()) render();
-      return !CaseScene.isTransientPreview();
+      const ended = !CaseScene.isTransientPreview();
+      if (ended && forManualEdit) {
+        UIComponents.showToast('AutoPack preview ended. Saved load plan restored.', 'info', { title: 'Editor' });
+      }
+      return ended;
     }
 
     function getPreviewScene() {
@@ -4798,6 +4803,7 @@ export function createEditorScreen({
         prevBtn.dataset.focusKey = 'results-prev';
         prevBtn.innerHTML = '<i class="fa-solid fa-chevron-left"></i>';
         prevBtn.disabled = viewIndex <= 0;
+        if (stale) prevBtn.disabled = true;
         prevBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.max(0, viewIndex - 1), previewEnded: false }, results.runId));
 
         const counter = document.createElement('span');
@@ -4811,6 +4817,7 @@ export function createEditorScreen({
         nextBtn.dataset.focusKey = 'results-next';
         nextBtn.innerHTML = '<i class="fa-solid fa-chevron-right"></i>';
         nextBtn.disabled = viewIndex >= options.length - 1;
+        if (stale) nextBtn.disabled = true;
         nextBtn.addEventListener('click', () => patchAutoPackResultsState({ viewIndex: Math.min(options.length - 1, viewIndex + 1), previewEnded: false }, results.runId));
 
         nav.appendChild(prevBtn);
@@ -5158,7 +5165,7 @@ export function createEditorScreen({
         },
       });
       InteractionManager.init(SceneManager.getRenderer().domElement);
-      InteractionManager.setBeforeSceneMutation?.(endAutoPackResultsPreview);
+      InteractionManager.setBeforeSceneMutation?.(() => endAutoPackResultsPreview({ forManualEdit: true }));
       wireDropToViewport(SceneManager.getRenderer().domElement);
       initialized = true;
     }
@@ -5853,7 +5860,7 @@ export function createEditorScreen({
         addBtn.disabled = true;
         let added = false;
         try {
-          endAutoPackResultsPreview();
+          endAutoPackResultsPreview({ forManualEdit: true });
           // Reset the draft BEFORE the mutating call: addInstancesToStaging's
           // Pack update triggers a synchronous StateStore-driven re-render
           // that rebuilds this card from caseQtyDrafts immediately, so the
@@ -5900,7 +5907,7 @@ export function createEditorScreen({
           if (qty === null) return;
           let removed = false;
           try {
-            endAutoPackResultsPreview();
+            endAutoPackResultsPreview({ forManualEdit: true });
             // Same ordering as Add: a successful removal re-renders this card
             // synchronously from caseQtyDrafts, so the reset must already be in place.
             setCaseQtyDraft(c.id, CASE_QTY_MIN);
@@ -6115,7 +6122,7 @@ export function createEditorScreen({
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
         return true;
       }
-      if (endPreview) endAutoPackResultsPreview();
+      if (endPreview) endAutoPackResultsPreview({ forManualEdit: true });
       return false;
     }
 
@@ -7757,7 +7764,8 @@ export function createEditorScreen({
         // cannot carry it. Out-of-truck moves keep the legacy settle+stage path.
         let resolved = null;
         const normalHandlingPack = buildNormalHandlingPack(pack, [inst.id]);
-        if (typeof PackLibrary.findManualVerticalPlacement === 'function') {
+        if (typeof PackLibrary.findManualVerticalPlacement === 'function' &&
+            (inst.placement !== 'staged' || check.insideTruck)) {
           resolved = PackLibrary.findManualVerticalPlacement(normalHandlingPack, CaseLibrary.getCases(), inst.id, {
             mode: 'resolve',
             desiredPosition: nextPos,
@@ -7800,7 +7808,9 @@ export function createEditorScreen({
         } else {
           PackLibrary.update(pack.id, { cases: nextCases });
         }
-        SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(finalPos), { duration: 420 });
+        if (inst.placement !== 'staged') {
+          SceneManager.focusOnWorldPoint(SceneManager.vecInchesToWorld(finalPos), { duration: 420 });
+        }
         const baseMessage = corrected ? 'Adjusted to the nearest supported level.' : 'Position updated';
         UIComponents.showToast(
           result ? formatVerticalMoveMessage(result, inst.id, baseMessage) : baseMessage,

@@ -2215,13 +2215,24 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
         const before = { persisted: persisted(), position: camera.position.toArray() };
         const target = q.CaseScene.getObject('b-cargo').position.clone().add(new THREE.Vector3(3, 0, 2));
         q.SceneManager.focusOnWorldPoint(target, { duration: 700 });
-        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        await new Promise(resolve => {
+          let frames = 0;
+          const waitForMotion = () => {
+            if (camera.position.toArray().some((value, axis) => Math.abs(value - before.position[axis]) > 1e-6) ||
+                ++frames >= 12) resolve();
+            else requestAnimationFrame(waitForMotion);
+          };
+          requestAnimationFrame(waitForMotion);
+        });
+        const startedMoving = camera.position.toArray().some((value, axis) =>
+          Math.abs(value - before.position[axis]) > 1e-6);
         const previewView = q.EditorUI.getPreviewView();
         q.mark();
         const frames = await q.captureEncodes(() => q.ExportService.captureScreenshot());
         const frame = frames.find(f => f.width === 1920);
         const view = q.exportViews()[0];
         const result = {
+          startedMoving,
           previewBlocked: previewView === null,
           exported: Boolean(frame),
           sameCamera: view ? view.camera === camera : false,
@@ -2231,6 +2242,7 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
         };
         return result;
       });
+      assert.equal(proof.startedMoving, true, 'fixture: focus advances before capture');
       assert.equal(proof.previewBlocked, true, 'Preview waits for the camera to settle');
       assert.equal(proof.exported, true, 'a pure camera move never blocks a committed-cargo export');
       assert.equal(proof.sameCamera, true, 'the current runtime camera is used');

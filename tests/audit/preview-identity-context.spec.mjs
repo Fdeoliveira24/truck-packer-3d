@@ -587,6 +587,82 @@ const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swift
 
 const A = 'fixture-pack';
 const B = 'fixture-other-pack';
+
+test('C5T browser confirms unresolved staged Truck Changes without cargo loss and restores persisted geometry', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const source = await page.evaluate(() => {
+      const q = window.probe;
+      const cases = Array.from({ length: 128 }, (_, index) => ({
+        id: `c5t-${index}`, caseId: index < 74 ? 'qa-carton' : 'missing', placement: 'staged',
+        hidden: false, groupId: null, instanceNotes: `Keep note ${index}`,
+        transform: { position: { x: 20 + (index % 10) * 20, y: 4, z: 100 + Math.floor(index / 10) * 20 },
+          rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
+      }));
+      const pack = { ...q.PackLibrary.getById(q.packId), cases };
+      q.StateStore.set({ packLibrary: [pack], selectedInstanceIds: [] }, { skipHistory: true });
+      q.StateStore.resetHistory();
+      return { cases, truck: pack.truck };
+    });
+    await openPack(page, A);
+    const chooseShape = async label => {
+      await page.locator('[data-focus-key="truck-shape"]').click();
+      await page.getByRole('listbox', { name: 'Trailer Shape Mode' }).getByRole('option', { name: label, exact: true }).click();
+      await settlePreview(page);
+      await page.locator('#inspector-body button').filter({ hasText: 'Update truck' }).click();
+      const modal = page.getByRole('dialog', { name: 'Truck change', exact: true });
+      await modal.waitFor();
+      assert.match(await modal.textContent(), /54 unresolved/);
+      assert.equal(await modal.getByRole('button', { name: 'Apply change', exact: true }).isEnabled(), true);
+      return modal;
+    };
+    const cancelled = await chooseShape('Front Overhang');
+    assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).truck), source.truck);
+    assert.deepEqual(await page.evaluate(() => window.probe.cases()), source.cases, 'preview is not a Pack mutation');
+    await cancelled.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await settlePreview(page);
+    assert.equal(await page.evaluate(() => window.probe.op()), 'idle');
+    assert.deepEqual(await page.evaluate(() => window.probe.cases()), source.cases);
+    for (const [label, mode] of [['Front Overhang', 'frontBonus'], ['Standard', 'rect'], ['Wheel Wells', 'wheelWells']]) {
+      const modal = await chooseShape(label);
+      await modal.getByRole('button', { name: 'Apply change', exact: true }).click();
+      await settlePreview(page);
+      assert.equal(await page.getByRole('dialog', { name: 'Truck change', exact: true }).count(), 0);
+      const committed = await page.evaluate(() => {
+        const q = window.probe;
+        return { pack: q.PackLibrary.getById(q.packId), op: q.op() };
+      });
+      assert.equal(committed.op, 'idle');
+      assert.equal(committed.pack.truck.shapeMode, mode);
+      assert.equal(committed.pack.cases.length, 128);
+      assert.deepEqual(committed.pack.cases.map(inst => inst.id), source.cases.map(inst => inst.id));
+      assert.deepEqual(committed.pack.cases.filter(inst => inst.caseId === 'missing'), source.cases.slice(74));
+      assert.ok(committed.pack.cases.every(inst => inst.placement === 'staged'));
+      const hydrated = await page.evaluate(() => {
+        const q = window.probe;
+        q.CoreStorage.saveNow();
+        const loaded = q.CoreStorage.load();
+        q.StateStore.replace({ ...q.StateStore.snapshot(), ...loaded, currentScreen: 'editor', currentPackId: q.packId },
+          { resetHistory: true });
+        return q.PackLibrary.getById(q.packId);
+      });
+      assert.deepEqual(hydrated.truck, committed.pack.truck, 'type, dimensions and shape settings survive real storage hydration');
+      assert.deepEqual(hydrated.cases.map(inst => inst.id), source.cases.map(inst => inst.id));
+      for (const inst of hydrated.cases.filter(inst => inst.caseId === 'missing')) {
+        const original = source.cases.find(entry => entry.id === inst.id);
+        assert.equal(inst.placement, 'staged');
+        assert.deepEqual(inst.transform, original.transform);
+        assert.equal(inst.instanceNotes, original.instanceNotes);
+        assert.equal(inst.orientedDims, original.orientedDims, 'storage never fabricates missing Case geometry');
+      }
+    }
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
 const counts = page => page.evaluate(() => {
   const q = window.probe;
   return {

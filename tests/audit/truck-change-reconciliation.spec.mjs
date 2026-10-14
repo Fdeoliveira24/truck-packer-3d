@@ -207,6 +207,96 @@ test('RECON controller is single-flight, double-submit safe, and commits truck+c
   assert.equal(JSON.stringify(pack), before, 'controller preserves the caller snapshot');
 });
 
+test('C5T 128 staged instances with 54 missing definitions survive confirmed shape changes and Cancel', async () => {
+  const PackLib = await import(packLibraryPath.href);
+  const StateStore = await import(stateStorePath.href);
+  const Controller = await import(truckChangeControllerPath.href);
+  const cases = Array.from({ length: 128 }, (_, index) => ({
+    ...reconInst(`c5t-${index}`, 30 + (index % 8) * 28, 8, 100 + Math.floor(index / 8) * 24),
+    caseId: index < 74 ? 'c' : 'missing', placement: 'staged',
+    instanceNotes: `Preserve note ${index}`, deliverySequence: index + 1,
+  }));
+  const editorView = { position: { x: 7, y: 4, z: 6 }, target: { x: 3, y: 0, z: 0 } };
+  StateStore.init({ caseLibrary: RECON_CASE_LIB, packLibrary: [{ id: 'c5t', truck: RECON_RECT, cases, editorView }],
+    currentPackId: 'c5t', folderLibrary: [], preferences: {} });
+  for (const nextTruck of [reconFB(), RECON_RECT, RECON_WW]) {
+    const source = PackLib.getById('c5t');
+    const before = JSON.stringify(source);
+    const harness = makeTruckChangeHarness();
+    const previews = [];
+    const controller = Controller.createTruckChangeController({ PackLibrary: PackLib,
+      CaseLibrary: { getCases: () => RECON_CASE_LIB }, UIComponents: harness.UIComponents,
+      documentRef: harness.documentRef });
+    const request = () => controller.request({ pack: PackLib.getById('c5t'), nextTruck,
+      renderPreview: preview => previews.push(preview) });
+    const result = request();
+    assert.equal(result.status, 'preview');
+    assert.equal(result.reconciliation.summary.unresolved, 54);
+    assert.ok(harness.modals[0].config.actions.some(action => action.label === 'Apply change'),
+      `${nextTruck.shapeMode}: missing staged definitions do not suppress confirmation`);
+    assert.equal(previews[0].pack.cases.length, 74, 'unresolved geometry is excluded only from the scene');
+    assert.equal(JSON.stringify(PackLib.getById('c5t')), before, 'preview does not persist');
+    harness.click(0, 'Cancel');
+    assert.equal(JSON.stringify(PackLib.getById('c5t')), before, 'Cancel restores the committed Pack');
+    request();
+    assert.equal(harness.click(1, 'Apply change'), true);
+    const applied = PackLib.getById('c5t');
+    assert.deepEqual(applied.truck, nextTruck);
+    assert.equal(applied.cases.length, 128);
+    assert.deepEqual(applied.cases.map(inst => inst.id), cases.map(inst => inst.id));
+    assert.deepEqual(applied.cases.filter(inst => inst.caseId === 'missing'), cases.slice(74),
+      'unresolved staged poses, notes and metadata survive byte-equivalent without fabricated data');
+    assert.ok(applied.cases.every(inst => inst.placement === 'staged'));
+    assert.deepEqual(applied.editorView, editorView);
+    const committed = JSON.stringify(applied);
+    StateStore.undo();
+    assert.equal(JSON.stringify(PackLib.getById('c5t')), before, 'one Undo restores truck and cargo together');
+    StateStore.redo();
+    assert.equal(JSON.stringify(PackLib.getById('c5t')), committed);
+  }
+});
+
+test('C5T untrusted packed geometry falls back to unresolved staging while resolved cargo remains validated', async () => {
+  const PackLib = await import(packLibraryPath.href);
+  const Controller = await import(truckChangeControllerPath.href);
+  const unresolved = { ...reconInst('missing-packed', 30, 8, 0), caseId: 'missing',
+    orientedDims: { ...RECON_DIMS }, instanceNotes: 'Keep source information' };
+  const noGeometry = { ...reconInst('missing-no-geometry', 80, 8, 0), caseId: 'missing' };
+  const malformed = { ...reconInst('malformed-packed', 90, 8, 0), transform: { position: null, rotation: { x: 0, y: 0, z: 0 } } };
+  const survivor = { ...reconInst('resolved-survivor', 30, 8, 0), placement: 'packed' };
+  const invalid = { ...reconInst('resolved-invalid', 400, 8, 0), placement: 'packed' };
+  const pack = { id: 'c5t-mixed', truck: RECON_RECT, cases: [unresolved, noGeometry, malformed, survivor, invalid] };
+  const before = JSON.stringify(pack);
+  const harness = makeTruckChangeHarness();
+  const previews = [];
+  const commits = [];
+  const controller = Controller.createTruckChangeController({
+    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
+    CaseLibrary: { getCases: () => RECON_CASE_LIB }, UIComponents: harness.UIComponents,
+    documentRef: harness.documentRef });
+  const request = () => controller.request({ pack, nextTruck: RECON_WW, renderPreview: preview => previews.push(preview) });
+  const result = request();
+  assert.ok(result.reconciliation.kept.includes(survivor.id), 'untrusted packed cargo is not a ghost blocker');
+  assert.ok(result.reconciliation.invalid.includes(invalid.id));
+  assert.match(harness.modals[0].config.content.textContent, /3.*packed.*staging/,
+    'existing feedback explains the unresolved packed fallback');
+  harness.click(0, 'Cancel');
+  assert.equal(JSON.stringify(pack), before);
+  assert.equal(commits.length, 0);
+  request();
+  assert.equal(harness.click(1, 'Move to staging'), true);
+  const final = commits[0].patch.cases;
+  assert.equal(final.length, pack.cases.length, 'no cargo is discarded at the preview/commit boundary');
+  for (const original of [unresolved, noGeometry, malformed]) {
+    assert.deepEqual(final.find(inst => inst.id === original.id), { ...original, placement: 'staged' });
+  }
+  assert.deepEqual(final.find(inst => inst.id === survivor.id).transform.position, survivor.transform.position);
+  assert.equal(final.find(inst => inst.id === invalid.id).placement, 'staged');
+  assertCanonicalReconLayoutSafe(PackLib, final.filter(inst => ![unresolved.id, noGeometry.id, malformed.id].includes(inst.id)),
+    RECON_WW, RECON_CASE_LIB, 'C5T resolved physical cargo');
+  assert.equal(JSON.stringify(pack), before);
+});
+
 test('RECON Truck Change Contract B preserves semantic counts and commits its exact grouped preview', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);

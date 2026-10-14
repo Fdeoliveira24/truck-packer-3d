@@ -257,15 +257,25 @@ for (const customCommit of [false, true]) {
 }
 
 for (const kind of ['missing', 'malformed']) {
-  test(`HANDLING-RULES-P0A Truck Change with ${kind} packed cargo cannot commit or certify`, async () => {
+  test(`HANDLING-RULES-P0A Truck Change preserves ${kind} packed cargo through explicit staging without certifying`, async () => {
     const { StateStore, PackLibrary, CaseLibrary } = await freshModules();
     const pack = { ...activePackFixture(), cases: [incompleteInstance(kind)], handlingRulesValidatedSignature: 'v1:OLD' };
     initFixture(StateStore, mkCase(), pack);
     const before = StateStore.snapshot();
     const { controller, modals } = truckHarness(PackLibrary, CaseLibrary);
-    controller.request({ pack, nextTruck: { ...RECT_TRUCK, length: 30 } });
-    assert.deepEqual(modals[0].actions.map(a => a.label), ['Cancel']);
+    const nextTruck = { ...RECT_TRUCK, length: 30 };
+    controller.request({ pack, nextTruck });
+    assert.deepEqual(modals[0].actions.map(a => a.label), ['Apply change', 'Cancel']);
     assert.deepEqual(StateStore.snapshot(), before);
+    assert.equal(modals[0].actions.find(a => a.label === 'Apply change').onClick(), true);
+    const after = PackLibrary.getById(pack.id);
+    assert.deepEqual(after.truck, nextTruck);
+    assert.deepEqual(after.cases, [{ ...pack.cases[0], placement: 'staged' }],
+      'untrusted source data is preserved without fabricated geometry or deletion');
+    assert.equal(after.handlingRulesValidatedSignature, undefined, 'unresolved fallback never certifies the layout');
+    assert.equal(StateStore.undo(), true);
+    assert.deepEqual(StateStore.snapshot(), before, 'one Undo restores the original truck and packed instance');
+    assert.equal(StateStore.undo(), false);
   });
 }
 

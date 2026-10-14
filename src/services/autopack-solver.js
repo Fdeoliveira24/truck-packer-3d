@@ -2440,9 +2440,13 @@ function directSupportDependents(placement, packed) {
 }
 
 function movedPlacementPreservesDependents(placement, candidate, packed, zones, retentionContext, wheelWell) {
-  const dependents = directSupportDependents(placement, packed);
-  if (!dependents.length) return true;
   const candidatePacked = packed.map(entry => entry === placement ? candidate : entry);
+  // A forward move can acquire new direct children as well as lose old ones.
+  // Recheck both sets: the new contacts may exhaust this support's child cap.
+  const dependents = new Set([
+    ...directSupportDependents(placement, packed),
+    ...directSupportDependents(candidate, candidatePacked),
+  ]);
   for (const child of dependents) {
     const packedWithoutChild = candidatePacked.filter(entry => entry !== child);
     if (!placementHasValidVerticalSupport(child, packedWithoutChild, zones, wheelWell)) return false;

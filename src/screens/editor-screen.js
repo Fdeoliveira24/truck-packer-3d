@@ -3974,22 +3974,23 @@ export function createEditorScreen({
     function persistSettledView(revision = viewRevision) {
       if (revision !== viewRevision || !isViewOwnerCurrent() ||
           viewGestureActive || viewFocusActive || viewPendingEnd) return false;
-      const scene = getPreviewScene();
-      if (!scene) {
+      // Camera metadata belongs to the Pack even while Results owns the cargo preview.
+      const pack = PackLibrary.getById(viewOwner.packId);
+      if (!pack) {
         pendingViewSave = true;
         return false;
       }
       pendingViewSave = false;
       const view = SceneManager.getEditorView();
       const signature = editorViewSignature(view);
-      const saved = normalizeEditorView(scene.pack.editorView) ||
-        SceneManager.getDefaultEditorView(scene.pack.truck);
+      const saved = normalizeEditorView(pack.editorView) ||
+        SceneManager.getDefaultEditorView(pack.truck);
       if (!signature) return false;
       if (signature === editorViewSignature(saved)) {
         if (onPreviewViewSettled) onPreviewViewSettled();
         return false;
       }
-      return Boolean(PackLibrary.updateEditorView(scene.pack.id, view));
+      return Boolean(PackLibrary.updateEditorView(pack.id, view));
     }
 
     function scheduleViewSettle(revision) {

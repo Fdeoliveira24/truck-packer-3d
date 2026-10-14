@@ -2157,15 +2157,12 @@ export function createInteractionManager({
     function operationsBusy() {
       return Boolean(OperationLifecycle && OperationLifecycle.isBusy()) || scenePreviewOnly();
     }
-    let beforeSceneMutation = null;
     function prepareSceneMutation() {
-      if (OperationLifecycle && OperationLifecycle.isBusy()) return true;
-      if (scenePreviewOnly()) beforeSceneMutation?.();
-      return scenePreviewOnly();
+      return operationsBusy();
     }
     function showOperationsBusyToast() {
       UIComponents.showToast(scenePreviewOnly()
-        ? 'Previewing an AutoPack option. Apply it or return to the Applied option to edit cargo.'
+        ? 'Use "Apply this option" in AutoPack Results before editing cargo.'
         : 'Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
     }
     const raycaster = new THREE.Raycaster();
@@ -3026,7 +3023,10 @@ export function createInteractionManager({
       raycaster.setFromCamera(pointer, camera);
       const hits = raycaster.intersectObjects(handles, false);
       if (!hits.length) return false;
-      if (prepareSceneMutation()) return false;
+      if (prepareSceneMutation()) {
+        if (scenePreviewOnly()) showOperationsBusyToast();
+        return false;
+      }
       const targetId = CaseScene.getGizmoTargetId();
       const obj = targetId ? CaseScene.getObject(targetId) : null;
       if (!obj) return false;
@@ -3355,7 +3355,13 @@ export function createInteractionManager({
       if (!pressed || !pressed.instanceId) return;
       // Do not begin moving a case while a mutating operation owns the editor. Click
       // selection (handled in onUp) still works; camera orbit is unaffected.
-      if (prepareSceneMutation()) return;
+      if (prepareSceneMutation()) {
+        if (scenePreviewOnly()) {
+          showOperationsBusyToast();
+          pressed = null; // Refuse this gesture once, without ending the preview.
+        }
+        return;
+      }
       if (gizmoPending) cancelPendingPose();
       draggingId = pressed.instanceId;
       dragStartPosWorld = CaseScene.getObject(draggingId).position.clone();
@@ -3901,7 +3907,6 @@ export function createInteractionManager({
     return {
       init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical,
       setSelectionOrientationConstraint,
-      setBeforeSceneMutation: callback => { beforeSceneMutation = callback; },
       hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending || revertHolds > 0),
     };
   })();
@@ -5165,7 +5170,6 @@ export function createEditorScreen({
         },
       });
       InteractionManager.init(SceneManager.getRenderer().domElement);
-      InteractionManager.setBeforeSceneMutation?.(() => endAutoPackResultsPreview({ forManualEdit: true }));
       wireDropToViewport(SceneManager.getRenderer().domElement);
       initialized = true;
     }
@@ -6122,7 +6126,12 @@ export function createEditorScreen({
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Editor' });
         return true;
       }
-      if (endPreview) endAutoPackResultsPreview({ forManualEdit: true });
+      // Geometry actions need committed cargo. Refuse a transient preview
+      // before touching scene poses, Pack data or history.
+      if (endPreview && CaseScene.isTransientPreview()) {
+        UIComponents.showToast('Use "Apply this option" in AutoPack Results before editing cargo.', 'info', { title: 'Editor' });
+        return true;
+      }
       return false;
     }
 

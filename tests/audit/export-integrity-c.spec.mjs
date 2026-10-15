@@ -676,7 +676,7 @@ test('EXPORT-C-PACKID pending truck marker never reaches Pack data or portable f
   const pack = PackLibrary.getById('pack-1');
   const pendingTruck = { ...pack.truck, length: 260, __packId: pack.id };
   assert.equal(controller.request({ pack, nextTruck: pendingTruck, successMessage: 'Truck updated' }).status, 'preview');
-  assert.equal(modals[0].actions.find(a => a.label === 'Apply change').onClick(), true);
+  assert.equal(modals[0].actions.find(a => a.label === 'Apply Changes').onClick(), true);
   const committed = PackLibrary.getById('pack-1').truck;
   assert.equal(Object.hasOwn(committed, '__packId'), false);
   assert.equal(committed.length, 260);

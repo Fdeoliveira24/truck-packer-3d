@@ -1021,7 +1021,7 @@ export function createSceneRuntime({
       const lengthW = toWorld(getTotalTruckLengthInches(truckInches));
       const widthW = toWorld(Number(truckInches?.width) || 102);
       const heightW = toWorld(Number(truckInches?.height) || 98);
-      const target = { x: lengthW / 2, y: Math.min(6, heightW / 2), z: 0 };
+      const target = { x: lengthW / 2, y: heightW / 2, z: 0 };
       const direction = new THREE.Vector3(
         Math.max(12, lengthW * 0.42),
         Math.max(12, heightW * 2.8),

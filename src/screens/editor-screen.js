@@ -5212,10 +5212,10 @@ export function createEditorScreen({
       CaseScene.sync(resultsPreviewPack || pack, { transientPreview: Boolean(resultsPreviewPack) });
       if (!isViewOwnerCurrent()) {
         invalidateViewOwner();
-        const requestedView = normalizeEditorView(pack.editorView) ||
-          SceneManager.getDefaultEditorView(pack.truck);
-        const appliedView = SceneManager.applyEditorView(requestedView);
-        pendingViewSave = editorViewSignature(appliedView) !== editorViewSignature(requestedView);
+        // Opening a Pack starts from its full-truck view. Keep the historical
+        // saved view intact until the user actually moves the camera.
+        SceneManager.applyEditorView(SceneManager.getDefaultEditorView(pack.truck));
+        pendingViewSave = false;
         viewOwner = { packId: pack.id, scope: CoreStorage.captureScopeContext() };
       }
       CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);

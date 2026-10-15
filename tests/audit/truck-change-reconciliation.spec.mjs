@@ -690,9 +690,40 @@ test('C5 stabilization truck change stages every committed instance, preserves d
   assert.deepEqual(h.PackLib.getById(h.pack.id), applied);
 });
 
-test('C5 stabilization truck change refuses partial staging and stale workspaces without changing Pack or Results', async () => {
+test('C5 stabilization truck change stages missing definitions without fabricating geometry', async () => {
+  const missing = { ...reconInst('missing', 30, 8, 0), caseId: 'missing',
+    orientedDims: { length: 31, width: 19, height: 17 }, packedProfile: 'max-capacity',
+    orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 },
+    customMetadata: { owner: 'preserve me' } };
+  const cases = [reconInst('good', 70, 8, 0), missing];
+  const h = await stabilizationHarness(cases);
+  const before = structuredClone(h.pack);
+  h.controller.request({ pack: h.pack, nextTruck: RECON_WW });
+  assert.equal(h.harness.click(0, 'Apply Changes'), true);
+  const applied = h.PackLib.getById(h.pack.id);
+  assert.deepEqual(applied.truck, RECON_WW);
+  assert.deepEqual(applied.cases.map(inst => inst.id), cases.map(inst => inst.id));
+  assert.ok(applied.cases.every(inst => inst.placement === 'staged'));
+  const expectedMissing = structuredClone(missing);
+  expectedMissing.placement = 'staged';
+  delete expectedMissing.packedProfile;
+  assert.deepEqual(applied.cases[1], expectedMissing,
+    'unresolved source pose, stored dimensions, and unrelated data remain untrusted and unchanged');
+  const known = applied.cases[0];
+  const dims = h.PackLib.getCanonicalInstanceEffectiveDims(known, h.caseLibrary[0]).dims;
+  assert.equal(known.transform.position.y, dims.height / 2);
+  assert.ok(h.PackLib.makeAabb(known.transform.position, dims).min.z > RECON_WW.width / 2,
+    'the known Case receives a real staging position');
+  assert.equal(h.StateStore.get('autoPackResults'), null);
+  assert.equal(h.StateStore.undo(), true);
+  assert.deepEqual(h.PackLib.getById(h.pack.id), before);
+  assert.equal(h.StateStore.undo(), false, 'the change is one history action');
+  assert.equal(h.StateStore.redo(), true);
+  assert.deepEqual(h.PackLib.getById(h.pack.id), applied);
+});
+
+test('C5 stabilization truck change refuses malformed geometry, duplicate IDs, and stale workspaces atomically', async () => {
   for (const bad of [
-    { ...reconInst('missing', 30, 8, 0), caseId: 'missing' },
     { ...reconInst('bad-pose', 30, 8, 0), transform: { rotation: { x: NaN, y: 0, z: 0 } } },
     reconInst('good', 30, 8, 0), // duplicate ID
   ]) {

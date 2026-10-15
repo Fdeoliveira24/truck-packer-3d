@@ -1078,12 +1078,13 @@ export function createSceneRuntime({
       const normalized = normalizeEditorView(view);
       if (!normalized) return null;
       cancelFocus();
-      camera.position.set(normalized.cameraPosition.x, normalized.cameraPosition.y, normalized.cameraPosition.z);
-      controls.target.set(normalized.target.x, normalized.target.y, normalized.target.z);
-      // Clear any OrbitControls damping left by the previous Pack before this
-      // Pack takes ownership of the one runtime camera.
+      // Drain the previous view's pending pan/orbit/zoom before assigning the
+      // opening pose. Disabling damping alone would apply that motion to it.
       const damping = controls.enableDamping;
       controls.enableDamping = false;
+      controls.update();
+      camera.position.set(normalized.cameraPosition.x, normalized.cameraPosition.y, normalized.cameraPosition.z);
+      controls.target.set(normalized.target.x, normalized.target.y, normalized.target.z);
       controls.update();
       controls.enableDamping = damping;
       return getEditorView();

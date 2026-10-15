@@ -2176,6 +2176,7 @@ export function createInteractionManager({
     let lastDragPreviewTime = 0;
 
     let domEl = null;
+    let focusClickPackId = null;
     let hoveredId = null;
     let pressed = null;
     let draggingId = null;
@@ -2206,7 +2207,13 @@ export function createInteractionManager({
       window.addEventListener('pointerup', onUp);
       domEl.addEventListener('pointercancel', onCancel);
       domEl.addEventListener('lostpointercapture', onCancel);
+      domEl.addEventListener('click', ev => {
+        if (ev.detail === 1) focusClickPackId = StateStore.get('currentPackId');
+      });
       domEl.addEventListener('dblclick', onDblClick);
+      StateStore.subscribe(changes => {
+        if (changes.currentScreen || changes.currentPackId || changes._replace) focusClickPackId = null;
+      });
       // Only leaving the viewport ends pointer-origin focus; shortcuts keep it,
       // so Tab / Shift+Tab back in is what shows the keyboard cue.
       domEl.parentElement?.addEventListener('blur', () => {
@@ -3284,7 +3291,10 @@ export function createInteractionManager({
     }
 
     function onDblClick(ev) {
-      if (!isEditorActive()) return;
+      // Both clicks must originate in this Pack's viewport. The second click
+      // used to open a Load Plan must not focus cargo exposed beneath the card.
+      if (!isEditorActive() || focusClickPackId !== StateStore.get('currentPackId')) return;
+      focusClickPackId = null;
       updatePointer(ev);
       const hit = raycastFirst();
       if (!hit) return;
@@ -4030,9 +4040,7 @@ export function createEditorScreen({
     }
 
     StateStore.subscribe((changes, _state, notification) => {
-      if (changes._replace ||
-          (changes.currentScreen && StateStore.get('currentScreen') !== 'editor') ||
-          (changes.currentPackId && viewOwner && StateStore.get('currentPackId') !== viewOwner.packId)) {
+      if (viewOwner && !isViewOwnerCurrent()) {
         invalidateViewOwner();
       }
       if (changes._replace || StateStore.get('currentScreen') !== 'editor' ||
@@ -5210,14 +5218,6 @@ export function createEditorScreen({
       const wasResultsPreview = CaseScene.isTransientPreview();
       const resultsPreviewPack = getAutoPackResultsPreviewPack(pack);
       CaseScene.sync(resultsPreviewPack || pack, { transientPreview: Boolean(resultsPreviewPack) });
-      if (!isViewOwnerCurrent()) {
-        invalidateViewOwner();
-        // Opening a Pack starts from its full-truck view. Keep the historical
-        // saved view intact until the user actually moves the camera.
-        SceneManager.applyEditorView(SceneManager.getDefaultEditorView(pack.truck));
-        pendingViewSave = false;
-        viewOwner = { packId: pack.id, scope: CoreStorage.captureScopeContext() };
-      }
       CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
       CaseScene.applyOOGHighlights();
 
@@ -5226,6 +5226,14 @@ export function createEditorScreen({
       renderAutoPackResultsPanel(pack);
       renderHandlingRulesStatus(pack);
       SceneManager.resize();
+      if (!isViewOwnerCurrent()) {
+        invalidateViewOwner();
+        // Fit after the Inspector and viewport have their opening dimensions.
+        // Same-Pack hydration and updates retain the user's active view.
+        SceneManager.applyEditorView(SceneManager.getDefaultEditorView(pack.truck));
+        pendingViewSave = false;
+        viewOwner = { packId: pack.id, scope: CoreStorage.captureScopeContext() };
+      }
       if (initialized && CaseScene.getSyncedPack() === pack) {
         // A same-commit repaint (including AutoPack's final UI render) is not
         // context loss. Preserve its identity so a valid frame wait can finish.

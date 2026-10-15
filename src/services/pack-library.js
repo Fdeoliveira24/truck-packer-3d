@@ -1420,7 +1420,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
  * - kept: ids whose current placement is fully valid (kept exactly).
  * - adjusted: [{ id, fromY, toY }] safely snapped vertically (X/Z unchanged).
  * - invalid: ids that cannot be kept or safely snapped (left at current position
- *   in the preview; the caller resolves them via repack/stage/cancel).
+ *   in the result; the caller decides whether to stage them).
  */
 export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, options = {}) {
   const basePack = pack && typeof pack === 'object' ? pack : {};
@@ -1682,6 +1682,9 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
   const targetSet = new Set(ids || []);
   const cases = (pack && pack.cases) || [];
   const grouped = options.grouped === true;
+  const stagingCanonical = inst => options.preserveRotation === true
+    ? getCanonicalInstanceEffectiveDims(inst, caseMap.get(inst.caseId))
+    : getDeterministicStagingCanonical(caseMap.get(inst.caseId));
   const accepted = [];
   for (const inst of cases) {
     if (!inst || targetSet.has(inst.id)) continue;
@@ -1709,15 +1712,15 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
     const layout = getStagingLayout(nextTruck);
     const groupsByCaseId = new Map();
     for (const entry of targets) {
-      const canonical = getDeterministicStagingCanonical(caseMap.get(entry.inst.caseId));
+      const canonical = stagingCanonical(entry.inst);
       if (!canonical.ok) {
         failedIds.push(entry.inst.id);
         warnings.push(`Item ${entry.inst.id} could not be staged: ${canonical.reason}.`);
         continue;
       }
-      const key = String(entry.inst.caseId || '');
+      const key = JSON.stringify([entry.inst.caseId, canonical.dims]);
       if (!groupsByCaseId.has(key)) groupsByCaseId.set(key, { key, canonical, entries: [] });
-      groupsByCaseId.get(key).entries.push(entry);
+      groupsByCaseId.get(key).entries.push({ ...entry, canonical });
     }
 
     const groups = [...groupsByCaseId.values()].sort((a, b) =>
@@ -1760,7 +1763,7 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
         },
       });
       for (let index = 0; index < group.entries.length; index += 1) {
-        const { inst } = group.entries[index];
+        const { inst, canonical } = group.entries[index];
         const col = index % cols;
         const row = Math.floor(index / cols);
         const position = {
@@ -1768,7 +1771,7 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
           y: dims.height / 2,
           z: band.aabb.min.z + dims.width / 2 + row * cellWidth,
         };
-        positioned.set(inst.id, { position, canonical: group.canonical });
+        positioned.set(inst.id, { position, canonical });
         stagedIds.push(inst.id);
       }
     }
@@ -1777,7 +1780,7 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
       // Staging is a visual holding area, not a packed orientation decision. Use
       // one deterministic identity pose so the placement AABB, rendered footprint,
       // and stored rotation/dimensions cannot inherit a prior packed orientation.
-      const canonical = getDeterministicStagingCanonical(caseMap.get(inst.caseId));
+      const canonical = stagingCanonical(inst);
       if (!canonical.ok) {
         failedIds.push(inst.id);
         warnings.push(`Item ${inst.id} could not be staged: ${canonical.reason}.`);
@@ -1800,7 +1803,8 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
       }
       return inst;
     }
-    const next = applyCanonicalInstancePose(inst, staged.canonical);
+    const next = options.preserveRotation === true
+      ? Utils.deepClone(inst) : applyCanonicalInstancePose(inst, staged.canonical);
     next.transform.position = staged.position;
     next.placement = 'staged';
     delete next.packedProfile;
@@ -1812,17 +1816,6 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
     failedIds,
     warnings,
   };
-}
-
-// Organized staging for invalid packed items. Existing staged items were already
-// handled by reconciliation and are not moved again.
-export function stageInvalidPlacements(reconResult, nextTruck, caseLibrary) {
-  return stagePlacementIds(
-    reconResult.nextPack,
-    reconResult.invalid || [],
-    nextTruck,
-    caseLibrary
-  ).pack;
 }
 
 // Compatibility entry point for older callers. Reading saved source never repairs it.
@@ -2350,88 +2343,6 @@ export function validateLoadPlan(packId, caseLibrary = CaseLibrary.getCases()) {
   return pack ? assessCommittedPack(pack, caseLibrary) : null;
 }
 
-// Repack the invalid items into the NEW truck's free floor/deck space front-first
-// (high +X first), without moving any kept/adjusted item or changing AutoPack
-// scoring. Items that still do not fit fall back to organized staging.
-function findRepackFloorPosition(node, zones, accepted, truck, wheelWell = null) {
-  const dims = node.dims;
-  const orderedZones = [...zones].sort((a, b) => b.max.x - a.max.x); // front-first
-  const STEP_MIN = 2;
-  for (const z of orderedZones) {
-    if (dims.height > (z.max.y - z.min.y) + RECON_TOL) continue;
-    const stepX = Math.max(STEP_MIN, dims.length / 2);
-    const stepZ = Math.max(STEP_MIN, dims.width / 2);
-    for (let cx = z.max.x - dims.length / 2; cx >= z.min.x + dims.length / 2 - RECON_TOL; cx -= stepX) {
-      for (let cz = z.min.z + dims.width / 2; cz <= z.max.z - dims.width / 2 + RECON_TOL; cz += stepZ) {
-        const pos = { x: cx, y: z.min.y + dims.height / 2, z: cz };
-        const aabb = makeAabb(pos, dims);
-        if (aabbIsFullyValid(node, aabb, accepted, zones, truck, RECON_TOL, wheelWell)) return { position: pos, aabb };
-      }
-    }
-  }
-  return null;
-}
-
-export function repackInvalidPlacements(reconResult, nextTruck, caseLibrary) {
-  const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
-  const zones = getTrailerUsableZones(nextTruck);
-  const wheelWell = getWheelWellGeometry(nextTruck);
-  const invalidSet = new Set(reconResult.invalid || []);
-  const accepted = [...(reconResult.acceptedPlacements || [])];
-  const cases = (reconResult.nextPack && reconResult.nextPack.cases) || [];
-  const footprint = inst => {
-    const canonical = getCanonicalInstanceEffectiveDims(inst, caseMap.get(inst.caseId));
-    return canonical.ok ? canonical.dims.length * canonical.dims.width : -1;
-  };
-  const targets = cases
-    .map((inst, index) => ({ inst, index }))
-    .filter(e => invalidSet.has(e.inst.id))
-    .sort((a, b) =>
-      footprint(b.inst) - footprint(a.inst) ||
-      String(a.inst.caseId).localeCompare(String(b.inst.caseId)) || a.index - b.index);
-
-  const positioned = new Map();
-  const repackedIds = [];
-  const failedIds = [];
-  const warnings = [];
-  for (const { inst } of targets) {
-    const caseData = caseMap.get(inst.caseId);
-    const canonical = getCanonicalInstanceEffectiveDims(inst, caseData);
-    if (!canonical.ok ||
-        !canonical.orientationAllowed) {
-      failedIds.push(inst.id);
-      warnings.push(`Item ${inst.id} could not be repacked: ${canonical.reason || 'hard orientation rule failed'}.`);
-      continue;
-    }
-    const node = { inst, caseData, canonical, dims: canonical.dims };
-    const placed = findRepackFloorPosition(node, zones, accepted, nextTruck, wheelWell);
-    if (placed) {
-      accepted.push({ ...node, position: placed.position, aabb: placed.aabb });
-      positioned.set(inst.id, { position: placed.position, canonical });
-      repackedIds.push(inst.id);
-    } else {
-      failedIds.push(inst.id);
-      warnings.push(`Item ${inst.id} could not fit in the proposed truck geometry.`);
-    }
-  }
-
-  const nextCases = cases.map(inst => {
-    const p = positioned.get(inst.id);
-    if (!p) return inst;
-    const next = applyCanonicalInstancePose(inst, p.canonical);
-    next.transform.position = p.position;
-    next.placement = 'packed';
-    return next;
-  });
-  return {
-    pack: { ...reconResult.nextPack, truck: nextTruck, cases: nextCases },
-    repackedIds,
-    stagedIds: [],
-    failedIds,
-    warnings,
-    acceptedPlacements: accepted,
-  };
-}
 
 export {
   getTrailerUsableZones,

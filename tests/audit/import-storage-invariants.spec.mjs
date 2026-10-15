@@ -1450,7 +1450,7 @@ test('REPAIR-1C 10: corrected fixture imports identically from real CSV and real
   }
 });
 
-test('RECON controller always previews real changes and restores controls on every dismissal path', async () => {
+test('RECON controller confirms real changes and restores controls on every dismissal path', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
   const harness = makeTruckChangeHarness();
@@ -1480,7 +1480,7 @@ test('RECON controller always previews real changes and restores controls on eve
   });
 
   assert.equal(request({ ...RECON_RECT, length: 239 }).status, 'preview', 'all-kept geometry change still previews');
-  assert.equal(previews.at(-1).pack.truck.length, 239, 'scene callback receives the proposed truck');
+  assert.equal(previews.length, 0, 'confirmation leaves the pre-dialog scene untouched');
   assert.equal(JSON.stringify(pack), original, 'preview does not mutate source pack or StateStore data');
   harness.click(0, 'Cancel');
   assert.equal(renderedScene, original, 'Cancel restores the exact original scene snapshot');
@@ -1541,7 +1541,7 @@ test('PHASE-C2 hidden retainers, rejected walls, deck-height changes, restore, a
     { id: 'raised', truck, cases: [wallInst, deckInst] }, raisedTruck, [wallCase, deckCase]
   );
   assert.ok(raised.invalid.includes('deck'), 'raising deckY above the wall invalidates the deck item');
-  const raisedStaged = PackLib.stageInvalidPlacements(raised, raisedTruck, [wallCase, deckCase]);
+  const raisedStaged = PackLib.stagePlacementIds((raised).nextPack, (raised).invalid, raisedTruck, [wallCase, deckCase]).pack;
   assert.equal(raisedStaged.cases.find(inst => inst.id === 'deck').placement, 'staged');
 
   const unsafe = { id: 'unsafe', truck, cases: [deckInst] };

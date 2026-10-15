@@ -450,7 +450,7 @@ test('C3 browser Inspector fixes and releases committed orientation with focus, 
       p.InteractionManager.setSelection([inst.id]);
     });
     const action = page.locator('[data-focus-key="action-autopack-orientation"]');
-    const status = page.locator('[data-role="autopack-orientation-status"]');
+
     const current = () => page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').cases[0]);
     const before = await current();
     assert.equal(await action.count(), 1);
@@ -459,7 +459,8 @@ test('C3 browser Inspector fixes and releases committed orientation with focus, 
     const active = await current();
     assert.deepEqual(active, { ...before, orientationLocked: true, lockedRotation: before.transform.rotation });
     assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'action-autopack-orientation');
-    assert.match(await status.textContent(), /matches the current pose/);
+    assert.equal(await action.textContent(), 'Unlock for AutoPack');
+    assert.equal(await action.getAttribute('aria-pressed'), 'true');
     await page.locator('#viewport').focus();
     await page.keyboard.press('ArrowRight');
     assert.deepEqual((await current()).lockedRotation, active.lockedRotation, 'position-only nudge preserves the target');
@@ -897,18 +898,15 @@ test('UI hotfix selected-case Inspector mirrors the Truck header with compact me
         assert.ok(chip.width < view.cardWidth / 2 + 40, `${chip.text} is content-sized, not a full-width field`);
       }
       assert.equal(view.meta[4].dot, fixture.categoryColor, 'Category keeps its color dot');
-      assert.deepEqual(view.rules.map(rule => rule.text), ['Handling rules', 'This item']);
-      const [caseRules, itemRules] = view.rules;
+      assert.deepEqual(view.rules.map(rule => rule.text), ['Handling rules']);
+      const [caseRules] = view.rules;
       assert.equal(caseRules.color, view.nameColor, 'Handling rules heading uses primary, not muted, text');
       assert.ok(caseRules.weight >= 600 && caseRules.chips.every(chip => chip.size < caseRules.size));
-      assert.ok(itemRules.weight < caseRules.weight, 'This item is a quieter subheading');
       assert.deepEqual(caseRules.chips, [
         { text: 'Upright', instance: false, size: caseRules.chips[0].size },
         { text: 'Lane: Never', instance: false, size: caseRules.chips[0].size },
         { text: 'Priority: High', instance: false, size: caseRules.chips[0].size },
       ], 'case-level policy stays in its own set');
-      assert.deepEqual(itemRules.chips.map(chip => [chip.text, chip.instance]),
-        [['AutoPack orientation fixed for this item', true]], 'instance planning stays in its own set');
       assert.ok(view.overflow <= 0, 'no horizontal overflow');
     }
     // A narrow Inspector wraps metadata and rules without colliding or overflowing.
@@ -2655,7 +2653,7 @@ test('Results carousel: Balanced leads, arrows live-preview the 3D load and Insp
   }
 });
 
-test('Results preview ends before Unpack and Truck Change claim the Editor; every outcome and the Truck change modal stay on the committed scene', { timeout: 120000 }, async () => {
+test('Results preview ends before Unpack claims the Editor; refused and successful operations retain committed authority', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
@@ -2695,7 +2693,6 @@ test('Results preview ends before Unpack and Truck Change claim the Editor; ever
       };
     });
     const lastClaim = () => page.evaluate(() => window.probe.opClaims.at(-1) || null);
-    const claimCount = () => page.evaluate(() => window.probe.opClaims.length);
     const preview = async label => {
       await page.locator('[data-focus-key="results-next"]').click();
       const s = await state();
@@ -2706,212 +2703,8 @@ test('Results preview ends before Unpack and Truck Change claim the Editor; ever
       assert.equal(s.atPack, true, `${label}: the scene shows the committed Pack`);
       assert.equal(s.appliedShown, true, `${label}: Results show the Applied option`);
     };
-    const updateTruck = () => page.locator('#inspector-body button').filter({ hasText: 'Update truck' }).click();
-    const truckModal = page.locator('.modal').filter({ has: page.locator('.modal-title', { hasText: 'Truck change' }) });
     const base = await state();
     assert.equal(base.transient, false);
-
-    // E: early validation failure.
-    await preview('E');
-    let claims = await claimCount();
-    await page.locator('[data-focus-key="truck-length"]').fill('');
-    await updateTruck();
-    const invalid = page.locator('[data-focus-key="truck-length"]');
-    assert.equal(await invalid.getAttribute('aria-invalid'), 'true', 'E: the error shows on the live, rebuilt field');
-    assert.match(await invalid.locator('..').textContent(), /Enter at least/);
-    committedScene(await state(), 'E');
-    assert.equal(await claimCount(), claims, 'E: validation failure claims no operation');
-    await page.locator('[data-focus-key="truck-length"]').fill('636');
-
-    // D: unchanged truck.
-    await preview('D');
-    claims = await claimCount();
-    await updateTruck();
-    await page.waitForFunction(() => window.probe.op() === 'idle');
-    assert.equal(await claimCount(), claims + 1, 'D: Truck Change claimed the Editor once');
-    const unchangedClaim = await lastClaim();
-    assert.deepEqual(unchangedClaim, { kind: 'changingTruck', transient: false, atPack: true, packWrites: 0 },
-      'D: the committed scene was restored before Truck Change claimed the Editor');
-    committedScene(await state(), 'D');
-
-    // C + F: a real proposal, the refined Truck change modal, then Cancel.
-    await preview('C');
-    await page.locator('[data-focus-key="truck-length"]').fill('150');
-    await updateTruck();
-    await truckModal.waitFor();
-    assert.deepEqual(await lastClaim(), { kind: 'changingTruck', transient: false, atPack: true, packWrites: 0 },
-      'C: the committed scene was restored before the Truck Change proposal');
-    const modalView = () => truckModal.evaluate(modal => {
-      const clean = el => el.textContent.replace(/\s+/g, ' ').trim();
-      const css = el => getComputedStyle(el);
-      const rows = [...modal.querySelectorAll('.tp3d-truck-change-summary__row')];
-      const buttons = [...modal.querySelectorAll('.modal-footer .btn')];
-      const footer = modal.querySelector('.modal-footer').getBoundingClientRect();
-      return {
-        title: clean(modal.querySelector('.modal-title')),
-        listTag: modal.querySelector('.tp3d-truck-change-summary')?.tagName,
-        listStyle: css(modal.querySelector('.tp3d-truck-change-summary')).listStyleType,
-        bullets: modal.querySelectorAll('.modal-body li:not(.tp3d-truck-change-summary__row)').length,
-        rows: rows.map(row => ({
-          text: clean(row), className: row.className, bg: css(row).backgroundColor, color: css(row).color,
-          countWeight: css(row.querySelector('.tp3d-truck-change-summary__count')).fontWeight,
-          strong: row.querySelector('strong') ? clean(row.querySelector('strong')) : null,
-          noteColor: row.querySelector('.tp3d-truck-change-summary__note')
-            ? css(row.querySelector('.tp3d-truck-change-summary__note')).color : null,
-          borderTop: css(row).borderTopColor + ' ' + css(row).borderTopWidth,
-        })),
-        body: clean(modal.querySelector('.modal-body')),
-        buttons: buttons.map(btn => {
-          const rect = btn.getBoundingClientRect();
-          return { label: clean(btn), primary: btn.classList.contains('btn-primary'), x: rect.left, y: rect.top,
-            right: rect.right, width: rect.width };
-        }),
-        footer: { left: footer.left, right: footer.right, width: footer.width },
-        overflow: modal.scrollWidth > modal.clientWidth + 1 || document.documentElement.scrollWidth > window.innerWidth + 1,
-        focusInside: modal.contains(document.activeElement),
-        secondary: getComputedStyle(document.documentElement).getPropertyValue('--text-secondary').trim(),
-      };
-    });
-    const desktop = await modalView();
-    assert.equal(desktop.title, 'Truck change');
-    assert.equal(desktop.listTag, 'UL');
-    assert.equal(desktop.listStyle, 'none', 'the summary is one group, not a bulleted list');
-    assert.equal(desktop.bullets, 0);
-    assert.deepEqual(desktop.rows.slice(0, 4).map(row => row.text.replace(/^\d+ /, 'N ')), [
-      'N kept in place', 'N safely adjusted', 'N no longer fit (shown in staging preview)', 'N existing staged items unchanged',
-    ]);
-    const decision = desktop.rows[2];
-    assert.match(decision.className, /\bis-no-longer-fit\b/, 'items no longer fit at 150 in');
-    assert.equal(decision.bg, 'rgba(255, 159, 28, 0.12)', 'the decision row has the faint brand tint');
-    assert.equal(decision.color, 'rgb(26, 26, 31)', 'decision-row text stays neutral (no brown, no dark warning text)');
-    assert.equal(decision.countWeight, '700');
-    assert.equal(decision.strong, 'no longer fit');
-    assert.notEqual(decision.noteColor, decision.color, 'the parenthetical is secondary gray');
-    assert.equal(decision.borderTop, desktop.rows[1].borderTop, 'same subtle divider as the other rows');
-    for (const row of desktop.rows) {
-      const zero = row.text.startsWith('0 ');
-      assert.equal(/\bis-zero\b/.test(row.className), zero, `${row.text}: zero rows are subdued, others are not`);
-      if (zero) assert.notEqual(row.color, 'rgb(26, 26, 31)', `${row.text}: zero row uses muted text`);
-      if (zero) assert.equal(row.bg, 'rgba(0, 0, 0, 0)', `${row.text}: zero row has no tint`);
-    }
-    assert.match(desktop.body, /The scene shows the proposed truck\. Items that no longer fit are shown in staging\. No changes are saved until you confirm\./);
-    assert.deepEqual(desktop.buttons.map(btn => [btn.label, btn.primary]),
-      [['Repack invalid', true], ['Move to staging', false], ['Cancel', false]], 'DOM and Tab order: decisions, then Cancel');
-    const [repack, move, cancel] = desktop.buttons;
-    assert.ok(repack.x < move.x && move.right < cancel.x, 'desktop: Repack invalid and Move to staging left, Cancel right');
-    assert.ok(Math.abs(repack.y - cancel.y) < 2, 'desktop: one footer row');
-    assert.ok(repack.x - desktop.footer.left < 40 && desktop.footer.right - cancel.right < 40, 'desktop: groups sit at the footer edges');
-    assert.equal(desktop.overflow, false);
-    assert.equal(desktop.focusInside, true, 'focus moves into the Truck change modal');
-    await truckModal.getByRole('button', { name: 'Cancel', exact: true }).click();
-    await truckModal.waitFor({ state: 'detached' });
-    await page.waitForFunction(() => window.probe.op() === 'idle');
-    const cancelled = await state();
-    committedScene(cancelled, 'F (Cancel)');
-    assert.equal(cancelled.truck, base.truck, 'F: Cancel commits no truck');
-    assert.equal(cancelled.cases, base.cases, 'F: Cancel commits no cargo');
-
-    // Narrow layout and Escape on the same modal.
-    // (The narrow Editor hides the Inspector in a drawer: open at desktop width, then narrow.)
-    await preview('Escape');
-    await page.locator('[data-focus-key="truck-length"]').fill('150');
-    await updateTruck();
-    await truckModal.waitFor();
-    await page.setViewportSize({ width: 390, height: 844 });
-    const narrow = await modalView();
-    const [nRepack, nMove, nCancel] = narrow.buttons;
-    assert.deepEqual(narrow.buttons.map(btn => btn.label), ['Repack invalid', 'Move to staging', 'Cancel']);
-    assert.ok(nRepack.y < nMove.y && nMove.y < nCancel.y, 'narrow: stacked Repack invalid, Move to staging, Cancel');
-    assert.ok(narrow.buttons.every(btn => Math.abs(btn.width - nRepack.width) < 1 && btn.width > narrow.footer.width * 0.8),
-      'narrow: full-width buttons');
-    assert.equal(narrow.overflow, false, 'narrow: no horizontal overflow');
-    await page.keyboard.press('Escape');
-    await truckModal.waitFor({ state: 'detached' });
-    await page.waitForFunction(() => window.probe.op() === 'idle');
-    await page.setViewportSize({ width: 1400, height: 900 });
-    const escaped = await state();
-    committedScene(escaped, 'Escape');
-    assert.equal(escaped.truck, base.truck, 'Escape commits no truck');
-    assert.equal(await page.evaluate(() => Boolean(document.activeElement?.closest('.modal'))), false,
-      'Escape leaves no focus inside a closed modal');
-    await page.locator('[data-focus-key="truck-length"]').fill('636');
-
-    // H: the follow-up "Some items still do not fit" modal shares the Truck change design.
-    await page.locator('[data-focus-key="truck-length"]').fill('150');
-    await updateTruck();
-    await truckModal.waitFor();
-    await truckModal.getByRole('button', { name: 'Repack invalid', exact: true }).click();
-    const followUp = page.locator('.modal').filter({ has: page.locator('.modal-title', { hasText: 'Some items still do not fit' }) });
-    await followUp.waitFor();
-    const followUpView = () => followUp.evaluate(modal => {
-      const clean = el => el.textContent.replace(/\s+/g, ' ').trim();
-      const css = el => getComputedStyle(el);
-      const rows = [...modal.querySelectorAll('.tp3d-truck-change-summary__row')];
-      const buttons = [...modal.querySelectorAll('.modal-footer .btn')];
-      const footer = modal.querySelector('.modal-footer').getBoundingClientRect();
-      return {
-        title: clean(modal.querySelector('.modal-title')),
-        hasModalClass: modal.classList.contains('tp3d-truck-change-modal'),
-        listStyle: css(modal.querySelector('.tp3d-truck-change-summary')).listStyleType,
-        listBorder: css(modal.querySelector('.tp3d-truck-change-summary')).borderTopWidth,
-        bullets: modal.querySelectorAll('.modal-body li:not(.tp3d-truck-change-summary__row)').length,
-        classicList: modal.querySelectorAll('.tp3d-editor-card-grid-gap-12').length,
-        rows: rows.map(row => ({
-          count: clean(row.querySelector('.tp3d-truck-change-summary__count')),
-          label: clean(row.querySelector('.tp3d-truck-change-summary__label')),
-          countWeight: css(row.querySelector('.tp3d-truck-change-summary__count')).fontWeight,
-          color: css(row).color, bg: css(row).backgroundColor,
-        })),
-        body: clean(modal.querySelector('.modal-body')),
-        buttons: buttons.map(btn => {
-          const rect = btn.getBoundingClientRect();
-          return { label: clean(btn), primary: btn.classList.contains('btn-primary'), bg: css(btn).backgroundColor,
-            x: rect.left, y: rect.top, right: rect.right, width: rect.width };
-        }),
-        footer: { left: footer.left, right: footer.right, width: footer.width },
-        overflow: modal.scrollWidth > modal.clientWidth + 1 || document.documentElement.scrollWidth > window.innerWidth + 1,
-      };
-    });
-    const followDesktop = await followUpView();
-    assert.equal(followDesktop.title, 'Some items still do not fit');
-    assert.equal(followDesktop.hasModalClass, true, 'H: the follow-up uses the Truck change modal pattern');
-    assert.equal(followDesktop.listStyle, 'none', 'H: failed Cases are not a bulleted list');
-    assert.equal(followDesktop.bullets, 0);
-    assert.equal(followDesktop.classicList, 0);
-    assert.notEqual(followDesktop.listBorder, '0px', 'H: the bordered summary group is used');
-    assert.ok(followDesktop.rows.length > 0, 'H: failed Cases are listed');
-    for (const row of followDesktop.rows) {
-      assert.match(row.count, /^\d+$/, 'H: the count column holds only the number');
-      assert.ok(row.label.length > 0 && !/^\d+\s*×/.test(row.label), 'H: the Case name is its own label');
-      assert.equal(row.countWeight, '600', 'H: counts are bold');
-      assert.equal(row.color, 'rgb(26, 26, 31)', 'H: neutral text, no brown');
-      assert.equal(row.bg, 'rgba(0, 0, 0, 0)', 'H: no row tint');
-    }
-    assert.match(followDesktop.body, /\d+ items? repacked\. Could not be repacked: \d+ items?\./);
-    assert.match(followDesktop.body, /Items that could not be repacked are shown in the staging preview\. No truck or cargo changes have been saved yet\./);
-    assert.deepEqual(followDesktop.buttons.map(btn => [btn.label, btn.primary]),
-      [['Keep current truck and cancel', false], ['Move remaining items to staging', true]]);
-    assert.equal(followDesktop.buttons[1].bg, 'rgb(255, 159, 28)', 'H: primary is brand orange');
-    assert.equal(followDesktop.buttons[0].bg, 'rgb(255, 255, 255)', 'H: Keep is the shared neutral secondary');
-    assert.ok(Math.abs(followDesktop.buttons[0].y - followDesktop.buttons[1].y) < 2, 'H: one desktop footer row');
-    assert.equal(followDesktop.overflow, false);
-    assert.equal((await state()).packWrites, 0, 'H: opening the follow-up writes no Pack');
-    await page.setViewportSize({ width: 390, height: 844 });
-    const followNarrow = await followUpView();
-    assert.ok(followNarrow.buttons[0].y < followNarrow.buttons[1].y, 'H narrow: buttons stack');
-    assert.ok(followNarrow.buttons.every(btn => btn.width > followNarrow.footer.width * 0.8), 'H narrow: full-width buttons');
-    assert.equal(followNarrow.overflow, false, 'H narrow: no horizontal overflow');
-    await page.setViewportSize({ width: 1400, height: 900 });
-    await followUp.getByRole('button', { name: 'Keep current truck and cancel', exact: true }).click();
-    await followUp.waitFor({ state: 'detached' });
-    await page.waitForFunction(() => window.probe.op() === 'idle');
-    const followCancelled = await state();
-    committedScene(followCancelled, 'H (Cancel)');
-    assert.equal(followCancelled.truck, base.truck, 'H: Cancel restores the original truck');
-    assert.equal(followCancelled.cases, base.cases, 'H: Cancel restores the original cargo');
-    assert.equal(followCancelled.packWrites, 0, 'H: no Pack write from the follow-up');
-    await page.locator('[data-focus-key="truck-length"]').fill('636');
-
     // B: refused Unpack.
     await preview('B');
     await page.evaluate(() => { window.probe.refuseKind = 'unpacking'; });

@@ -23,7 +23,6 @@ import {
   enforceWorkspaceLimitMigrationPath,
   fs,
   indexHtmlPath,
-  makeTruckChangeHarness,
   orgArchiveMigrationPath,
   orgArchiveWorkspacePath,
   orgCreateWorkspacePath,
@@ -50,7 +49,6 @@ import {
   test,
   transferOwnershipLiveFixMigrationPath,
   transferOwnershipMigrationPath,
-  truckChangeControllerPath,
   vm,
 } from '../fixtures/security-invariants-support.mjs';
 
@@ -151,13 +149,13 @@ test('RECON mode switches (Std↔WheelWells, Std↔FrontOverhang) keep valid ite
     assert.deepEqual(after.transform.position, before.transform.position, `kept item ${id} is byte-equivalent`);
   }
   // Resolve invalid by staging, then the whole layout is safe.
-  const staged = PackLib.stageInvalidPlacements(r, RECON_WW, RECON_CASE_LIB);
+  const staged = PackLib.stagePlacementIds((r).nextPack, (r).invalid, RECON_WW, RECON_CASE_LIB).pack;
   assertReconLayoutSafe(PackLib, staged.cases, RECON_WW, 'Std→WW staged');
 
   // Wheel Wells → Standard: a previously-valid WW layout stays valid (more space).
   const wwCases = staged.cases;
   const r2 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_WW, cases: wwCases }, RECON_RECT, RECON_CASE_LIB);
-  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r2, RECON_RECT, RECON_CASE_LIB).cases, RECON_RECT, 'WW→Std');
+  assertReconLayoutSafe(PackLib, PackLib.stagePlacementIds((r2).nextPack, (r2).invalid, RECON_RECT, RECON_CASE_LIB).pack.cases, RECON_RECT, 'WW→Std');
 
   // Std → Front Overhang: floor items unaffected (overhang only adds space).
   const r3 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, reconFB(), RECON_CASE_LIB);
@@ -168,10 +166,10 @@ test('RECON mode switches (Std↔WheelWells, Std↔FrontOverhang) keep valid ite
   const r4 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: reconFB(), cases: deckCases }, RECON_RECT, RECON_CASE_LIB);
   assert.deepEqual(r4.invalid, ['deck'], 'FrontOverhang→Std: the deck item is invalid');
   assert.ok(r4.kept.includes('floor'), 'the main-floor item is kept');
-  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r4, RECON_RECT, RECON_CASE_LIB).cases, RECON_RECT, 'FB→Std staged');
+  assertReconLayoutSafe(PackLib, PackLib.stagePlacementIds((r4).nextPack, (r4).invalid, RECON_RECT, RECON_CASE_LIB).pack.cases, RECON_RECT, 'FB→Std staged');
 });
 
-test('RECON repack and organized staging produce safe, deterministic, type-grouped layouts', async () => {
+test('RECON organized staging produce safe, deterministic, type-grouped layouts', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
   const lib = [
     { id: 'A', name: 'A', dimensions: { length: 24, width: 18, height: 16 }, weight: 10, orientationLock: 'any' },
@@ -185,7 +183,7 @@ test('RECON repack and organized staging produce safe, deterministic, type-group
   const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib);
   assert.ok(r.summary.invalid > 0, 'several items are invalid after the length cut');
 
-  const staged = PackLib.stageInvalidPlacements(r, nextTruck, lib);
+  const staged = PackLib.stagePlacementIds((r).nextPack, (r).invalid, nextTruck, lib).pack;
   assertReconLayoutSafe(PackLib, staged.cases, nextTruck, 'staged');
   // Grouped by case type: staged items of type A occupy a contiguous staging band vs B.
   const stagedA = staged.cases.filter(c => c.caseId === 'A' && c.placement === 'staged').map(c => c.transform.position.z);
@@ -194,13 +192,10 @@ test('RECON repack and organized staging produce safe, deterministic, type-group
     assert.ok(Math.max(...stagedA) <= Math.min(...stagedB) || Math.max(...stagedB) <= Math.min(...stagedA), 'staged items are grouped by type (A and B do not interleave by z-band)');
   }
   // Deterministic repeat.
-  const staged2 = PackLib.stageInvalidPlacements(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib), nextTruck, lib);
+  const staged2 = PackLib.stagePlacementIds((PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib)).nextPack, (PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib)).invalid, nextTruck, lib).pack;
   assert.equal(JSON.stringify(staged.cases.map(c => c.transform.position)), JSON.stringify(staged2.cases.map(c => c.transform.position)), 'staging is deterministic');
 
-  const repacked = PackLib.repackInvalidPlacements(r, nextTruck, lib);
-  assertReconLayoutSafe(PackLib, repacked.pack.cases, nextTruck, 'repacked');
-  const repacked2 = PackLib.repackInvalidPlacements(PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, lib), nextTruck, lib);
-  assert.equal(JSON.stringify(repacked.pack.cases.map(c => c.transform.position)), JSON.stringify(repacked2.pack.cases.map(c => c.transform.position)), 'repack is deterministic');
+
 });
 
 test('RECON grouped staging preserves obstacles and builds deterministic case bands with aligned partial rows', async () => {
@@ -330,7 +325,6 @@ test('RECON grouped staging preserves obstacles and builds deterministic case ba
 
 test('RECON Truck Change preserves 521 organized staged cases across modes and smaller presets', async () => {
   const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
   const caseData = { id: 'bulk', name: 'Bulk carton', dimensions: { length: 20, width: 14, height: 12 },
     weight: 10, orientationLock: 'any' };
   const caseLibrary = [caseData];
@@ -348,7 +342,6 @@ test('RECON Truck Change preserves 521 organized staged cases across modes and s
   const boxTruck = { length: 300, width: 90, height: 96, shapeMode: 'rect' };
   const sprinter = { length: 190, width: 70, height: 72, shapeMode: 'rect' };
   const stagedCases = buildLargeReconStagingRows(521, standard, caseData);
-  const sourceSnapshot = JSON.stringify(stagedCases);
   const workArea = PackLib.getStagingWorkAreaBounds(standard);
   assert.ok(stagedCases.some(inst => reconAabb(inst.transform.position, caseData.dimensions).max.z > workArea.max.z),
     'fixture contains organized rows beyond the compact preferred staging work area');
@@ -397,89 +390,7 @@ test('RECON Truck Change preserves 521 organized staged cases across modes and s
   assert.deepEqual(sprinterAfterBox.nextPack.cases, stagedCases,
     'sequential preset changes keep every safe staged pose byte-equivalent');
 
-  const sequentialHarness = makeTruckChangeHarness();
-  const sequentialPreviews = [];
-  const sequentialCommits = [];
-  const sequentialController = Controller.createTruckChangeController({
-    PackLibrary: {
-      ...PackLib,
-      update: (id, patch) => {
-        sequentialCommits.push({ id, patch });
-        return { id, ...patch };
-      },
-    },
-    CaseLibrary: { getCases: () => caseLibrary },
-    UIComponents: sequentialHarness.UIComponents,
-    documentRef: sequentialHarness.documentRef,
-  });
-  sequentialController.request({
-    pack: boxCommit.nextPack,
-    nextTruck: sprinter,
-    renderPreview: preview => sequentialPreviews.push(preview),
-  });
-  const sequentialRows = sequentialHarness.modals[0].config.content.children[1].children
-    .map(child => child.textContent);
-  assert.deepEqual(sequentialRows, [
-    '0 kept in place',
-    '0 safely adjusted',
-    '0 no longer fit (shown in staging preview)',
-    '521 existing staged items unchanged',
-  ], 'sequential preset modal reports the exact unchanged semantic count');
-  sequentialHarness.click(0, 'Apply change');
-  assert.equal(sequentialCommits.length, 1);
-  assert.deepEqual(sequentialCommits[0].patch.cases, sequentialPreviews[0].pack.cases,
-    'sequential preset commit is byte-equivalent to its preview');
-  assert.deepEqual(sequentialCommits[0].patch.cases, stagedCases,
-    'sequential preset controller keeps every original pose');
 
-  const sourcePack = { id: 'large-controller', truck: standard, cases: stagedCases };
-  const runController = () => {
-    const harness = makeTruckChangeHarness();
-    const previews = [];
-    const commits = [];
-    const controller = Controller.createTruckChangeController({
-      PackLibrary: {
-        ...PackLib,
-        update: (id, patch) => {
-          commits.push({ id, patch });
-          return { id, ...patch };
-        },
-      },
-      CaseLibrary: { getCases: () => caseLibrary },
-      UIComponents: harness.UIComponents,
-      documentRef: harness.documentRef,
-    });
-    const result = controller.request({
-      pack: sourcePack,
-      nextTruck: wheelWells,
-      renderPreview: preview => previews.push(preview),
-    });
-    return { harness, previews, commits, result };
-  };
-
-  const cancelled = runController();
-  assert.equal(cancelled.result.status, 'preview');
-  assert.deepEqual(cancelled.previews[0].pack.cases, stagedCases,
-    '521-case preview preserves every safe staged pose');
-  const summaryRows = cancelled.harness.modals[0].config.content.children[1].children
-    .map(child => child.textContent);
-  assert.deepEqual(summaryRows, [
-    '0 kept in place',
-    '0 safely adjusted',
-    '0 no longer fit (shown in staging preview)',
-    '521 existing staged items unchanged',
-  ], 'modal counts remain truthful and do not invent unsafe staged corrections');
-  cancelled.harness.click(0, 'Cancel');
-  assert.equal(JSON.stringify(stagedCases), sourceSnapshot, 'Cancel is pure for the exact large-load regression');
-
-  const applied = runController();
-  assert.deepEqual(applied.previews[0].pack.cases, cancelled.previews[0].pack.cases,
-    'repeated 521-case previews are byte-equivalent');
-  applied.harness.click(0, 'Apply change');
-  assert.equal(applied.commits.length, 1, 'large staged-only Truck Change commits once');
-  assert.deepEqual(applied.commits[0].patch.cases, applied.previews[0].pack.cases,
-    'large staged-only commit is byte-equivalent to the rendered preview');
-  assert.equal(JSON.stringify(stagedCases), sourceSnapshot, 'controller never mutates the caller snapshot');
 });
 
 test('legacy org-sync handler is hint-only and does not call handleIncomingOrgContextSync', async () => {

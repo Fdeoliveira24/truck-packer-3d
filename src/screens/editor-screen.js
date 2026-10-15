@@ -7005,16 +7005,13 @@ export function createEditorScreen({
     }
 
     // Every editor truck writer delegates to the shared, single-flight
-    // reconciliation controller. The current render is also the canonical
+    // staging confirmation controller. The current render is also the canonical
     // control restoration path for Cancel, X, overlay click, and Escape.
     function applyTruckGeometryChange(pack, nextTruck, successMsg) {
       // Single choke point for every truck-geometry commit (Update truck + the
       // config-card save buttons). Block while another operation owns the editor,
       // and hold the lifecycle slot for the duration of the preview modal so AutoPack/
       // Unpack cannot mutate the pack underneath an open Truck Change.
-      // Truck Change starts from the committed scene, so every outcome (proposal,
-      // unchanged, invalid, failed, Cancel) ends on it rather than a Results preview.
-      endAutoPackResultsPreview();
       if (OperationLifecycle && OperationLifecycle.isBusy()) {
         UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
         return { status: 'busy' };
@@ -7027,17 +7024,8 @@ export function createEditorScreen({
           pack,
           nextTruck,
           successMessage: successMsg || 'Truck updated',
-          renderPreview: preview => {
-            if (!preview || !preview.pack || StateStore.get('currentScreen') !== 'editor') return;
-            previewScene = null;
-            ensureScene();
-            SceneManager.setTruck(preview.pack.truck);
-            CaseScene.sync(preview.pack);
-            CaseScene.setSelected(StateStore.get('selectedInstanceIds') || []);
-            SceneManager.resize();
-          },
           onCommitted: () => { clearPendingTruck(); render(); release(); },
-          restoreControls: () => { render(); release(); },
+          restoreControls: () => { clearPendingTruck(); render(); release(); },
         });
       } catch (err) {
         release();
@@ -7216,23 +7204,7 @@ export function createEditorScreen({
       if (truckDirty) btnSave.classList.add('tp3d-editor-btn-attention');
       btnSave.dataset.role = 'truck-update';
       btnSave.addEventListener('click', () => {
-        // Truck Change starts from the committed scene. Ending a transient
-        // Results preview rebuilds this form, so the typed dimensions carry over
-        // and the same Update (validation included) runs on the rebuilt form.
-        if (CaseScene.isTransientPreview()) {
-          const typed = [fL, fW, fH].map(field => [field.input.dataset.focusKey, field.input.value]);
-          if (endAutoPackResultsPreview()) {
-            typed.forEach(([key, value]) => {
-              const input = inspectorEl.querySelector(`[data-focus-key="${key}"]`);
-              if (input instanceof HTMLInputElement) input.value = value;
-            });
-            const rebuilt = inspectorEl.querySelector('[data-role="truck-update"]');
-            if (rebuilt instanceof HTMLButtonElement) rebuilt.click();
-            return;
-          }
-        }
-        // Commit the pending/edited geometry. This is the ONLY path that calls the
-        // TruckChangeController (reconciliation + preview); dropdown changes do not.
+        // Commit only after confirmation; pending form edits leave Results alone.
         if (OperationLifecycle && OperationLifecycle.isBusy()) {
           UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
           return;
@@ -7292,7 +7264,7 @@ export function createEditorScreen({
 
       shapeSelect.addEventListener('change', () => {
         // Pending only: pre-fill the form (and surface the matching config card on the
-        // next render). Reconciliation/preview happens when the user clicks Update truck.
+        // next render). Confirmation opens only when the user clicks Update truck.
         if (OperationLifecycle && OperationLifecycle.isBusy()) {
           UIComponents.showToast('Another operation is in progress. Please wait…', 'info', { title: 'Truck' });
           shapeSelect.value = effectiveTruck && (effectiveTruck.shapeMode === 'wheelWells' || effectiveTruck.shapeMode === 'frontBonus') ? effectiveTruck.shapeMode : 'rect';

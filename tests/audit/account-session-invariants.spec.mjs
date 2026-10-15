@@ -1,12 +1,9 @@
 // account session invariants: contract tests from the former security suite.
 
 import {
-  RECON_RECT,
-  RECON_WW,
   accountOverlayPath,
   accountPurgeStatusMigrationPath,
   assert,
-  assertCanonicalReconLayoutSafe,
   authOverlayPath,
   autoPackEnginePath,
   banUserPath,
@@ -21,7 +18,6 @@ import {
   executeOrgMemberRoleUpdate,
   fs,
   guardProfileDeletionFieldsMigrationPath,
-  makeTruckChangeHarness,
   orgCreateWorkspacePath,
   orgInviteAcceptPath,
   orgInvitePath,
@@ -31,11 +27,9 @@ import {
   orgRestoreWorkspacePath,
   orgTransferOwnershipPath,
   p5Modules,
-  packLibraryPath,
   purgeDeletedAccountsPath,
   purgeDeletedUsersPath,
   readAppSource,
-  reconFB,
   requestAccountDeletionPath,
   restrictMembershipMutationMigrationPath,
   settingsOverlayPath,
@@ -43,7 +37,6 @@ import {
   supabaseConfigPath,
   supabasePath,
   test,
-  truckChangeControllerPath,
   unbanUserPath,
   vm,
 } from '../fixtures/security-invariants-support.mjs';
@@ -525,116 +518,6 @@ test('phase 1 P0 cross-profile logout: visible signed-in tabs actively validate 
     'signed-out cleanup must stop the visible auth validation loop');
   assert.match(app, /const shouldClearSignedOutOrgHint = Boolean\(userInitiatedSignOut \|\| treatAsSignedOut \|\| AuthService\.getAuthBlockState\(\)\)[\s\S]{0,180}clearLocalOrgHint: shouldClearSignedOutOrgHint/,
     'confirmed signed-out cleanup must clear stale active org hints');
-});
-
-test('RECON Truck Change stages identity poses with preview/commit, mode, profile, and repeat parity', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseData = {
-    id: 'beam', name: 'Beam', dimensions: { length: 30, width: 20, height: 10 },
-    orientationLock: 'any', weight: 10,
-  };
-  const identity = { x: 0, y: 0, z: 0 };
-  const rotatedY = { x: 0, y: Math.PI / 2, z: 0 };
-  const rolledX = { x: Math.PI / 2, y: 0, z: 0 };
-  const make = (id, x, rotation, orientedDims, extra = {}) => ({
-    id, caseId: 'beam', placement: 'packed', hidden: false,
-    transform: { position: { x, y: orientedDims.height / 2, z: 0 }, rotation, scale: { x: 1, y: 1, z: 1 } },
-    orientedDims,
-    ...extra,
-  });
-  const survivor = make('survivor', 30, rotatedY, { length: 20, width: 30, height: 10 },
-    { packedProfile: 'max-capacity' });
-  const invalidYaw = make('invalid-yaw', 190, rotatedY, { length: 20, width: 30, height: 10 },
-    { packedProfile: 'max-capacity', orientationLocked: true, lockedRotation: rotatedY });
-  const invalidRoll = make('invalid-roll', 220, rolledX, { length: 30, width: 10, height: 20 });
-  const existingStaged = {
-    ...make('existing-stage', 20, identity, caseData.dimensions),
-    placement: 'staged',
-    transform: { position: { x: 20, y: 5, z: 130 }, rotation: identity, scale: { x: 1, y: 1, z: 1 } },
-  };
-  const pack = { id: 'truck-stage', truck: RECON_RECT, cases: [survivor, invalidYaw, invalidRoll, existingStaged] };
-  const nextTruck = { ...RECON_RECT, length: 120 };
-  const sourceSnapshot = JSON.stringify(pack);
-
-  const runPreview = () => {
-    const harness = makeTruckChangeHarness();
-    const previews = [];
-    const commits = [];
-    const controller = Controller.createTruckChangeController({
-      PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
-      CaseLibrary: { getCases: () => [caseData] },
-      UIComponents: harness.UIComponents,
-      documentRef: harness.documentRef,
-    });
-    assert.equal(controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) }).status, 'preview');
-    return { harness, previews, commits };
-  };
-
-  const cancelled = runPreview();
-  const cancelledPose = JSON.stringify(cancelled.previews[0].pack.cases);
-  cancelled.harness.click(0, 'Cancel');
-  assert.equal(JSON.stringify(pack), sourceSnapshot, 'Cancel leaves every original packed transform unchanged');
-
-  const applied = runPreview();
-  assert.equal(JSON.stringify(applied.previews[0].pack.cases), cancelledPose,
-    'repeated identical Truck Change previews produce byte-equivalent poses');
-  const previewCases = applied.previews[0].pack.cases;
-  const stagedPreview = previewCases.filter(inst => ['invalid-yaw', 'invalid-roll'].includes(inst.id));
-  for (const inst of stagedPreview) {
-    assert.equal(inst.placement, 'staged', `${inst.id} is shown in staging`);
-    assert.deepEqual(inst.transform.rotation, identity, `${inst.id} drops its previous packed rotation`);
-    assert.deepEqual(inst.orientedDims, caseData.dimensions, `${inst.id} dimensions match identity rotation`);
-    assert.equal(inst.transform.position.y, caseData.dimensions.height / 2, `${inst.id} rests on staging ground`);
-    assert.equal(Object.prototype.hasOwnProperty.call(inst, 'packedProfile'), false, `${inst.id} loses packedProfile`);
-  }
-  assert.deepEqual(previewCases.find(inst => inst.id === 'survivor'), survivor,
-    'valid packed survivor remains byte-equivalent, including Max Capacity profile');
-  assert.deepEqual(previewCases.find(inst => inst.id === 'existing-stage'), existingStaged,
-    'safe existing deterministic staging remains unchanged');
-  assert.deepEqual(previewCases.find(inst => inst.id === 'invalid-yaw').lockedRotation, rotatedY,
-    'staging changes actual pose without rewriting the exact planning target');
-  assertCanonicalReconLayoutSafe(PackLib, previewCases, nextTruck, [caseData], 'Truck Change identity preview');
-
-  applied.harness.click(0, 'Move to staging');
-  assert.equal(applied.commits.length, 1);
-  assert.deepEqual(applied.commits[0].patch.cases, previewCases,
-    'Move-to-staging commit is byte-equivalent to its preview pose');
-  assert.equal(JSON.stringify(pack), sourceSnapshot, 'controller keeps its caller snapshot pure');
-
-  const transitions = [
-    [RECON_RECT, RECON_WW],
-    [RECON_WW, RECON_RECT],
-    [RECON_RECT, reconFB()],
-    [reconFB(), RECON_WW],
-    [RECON_WW, reconFB()],
-  ];
-  for (const [sourceTruck, targetTruck] of transitions) {
-    const direct = PackLib.stagePlacementIds(
-      { id: 'mode-parity', truck: sourceTruck, cases: [invalidYaw, invalidRoll] },
-      ['invalid-yaw', 'invalid-roll'], targetTruck, [caseData], { grouped: true }
-    );
-    assert.deepEqual(direct.failedIds, []);
-    for (const inst of direct.pack.cases) {
-      assert.deepEqual(inst.transform.rotation, identity, `${sourceTruck.shapeMode}→${targetTruck.shapeMode}: identity rotation`);
-      assert.deepEqual(inst.orientedDims, caseData.dimensions, `${sourceTruck.shapeMode}→${targetTruck.shapeMode}: identity dimensions`);
-      assert.equal(inst.transform.position.y, 5, `${sourceTruck.shapeMode}→${targetTruck.shapeMode}: grounded`);
-    }
-    assertCanonicalReconLayoutSafe(PackLib, direct.pack.cases, targetTruck, [caseData],
-      `${sourceTruck.shapeMode}→${targetTruck.shapeMode} staging`);
-  }
-
-  const unresolved = {
-    id: 'missing', caseId: 'missing-case', placement: 'packed', packedProfile: 'max-capacity',
-    transform: { position: { x: 200, y: 7, z: 0 }, rotation: rolledX, scale: { x: 1, y: 1, z: 1 } },
-    customMetadata: { keep: true },
-  };
-  const unresolvedResult = PackLib.stagePlacementIds(
-    { id: 'unresolved', truck: RECON_RECT, cases: [unresolved] }, ['missing'], nextTruck, [caseData]
-  );
-  assert.deepEqual(unresolvedResult.failedIds, ['missing']);
-  assert.deepEqual(unresolvedResult.pack.cases[0], unresolved,
-    'unresolved packed references keep safe metadata and receive no fabricated staging geometry');
 });
 
 test('phase 1 P0 cross-profile logout: server auth validation only clears on confirmed revocation', async () => {

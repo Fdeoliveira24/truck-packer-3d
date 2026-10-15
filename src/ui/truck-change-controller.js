@@ -79,7 +79,7 @@ export function createTruckChangeController({
         throw new Error('Case instance IDs need review. No changes were applied.');
       }
       const staged = PackLibrary.stagePlacementIds(pack, ids, ctx.nextTruck, CaseLibrary.getCases(), {
-        grouped: true, preserveRotation: true,
+        grouped: true, preserveRotation: true, preserveMissingDefinitions: true,
       });
       if (staged.failedIds.length || staged.stagedIds.length !== ids.length ||
           staged.pack.cases.length !== ids.length) {

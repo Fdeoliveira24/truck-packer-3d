@@ -1740,6 +1740,7 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
       String(a.inst.caseId).localeCompare(String(b.inst.caseId)) || a.index - b.index);
 
   const positioned = new Map();
+  const preservedMissingIds = new Set();
   const stagedIds = [];
   const failedIds = [];
   const warnings = [];
@@ -1747,6 +1748,18 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
     const layout = getStagingLayout(nextTruck);
     const groupsByCaseId = new Map();
     for (const entry of targets) {
+      if (options.preserveMissingDefinitions === true && !caseMap.has(entry.inst.caseId)) {
+        // Truck Change cannot validate or rearrange a Case with no definition.
+        // Retain its source pose; explicit stored bounds can still reserve space
+        // for the Cases whose geometry is known and can be staged safely.
+        preservedMissingIds.add(entry.inst.id);
+        stagedIds.push(entry.inst.id);
+        const pos = normalizeTransformPosition(entry.inst.transform && entry.inst.transform.position);
+        if (pos && hasPositiveFiniteDims(entry.inst.orientedDims)) {
+          accepted.push(makeAabb(pos, entry.inst.orientedDims));
+        }
+        continue;
+      }
       const canonical = stagingCanonical(entry.inst);
       if (!canonical.ok) {
         failedIds.push(entry.inst.id);
@@ -1829,6 +1842,12 @@ export function stagePlacementIds(pack, ids, nextTruck, caseLibrary, options = {
   }
 
   const nextCases = cases.map(inst => {
+    if (preservedMissingIds.has(inst.id)) {
+      const next = Utils.deepClone(inst);
+      next.placement = 'staged';
+      delete next.packedProfile;
+      return next;
+    }
     const staged = positioned.get(inst.id);
     if (!staged) {
       if (inst && inst.placement === 'staged' && inst.packedProfile !== undefined) {

@@ -279,6 +279,13 @@ for (const kind of ['missing', 'malformed']) {
   test(`HANDLING-RULES-P0A Truck Change handles ${kind} cargo without fabrication or partial commit`, async () => {
     const { StateStore, PackLibrary, CaseLibrary } = await freshModules();
     const pack = { ...activePackFixture(), cases: [incompleteInstance(kind)], handlingRulesValidatedSignature: 'v1:OLD' };
+    if (kind === 'missing') {
+      pack.cases[0].packedProfile = 'max-capacity';
+      const preserved = mkInst('missing-staged', 'missing-case', { x: 5, y: 5, z: 47 }, 'staged');
+      preserved.orientedDims = { length: 10, width: 10, height: 10 };
+      preserved.instanceNotes = 'Keep unresolved source';
+      pack.cases.push(preserved, mkInst('known', 'case-a', { x: 60, y: 5, z: 0 }));
+    }
     initFixture(StateStore, mkCase(), pack);
     const before = StateStore.snapshot();
     const { controller, modals } = truckHarness(PackLibrary, CaseLibrary);
@@ -287,10 +294,27 @@ for (const kind of ['missing', 'malformed']) {
     assert.deepEqual(modals[0].actions.map(a => a.label), ['Cancel', 'Apply Changes']);
     assert.deepEqual(StateStore.snapshot(), before);
     if (kind === 'missing') {
-      assert.equal(modals[0].actions[1].onClick(), false);
-      assert.deepEqual(StateStore.snapshot(), before,
-        'missing geometry leaves source data, truck, and signature unchanged');
-      assert.equal(StateStore.undo(), false, 'failure creates no history action');
+      assert.equal(modals[0].actions[1].onClick(), true);
+      const after = StateStore.snapshot();
+      const [unresolvedPacked, unresolvedStaged, known] = after.packLibrary[0].cases;
+      const expectedPacked = structuredClone(pack.cases[0]);
+      expectedPacked.placement = 'staged';
+      delete expectedPacked.packedProfile;
+      assert.deepEqual(unresolvedPacked, expectedPacked, 'packed unresolved cargo keeps its untrusted pose and metadata');
+      assert.deepEqual(unresolvedStaged, pack.cases[1], 'already staged unresolved cargo is unchanged');
+      assert.equal(known.placement, 'staged');
+      assert.notDeepEqual(known.transform.position, pack.cases[2].transform.position);
+      assert.ok(Math.abs(known.transform.position.x - unresolvedStaged.transform.position.x) >= 10 ||
+        Math.abs(known.transform.position.z - unresolvedStaged.transform.position.z) >= 10,
+      'stored unresolved bounds reserve space without certifying that geometry');
+      assert.deepEqual(after.packLibrary[0].cases.map(i => i.id), pack.cases.map(i => i.id));
+      assert.deepEqual(after.packLibrary[0].truck, nextTruck);
+      assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, undefined);
+      assert.equal(StateStore.undo(), true);
+      assert.deepEqual(StateStore.snapshot(), before);
+      assert.equal(StateStore.undo(), false);
+      assert.equal(StateStore.redo(), true);
+      assert.deepEqual(StateStore.snapshot(), after);
     } else {
       assert.equal(modals[0].actions[1].onClick(), true,
         'the real Case definition supplies dimensions for a trustworthy staging pose');

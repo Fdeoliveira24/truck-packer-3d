@@ -112,32 +112,38 @@ export function createTruckChangeController({
     } });
   }
 
-  function makeSummaryContent(recon, heading, unresolvedPackedCount = 0) {
+  function makeSummaryContent(recon, unresolvedPackedCount = 0) {
     const content = documentRef.createElement('div');
-    const intro = documentRef.createElement('div');
-    intro.className = 'tp3d-editor-sub-sm';
-    intro.textContent = heading;
-    content.appendChild(intro);
-
-    // One bordered summary group: a scannable count, then its meaning. Zero rows
-    // stay visible but subdued; a non-zero "no longer fit" row is the decision row.
+    const unresolvedReasons = {
+      missing: 0,
+      orientation: 0,
+      other: 0,
+    };
+    (recon.unresolved || []).forEach(entry => {
+      if (entry.reason === 'missing-case-definition') unresolvedReasons.missing += 1;
+      else if (entry.reason === 'saved orientation requires assessment') unresolvedReasons.orientation += 1;
+      else unresolvedReasons.other += 1;
+    });
     const list = documentRef.createElement('ul');
     list.className = 'tp3d-truck-change-summary';
     const rows = [
       { count: recon.summary.kept, label: 'kept in place' },
       { count: recon.summary.adjusted, label: 'safely adjusted' },
-      { count: recon.summary.invalid, label: 'no longer fit', note: '(shown in staging preview)', decision: true },
-      { count: recon.summary.stagedUnchanged, label: 'existing staged items unchanged' },
+      { count: recon.summary.invalid, label: 'no longer fit', decision: true },
+      { count: recon.summary.stagedUnchanged, label: 'staged items unchanged' },
+      { count: recon.summary.stagedAdjusted, label: 'staged items repositioned' },
+      { count: unresolvedReasons.missing, label: 'missing Case definition' },
+      { count: recon.summary.malformed, label: 'untrustworthy geometry' },
+      { count: unresolvedReasons.orientation, label: 'need orientation review' },
+      { count: unresolvedReasons.other, label: 'need other assessment' },
+      { count: unresolvedPackedCount, label: 'packed items shown in staging' },
     ];
-    if (recon.summary.stagedAdjusted) rows.push({ count: recon.summary.stagedAdjusted, label: 'unsafe staged items corrected' });
-    if (recon.summary.unresolved) rows.push({ count: recon.summary.unresolved, label: 'unresolved items require attention' });
-    if (recon.summary.malformed) rows.push({ count: recon.summary.malformed, label: 'malformed items require attention' });
-    rows.forEach(row => {
+    const visibleRows = rows.filter(row => row.count > 0);
+    visibleRows.forEach(row => {
       const li = documentRef.createElement('li');
       li.className = [
         'tp3d-truck-change-summary__row',
-        row.count ? '' : 'is-zero',
-        row.decision && row.count ? 'is-no-longer-fit' : '',
+        row.decision ? 'is-no-longer-fit' : '',
       ].filter(Boolean).join(' ');
       // Word spaces live in the text so the row reads "N label" as one phrase;
       // the count cell's trailing space collapses visually.
@@ -147,42 +153,17 @@ export function createTruckChangeController({
       li.appendChild(count);
       const label = documentRef.createElement('span');
       label.className = 'tp3d-truck-change-summary__label';
-      const text = documentRef.createElement(row.decision && row.count ? 'strong' : 'span');
+      const text = documentRef.createElement(row.decision ? 'strong' : 'span');
       text.textContent = row.label;
       label.appendChild(text);
-      if (row.note) {
-        const note = documentRef.createElement('span');
-        note.className = 'tp3d-truck-change-summary__note';
-        note.textContent = ` ${row.note}`;
-        label.appendChild(note);
-      }
       li.appendChild(label);
       list.appendChild(li);
     });
-    content.appendChild(list);
-
-    if (recon.unresolved.length || recon.malformed.length) {
-      const blocked = documentRef.createElement('div');
-      blocked.className = 'muted tp3d-editor-sub-sm';
-      const messages = [];
-      if (recon.unresolved.length) {
-        messages.push(`${recon.unresolved.length} unresolved item(s) require source data or assessment`);
-      }
-      if (recon.malformed.length) {
-        messages.push(`${recon.malformed.length} malformed item(s) have invalid physical data`);
-      }
-      const completeness = PackLibrary.getPackedReconciliationCompleteness(recon.nextPack, recon);
-      blocked.textContent = `${messages.join('; ')}. ${completeness.validationComplete
-        ? 'These items are preserved in staging and still require attention.'
-        : 'Packed physical data must be resolved before changing the truck.'}`;
-      if (unresolvedPackedCount) {
-        blocked.textContent += ` ${unresolvedPackedCount} packed item(s) will move to unresolved staging.`;
-      }
-      content.appendChild(blocked);
-    }
+    if (visibleRows.length) content.appendChild(list);
     const previewNote = documentRef.createElement('div');
     previewNote.className = 'muted tp3d-editor-sub-sm';
-    previewNote.textContent = 'The scene shows the proposed truck. Items that no longer fit are shown in staging. No changes are saved until you confirm.';
+    const blocked = !PackLibrary.getPackedReconciliationCompleteness(recon.nextPack, recon).validationComplete;
+    previewNote.textContent = `Based on the committed Pack, not an unapplied AutoPack preview. The scene shows the proposed truck; nothing is saved until Apply.${blocked ? ' Packed items needing review must be resolved before Apply.' : ''}`;
     content.appendChild(previewNote);
     return content;
   }
@@ -380,7 +361,7 @@ export function createTruckChangeController({
 
     const modalRef = showManagedModal(ctx, {
       title: 'Truck change',
-      content: makeSummaryContent(recon, 'Changing the truck affects placed cases:', ctx.unresolvedPackedIds.length),
+      content: makeSummaryContent(recon, ctx.unresolvedPackedIds.length),
       actions,
     });
     modalRef.modal?.classList?.add('tp3d-truck-change-modal');

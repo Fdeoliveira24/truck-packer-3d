@@ -1441,7 +1441,8 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     const pos = normalizeTransformPosition(inst && inst.transform && inst.transform.position);
     if (!inst) continue;
     if (!caseData) {
-      unresolved.push({ id: inst.id, caseId: inst.caseId, name: inst.name || inst.caseId || 'Unknown case' });
+      unresolved.push({ id: inst.id, caseId: inst.caseId, name: inst.name || inst.caseId || 'Unknown case',
+        reason: 'missing-case-definition' });
       const aabb = getTrustedUnresolvedPackedAabb(inst);
       if (aabb) collisionOnly.push({ inst, aabb, collisionOnly: true });
       continue;
@@ -1574,13 +1575,6 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
       continue;
     }
     const current = node.curAabb;
-    const proposed = options.changedInstanceIds instanceof Set && options.changedInstanceIds.has(node.inst.id);
-    if (!proposed && !node.canonical.orientationAllowed) {
-      unresolved.push({ id: node.inst.id, caseId: node.inst.caseId, reason: 'saved orientation requires assessment' });
-      stagingAccepted.push(current);
-      resultByInst.set(node.inst, { status: 'preserved', position: node.curPos, node });
-      continue;
-    }
     const insideTruck = overlapsAny(current, zones);
     const blockedBody = aabbIntersectsWheelWellBlockedBody(current, nextTruck) ||
       aabbIntersectsFrontBonusBlockedBody(current, nextTruck);

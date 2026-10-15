@@ -136,8 +136,7 @@ export function createTruckChangeController({
         if (options.successMessage) UIComponents.showToast(options.successMessage, 'success', { title: 'Truck' });
         return { status: 'committed' };
       }
-      const ctx = { ...options, restoreControls: options.restoreControls,
-        scope: captureScopeContext(), committed: false, inFlight: false };
+      const ctx = { ...options, scope: captureScopeContext(), committed: false, inFlight: false };
       const content = documentRef.createElement('p');
       content.textContent = 'Changing the truck layout will place all Cases in staging. You can arrange them again manually or use AutoPack.';
       active = ctx;

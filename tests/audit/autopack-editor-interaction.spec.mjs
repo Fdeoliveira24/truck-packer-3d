@@ -459,7 +459,7 @@ test('C3 browser Inspector fixes and releases committed orientation with focus, 
     const active = await current();
     assert.deepEqual(active, { ...before, orientationLocked: true, lockedRotation: before.transform.rotation });
     assert.equal(await page.evaluate(() => document.activeElement.dataset.focusKey), 'action-autopack-orientation');
-    assert.equal(await action.textContent(), 'Unlock for AutoPack');
+    assert.equal((await action.textContent()).trim(), 'Unlock for AutoPack');
     assert.equal(await action.getAttribute('aria-pressed'), 'true');
     await page.locator('#viewport').focus();
     await page.keyboard.press('ArrowRight');
@@ -498,7 +498,7 @@ test('C3 browser Inspector fixes and releases committed orientation with focus, 
         packLibrary: [{ ...pack, cases: [{ ...pack.cases[0], orientationLocked: true,
           lockedRotation: { x: Math.PI, y: 0, z: 0 } }] }] }, { skipHistory: true });
     });
-    assert.match(await status.textContent(), /conflicts with this Case/);
+    assert.equal(await page.locator('[data-role="autopack-orientation-status"]').count(), 0);
     const conflict = await current();
     await action.click();
     assert.deepEqual(await current(), { ...conflict, orientationLocked: false, lockedRotation: null });

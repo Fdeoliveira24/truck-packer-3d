@@ -3978,34 +3978,31 @@ test('OPERATION-LIFECYCLE-AMEND InteractionManager receives the lifecycle and gu
   const boundaryStart = editorSrc.indexOf('function scenePreviewOnly()');
   const boundaryEnd = editorSrc.indexOf('function showOperationsBusyToast()', boundaryStart);
   assert.ok(boundaryStart >= 0 && boundaryEnd > boundaryStart, 'scene mutation authority boundary must exist');
-  const state = { busy: false, preview: false, clearPreview: true };
-  const calls = { busy: 0, previewEnd: 0, packWrites: 0, historyWrites: 0 };
+  const state = { busy: false, preview: false };
+  const calls = { busy: 0, packWrites: 0, historyWrites: 0 };
   const prepare = runInNewContext(`${editorSrc.slice(boundaryStart, boundaryEnd)}
-    beforeSceneMutation = endPreview;
     prepareSceneMutation;`, {
     OperationLifecycle: { isBusy() { calls.busy++; return state.busy; } },
     CaseScene: { isTransientPreview: () => state.preview },
-    endPreview() { calls.previewEnd++; if (state.clearPreview) state.preview = false; },
     PackLibrary: { update() { calls.packWrites++; } },
     StateStore: { set() { calls.historyWrites++; } },
   });
   for (const scenario of [
-    { label: 'busy preview', busy: true, preview: true, clearPreview: true, blocked: true, ends: 0 },
-    { label: 'busy committed scene', busy: true, preview: false, clearPreview: true, blocked: true, ends: 0 },
-    { label: 'idle preview', busy: false, preview: true, clearPreview: true, blocked: false, ends: 1 },
-    { label: 'idle committed scene', busy: false, preview: false, clearPreview: true, blocked: false, ends: 0 },
-    { label: 'preview remains', busy: false, preview: true, clearPreview: false, blocked: true, ends: 1 },
+    { label: 'busy preview', busy: true, preview: true, blocked: true },
+    { label: 'busy committed scene', busy: true, preview: false, blocked: true },
+    { label: 'idle preview', busy: false, preview: true, blocked: true },
+    { label: 'idle committed scene', busy: false, preview: false, blocked: false },
   ]) {
     Object.assign(state, scenario);
     Object.keys(calls).forEach(key => { calls[key] = 0; });
     assert.equal(prepare(), scenario.blocked, `${scenario.label}: mutation authority`);
     assert.equal(calls.busy, 1, `${scenario.label}: one lifecycle busy query`);
-    assert.equal(calls.previewEnd, scenario.ends, `${scenario.label}: preview ends only when idle`);
-    assert.equal(calls.packWrites, 0, `${scenario.label}: ending preview does not write the Pack`);
-    assert.equal(calls.historyWrites, 0, `${scenario.label}: ending preview does not write history`);
+    assert.equal(state.preview, scenario.preview, `${scenario.label}: mutation guard preserves the preview`);
+    assert.equal(calls.packWrites, 0, `${scenario.label}: guard does not write the Pack`);
+    assert.equal(calls.historyWrites, 0, `${scenario.label}: guard does not write history`);
   }
 
-  // Geometry mutations share the busy refusal and preview-to-committed boundary.
+  // Geometry mutations share the busy refusal and committed-scene requirement.
   const guarded = ['function rotateSelection(', 'function nudgeSelection(', 'function deleteSelection(',
     'function startDrag(', 'function beginGizmoDrag(', 'function moveSelectionVertical('];
   for (const fn of guarded) {
@@ -4044,19 +4041,23 @@ test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are 
     'editor must have a busy-guard helper backed by the lifecycle');
   const guardStart = editorSrc.indexOf('function editorMutationBlocked(');
   const guardEnd = editorSrc.indexOf('\n    function setSelectionFromDeleteResult', guardStart);
-  const state = { busy: true, ends: 0 };
+  const state = { busy: true, preview: true };
+  const toasts = [];
   const guard = runInNewContext(`(${editorSrc.slice(guardStart, guardEnd).trim()})`, {
     OperationLifecycle: { isBusy: () => state.busy },
-    UIComponents: { showToast() {} },
-    endAutoPackResultsPreview() { state.ends++; },
+    CaseScene: { isTransientPreview: () => state.preview },
+    UIComponents: { showToast(...args) { toasts.push(args); } },
   });
   assert.equal(guard({ endPreview: true }), true, 'busy lifecycle refuses geometry mutation');
-  assert.equal(state.ends, 0, 'busy refusal precedes ending preview');
+  assert.equal(state.preview, true, 'busy refusal preserves preview');
   state.busy = false;
-  assert.equal(guard({ endPreview: true }), false, 'idle geometry mutation may proceed');
-  assert.equal(state.ends, 1, 'geometry mutation restores committed scene first');
+  assert.equal(guard({ endPreview: true }), true, 'idle transient cargo still needs explicit Apply');
+  assert.equal(state.preview, true, 'geometry refusal preserves preview');
+  assert.match(toasts.at(-1)[0], /Apply this option/);
   assert.equal(guard(), false, 'idle non-geometric action may proceed');
-  assert.equal(state.ends, 1, 'non-geometric actions leave preview alone');
+  assert.equal(state.preview, true, 'non-geometric actions leave preview alone');
+  state.preview = false;
+  assert.equal(guard({ endPreview: true }), false, 'idle committed cargo remains editable');
   const addStart = editorSrc.indexOf('function addCaseToPack(');
   assert.match(editorSrc.slice(addStart, addStart + 220), /if \(editorMutationBlocked\(\{ endPreview: true \}\)\) return;/,
     'addCaseToPack must be blocked while busy');
@@ -4066,7 +4067,7 @@ test('OPERATION-LIFECYCLE-AMEND editor panel add/duplicate/delete mutations are 
   const deleteStart = editorSrc.indexOf('function deleteInstancesWithFeedback(');
   const deleteBlock = editorSrc.slice(deleteStart, editorSrc.indexOf('\n    function addCaseToPack', deleteStart));
   assert.match(deleteBlock, /if \(editorMutationBlocked\(\{ endPreview: true \}\)\) return null;\s*const result = PackLibrary\.removeInstances\(/,
-    'the shared delete boundary restores committed authority before membership mutation');
+    'the shared delete boundary requires committed authority before membership mutation');
   // Inspector "Delete item/Delete" buttons guard the shared delete feedback path.
   const guardedDeletes = editorSrc.match(/onClick: \(\) => \{\s*if \(editorMutationBlocked\(\)\) return;\s*deleteInstancesWithFeedback\(/g) || [];
   assert.ok(guardedDeletes.length >= 2, 'inspector delete buttons must guard deleteInstancesWithFeedback with the busy check');

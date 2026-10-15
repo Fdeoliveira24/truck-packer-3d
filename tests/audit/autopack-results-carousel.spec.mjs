@@ -2045,7 +2045,7 @@ test('C5A a normal source signature cannot take ownership of an existing staged 
     'Max retains its legacy staged-pose ownership even when allocator evidence exists');
 });
 
-test('C5A Inspector Apply Position restores committed scene before validation and adds only one history action', async () => {
+test('C5A Inspector Apply Position preserves an unapplied preview and edits only explicitly applied cargo', async () => {
   const f = await resultsSyncFixture();
   try {
     const source = await fs.readFile(editorScreenPath, 'utf8');
@@ -2059,14 +2059,15 @@ test('C5A Inspector Apply Position restores committed scene before validation an
       caseAuthoritySignature: f.Engine.buildAutoPackCaseRuleSignature(pack, f.getCaseById, { exact: true }) };
     f.StateStore.replace({ ...f.StateStore.get(), packLibrary: [pack], autoPackResults: results }, { resetHistory: true });
     const preview = previewProjector(f, source, () => ({ busy: false }));
-    let transient = true, validations = 0, applyPosition;
+    let transient = true, validations = 0, applyPosition, appliedPack;
+    const toasts = [];
     const vec = p => ({ x: p.x, y: p.y, z: p.z,
       clone() { return vec(this); }, copy(v) { Object.assign(this, { x: v.x, y: v.y, z: v.z }); return this; } });
     const obj = { position: vec(option.nextCases[0].transform.position) };
     const CaseScene = { isTransientPreview: () => transient, getObject: () => obj,
       checkCollision() {
         assert.equal(transient, false, 'collision validation never sees the transient candidate');
-        if (validations++ === 0) assert.equal(obj.position.x, pack.cases[0].transform.position.x);
+        if (validations++ === 0) assert.equal(obj.position.x, appliedPack.cases[0].transform.position.x);
         return { collides: false };
       }, setCollision() {}, settleY: () => 12, applyOOGHighlights() {} };
     const deps = {
@@ -2078,7 +2079,7 @@ test('C5A Inspector Apply Position restores committed scene before validation an
         assert.equal(preview(committed), null, 'preview identity ends before the scene returns to source');
         transient = false;
         obj.position.copy(committed.cases[0].transform.position);
-      }, OperationLifecycle: { isBusy: () => false }, UIComponents: { showToast() {} },
+      }, OperationLifecycle: { isBusy: () => false }, UIComponents: { showToast(...args) { toasts.push(args); } },
     };
     const boundaries = sliceFn(source, 'function landAutoPackResultsViewOnApplied()', 'function getPreviewScene()') +
       sliceFn(source, 'function editorMutationBlocked(', 'function setSelectionFromDeleteResult(');
@@ -2098,22 +2099,49 @@ test('C5A Inspector Apply Position restores committed scene before validation an
     };
     new Function(...Object.keys(handlerDeps), handler)(...Object.values(handlerDeps));
     applyPosition();
+    assert.equal(validations, 0, 'refusal precedes collision validation or scene mutation');
+    assert.equal(f.writes.length, 0, 'an attempted preview edit never implicitly applies cargo');
+    assert.equal(transient, true);
+    assert.ok(preview(pack), 'the same candidate remains available');
+    assert.equal(obj.position.x, option.nextCases[0].transform.position.x);
+    assert.deepEqual(f.PackLibrary.getById(pack.id), pack);
+    assert.equal(f.StateStore.get('autoPackResults').previewEnded, undefined);
+    assert.match(toasts.at(-1)[0], /Apply this option/);
+    assert.equal(f.StateStore.undo(), false, 'refusal adds no history action');
+
+    f.apply(option.id, 'run-A');
+    assert.equal(f.writes.length, 1, 'the existing Apply action commits exactly once');
+    appliedPack = structuredClone(f.PackLibrary.getById(pack.id));
+    assert.equal(appliedPack.cases[0].placement, 'packed');
+    transient = false;
+    obj.position.copy(appliedPack.cases[0].transform.position);
+    Object.assign(handlerDeps, { pack: appliedPack, inst: appliedPack.cases[0] });
+    new Function(...Object.keys(handlerDeps), handler)(...Object.values(handlerDeps));
+    applyPosition();
     assert.equal(validations, 2, 'both initial and final scene checks use committed authority');
-    assert.equal(f.writes.length, 1);
+    assert.equal(f.writes.length, 2, 'Apply and the single-Case edit are separate commits');
     assert.equal(f.PackLibrary.getById(pack.id).cases[0].transform.position.x, 43);
-    assert.equal(f.StateStore.get('autoPackResults').previewEnded, true);
+    assert.deepEqual(f.PackLibrary.getById(pack.id).cases[1], pack.cases[1], 'other staged cargo stays source-owned');
+    const editedPack = structuredClone(f.PackLibrary.getById(pack.id));
+    assert.equal(f.StateStore.undo(), true);
+    assert.deepEqual(f.PackLibrary.getById(pack.id), appliedPack, 'Undo returns to the committed AutoPack layout');
     assert.equal(f.StateStore.undo(), true);
     assert.deepEqual(f.PackLibrary.getById(pack.id), pack);
-    assert.equal(f.StateStore.undo(), false, 'ending preview creates no history action');
+    assert.equal(f.StateStore.undo(), false, 'the refused preview edit added no hidden history step');
+    assert.equal(f.StateStore.redo(), true);
+    assert.deepEqual(f.PackLibrary.getById(pack.id), appliedPack);
+    assert.equal(f.StateStore.redo(), true);
+    assert.deepEqual(f.PackLibrary.getById(pack.id), editedPack);
   } finally { f.unsubscribe(); }
 });
 
-test('C5A an ordinary manual mutation ends persistent preview without an assessment lock', async () => {
+test('C5A an ordinary manual mutation preserves persistent preview without locking committed assessment states', async () => {
   const [Editor, Three] = await Promise.all([import(editorScreenPath.href), import('three')]);
   const previousThree = globalThis.THREE;
   globalThis.THREE = Three;
   try {
-    let preview = true, busy = false, ended = 0, removed = 0;
+    let preview = true, busy = false, removed = 0;
+    const toasts = [];
     const state = { currentPackId: 'p', selectedInstanceIds: ['i'],
       autoPackResults: { closed: true, assessment: { primary: 'INVALID' } } };
     const interaction = Editor.createInteractionManager({
@@ -2125,16 +2153,19 @@ test('C5A an ordinary manual mutation ends persistent preview without an assessm
         assert.equal(packId, 'p'); assert.deepEqual(ids, ['i']); removed += 1;
         return { deletedInstanceIds: ids, finalSelectionIds: [] };
       } },
-      OperationLifecycle: { isBusy: () => busy }, UIComponents: { showToast() {} },
+      OperationLifecycle: { isBusy: () => busy }, UIComponents: { showToast(...args) { toasts.push(args); } },
     });
-    interaction.setBeforeSceneMutation(() => { preview = false; ended += 1; });
     busy = true;
     interaction.deleteSelection();
-    assert.equal(ended, 0, 'an owning operation is still protected');
     assert.equal(removed, 0);
     busy = false;
     interaction.deleteSelection();
-    assert.equal(ended, 1);
+    assert.equal(preview, true, 'hidden Results do not make the transient scene editable');
+    assert.equal(removed, 0);
+    assert.deepEqual(state.selectedInstanceIds, ['i']);
+    assert.match(toasts.at(-1)[0], /Apply this option/);
+    preview = false;
+    interaction.deleteSelection();
     assert.equal(removed, 1, 'hidden Results and INVALID assessment do not revoke manual editing');
     assert.deepEqual(state.selectedInstanceIds, []);
   } finally { globalThis.THREE = previousThree; }

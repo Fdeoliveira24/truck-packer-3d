@@ -149,7 +149,7 @@ export function createTruckChangeController({
         ],
         onClose: () => {
           if (active === ctx) active = null;
-          if (!ctx.committed) ctx.restoreControls?.();
+          if (!ctx.committed) /** @type {{ restoreControls?: () => void }} */ (ctx).restoreControls?.();
         },
       });
       modal.modal?.classList?.add('tp3d-truck-change-modal');

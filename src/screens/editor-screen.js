@@ -356,15 +356,6 @@ function formatVerticalMoveMessage(result, movedId, baseMessage) {
   return message;
 }
 
-function manualGroupPositionsMatch(a, b, tolerance = 1e-6) {
-  if (!a || !b) return false;
-  return ['x', 'y', 'z'].every(axis => {
-    const left = Number(a[axis]);
-    const right = Number(b[axis]);
-    return Number.isFinite(left) && Number.isFinite(right) && Math.abs(left - right) <= tolerance;
-  });
-}
-
 export function validateAtomicManualGroupResult(proposedCases, validationResult, groupIds, tolerance = 1e-6) {
   const ids = Array.isArray(groupIds) ? [...new Set(groupIds.filter(Boolean))] : [];
   const validatedCases = validationResult && validationResult.pack && Array.isArray(validationResult.pack.cases)
@@ -380,6 +371,7 @@ export function validateAtomicManualGroupResult(proposedCases, validationResult,
     ...(Array.isArray(validationResult.invalidIds) ? validationResult.invalidIds : []),
     ...(Array.isArray(validationResult.failedIds) ? validationResult.failedIds : []),
   ]);
+  let sharedVerticalCorrection = null;
 
   for (const id of ids) {
     const proposed = proposedById.get(id);
@@ -390,16 +382,45 @@ export function validateAtomicManualGroupResult(proposedCases, validationResult,
     if (validated.placement !== proposed.placement) {
       return { ok: false, reason: 'selected-placement-changed', instanceId: id };
     }
-    if (!manualGroupPositionsMatch(
-      proposed.transform && proposed.transform.position,
-      validated.transform && validated.transform.position,
-      tolerance
-    )) {
+    const requested = proposed.transform && proposed.transform.position;
+    const settled = validated.transform && validated.transform.position;
+    if (!requested || !settled || !['x', 'y', 'z'].every(axis =>
+      Number.isFinite(Number(requested[axis])) && Number.isFinite(Number(settled[axis]))) ||
+      Math.abs(Number(requested.x) - Number(settled.x)) > tolerance ||
+      Math.abs(Number(requested.z) - Number(settled.z)) > tolerance) {
       return { ok: false, reason: 'selected-position-changed', instanceId: id };
     }
+    const correction = Number(settled.y) - Number(requested.y);
+    if (sharedVerticalCorrection !== null && Math.abs(correction - sharedVerticalCorrection) > tolerance) {
+      return { ok: false, reason: 'selected-relative-position-changed', instanceId: id };
+    }
+    sharedVerticalCorrection = correction;
   }
 
   return { ok: true };
+}
+
+function pointInsideTruckFootprint(zones, position) {
+  return (zones || []).some(zone =>
+    position.x >= zone.min.x && position.x <= zone.max.x &&
+    position.z >= zone.min.z && position.z <= zone.max.z
+  );
+}
+
+function positionsShareManualXZ(a, b) {
+  if (!a || !b) return false;
+  const ax = Number(a.x);
+  const az = Number(a.z);
+  const bx = Number(b.x);
+  const bz = Number(b.z);
+  if (!Number.isFinite(ax) || !Number.isFinite(az) ||
+      !Number.isFinite(bx) || !Number.isFinite(bz)) return false;
+  return Math.abs(ax - bx) <= 0.05 && Math.abs(az - bz) <= 0.05;
+}
+
+function positionsShareManualY(a, b) {
+  return a && b && Number.isFinite(Number(a.y)) && Number.isFinite(Number(b.y)) &&
+    Math.abs(Number(a.y) - Number(b.y)) <= 0.05;
 }
 
 export function formatManualGroupMoveMessage(result, movedIds, baseMessage) {
@@ -2264,14 +2285,13 @@ export function createInteractionManager({
 
     function stagedCandidateIsInsideUsableTruckZone(pack, inst, positionInches) {
       if (!pack || !pack.truck ||
-          typeof PackLibrary.getTrailerUsableZones !== 'function' ||
-          typeof PackLibrary.isAabbContainedInAnyZone !== 'function') {
+          typeof PackLibrary.getTrailerUsableZones !== 'function') {
         return false;
       }
       const dims = getInstanceDimsInches(inst);
       const aabb = makeInstanceAabbInches(positionInches, dims);
       if (!aabb) return false;
-      return PackLibrary.isAabbContainedInAnyZone(aabb, PackLibrary.getTrailerUsableZones(pack.truck));
+      return pointInsideTruckFootprint(PackLibrary.getTrailerUsableZones(pack.truck), positionInches);
     }
 
     function buildStagedToPackedCandidateCases(pack, instanceId, desiredPosition) {
@@ -2286,36 +2306,17 @@ export function createInteractionManager({
       );
     }
 
-    function positionsShareManualXZ(a, b) {
-      if (!a || !b) return false;
-      const ax = Number(a.x);
-      const az = Number(a.z);
-      const bx = Number(b.x);
-      const bz = Number(b.z);
-      if (!Number.isFinite(ax) || !Number.isFinite(az) ||
-          !Number.isFinite(bx) || !Number.isFinite(bz)) {
-        return false;
-      }
-      return Math.abs(ax - bx) <= 0.05 && Math.abs(az - bz) <= 0.05;
-    }
-
-    function positionsShareManualY(a, b) {
-      return a && b && Number.isFinite(Number(a.y)) && Number.isFinite(Number(b.y)) &&
-        Math.abs(Number(a.y) - Number(b.y)) <= 0.05;
-    }
-
     function tryCommitStagedIntoTruck(packId, pack, inst, obj, groupIds, startMap) {
       if (!inst || inst.placement !== 'staged' || !obj ||
           typeof PackLibrary.findManualVerticalPlacement !== 'function' ||
-          typeof PackLibrary.revalidateManualPlacements !== 'function' ||
-          typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
+          typeof PackLibrary.revalidateManualPlacements !== 'function') {
         return false;
       }
       const desiredPosition = SceneManager.vecWorldToInches(obj.position);
       if (!stagedCandidateIsInsideUsableTruckZone(pack, inst, desiredPosition)) return false;
       const resolved = PackLibrary.findManualVerticalPlacement(
         pack, CaseLibrary.getCases(), inst.id,
-        { mode: 'resolve', desiredPosition, exact: true }
+        { mode: 'resolve', desiredPosition, manualGeometry: true, rejectProposedCollisions: true }
       );
       if (!resolved.ok) {
         if (resolved.code === 'outside-truck') return false;
@@ -2324,48 +2325,41 @@ export function createInteractionManager({
         resetDrag();
         return true;
       }
-      const candidateCases = buildStagedToPackedCandidateCases(pack, inst.id, desiredPosition);
+      const candidateCases = buildStagedToPackedCandidateCases(pack, inst.id, resolved.position);
       const preflight = PackLibrary.revalidateManualPlacements(
         { ...pack, cases: candidateCases },
         CaseLibrary.getCases(),
-        { repairDependents: true, beforePack: pack }
+        { repairDependents: true, beforePack: pack, manualGeometry: true }
       );
       const preflightSelf = preflight && preflight.pack && Array.isArray(preflight.pack.cases)
         ? preflight.pack.cases.find(item => item && item.id === inst.id)
         : null;
       if (preflightSelf && preflightSelf.placement === 'packed' &&
           preflightSelf.transform &&
-          positionsShareManualXZ(preflightSelf.transform.position, desiredPosition) &&
-          positionsShareManualY(preflightSelf.transform.position, desiredPosition)) {
-        const result = PackLibrary.updateCasesWithManualRevalidation(
-          packId,
-          candidateCases,
-          CaseLibrary.getCases(),
-          { repairDependents: true }
-        );
-        const committedSelf = result && result.pack && Array.isArray(result.pack.cases)
-          ? result.pack.cases.find(item => item && item.id === inst.id)
-          : null;
+          positionsShareManualXZ(preflightSelf.transform.position, resolved.position) &&
+          positionsShareManualY(preflightSelf.transform.position, resolved.position)) {
+        const committed = PackLibrary.update(packId, { cases: preflight.pack.cases });
+        if (!committed) {
+          revertGroupToStart(groupIds, startMap);
+          UIComponents.showToast('Load Plan is unavailable. No Case was moved.', 'error');
+          resetDrag();
+          return true;
+        }
+        const result = { ...preflight, pack: committed };
+        const committedSelf = committed.cases.find(item => item && item.id === inst.id);
         const stagedSelf = !committedSelf || committedSelf.placement !== 'packed' ||
-          !positionsShareManualXZ(committedSelf.transform && committedSelf.transform.position, desiredPosition) ||
-          !positionsShareManualY(committedSelf.transform && committedSelf.transform.position, desiredPosition) ||
-          (Array.isArray(result && result.stagedIds) && result.stagedIds.includes(inst.id));
+          !positionsShareManualXZ(committedSelf.transform && committedSelf.transform.position, resolved.position) ||
+          !positionsShareManualY(committedSelf.transform && committedSelf.transform.position, resolved.position) ||
+          result.stagedIds.includes(inst.id);
         if (committedSelf && committedSelf.transform && committedSelf.transform.position) {
           obj.position.copy(SceneManager.vecInchesToWorld(committedSelf.transform.position));
         }
         CaseScene.setCollision(inst.id, stagedSelf);
-        UIComponents.showToast(
-          result
-            ? formatVerticalMoveMessage(
-              result,
-              inst.id,
-              stagedSelf
-                ? 'The case could not rest safely and stayed in staging.'
-                : 'Placed staged case in the truck.'
-            )
-            : 'Placed staged case in the truck.',
-          stagedSelf ? 'warning' : 'success'
-        );
+        UIComponents.showToast(formatVerticalMoveMessage(
+          result, inst.id, stagedSelf
+            ? 'The case could not rest safely and stayed in staging.'
+            : 'Placed staged case in the truck.'
+        ), stagedSelf ? 'warning' : 'success');
         resetDrag();
         CaseScene.applyOOGHighlights();
         return true;
@@ -2373,7 +2367,7 @@ export function createInteractionManager({
 
       if (stagedCandidateIsInsideUsableTruckZone(pack, inst, desiredPosition)) {
         revertGroupToStart(groupIds, startMap);
-        UIComponents.showToast('Cannot place this staged case in the truck safely.', 'error');
+        UIComponents.showToast(preflight.invalidReasons?.[inst.id] || 'This position has no stable physical support.', 'error');
         resetDrag();
         return true;
       }
@@ -2382,8 +2376,7 @@ export function createInteractionManager({
 
     function buildAtomicManualGroupCandidate(pack, groupIds) {
       if (!pack || !pack.truck || !Array.isArray(groupIds) || groupIds.length < 2 ||
-          typeof PackLibrary.getTrailerUsableZones !== 'function' ||
-          typeof PackLibrary.isAabbContainedInAnyZone !== 'function') {
+          typeof PackLibrary.getTrailerUsableZones !== 'function') {
         return null;
       }
 
@@ -2402,7 +2395,7 @@ export function createInteractionManager({
         const position = SceneManager.vecWorldToInches(obj.position);
         const aabb = makeInstanceAabbInches(position, dims);
         if (!aabb) return null;
-        const placement = PackLibrary.isAabbContainedInAnyZone(aabb, zones) ? 'packed' : 'staged';
+        const placement = pointInsideTruckFootprint(zones, position) ? 'packed' : 'staged';
         if (placement === 'packed') packedCount += 1;
         else stagedCount += 1;
         patchById.set(id, {
@@ -2426,8 +2419,7 @@ export function createInteractionManager({
 
     function tryCommitAtomicManualGroup(packId, pack, groupIds, startMap) {
       if (!Array.isArray(groupIds) || groupIds.length < 2) return false;
-      if (typeof PackLibrary.revalidateManualPlacements !== 'function' ||
-          typeof PackLibrary.updateCasesWithManualRevalidation !== 'function') {
+      if (typeof PackLibrary.revalidateManualPlacements !== 'function') {
         revertAtomicManualGroup(
           groupIds,
           startMap,
@@ -2449,19 +2441,28 @@ export function createInteractionManager({
       const preflight = PackLibrary.revalidateManualPlacements(
         { ...pack, cases: candidate.cases },
         CaseLibrary.getCases(),
-        { repairDependents: true, beforePack: pack }
+        { repairDependents: true, beforePack: pack, manualGeometry: true, rejectProposedCollisions: true }
       );
       const atomicResult = validateAtomicManualGroupResult(candidate.cases, preflight, groupIds);
       if (!atomicResult.ok || (Array.isArray(preflight && preflight.failedIds) && preflight.failedIds.length)) {
         revertAtomicManualGroup(
           groupIds,
           startMap,
-          'Cannot place this selection safely. All selected cases were returned.'
+          preflight.invalidReasons?.[atomicResult.instanceId] || {
+            'selected-placement-changed': 'A selected Case cannot fit at this truck position.',
+            'selected-position-changed': candidate.cases.find(item => item.id === atomicResult.instanceId)?.placement === 'staged'
+              ? 'The selection overlaps Cases in staging. Move it into the truck or an open staging area.'
+              : 'A selected Case would need to move sideways.',
+            'selected-relative-position-changed': 'This group cannot settle without changing its shape.',
+          }[atomicResult.reason] || (preflight.failedIds?.length
+            ? 'A dependent Case could not be staged safely. No changes were saved.'
+            : 'This selection has no stable, collision-free placement.')
         );
         return true;
       }
 
-      const result = commitCasesWithManualRevalidation(packId, candidate.cases, { repairDependents: true });
+      const committed = PackLibrary.update(packId, { cases: preflight.pack.cases });
+      const result = committed ? { ...preflight, pack: committed } : null;
       if (!result) {
         revertAtomicManualGroup(
           groupIds,
@@ -2736,7 +2737,7 @@ export function createInteractionManager({
         normalHandlingPack,
         CaseLibrary.getCases(),
         inst.id,
-        { mode }
+        { mode, manualGeometry: true }
       );
       if (!resolved.ok) {
         const infoCodes = new Set(['already-resting', 'no-level-above', 'no-level-below']);
@@ -2753,6 +2754,7 @@ export function createInteractionManager({
       );
       const result = PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases(), {
         repairDependents: true,
+        manualGeometry: true,
       });
       if (!result) {
         UIComponents.showToast('Vertical move failed. Please try again.', 'error');
@@ -3138,6 +3140,7 @@ export function createInteractionManager({
       const resolved = PackLibrary.findManualVerticalPlacement(pack, CaseLibrary.getCases(), instanceId, {
         mode: 'resolve',
         desiredPosition: SceneManager.vecWorldToInches(obj.position),
+        manualGeometry: true,
       });
       if (resolved.ok && resolved.corrected !== true) {
         // Directly valid: commit now through the shared validated release.
@@ -3221,6 +3224,7 @@ export function createInteractionManager({
       const resolved = PackLibrary.findManualVerticalPlacement(normalHandlingPack, CaseLibrary.getCases(), instanceId, {
         mode: 'resolve',
         desiredPosition: SceneManager.vecWorldToInches(obj.position),
+        manualGeometry: true,
       });
       if (!resolved.ok && resolved.code === 'outside-truck') {
         // The hold was carried out of the truck: reuse the legacy drag release
@@ -3254,6 +3258,7 @@ export function createInteractionManager({
       );
       const result = PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases(), {
         repairDependents: true,
+        manualGeometry: true,
       });
       const stagedSelf = result && Array.isArray(result.stagedIds) && result.stagedIds.includes(instanceId);
       let tone = resolved.corrected ? 'info' : 'success';
@@ -3479,7 +3484,7 @@ export function createInteractionManager({
                 previewPack,
                 CaseLibrary.getCases(),
                 draggingId,
-                { mode: 'resolve', desiredPosition: SceneManager.vecWorldToInches(obj.position) }
+                { mode: 'resolve', desiredPosition: SceneManager.vecWorldToInches(obj.position), manualGeometry: true }
               );
               CaseScene.setCollision(draggingId, !resolved.ok && resolved.code !== 'outside-truck');
             }
@@ -3621,7 +3626,7 @@ export function createInteractionManager({
 
       if (groupIds.length > 1 && dragGroupPreviewBlocked) {
         revertGroupToStart(groupIds, startMap);
-        UIComponents.showToast('Cannot place this selection here. All selected cases were returned.', 'error');
+        UIComponents.showToast('A Case or blocked truck area is in the way.', 'error');
         resetDrag();
         return;
       }
@@ -3696,6 +3701,8 @@ export function createInteractionManager({
         const resolved = PackLibrary.findManualVerticalPlacement(normalHandlingPack, CaseLibrary.getCases(), instanceId, {
           mode: 'resolve',
           desiredPosition: SceneManager.vecWorldToInches(obj.position),
+          manualGeometry: true,
+          rejectProposedCollisions: true,
         });
         if (resolved.ok) {
           obj.position.copy(SceneManager.vecInchesToWorld(resolved.position));
@@ -3707,6 +3714,7 @@ export function createInteractionManager({
           );
           const result = PackLibrary.updateCasesWithManualRevalidation(packId, nextCases, CaseLibrary.getCases(), {
             repairDependents: true,
+            manualGeometry: true,
           });
           const stagedSelf = result && Array.isArray(result.stagedIds) && result.stagedIds.includes(instanceId);
           let tone = resolved.corrected ? 'info' : 'success';
@@ -7727,9 +7735,11 @@ export function createEditorScreen({
         const originalWorld = obj ? obj.position.clone() : null;
         const candidateWorld = SceneManager.vecInchesToWorld(nextPos);
         const ignoreSet = new Set([inst.id]);
+        const stagedTruckProposal = inst.placement === 'staged' &&
+          pointInsideTruckFootprint(PackLibrary.getTrailerUsableZones(pack.truck), nextPos);
         let check = CaseScene.checkCollision(inst.id, candidateWorld, ignoreSet);
         CaseScene.setCollision(inst.id, check.collides);
-        if (check.collides) {
+        if (check.collides && !stagedTruckProposal) {
           UIComponents.showToast('Cannot place here: collision detected', 'error');
           CaseScene.setCollision(inst.id, false);
           return;
@@ -7742,13 +7752,16 @@ export function createEditorScreen({
         let resolved = null;
         const normalHandlingPack = buildNormalHandlingPack(pack, [inst.id]);
         if (typeof PackLibrary.findManualVerticalPlacement === 'function' &&
-            (inst.placement !== 'staged' || check.insideTruck)) {
+            (inst.placement !== 'staged' || stagedTruckProposal)) {
           resolved = PackLibrary.findManualVerticalPlacement(normalHandlingPack, CaseLibrary.getCases(), inst.id, {
             mode: 'resolve',
             desiredPosition: nextPos,
+            manualGeometry: true,
+            rejectProposedCollisions: stagedTruckProposal,
           });
         }
         if (resolved && !resolved.ok && resolved.code !== 'outside-truck') {
+          CaseScene.setCollision(inst.id, false);
           UIComponents.showToast(resolved.reason || 'Cannot place here.', 'error');
           return;
         }
@@ -7763,7 +7776,7 @@ export function createEditorScreen({
           }
           check = CaseScene.checkCollision(inst.id, obj.position, ignoreSet);
           CaseScene.setCollision(inst.id, check.collides);
-          if (check.collides) {
+          if (check.collides && !stagedTruckProposal) {
             if (originalWorld) obj.position.copy(originalWorld);
             UIComponents.showToast('Cannot place here: collision detected', 'error');
             CaseScene.setCollision(inst.id, false);
@@ -7774,13 +7787,40 @@ export function createEditorScreen({
         CaseScene.setCollision(inst.id, false);
         const nextCases = (normalHandlingPack.cases || []).map(item =>
           item.id === inst.id
-            ? { ...item, transform: { ...item.transform, position: finalPos } }
+            ? { ...item, transform: { ...item.transform, position: finalPos },
+              placement: stagedTruckProposal && resolved?.ok ? 'packed' : item.placement }
             : item
         );
+        let preflight = null;
+        if (stagedTruckProposal) {
+          preflight = PackLibrary.revalidateManualPlacements(
+            { ...pack, cases: nextCases }, CaseLibrary.getCases(),
+            { beforePack: pack, repairDependents: true, manualGeometry: true }
+          );
+          const checked = preflight.pack.cases.find(item => item?.id === inst.id);
+          if (checked?.placement !== 'packed' ||
+              !positionsShareManualXZ(checked?.transform?.position, finalPos) ||
+              !positionsShareManualY(checked?.transform?.position, finalPos)) {
+            if (obj && originalWorld) obj.position.copy(originalWorld);
+            CaseScene.setCollision(inst.id, false);
+            UIComponents.showToast(preflight.invalidReasons?.[inst.id] ||
+              'This position has no stable physical support.', 'error');
+            return;
+          }
+        }
         let result = null;
-        if (typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
+        if (preflight) {
+          const committed = PackLibrary.update(pack.id, { cases: preflight.pack.cases });
+          if (!committed) {
+            if (obj && originalWorld) obj.position.copy(originalWorld);
+            UIComponents.showToast('Load Plan is unavailable. No Case was moved.', 'error');
+            return;
+          }
+          result = { ...preflight, pack: committed };
+        } else if (typeof PackLibrary.updateCasesWithManualRevalidation === 'function') {
           result = PackLibrary.updateCasesWithManualRevalidation(pack.id, nextCases, CaseLibrary.getCases(), {
             repairDependents: true,
+            manualGeometry: true,
           });
         } else {
           PackLibrary.update(pack.id, { cases: nextCases });

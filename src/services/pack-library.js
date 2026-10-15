@@ -1124,6 +1124,12 @@ export function projectMaxCapacitySupportRecords(candidate, accepted) {
   });
 }
 
+function projectManualGeometrySupportRecords(accepted) {
+  return (accepted || []).map(entry => ({ ...entry, caseData: {
+    ...(entry.caseData || {}), noStackOnTop: false, stackable: true, maxStackCount: 0,
+  } }));
+}
+
 function reconXzOverlapArea(a, b) {
   const ox = Math.max(0, Math.min(a.max.x, b.max.x) - Math.max(a.min.x, b.min.x));
   const oz = Math.max(0, Math.min(a.max.z, b.max.z) - Math.max(a.min.z, b.min.z));
@@ -1163,14 +1169,14 @@ function supportCanCarry(candidate, support, accepted) {
   );
 }
 
-function aabbIsSupported(candidate, aabb, accepted, zones, tol = RECON_TOL) {
+function aabbIsSupported(candidate, aabb, accepted, zones, tol = RECON_TOL, manualGeometry = false) {
   if (aabbRestsOnZoneFloor(aabb, zones, tol)) return true;
   const supporters = (accepted || []).filter(support =>
     Math.abs(aabb.min.y - support.aabb.max.y) <= tol &&
     reconXzOverlapArea(aabb, support.aabb) > 0.05
   );
   if (!supporters.length) return false;
-  if (supporters.some(support => !supportCanCarry(candidate, support, accepted))) return false;
+  if (!manualGeometry && supporters.some(support => !supportCanCarry(candidate, support, accepted))) return false;
   return computeSupportFraction(aabb, supporters.map(support => support.aabb), tol) >= MIN_SUPPORT_FRACTION;
 }
 
@@ -1185,17 +1191,21 @@ function isAabbInsideTruckGeometry(aabb, zones, wheelWell) {
   return Boolean(wheelWell) && isAabbWithinTruckMinusBlocked(aabb, wheelWell);
 }
 
-function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL, wheelWell = null) {
+function aabbIsFullyValid(candidate, aabb, accepted, zones, truck, tol = RECON_TOL, wheelWell = null, manualGeometry = false) {
   const structural = (accepted || []).filter(entry => !entry.collisionOnly);
-  const physicalSupportRecords = projectMaxCapacitySupportRecords(candidate, structural);
+  // Manual authoring uses the same support geometry, without AutoPack's
+  // handling preferences. These projected records never enter the saved Pack.
+  const physicalSupportRecords = manualGeometry
+    ? projectManualGeometrySupportRecords(structural)
+    : projectMaxCapacitySupportRecords(candidate, structural);
   const physicallySupported = wheelWell
     ? isWheelWellSupportedAndStable(
       aabb,
       physicalSupportRecords,
       wheelWell,
-      { weight: candidate?.caseData?.weight }
+      manualGeometry ? null : { weight: candidate?.caseData?.weight }
     )
-    : aabbIsSupported(candidate, aabb, structural, zones, tol);
+    : aabbIsSupported(candidate, aabb, structural, zones, tol, manualGeometry);
   return isAabbInsideTruckGeometry(aabb, zones, wheelWell) &&
     !aabbIntersectsWheelWellBlockedBody(aabb, truck) &&
     !aabbIntersectsFrontBonusBlockedBody(aabb, truck) &&
@@ -1249,7 +1259,7 @@ function manualVerticalFailure(code) {
 
 // Explain why the nearest rejected level failed, mirroring aabbIsFullyValid's
 // factor order so the toast names the first hard rule that actually blocked it.
-function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode) {
+function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode, manualGeometry = false) {
   if (!isAabbInsideTruckGeometry(aabb, zones, wheelWell)) {
     return manualVerticalFailure(mode === 'up' ? 'no-clearance-above' : 'blocked-collision');
   }
@@ -1259,16 +1269,20 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
     return manualVerticalFailure('blocked-collision');
   }
   const structural = (accepted || []).filter(entry => !entry.collisionOnly);
-  const physicalSupportRecords = projectMaxCapacitySupportRecords(node, structural);
+  const physicalSupportRecords = manualGeometry
+    ? projectManualGeometrySupportRecords(structural)
+    : projectMaxCapacitySupportRecords(node, structural);
   const physicallySupported = wheelWell
     ? isWheelWellSupportedAndStable(
       aabb,
       physicalSupportRecords,
       wheelWell,
-      { weight: node?.caseData?.weight }
+      manualGeometry ? null : { weight: node?.caseData?.weight }
     )
-    : aabbIsSupported(node, aabb, structural, zones, RECON_TOL);
-  if (!physicallySupported) return manualVerticalFailure('support-rules');
+    : aabbIsSupported(node, aabb, structural, zones, RECON_TOL, manualGeometry);
+  if (!physicallySupported) return manualGeometry
+    ? { ok: false, code: 'unsupported', reason: 'This position has no stable physical support.' }
+    : manualVerticalFailure('support-rules');
   if (!evaluateFrontOverhangRearRetention(aabb, structural, truck, zones).retained) {
     return manualVerticalFailure('needs-rear-retention');
   }
@@ -1277,9 +1291,10 @@ function explainInvalidLevel(node, aabb, accepted, zones, truck, wheelWell, mode
 
 // Preserving a saved body does not certify its support path. New proposals may
 // collide with it, but cannot rest on floating/unresolved/unstable cargo.
-function qualifiedSupportIds(assessment) {
+function qualifiedSupportIds(assessment, manualGeometry = false) {
   return new Set(assessment.measurements.bodies
-    .filter(body => body.pathOutcome === 'PASS' && body.loadedOutcome === 'PASS')
+    .filter(body => body.pathOutcome === 'PASS' &&
+      (manualGeometry ? body.support?.coverage >= MIN_SUPPORT_FRACTION : body.loadedOutcome === 'PASS'))
     .map(body => body.id));
 }
 
@@ -1297,12 +1312,13 @@ function qualifiedSupportIds(assessment) {
  */
 export function findManualVerticalPlacement(pack, caseLibrary, instanceId, options = {}) {
   const mode = options && typeof options.mode === 'string' ? options.mode : '';
+  const manualGeometry = options.manualGeometry === true;
   if (!['up', 'down', 'drop', 'resolve'].includes(mode)) return manualVerticalFailure('invalid-selection');
   const source = pack && typeof pack === 'object' ? pack : {};
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
   const zones = getTrailerUsableZones(truck);
   const wheelWell = getWheelWellGeometry(truck);
-  const supportIds = qualifiedSupportIds(assessCommittedPack({ ...source, cases: source.cases || [] }, caseLibrary || []));
+  const supportIds = qualifiedSupportIds(assessCommittedPack({ ...source, cases: source.cases || [] }, caseLibrary || []), manualGeometry);
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
 
   let target = null;
@@ -1333,10 +1349,10 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
     };
     if (isTarget) target = node;
     else accepted.push({ ...node, aabb: node.curAabb, position: pos,
-      collisionOnly: !canonical.orientationAllowed || !supportIds.has(inst.id) });
+      collisionOnly: (!manualGeometry && !canonical.orientationAllowed) || !supportIds.has(inst.id) });
   }
   if (!target) return manualVerticalFailure('invalid-selection');
-  if (!target.canonical.orientationAllowed) {
+  if (!manualGeometry && !target.canonical.orientationAllowed) {
     return manualVerticalFailure('invalid-selection');
   }
 
@@ -1356,7 +1372,11 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
     if (!(zones || []).some(z => reconXzOverlapArea(probe, z) > 0)) {
       return manualVerticalFailure('outside-truck');
     }
-    if (aabbIsFullyValid(target, probe, accepted, zones, truck, RECON_TOL, wheelWell)) {
+    if (options.rejectProposedCollisions === true &&
+        overlapsAny(probe, accepted.map(entry => entry.aabb))) {
+      return manualVerticalFailure('blocked-collision');
+    }
+    if (aabbIsFullyValid(target, probe, accepted, zones, truck, RECON_TOL, wheelWell, manualGeometry)) {
       return {
         ok: true,
         position: desired,
@@ -1366,7 +1386,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
       };
     }
     if (options.exact === true) {
-      return explainInvalidLevel(target, probe, accepted, zones, truck, wheelWell, mode);
+      return explainInvalidLevel(target, probe, accepted, zones, truck, wheelWell, mode, manualGeometry);
     }
   }
 
@@ -1392,7 +1412,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
   for (const bottom of candidates) {
     const sPos = { x: anchorX, y: bottom + dims.height / 2, z: anchorZ };
     const sAabb = makeAabb(sPos, dims);
-    if (!aabbIsFullyValid(target, sAabb, accepted, zones, truck, RECON_TOL, wheelWell)) continue;
+    if (!aabbIsFullyValid(target, sAabb, accepted, zones, truck, RECON_TOL, wheelWell, manualGeometry)) continue;
     if (mode === 'drop' && Math.abs(bottom - referenceBottom) <= RECON_TOL) {
       return manualVerticalFailure('already-resting');
     }
@@ -1411,7 +1431,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
   if (mode === 'down') return manualVerticalFailure('no-level-below');
   const nearest = candidates[0];
   const nearestAabb = makeAabb({ x: anchorX, y: nearest + dims.height / 2, z: anchorZ }, dims);
-  return explainInvalidLevel(target, nearestAabb, accepted, zones, truck, wheelWell, mode);
+  return explainInvalidLevel(target, nearestAabb, accepted, zones, truck, wheelWell, mode, manualGeometry);
 }
 
 /**
@@ -1424,6 +1444,7 @@ export function findManualVerticalPlacement(pack, caseLibrary, instanceId, optio
  */
 export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, options = {}) {
   const basePack = pack && typeof pack === 'object' ? pack : {};
+  const manualGeometry = options.manualGeometry === true;
   const preserveStagedPositions = options.preserveStagedPositions === true;
   const zones = getTrailerUsableZones(nextTruck);
   const wheelWell = getWheelWellGeometry(nextTruck);
@@ -1481,7 +1502,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     ? packedNodes.filter(node => !mutableIds.has(node.inst.id)) : [];
   const accepted = [...collisionOnly, ...fixedNodes.map(node => ({
     ...node, aabb: node.curAabb, position: node.curPos,
-    collisionOnly: !node.canonical.orientationAllowed || !options.fixedSupportIds?.has(node.inst.id),
+    collisionOnly: (!manualGeometry && !node.canonical.orientationAllowed) || !options.fixedSupportIds?.has(node.inst.id),
   }))];
   const resultByInst = new Map();
   const kept = []; const adjusted = []; const invalid = [];
@@ -1497,7 +1518,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     if (!proposed && options.causalChanges instanceof Set &&
         !options.dependencies.some(([support, child]) => child === inst.id && options.causalChanges.has(support))) {
       accepted.push({ ...node, aabb: node.curAabb, position: curPos,
-        collisionOnly: !canonical.orientationAllowed || !options.fixedSupportIds?.has(inst.id) });
+        collisionOnly: (!manualGeometry && !canonical.orientationAllowed) || !options.fixedSupportIds?.has(inst.id) });
       resultByInst.set(inst, { status: 'preserved', position: curPos, node });
       continue;
     }
@@ -1511,14 +1532,14 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     // C3 introduces stricter source semantics, not a new saved-layout repair.
     // Preserve incompatible committed poses and mark reconciliation incomplete;
     // a new manual proposal still goes through the conservative placement gate.
-    if (!proposed && (!canonical.orientationAllowed || incompleteSupportMass)) {
+    if (!proposed && ((!manualGeometry && !canonical.orientationAllowed) || (!manualGeometry && incompleteSupportMass))) {
       unresolved.push({ id: inst.id, caseId: inst.caseId,
         reason: !canonical.orientationAllowed ? 'saved orientation requires assessment' : 'support mass is unknown' });
       accepted.push({ ...node, aabb: node.curAabb, position: curPos });
       resultByInst.set(inst, { status: 'preserved', position: curPos, node });
       continue;
     }
-    if (!canonical.orientationAllowed) {
+    if (!manualGeometry && !canonical.orientationAllowed) {
       invalid.push(inst.id);
       invalidReasons[inst.id] = 'orientation violates the case policy';
       options.causalChanges?.add(inst.id);
@@ -1527,7 +1548,14 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     }
 
     const currentAabb = makeAabb(curPos, dims);
-    if (aabbIsFullyValid(node, currentAabb, accepted, zones, nextTruck, RECON_TOL, wheelWell)) {
+    if (proposed && manualGeometry && options.rejectProposedCollisions &&
+        overlapsAny(currentAabb, accepted.map(entry => entry.aabb))) {
+      invalid.push(inst.id);
+      invalidReasons[inst.id] = 'collides with another Case';
+      resultByInst.set(inst, { status: 'invalid', position: curPos, node });
+      continue;
+    }
+    if (aabbIsFullyValid(node, currentAabb, accepted, zones, nextTruck, RECON_TOL, wheelWell, manualGeometry)) {
       const entry = { ...node, aabb: currentAabb, position: curPos };
       accepted.push(entry);
       kept.push(inst.id);
@@ -1540,7 +1568,7 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
     for (const bottom of candidateSnapBottoms(node.curAabb, accepted, zones, RECON_TOL, wheelWell)) {
       const sPos = { x: curPos.x, y: bottom + dims.height / 2, z: curPos.z };
       const sAabb = makeAabb(sPos, dims);
-      if (aabbIsFullyValid(node, sAabb, accepted, zones, nextTruck, RECON_TOL, wheelWell)) {
+      if (aabbIsFullyValid(node, sAabb, accepted, zones, nextTruck, RECON_TOL, wheelWell, manualGeometry)) {
         snapped = { pos: sPos, aabb: sAabb };
         break;
       }
@@ -1555,7 +1583,14 @@ export function reconcilePlacementsForTruck(pack, nextTruck, caseLibrary, option
 
     // 3) Invalid — leave at current position; the user resolves it.
     invalid.push(inst.id);
-    invalidReasons[inst.id] = 'not safely placeable in the proposed truck geometry';
+    invalidReasons[inst.id] = !isAabbInsideTruckGeometry(currentAabb, zones, wheelWell)
+      ? 'outside the truck boundaries'
+      : aabbIntersectsWheelWellBlockedBody(currentAabb, nextTruck) ||
+        aabbIntersectsFrontBonusBlockedBody(currentAabb, nextTruck)
+        ? 'intersects a blocked truck body'
+        : overlapsAny(currentAabb, accepted.map(entry => entry.aabb))
+          ? 'collides with another Case'
+          : 'has no stable physical support at this position';
     options.causalChanges?.add(inst.id);
     resultByInst.set(inst, { status: 'invalid', position: curPos, node });
   }
@@ -1830,7 +1865,7 @@ export function repairRestoredPackPlacements(pack) {
  * considered. Never moves valid placements; never rearranges the load.
  * Returns updated cases plus the ids repaired and the ids still invalid.
  */
-function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
+function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary, manualGeometry = false) {
   const caseMap = new Map((caseLibrary || []).map(c => [c.id, c]));
   const zones = getTrailerUsableZones(truck);
   const wheelWell = getWheelWellGeometry(truck);
@@ -1846,7 +1881,7 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
       const canonical = getCanonicalInstanceEffectiveDims(entry.inst, caseData);
       const position = normalizeTransformPosition(entry.inst.transform && entry.inst.transform.position);
       if (!caseData || !canonical.ok ||
-          !canonical.orientationAllowed ||
+          (!manualGeometry && !canonical.orientationAllowed) ||
           !position) {
         return null;
       }
@@ -1874,7 +1909,7 @@ function repairInvalidPlacementsLocally(reconResult, truck, caseLibrary) {
     },
     validate: (node, position) => {
       const aabb = makeAabb(position, node.dims);
-      return aabbIsFullyValid(node, aabb, accepted, zones, truck, RECON_TOL, wheelWell);
+      return aabbIsFullyValid(node, aabb, accepted, zones, truck, RECON_TOL, wheelWell, manualGeometry);
     },
     onRepaired: (node, position) => {
       const aabb = makeAabb(position, node.dims);
@@ -2213,7 +2248,7 @@ export function getPackedReconciliationCompleteness(pack, reconciliation, failed
 // Mutation authority follows actual pre-edit support/blocking contacts. Hidden
 // cargo participates, staged cargo does not. Missing geometry yields no invented
 // contact. A connected item is kept exactly if its current pose is still safe.
-function manualMutationScope(beforePack, proposedPack, beforeCases, explicitIds) {
+function manualMutationScope(beforePack, proposedPack, beforeCases, explicitIds, manualGeometry = false) {
   const before = new Map((beforePack?.cases || []).map(inst => [inst.id, inst]));
   const after = new Map((proposedPack.cases || []).map(inst => [inst.id, inst]));
   const changed = new Set(explicitIds || []);
@@ -2234,7 +2269,7 @@ function manualMutationScope(beforePack, proposedPack, beforeCases, explicitIds)
   }));
   const dependencies = [];
   const assessment = assessCommittedPack(beforePack, beforeCases);
-  const supportIds = qualifiedSupportIds(assessment);
+  const supportIds = qualifiedSupportIds(assessment, manualGeometry);
   if (!physicalChanges.size) return { changed, mutable, physicalChanges, dependencies, supportIds };
   dependencies.push(...assessment.measurements.supportGraph.edges.map(edge => [edge.to, edge.from]));
   for (const finding of assessment.hard) {
@@ -2257,8 +2292,9 @@ function manualMutationScope(beforePack, proposedPack, beforeCases, explicitIds)
 export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   const source = pack && typeof pack === 'object' ? pack : {};
   const truck = source.truck && typeof source.truck === 'object' ? source.truck : {};
+  const manualGeometry = options.manualGeometry === true;
   const beforePack = options.beforePack || getById(source.id) || source;
-  const scope = manualMutationScope(beforePack, source, options.beforeCaseLibrary || caseLibrary, options.changedInstanceIds);
+  const scope = manualMutationScope(beforePack, source, options.beforeCaseLibrary || caseLibrary, options.changedInstanceIds, manualGeometry);
   const stagedBefore = new Set((beforePack.cases || []).filter(inst => inst.placement === 'staged').map(inst => inst.id));
   const definitions = new Map((caseLibrary || []).map(definition => [definition.id, definition]));
   const zones = getTrailerUsableZones(truck);
@@ -2279,6 +2315,8 @@ export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
     causalChanges: scope.physicalChanges,
     dependencies: scope.dependencies,
     fixedSupportIds: scope.supportIds,
+    manualGeometry,
+    rejectProposedCollisions: options.rejectProposedCollisions === true,
   });
   let nextPack = reconciliation.nextPack;
   let stagedIds = [];
@@ -2291,7 +2329,7 @@ export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
   // dependents inside the truck when legally possible so removing one box
   // never ejects cargo that still has a valid nearby resting place.
   if (options.repairDependents === true && invalidForStaging.length) {
-    const repair = repairInvalidPlacementsLocally(reconciliation, truck, caseLibrary);
+    const repair = repairInvalidPlacementsLocally(reconciliation, truck, caseLibrary, manualGeometry);
     nextPack = repair.pack;
     repairedIds = repair.repairedIds;
     invalidForStaging = repair.stillInvalidIds;
@@ -2318,6 +2356,7 @@ export function revalidateManualPlacements(pack, caseLibrary, options = {}) {
     failedIds,
     warnings,
     invalidIds: reconciliation.invalid || [],
+    invalidReasons: reconciliation.invalidReasons || {},
     summary: {
       adjusted: (reconciliation.adjusted || []).length,
       repaired: repairedIds.length,

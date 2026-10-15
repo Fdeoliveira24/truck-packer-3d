@@ -7889,31 +7889,27 @@ export function createEditorScreen({
       const orientationActive = inst.orientationLocked === true;
       const targetAxes = getPhysicalOrientationAxes(inst.lockedRotation);
       const actualAxes = getPhysicalOrientationAxes(inst.transform?.rotation);
-      const orientationStatus = document.createElement('div');
-      orientationStatus.className = 'muted tp3d-editor-sub-sm';
-      orientationStatus.dataset.role = 'autopack-orientation-status';
-      if (!orientationActive) {
-        orientationStatus.textContent = 'AutoPack may choose an orientation permitted by this Case.';
-      } else if (!targetAxes.valid) {
-        orientationStatus.textContent = 'AutoPack orientation fixed for this item. The saved target is unsupported.';
-      } else if (!isCasePhysicalOrientationAllowed(caseData, inst.lockedRotation)) {
-        orientationStatus.textContent = 'AutoPack orientation fixed for this item. The target conflicts with this Case’s orientation rule.';
-      } else {
-        const matchesPose = actualAxes.valid && JSON.stringify(targetAxes.value) === JSON.stringify(actualAxes.value);
-        orientationStatus.textContent = `AutoPack orientation fixed for this item. The target ${matchesPose ? 'matches' : 'differs from'} the current pose.`;
+      if (orientationActive) {
+        const orientationStatus = document.createElement('div');
+        orientationStatus.className = 'muted tp3d-editor-sub-sm';
+        orientationStatus.dataset.role = 'autopack-orientation-status';
+        if (!targetAxes.valid) {
+          orientationStatus.textContent = 'Saved AutoPack orientation needs review.';
+        } else if (!isCasePhysicalOrientationAllowed(caseData, inst.lockedRotation)) {
+          orientationStatus.textContent = 'AutoPack orientation conflicts with this Case rule.';
+        } else {
+          const matchesPose = actualAxes.valid && JSON.stringify(targetAxes.value) === JSON.stringify(actualAxes.value);
+          orientationStatus.textContent = matchesPose ? 'AutoPack orientation locked.' : 'AutoPack target differs from current pose.';
+        }
+        rotCard.appendChild(orientationStatus);
       }
-      rotCard.appendChild(orientationStatus);
       const orientationAction = makeActionButton({
-        label: orientationActive ? 'Release AutoPack orientation' : 'Fix AutoPack to current orientation',
+        label: orientationActive ? 'Unlock AutoPack' : 'Lock for AutoPack',
         iconClass: orientationActive ? 'fa-solid fa-unlock' : 'fa-solid fa-lock',
         onClick: () => InteractionManager.setSelectionOrientationConstraint(!orientationActive, inst.id),
       });
       orientationAction.dataset.focusKey = 'action-autopack-orientation';
       rotCard.appendChild(orientationAction);
-      const orientationHelp = document.createElement('div');
-      orientationHelp.className = 'muted tp3d-editor-sub-sm';
-      orientationHelp.textContent = 'Manual rotation remains available and updates an active AutoPack target. Releasing restores AutoPack’s Case-permitted choices.';
-      rotCard.appendChild(orientationHelp);
       inspectorEl.appendChild(rotCard);
 
       // === Actions Card ===

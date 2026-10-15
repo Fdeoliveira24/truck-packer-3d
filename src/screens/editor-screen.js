@@ -26,9 +26,9 @@ import {
   isNormalAutoPackCandidateAcceptable,
 } from '../services/autopack-engine.js';
 import { MIN_SUPPORT_FRACTION } from '../services/pack-library.js';
-import { getCaseHandlingSummary, getInstanceHandlingSummary } from '../services/case-rule-summary.js';
+import { getCaseHandlingSummary } from '../services/case-rule-summary.js';
 import { isCasePhysicalOrientationAllowed } from '../core/orientation.js';
-import { getActualPoseDimensions, getPhysicalOrientationAxes } from '../core/oriented-dims.js';
+import { getActualPoseDimensions } from '../core/oriented-dims.js';
 import { formatWeight } from '../core/utils/index.js';
 
 // Editor screen + 3D interaction helpers (extracted from src/app.js; behavior preserved)
@@ -7690,37 +7690,24 @@ export function createEditorScreen({
         }
       }
 
-      // Handling rules: case-level policy and this-instance lock, shown separately.
+      // Instance orientation is controlled once, in Rotate / Flip below.
       const caseRules = getCaseHandlingSummary(caseData);
-      const instRules = getInstanceHandlingSummary(inst);
-      if (caseRules.length || instRules.length) {
+      if (caseRules.length) {
         const rulesWrap = document.createElement('div');
         rulesWrap.className = 'tp3d-editor-handling-rules';
-        const addChips = (labels, extraClass) => {
-          const chips = document.createElement('div');
-          chips.className = 'tp3d-editor-handling-chips';
-          labels.forEach(label => {
-            const chip = document.createElement('span');
-            chip.className = 'badge tp3d-handling-chip' + (extraClass ? ' ' + extraClass : '');
-            chip.textContent = label;
-            chips.appendChild(chip);
-          });
-          rulesWrap.appendChild(chips);
-        };
-        if (caseRules.length) {
-          const lbl = document.createElement('div');
-          lbl.className = 'tp3d-editor-rules-heading';
-          lbl.textContent = 'Handling rules';
-          rulesWrap.appendChild(lbl);
-          addChips(caseRules);
-        }
-        if (instRules.length) {
-          const lbl2 = document.createElement('div');
-          lbl2.className = 'tp3d-editor-rules-heading tp3d-editor-rules-heading--item';
-          lbl2.textContent = 'This item';
-          rulesWrap.appendChild(lbl2);
-          addChips(instRules, 'tp3d-handling-chip-instance');
-        }
+        const heading = document.createElement('div');
+        heading.className = 'tp3d-editor-rules-heading';
+        heading.textContent = 'Handling rules';
+        rulesWrap.appendChild(heading);
+        const chips = document.createElement('div');
+        chips.className = 'tp3d-editor-handling-chips';
+        caseRules.forEach(label => {
+          const chip = document.createElement('span');
+          chip.className = 'badge tp3d-handling-chip';
+          chip.textContent = label;
+          chips.appendChild(chip);
+        });
+        rulesWrap.appendChild(chips);
         card.appendChild(rulesWrap);
       }
 
@@ -7895,27 +7882,12 @@ export function createEditorScreen({
       });
       rotCard.appendChild(rotRow);
       const orientationActive = inst.orientationLocked === true;
-      const targetAxes = getPhysicalOrientationAxes(inst.lockedRotation);
-      const actualAxes = getPhysicalOrientationAxes(inst.transform?.rotation);
-      if (orientationActive) {
-        const orientationStatus = document.createElement('div');
-        orientationStatus.className = 'muted tp3d-editor-sub-sm';
-        orientationStatus.dataset.role = 'autopack-orientation-status';
-        if (!targetAxes.valid) {
-          orientationStatus.textContent = 'Saved AutoPack orientation needs review.';
-        } else if (!isCasePhysicalOrientationAllowed(caseData, inst.lockedRotation)) {
-          orientationStatus.textContent = 'AutoPack orientation conflicts with this Case rule.';
-        } else {
-          const matchesPose = actualAxes.valid && JSON.stringify(targetAxes.value) === JSON.stringify(actualAxes.value);
-          orientationStatus.textContent = matchesPose ? 'AutoPack orientation locked.' : 'AutoPack target differs from current pose.';
-        }
-        rotCard.appendChild(orientationStatus);
-      }
       const orientationAction = makeActionButton({
-        label: orientationActive ? 'Unlock AutoPack' : 'Lock for AutoPack',
+        label: orientationActive ? 'Unlock for AutoPack' : 'Lock for AutoPack',
         iconClass: orientationActive ? 'fa-solid fa-unlock' : 'fa-solid fa-lock',
         onClick: () => InteractionManager.setSelectionOrientationConstraint(!orientationActive, inst.id),
       });
+      orientationAction.setAttribute('aria-pressed', String(orientationActive));
       orientationAction.dataset.focusKey = 'action-autopack-orientation';
       rotCard.appendChild(orientationAction);
       inspectorEl.appendChild(rotCard);

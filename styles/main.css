@@ -5938,9 +5938,6 @@ body.tp3d-shared-modal-lock #app .nav {
   font-size: var(--text-xs);
 }
 
-.tp3d-handling-chip-instance {
-  border: 1px dashed var(--border, #d1d5db);
-}
 
 /* "+N" Handling Rules disclosure control (Cases Grid + List). It carries the
    same .badge pill look as an ordinary chip, reset for native <button> chrome
@@ -6986,10 +6983,6 @@ body.tp3d-shared-modal-lock #app .nav {
   line-height: var(--leading-tight);
 }
 
-.tp3d-editor-rules-heading--item {
-  margin-top: var(--space-1);
-  font-weight: var(--font-medium);
-}
 
 /* Interaction styles */
 .tp3d-editor-no-touch-action {

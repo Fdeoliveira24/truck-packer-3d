@@ -48,15 +48,3 @@ export function getCaseHandlingSummary(caseData = {}) {
 
   return out;
 }
-
-/**
- * Per-instance AutoPack planning note, shown separately from Case physical rules.
- * @param {Record<string, any>} instance
- * @returns {string[]}
- */
-export function getInstanceHandlingSummary(instance = {}) {
-  const inst = instance && typeof instance === 'object' ? instance : {};
-  const out = [];
-  if (inst.orientationLocked === true) out.push('AutoPack orientation fixed for this item');
-  return out;
-}

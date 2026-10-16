@@ -445,8 +445,13 @@ body[data-auth="signed_in"] #app {
   border-top: 1px solid var(--border-subtle);
 }
 
-.tp3d-import-export-action:hover {
+.tp3d-import-export-action:not(:disabled):hover {
   background: var(--bg-hover);
+}
+
+.tp3d-import-export-action:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 
 .tp3d-import-export-action:focus-visible:not(.tp3d-pointer-focus) {
@@ -465,7 +470,7 @@ body[data-auth="signed_in"] #app {
   font-size: var(--text-sm);
 }
 
-.tp3d-import-export-action:hover .tp3d-import-export-icon {
+.tp3d-import-export-action:not(:disabled):hover .tp3d-import-export-icon {
   background: var(--bg-elevated);
 }
 

@@ -740,36 +740,50 @@
 
           <!-- ===== SCREEN: IMPORT / EXPORT ===== -->
           <section class="screen" id="screen-import-export" aria-label="Import / Export">
-            <div class="tp3d-import-export-grid">
-              <section class="card tp3d-import-export-card" aria-labelledby="import-export-cases-title">
-                <div>
+            <div class="card tp3d-import-export-workspace">
+              <section class="tp3d-import-export-section" aria-labelledby="import-export-cases-title">
+                <div class="tp3d-import-export-heading">
                   <h2 id="import-export-cases-title">Cases</h2>
-                  <p class="muted">Bring cases into this workspace or download a copy.</p>
                 </div>
                 <div class="tp3d-import-export-actions">
-                  <button class="btn" id="btn-cases-import" type="button">
-                    <i class="fa-solid fa-file-import" aria-hidden="true"></i>
-                    Import Cases
+                  <button class="tp3d-import-export-action" id="btn-cases-import" type="button">
+                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-file-import"></i></span>
+                    <span class="tp3d-import-export-copy">
+                      <span class="tp3d-import-export-title">Import Cases</span>
+                      <span class="tp3d-import-export-description">CSV, XLSX or Case Catalog JSON</span>
+                    </span>
+                    <i class="fa-solid fa-chevron-right tp3d-import-export-indicator" aria-hidden="true"></i>
                   </button>
-                  <button class="btn" id="btn-cases-export" type="button" aria-haspopup="menu">
-                    <i class="fa-solid fa-file-export" aria-hidden="true"></i>
-                    Export Cases
+                  <button class="tp3d-import-export-action" id="btn-cases-export" type="button" aria-haspopup="menu">
+                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-file-export"></i></span>
+                    <span class="tp3d-import-export-copy">
+                      <span class="tp3d-import-export-title">Export Cases</span>
+                      <span class="tp3d-import-export-description">JSON, CSV or XLSX</span>
+                    </span>
+                    <i class="fa-solid fa-chevron-down tp3d-import-export-indicator" aria-hidden="true"></i>
                   </button>
-                  <button class="btn" id="btn-cases-template" type="button">
-                    <i class="fa-solid fa-download" aria-hidden="true"></i>
-                    Download Cases Template
+                  <button class="tp3d-import-export-action" id="btn-cases-template" type="button">
+                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-download"></i></span>
+                    <span class="tp3d-import-export-copy">
+                      <span class="tp3d-import-export-title">Download Cases Template</span>
+                      <span class="tp3d-import-export-description">Spreadsheet template</span>
+                    </span>
+                    <i class="fa-solid fa-chevron-right tp3d-import-export-indicator" aria-hidden="true"></i>
                   </button>
                 </div>
               </section>
-              <section class="card tp3d-import-export-card" aria-labelledby="import-export-packs-title">
-                <div>
+              <section class="tp3d-import-export-section" aria-labelledby="import-export-packs-title">
+                <div class="tp3d-import-export-heading">
                   <h2 id="import-export-packs-title">Load Plans</h2>
-                  <p class="muted">Import a load plan or a batch of load plans.</p>
                 </div>
                 <div class="tp3d-import-export-actions">
-                  <button class="btn" id="btn-import-pack" type="button">
-                    <i class="fa-solid fa-file-import" aria-hidden="true"></i>
-                    Import Load Plan(s)
+                  <button class="tp3d-import-export-action" id="btn-import-pack" type="button">
+                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-file-import"></i></span>
+                    <span class="tp3d-import-export-copy">
+                      <span class="tp3d-import-export-title">Import Load Plan(s)</span>
+                      <span class="tp3d-import-export-description">Individual or batch JSON</span>
+                    </span>
+                    <i class="fa-solid fa-chevron-right tp3d-import-export-indicator" aria-hidden="true"></i>
                   </button>
                 </div>
               </section>

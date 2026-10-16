@@ -588,47 +588,56 @@ const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swift
 const A = 'fixture-pack';
 const B = 'fixture-other-pack';
 
-test('C5T browser confirms unresolved staged Truck Changes without cargo loss and restores persisted geometry', { timeout: 120000 }, async () => {
+test('C5T browser stages known cargo and preserves 54 unresolved Cases through Truck Change, history and storage', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
     const source = await page.evaluate(() => {
       const q = window.probe;
       const cases = Array.from({ length: 128 }, (_, index) => ({
-        id: `c5t-${index}`, caseId: index < 74 ? 'qa-carton' : 'missing', placement: 'staged',
+        id: `c5t-${index}`, caseId: index < 74 ? 'qa-carton' : 'missing', placement: index === 0 ? 'packed' : 'staged',
         hidden: false, groupId: null, instanceNotes: `Keep note ${index}`,
-        transform: { position: { x: 20 + (index % 10) * 20, y: 4, z: 100 + Math.floor(index / 10) * 20 },
+        transform: { position: index === 0 ? { x: 12, y: 4, z: 0 } :
+          { x: 20 + (index % 10) * 20, y: 4, z: 100 + Math.floor(index / 10) * 20 },
           rotation: { x: 0, y: 0, z: 0 }, scale: { x: 1, y: 1, z: 1 } },
       }));
       const pack = { ...q.PackLibrary.getById(q.packId), cases };
+      const results = { packId: pack.id, runId: 'c5t-before-change', options: [] };
       q.StateStore.set({ packLibrary: [pack], selectedInstanceIds: [] }, { skipHistory: true });
+      q.StateStore.set({ autoPackResults: results }, { skipHistory: true, skipNotify: true });
       q.StateStore.resetHistory();
       return { cases, truck: pack.truck };
     });
     await openPack(page, A);
+    const resultsBeforeTruckChange = await page.evaluate(() => window.probe.results());
     const chooseShape = async label => {
       await page.locator('[data-focus-key="truck-shape"]').click();
       await page.getByRole('listbox', { name: 'Trailer Shape Mode' }).getByRole('option', { name: label, exact: true }).click();
       await settlePreview(page);
       await page.locator('#inspector-body button').filter({ hasText: 'Update truck' }).click();
-      const modal = page.getByRole('dialog', { name: 'Truck change', exact: true });
+      const modal = page.getByRole('dialog', { name: 'Change truck layout?', exact: true });
       await modal.waitFor();
-      assert.match(await modal.textContent(), /54 unresolved/);
-      assert.equal(await modal.getByRole('button', { name: 'Apply change', exact: true }).isEnabled(), true);
+      assert.deepEqual(await modal.locator('.modal-footer button').allTextContents(), ['Cancel', 'Apply Changes']);
+      assert.match(await modal.textContent(), /Changing the truck layout will place all Cases in staging/);
+      assert.doesNotMatch(await modal.textContent(), /unresolved|Kept in place|Safely adjusted|No longer fit|Repack invalid|Move remaining/i);
       return modal;
     };
     const cancelled = await chooseShape('Front Overhang');
     assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).truck), source.truck);
     assert.deepEqual(await page.evaluate(() => window.probe.cases()), source.cases, 'preview is not a Pack mutation');
+    assert.deepEqual(await page.evaluate(() => window.probe.results()), resultsBeforeTruckChange);
     await cancelled.getByRole('button', { name: 'Cancel', exact: true }).click();
     await settlePreview(page);
     assert.equal(await page.evaluate(() => window.probe.op()), 'idle');
+    assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).truck), source.truck);
     assert.deepEqual(await page.evaluate(() => window.probe.cases()), source.cases);
+    assert.deepEqual(await page.evaluate(() => window.probe.results()), resultsBeforeTruckChange, 'Cancel keeps Results intact');
+    assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'Cancel creates no history entry');
     for (const [label, mode] of [['Front Overhang', 'frontBonus'], ['Standard', 'rect'], ['Wheel Wells', 'wheelWells']]) {
       const modal = await chooseShape(label);
-      await modal.getByRole('button', { name: 'Apply change', exact: true }).click();
+      await modal.getByRole('button', { name: 'Apply Changes', exact: true }).click();
       await settlePreview(page);
-      assert.equal(await page.getByRole('dialog', { name: 'Truck change', exact: true }).count(), 0);
+      assert.equal(await page.getByRole('dialog', { name: 'Change truck layout?', exact: true }).count(), 0);
       const committed = await page.evaluate(() => {
         const q = window.probe;
         return { pack: q.PackLibrary.getById(q.packId), op: q.op() };
@@ -639,6 +648,26 @@ test('C5T browser confirms unresolved staged Truck Changes without cargo loss an
       assert.deepEqual(committed.pack.cases.map(inst => inst.id), source.cases.map(inst => inst.id));
       assert.deepEqual(committed.pack.cases.filter(inst => inst.caseId === 'missing'), source.cases.slice(74));
       assert.ok(committed.pack.cases.every(inst => inst.placement === 'staged'));
+      assert.notDeepEqual(committed.pack.cases[0].transform.position, source.cases[0].transform.position,
+        'the known packed Case receives a real staging pose');
+      assert.equal(await page.evaluate(() => window.probe.results()), null, 'committing geometry invalidates old Results');
+      if (mode === 'frontBonus') {
+        const history = await page.evaluate(() => {
+          const q = window.probe;
+          const undo = q.StateStore.undo();
+          const previous = q.PackLibrary.getById(q.packId);
+          const secondUndo = q.StateStore.undo();
+          const redo = q.StateStore.redo();
+          return { undo, previous, secondUndo, redo, restored: q.PackLibrary.getById(q.packId) };
+        });
+        assert.equal(history.undo, true);
+        assert.deepEqual(history.previous.truck, source.truck);
+        assert.deepEqual(history.previous.cases, source.cases, 'one Undo restores all 128 original instances');
+        assert.equal(history.secondUndo, false, 'Truck Change is one history action');
+        assert.equal(history.redo, true);
+        assert.deepEqual(history.restored.truck, committed.pack.truck);
+        assert.deepEqual(history.restored.cases, committed.pack.cases);
+      }
       const hydrated = await page.evaluate(() => {
         const q = window.probe;
         q.CoreStorage.saveNow();
@@ -649,6 +678,7 @@ test('C5T browser confirms unresolved staged Truck Changes without cargo loss an
       });
       assert.deepEqual(hydrated.truck, committed.pack.truck, 'type, dimensions and shape settings survive real storage hydration');
       assert.deepEqual(hydrated.cases.map(inst => inst.id), source.cases.map(inst => inst.id));
+      assert.deepEqual(hydrated.cases, committed.pack.cases, 'all 128 staging poses and metadata persist');
       for (const inst of hydrated.cases.filter(inst => inst.caseId === 'missing')) {
         const original = source.cases.find(entry => entry.id === inst.id);
         assert.equal(inst.placement, 'staged');
@@ -1813,7 +1843,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       assert.equal(proof.redo, true);
     });
 
-    await t.test('Camera A/B views restore independently; settled orbit saves once and refreshes only A', async () => {
+    await t.test('Camera A/B save independently while each opening uses the centered truck view', async () => {
       await page.evaluate(() => window.probe.reset());
       await openPack(page, A);
       const before = await page.evaluate(() => {
@@ -1821,6 +1851,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         q.mark();
         const controls = q.SceneManager.getControls();
         const defaultA = q.SceneManager.getEditorView();
+        const expectedA = q.SceneManager.getDefaultEditorView(q.PackLibrary.getById(q.packId).truck);
         controls.dispatchEvent({ type: 'start' });
         q.SceneManager.getCamera().position.x += 6;
         controls.update();
@@ -1828,8 +1859,9 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         controls.dispatchEvent({ type: 'change' });
         const during = q.PackLibrary.getById(q.packId).editorView;
         controls.dispatchEvent({ type: 'end' });
-        return { defaultA, during };
+        return { defaultA, expectedA, during };
       });
+      assert.deepEqual(before.defaultA, before.expectedA, 'A opens at the truck-centered default');
       assert.equal(before.during ?? null, null, 'change events do not persist an intermediate pose');
       await settlePreview(page);
       const savedA = await page.evaluate(() => {
@@ -1843,8 +1875,13 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       assert.equal(savedA.signature, savedA.expected);
       assert.equal(savedA.writes, 1, 'camera only refreshes the thumbnail once');
       await openPack(page, B);
-      const initialB = await page.evaluate(() => window.probe.SceneManager.getEditorView());
-      assert.notDeepEqual(initialB, savedA.view, 'B starts from its own default');
+      const initialB = await page.evaluate(() => {
+        const q = window.probe;
+        return { view: q.SceneManager.getEditorView(),
+          expected: q.SceneManager.getDefaultEditorView(q.PackLibrary.getById(q.otherPackId).truck) };
+      });
+      assert.deepEqual(initialB.view, initialB.expected, 'B opens at its own centered truck view');
+      assert.notDeepEqual(initialB.view, savedA.view, 'A cannot carry its last orbit into B');
       await page.evaluate(() => {
         const q = window.probe;
         const controls = q.SceneManager.getControls();
@@ -1854,15 +1891,33 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         controls.dispatchEvent({ type: 'end' });
       });
       await settlePreview(page);
-      const savedB = await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.otherPackId).editorView);
-      assert.notDeepEqual(savedB, savedA.view);
+      const savedB = await page.evaluate(() => {
+        const q = window.probe;
+        const pack = q.PackLibrary.getById(q.otherPackId);
+        return { view: pack.editorView, signature: pack.thumbnailViewSignature,
+          expected: q.Normalizer.editorViewSignature(pack.editorView) };
+      });
+      assert.notDeepEqual(savedB.view, savedA.view);
+      assert.equal(savedB.signature, savedB.expected, 'B thumbnail identifies the view actually captured');
       await openPack(page, A);
-      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), savedA.view);
+      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), before.expectedA,
+        'reopening A frames the truck instead of restoring historical metadata');
+      assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).editorView), savedA.view,
+        'reopening A preserves its saved historical view');
+      const activeA = await page.evaluate(() => {
+        const q = window.probe;
+        q.SceneManager.getCamera().position.x += 2;
+        q.SceneManager.getControls().update();
+        return q.SceneManager.getEditorView();
+      });
       await page.evaluate(() => window.probe.EditorUI.render());
-      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), savedA.view,
-        'same-Pack render keeps the established view');
+      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), activeA,
+        'same-Pack render keeps an adjusted active view');
+      assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).editorView), savedA.view);
       await openPack(page, B);
-      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), savedB);
+      assert.deepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView()), initialB.expected,
+        'reopening B frames the truck instead of restoring its last orbit');
+      assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.otherPackId).editorView), savedB.view);
       const hydratedB = await page.evaluate(() => {
         const q = window.probe;
         q.CoreStorage.saveNow();
@@ -1870,9 +1925,10 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         if (!loaded?.packLibrary?.find(pack => pack.id === q.otherPackId)?.editorView) return null;
         q.StateStore.replace({ ...q.StateStore.snapshot(), ...loaded, currentScreen: 'editor' },
           { resetHistory: true });
-        return q.SceneManager.getEditorView();
+        return { active: q.SceneManager.getEditorView(), stored: q.PackLibrary.getById(q.otherPackId).editorView };
       });
-      assert.deepEqual(hydratedB, savedB, 'persisted pose restores through the workspace storage load path');
+      assert.deepEqual(hydratedB.active, initialB.expected, 'hydration keeps the centered active B view');
+      assert.deepEqual(hydratedB.stored, savedB.view, 'storage preserves B historical camera metadata');
       assert.deepEqual(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.packId).editorView), savedA.view,
         'B never overwrites A metadata');
     });
@@ -1963,7 +2019,7 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
       await page.evaluate(() => window.probe.reset());
     });
 
-    await t.test('two rapid orbit endings coalesce to one preview; immediate departure saves the final view', async () => {
+    await t.test('two rapid orbit endings coalesce; departure captures the final view and reopening centers the truck', async () => {
       await page.evaluate(() => window.probe.reset());
       await openPack(page, A);
       const departure = await page.evaluate(() => {
@@ -1979,23 +2035,28 @@ test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, 
         q.AppShell.navigate('packs');
         return { saved: q.PackLibrary.getById(q.packId).editorView,
           signature: q.PackLibrary.getById(q.packId).thumbnailViewSignature,
+          expectedSignature: q.Normalizer.editorViewSignature(q.PackLibrary.getById(q.packId).editorView),
           reads: q.log.filter(e => e.type === 'readback').length };
       });
       assert.ok(departure.saved);
       assert.equal(departure.reads, 1, 'the departure flush captures the final settled view once');
+      assert.equal(departure.signature, departure.expectedSignature, 'the thumbnail is stamped with its captured view');
       await openPack(page, A);
       await settlePreview(page);
       const after = await page.evaluate(() => {
         const q = window.probe;
         return { view: q.SceneManager.getEditorView(),
+          expected: q.SceneManager.getDefaultEditorView(q.PackLibrary.getById(q.packId).truck),
           stored: q.PackLibrary.getById(q.packId).editorView,
           signature: q.PackLibrary.getById(q.packId).thumbnailViewSignature,
           viewSignature: q.Normalizer.editorViewSignature(q.SceneManager.getEditorView()),
           reads: q.log.filter(e => e.type === 'readback').length };
       });
-      assert.deepEqual(after.view, after.stored);
+      assert.deepEqual(after.view, after.expected, 'reopening resets only the active camera to the centered truck view');
+      assert.deepEqual(after.stored, departure.saved, 'the previous orbit remains saved as historical metadata');
       assert.equal(after.reads, 1, 'reopening needs no duplicate preview');
-      assert.equal(after.signature, after.viewSignature);
+      assert.equal(after.signature, departure.signature, 'the existing thumbnail retains its actual capture signature');
+      assert.notEqual(after.signature, after.viewSignature, 'the prior capture is not mislabeled as the opening view');
     });
 
     assert.deepEqual(errors.filter(e => !e.includes('injected scene sync failure')), [], 'no uncaught error or unhandled rejection');

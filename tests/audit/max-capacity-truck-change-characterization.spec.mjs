@@ -1,13 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-// ---------------------------------------------------------------------------
-// AUDIT-ONLY behavior-characterization suite for the Max Capacity Phase C
-// packed-profile semantics audit (branch audit/max-capacity-phase-c-profile-semantics).
-// Characterizes repackInvalidPlacements() (previously untested for packedProfile
-// anywhere in the suite) and cross-shape-mode Truck Change, both flagged as gaps
-// in the prior audit rounds.
-// ---------------------------------------------------------------------------
+// Shared physical reconciliation retains packed profile semantics. Truck layout
+// confirmation is covered by truck-change-reconciliation.spec.mjs.
 
 const packLibraryPath = new URL('../../src/services/pack-library.js', import.meta.url);
 const stateStorePath = new URL('../../src/core/state-store.js', import.meta.url);
@@ -57,82 +52,6 @@ async function loadPackLibrary(cases, instances, truck = RECT_TRUCK, packId = 'p
   });
   return { StateStore, PackLibrary, packId };
 }
-
-// ── repackInvalidPlacements(): success path, no relaxation needed ───────────
-
-test('TC-CHAR-repack-1 successfully repacked marked instance keeps the marker even when the new floor spot needs no relaxation', async () => {
-  const caseData = makeCase('repack-floor');
-  const inst = marked(makeInstance('repack-inst', caseData.id, { x: 20, y: 5, z: 0 }));
-  const { PackLibrary } = await loadPackLibrary([caseData], [inst]);
-
-  const smallTruck = { length: 15, width: 60, height: 60, shapeMode: 'rect' };
-  const recon = PackLibrary.reconcilePlacementsForTruck(
-    { id: 'p', truck: RECT_TRUCK, cases: [inst] }, smallTruck, [caseData]);
-  assert.deepEqual(recon.invalid, ['repack-inst'], 'sanity: original position is outside the shrunk truck');
-
-  const outcome = PackLibrary.repackInvalidPlacements(recon, smallTruck, [caseData]);
-  assert.deepEqual(outcome.repackedIds, ['repack-inst']);
-  const repacked = outcome.pack.cases.find(c => c.id === 'repack-inst');
-  assert.equal(repacked.placement, 'packed');
-  assert.equal(repacked.packedProfile, MAX_PROFILE,
-    'repackInvalidPlacements does NOT re-derive whether the new position needs relaxation - ' +
-    'it unconditionally carries the existing marker forward via applyCanonicalInstancePose(), ' +
-    'confirming this path behaves like provenance/mode-membership (Contract A/C), not a live ' +
-    're-check of relaxed-validation necessity (Contract B).');
-});
-
-// ── repackInvalidPlacements(): the floor-only search cannot recreate a stack ─
-
-test('TC-CHAR-repack-2 repack search is floor-only and cannot rebuild a relaxation-dependent stacked relationship', async () => {
-  const supportCase = makeCase('repack-support', { stackable: false, noStackOnTop: true, maxStackCount: 1, weight: 5 });
-  const childCase = makeCase('repack-child', { weight: 50 });
-  const support = marked(makeInstance('rp-support', supportCase.id, { x: 20, y: 5, z: 0 }));
-  const child = marked(makeInstance('rp-child', childCase.id, { x: 20, y: 15, z: 0 }));
-  const { PackLibrary } = await loadPackLibrary([supportCase, childCase], [support, child]);
-
-  // Shrink the truck length so BOTH the support and the child's (x=20) column
-  // falls outside, forcing both into reconResult.invalid.
-  const smallTruck = { length: 15, width: 60, height: 60, shapeMode: 'rect' };
-  const recon = PackLibrary.reconcilePlacementsForTruck(
-    { id: 'p', truck: RECT_TRUCK, cases: [support, child] }, smallTruck, [supportCase, childCase]);
-  assert.equal(recon.invalid.length, 2, 'sanity: both members fall outside the shrunk truck');
-
-  const outcome = PackLibrary.repackInvalidPlacements(recon, smallTruck, [supportCase, childCase]);
-  const repackedChild = outcome.pack.cases.find(c => c.id === 'rp-child');
-  // The support gets a floor slot; the child, if repacked, lands on a DIFFERENT
-  // floor slot (not stacked on the support) because findRepackFloorPosition only
-  // ever tries y = zone floor. If there is not enough floor area for both, the
-  // child fails to repack entirely (failedIds) rather than being stacked.
-  if (outcome.repackedIds.includes('rp-child')) {
-    assert.equal(Math.abs(repackedChild.transform.position.y - 5) < 0.06, true,
-      'child was repacked to a FLOOR level (y≈5 for these dims), not stacked on the support - ' +
-      'repackInvalidPlacements never attempts an elevated/supported candidate position');
-  } else {
-    assert.equal(outcome.failedIds.includes('rp-child'), true,
-      'child could not be repacked at all - confirms repack cannot reconstruct a stacked/support-dependent relationship');
-  }
-});
-
-// ── repackInvalidPlacements(): failure path is a pure pass-through ──────────
-
-test('TC-CHAR-repack-3 a repack failure leaves the instance (placement + marker) completely untouched, reported via failedIds', async () => {
-  const bigCase = makeCase('too-big', { dimensions: { length: 200, width: 200, height: 200 } });
-  const inst = marked(makeInstance('too-big-inst', bigCase.id, { x: 20, y: 100, z: 0 }));
-  const { PackLibrary } = await loadPackLibrary([bigCase], [inst]);
-
-  const tinyTruck = { length: 15, width: 15, height: 15, shapeMode: 'rect' };
-  const recon = PackLibrary.reconcilePlacementsForTruck(
-    { id: 'p', truck: RECT_TRUCK, cases: [inst] }, tinyTruck, [bigCase]);
-  assert.deepEqual(recon.invalid, ['too-big-inst']);
-
-  const outcome = PackLibrary.repackInvalidPlacements(recon, tinyTruck, [bigCase]);
-  assert.deepEqual(outcome.repackedIds, []);
-  assert.deepEqual(outcome.failedIds, ['too-big-inst']);
-  assert.deepEqual(outcome.stagedIds, [], 'repackInvalidPlacements ALWAYS returns an empty stagedIds array - it never stages anything itself, by design (caller decides)');
-  const untouched = outcome.pack.cases.find(c => c.id === 'too-big-inst');
-  assert.equal(untouched.placement, 'packed', 'failure leaves placement UNCHANGED (still packed, not auto-staged)');
-  assert.equal(untouched.packedProfile, MAX_PROFILE, 'failure leaves the marker UNCHANGED - purely a pass-through pending a later user/controller decision');
-});
 
 // ── Cross-shape Truck Change: rect -> Wheel Wells ────────────────────────────
 

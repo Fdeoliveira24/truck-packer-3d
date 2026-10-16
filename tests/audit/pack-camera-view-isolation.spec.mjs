@@ -46,6 +46,47 @@ test('Pack views normalize, persist independently and survive workspace hydratio
     editorViewSignature(viewA), 'submillimeter camera noise is ignored');
 });
 
+test('settled camera saves remain Pack-owned during an AutoPack preview', async () => {
+  seed();
+  const editor = await readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+  const start = editor.indexOf('    function isViewOwnerCurrent()');
+  const end = editor.indexOf('    function scheduleViewSettle(', start);
+  assert.ok(start >= 0 && end > start);
+  const sourcePack = PackLibrary.getById('A');
+  const sandbox = {
+    StateStore, PackLibrary, normalizeEditorView, editorViewSignature,
+    CoreStorage: { isScopeContextCurrent: scope => scope === 'current' },
+    SceneManager: { getEditorView: () => viewA, getDefaultEditorView: () => viewB },
+    getPreviewScene: () => null,
+    viewOwner: { packId: 'A', scope: 'current' }, viewRevision: 1,
+    viewGestureActive: false, viewFocusActive: false, viewPendingEnd: false,
+    pendingViewSave: true, onPreviewViewSettled: null,
+  };
+  vm.createContext(sandbox);
+  vm.runInContext(editor.slice(start, end), sandbox);
+  assert.equal(sandbox.persistSettledView(), true, 'a transient cargo preview does not block camera saving');
+  assert.equal(editorViewSignature(PackLibrary.getById('A').editorView), editorViewSignature(viewA));
+  assert.equal(sandbox.pendingViewSave, false);
+  assert.equal(PackLibrary.getById('A').cases, sourcePack.cases, 'camera saving cannot adopt preview cargo');
+  assert.equal(StateStore.undo(), false, 'camera saving adds no cargo history step');
+  assert.equal(PackLibrary.getById('B').editorView, null);
+
+  sandbox.SceneManager.getEditorView = () => viewB;
+  for (const flag of ['viewGestureActive', 'viewFocusActive', 'viewPendingEnd']) {
+    sandbox[flag] = true;
+    assert.equal(sandbox.persistSettledView(), false, `${flag} prevents an unsettled save`);
+    sandbox[flag] = false;
+  }
+  assert.equal(sandbox.persistSettledView(0), false, 'an old revision cannot save');
+  sandbox.viewOwner.scope = 'stale';
+  assert.equal(sandbox.persistSettledView(), false, 'an old workspace cannot save');
+  sandbox.viewOwner.scope = 'current';
+  StateStore.set({ currentPackId: 'B' }, { skipHistory: true });
+  assert.equal(sandbox.persistSettledView(), false, 'a departing Pack cannot save into the next Pack');
+  assert.equal(PackLibrary.getById('B').editorView, null);
+  assert.equal(editorViewSignature(PackLibrary.getById('A').editorView), editorViewSignature(viewA));
+});
+
 test('camera metadata is outside cargo Undo and preserves Redo', () => {
   seed();
   const notifications = [];

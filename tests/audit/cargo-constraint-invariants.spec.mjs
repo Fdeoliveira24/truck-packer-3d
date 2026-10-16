@@ -279,7 +279,7 @@ test('CARGO-RULE-V1 laneItem:false does not compare equal to Automatic; distinct
 
 test('CARGO-RULE-V1 case-rule-summary returns only active non-default rules', async () => {
   const summaryPath = new URL('../../src/services/case-rule-summary.js', import.meta.url);
-  const { getCaseHandlingSummary, getInstanceHandlingSummary } = await import(`${summaryPath.href}?t=${Date.now()}-${Math.random()}`);
+  const { getCaseHandlingSummary } = await import(`${summaryPath.href}?t=${Date.now()}-${Math.random()}`);
 
   // Defaults → nothing shown
   assert.deepEqual(getCaseHandlingSummary({ orientationLock: 'any', canFlip: false, noStackOnTop: false, maxStackCount: 0, isPallet: false, laneItem: null, loadPriority: 0 }), []);
@@ -298,9 +298,6 @@ test('CARGO-RULE-V1 case-rule-summary returns only active non-default rules', as
   assert.deepEqual(getCaseHandlingSummary({ laneItem: false }), ['Lane: Never']);
   assert.deepEqual(getCaseHandlingSummary({ loadPriority: 1 }), ['Priority: High']);
   assert.deepEqual(getCaseHandlingSummary({ loadPriority: -1 }), ['Priority: Low']);
-  // Instance lock shown separately
-  assert.deepEqual(getInstanceHandlingSummary({ orientationLocked: true }), ['AutoPack orientation fixed for this item']);
-  assert.deepEqual(getInstanceHandlingSummary({ orientationLocked: false }), []);
 });
 
 test('CARGO-RULE-V1 all case surfaces use the shared rule-summary source', async () => {
@@ -308,7 +305,7 @@ test('CARGO-RULE-V1 all case surfaces use the shared rule-summary source', async
   const editorSrc = await fs.readFile(editorScreenPath, 'utf8');
   assert.match(casesSrc, /import \{ getCaseHandlingSummary \} from '\.\.\/services\/case-rule-summary\.js'/, 'cases screen imports the shared summary');
   assert.match(casesSrc, /getCaseHandlingSummary\(c\)/, 'cases screen renders the shared summary (cards + list)');
-  assert.match(editorSrc, /import \{ getCaseHandlingSummary, getInstanceHandlingSummary \} from '\.\.\/services\/case-rule-summary\.js'/, 'editor imports the shared summary');
+  assert.match(editorSrc, /import \{ getCaseHandlingSummary \} from '\.\.\/services\/case-rule-summary\.js'/, 'editor imports the shared summary');
   assert.match(editorSrc, /getCaseHandlingSummary\(c\)/, 'editor case browser uses the shared summary');
   assert.match(editorSrc, /getCaseHandlingSummary\(caseData\)/, 'inspector uses the shared summary');
   // 3D pallet label is warning-worded, not an enforced cap

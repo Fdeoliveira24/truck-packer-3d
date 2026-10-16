@@ -37,6 +37,21 @@ class Surface {
   }
 }
 
+function mockStateStore(state) {
+  const subscribers = new Set();
+  return {
+    get: key => state[key],
+    set(patch) {
+      Object.assign(state, patch);
+      for (const subscriber of subscribers) subscriber(patch, state);
+    },
+    subscribe(subscriber) {
+      subscribers.add(subscriber);
+      return () => subscribers.delete(subscriber);
+    },
+  };
+}
+
 function installDom(t) {
   const original = new Map(['window', 'document', 'HTMLElement', 'THREE', 'requestAnimationFrame']
     .map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
@@ -440,7 +455,7 @@ test('P0-SM-OF-2 actual document and Editor window listeners share the entry sna
   let editorMutatingAttempts = 0;
   createInteractionManager({
     UIComponents: { ...dom.UI, showToast() {} },
-    StateStore: { get: key => key === 'currentScreen' ? 'editor' : [] },
+    StateStore: mockStateStore({ currentScreen: 'editor', selectedInstanceIds: [] }),
     CaseScene: {},
     OperationLifecycle: { isBusy() { editorMutatingAttempts++; return true; } },
   }).init(dom.doc.body.appendChild(dom.doc.createElement('div')).appendChild(dom.doc.createElement('canvas')));
@@ -484,7 +499,7 @@ test('P0-SM-OF-2 unowned Escape still cancels a live gizmo drag after KeyboardMa
   canvas.setPointerCapture = () => {};
   createInteractionManager({
     UIComponents: dom.UI,
-    StateStore: { get: key => key === 'currentScreen' ? 'editor' : ['cargo'] },
+    StateStore: mockStateStore({ currentScreen: 'editor', selectedInstanceIds: ['cargo'] }),
     SceneManager: { getCamera: () => camera, getControls: () => controls },
     CaseScene: {
       getGizmoHandleMeshes: () => [handle], getGizmoTargetId: () => 'cargo',
@@ -524,7 +539,7 @@ test('Editor pointer cancellation restores gizmo pose and camera without committ
   canvas.setPointerCapture = () => {};
   createInteractionManager({
     UIComponents: dom.UI,
-    StateStore: { get: key => key === 'currentScreen' ? 'editor' : selection },
+    StateStore: mockStateStore({ currentScreen: 'editor', selectedInstanceIds: selection }),
     SceneManager: { getCamera: () => camera, getControls: () => controls },
     CaseScene: {
       getGizmoHandleMeshes: () => [handle], getGizmoTargetId: () => 'cargo',
@@ -570,7 +585,7 @@ function installProvisionalEditor(t, dom) {
   canvas.setPointerCapture = () => {};
   const interaction = createInteractionManager({
     UIComponents: { ...dom.UI, showToast: message => toasts.push(message) },
-    StateStore: { get: key => state[key], set: patch => Object.assign(state, patch) },
+    StateStore: mockStateStore(state),
     SceneManager: {
       getCamera: () => camera, getControls: () => controls, toWorld: value => value,
       vecWorldToInches: v => ({ x: v.x, y: v.y, z: v.z }),

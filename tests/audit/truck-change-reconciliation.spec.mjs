@@ -2,10 +2,8 @@
 
 import {
   RECON_CASE_LIB,
-  RECON_DIMS,
   RECON_RECT,
   RECON_WW,
-  appPath,
   assert,
   assertCanonicalReconLayoutSafe,
   assertLargeReconStagingSafe,
@@ -17,7 +15,6 @@ import {
   makeTruckChangeHarness,
   packImportAabbsOverlap,
   packLibraryPath,
-  packsScreenPath,
   phbSolverModules,
   phc2Instance,
   phcFrontOverhangTruck,
@@ -83,7 +80,7 @@ test('RECON wheel-well size/offset and overhang deck length changes revalidate p
   const wwA = { ...RECON_WW, shapeConfig: { wellOffsetFromRear: 60, wellLength: 84, wellWidth: 14.4, wellHeight: 33.6 } };
   const item = [reconInst('w', 200, 8, 40)]; // rear zone, near a side
   const r = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: item }, wwA, RECON_CASE_LIB);
-  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r, wwA, RECON_CASE_LIB).cases, wwA, 'WW offset');
+  assertReconLayoutSafe(PackLib, PackLib.stagePlacementIds((r).nextPack, (r).invalid, wwA, RECON_CASE_LIB).pack.cases, wwA, 'WW offset');
   // Overhang deck shortened so a deck item past the new extent becomes invalid.
   const deck = [reconInst('d', 280, 43.2 + 8, 0)]; // within bonusLength 48 (x up to 288)
   const rShort = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: reconFB(43.2, 48), cases: deck }, reconFB(43.2, 20), RECON_CASE_LIB);
@@ -101,329 +98,7 @@ test('RECON dependency groups: invalid base never leaves a child floating; colli
   const r2 = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases: stack2 }, { ...RECON_RECT, height: 28 }, RECON_CASE_LIB);
   assert.deepEqual(r2.kept, ['b2'], 'the base remains valid');
   assert.deepEqual(r2.invalid, ['c2'], 'the over-height child is invalid (not collided into the base)');
-  assertReconLayoutSafe(PackLib, PackLib.stageInvalidPlacements(r2, { ...RECON_RECT, height: 28 }, RECON_CASE_LIB).cases, { ...RECON_RECT, height: 28 }, 'height-clip stack');
-});
-
-test('RECON apply is one undoable transaction; cancel leaves state unchanged; Stats agree', async () => {
-  const StateStore = await import(stateStorePath.href);
-  const PackLib = await import(packLibraryPath.href);
-  const cases = [reconInst('i0', 30, 8, 0), reconInst('i1', 150, 8, 0), reconInst('i2', 210, 8, 0)];
-  StateStore.init({ caseLibrary: RECON_CASE_LIB, packLibrary: [{ id: 'p', title: 'P', truck: RECON_RECT, cases }], folderLibrary: [], preferences: {}, currentPackId: 'p' });
-  const before = JSON.stringify(StateStore.get('packLibrary'));
-
-  // CANCEL: compute reconciliation but do not apply → state unchanged.
-  const pack = PackLib.getById('p');
-  PackLib.reconcilePlacementsForTruck(pack, { ...RECON_RECT, length: 120 }, RECON_CASE_LIB);
-  assert.equal(JSON.stringify(StateStore.get('packLibrary')), before, 'reconcile alone (cancel) does not mutate state');
-
-  // APPLY: truck + reconciled cases in ONE update (one history entry).
-  const nextTruck = { ...RECON_RECT, length: 120 };
-  const r = PackLib.reconcilePlacementsForTruck(pack, nextTruck, RECON_CASE_LIB);
-  const finalPack = PackLib.stageInvalidPlacements(r, nextTruck, RECON_CASE_LIB);
-  PackLib.update('p', { truck: nextTruck, cases: finalPack.cases });
-  const applied = PackLib.getById('p');
-  assert.equal(applied.truck.length, 120, 'truck change applied');
-  // Stats agree immediately with the reconciled layout.
-  assert.equal(applied.stats.totalCases, 3, 'stats recomputed on apply');
-  assert.equal(applied.stats.packedCases + applied.stats.stagedCases, 3, 'stats packed+staged account for every item');
-  assertReconLayoutSafe(PackLib, applied.cases, applied.truck, 'applied');
-
-  // ONE-STEP UNDO restores the prior truck AND the full prior layout.
-  StateStore.undo();
-  assert.equal(JSON.stringify(StateStore.get('packLibrary')), before, 'a single undo restores the prior truck and full layout');
-  StateStore.redo();
-  assert.equal(PackLib.getById('p').truck.length, 120, 'a single redo restores the staged truck change');
-
-  // Repack is the same one-history-entry transaction and round-trips too.
-  StateStore.undo();
-  const restoredPack = PackLib.getById('p');
-  const repackRecon = PackLib.reconcilePlacementsForTruck(restoredPack, nextTruck, RECON_CASE_LIB);
-  const repackOutcome = PackLib.repackInvalidPlacements(repackRecon, nextTruck, RECON_CASE_LIB);
-  assert.equal(repackOutcome.failedIds.length, 0, 'fixture invalid items can be repacked');
-  PackLib.update('p', { truck: nextTruck, cases: repackOutcome.pack.cases });
-  const repackedSnapshot = JSON.stringify(StateStore.get('packLibrary'));
-  StateStore.undo();
-  assert.equal(JSON.stringify(StateStore.get('packLibrary')), before, 'one undo restores the complete pre-repack state');
-  StateStore.redo();
-  assert.equal(JSON.stringify(StateStore.get('packLibrary')), repackedSnapshot, 'one redo restores the complete repack result');
-});
-
-test('RECON every production truck writer routes through the shared controller', async () => {
-  const [editor, packs, controller, app] = await Promise.all([
-    fs.readFile(editorScreenPath, 'utf8'),
-    fs.readFile(packsScreenPath, 'utf8'),
-    fs.readFile(truckChangeControllerPath, 'utf8'),
-    fs.readFile(appPath, 'utf8'),
-  ]);
-  assert.match(editor, /function applyTruckGeometryChange\(pack, nextTruck/);
-  assert.match(editor, /TruckChangeController\.request\(\{/);
-  assert.match(editor, /renderPreview: preview => \{[\s\S]*?SceneManager\.setTruck\(preview\.pack\.truck\);[\s\S]*?CaseScene\.sync\(preview\.pack\);/,
-    'Editor owns ephemeral truck and cargo scene rendering');
-  assert.doesNotMatch(editor, /PackLibrary\.update\(pack\.id, \{ truck/,
-    'Editor has no direct truck writer');
-  assert.match(packs, /function requestTruckChange\(options\)/,
-    'Packs routes truck changes through its operation-lifecycle wrapper');
-  assert.equal((packs.match(/TruckChangeController\.request\(\{/g) || []).length, 1,
-    'the operation-lifecycle wrapper has one shared controller delegation');
-  assert.equal((packs.match(/\brequestTruckChange\(\{/g) || []).length, 2,
-    'Packs toolbar preset and Edit Pack Save both use the guarded wrapper');
-  assert.doesNotMatch(packs, /PackLibrary\.update\(pack\.id, \{ truck/,
-    'Packs toolbar has no direct truck writer');
-  assert.match(controller, /PackLibrary\.reconcilePlacementsForTruck\(pack, nextTruck, caseLibrary\)/);
-  assert.match(controller, /PackLibrary\.update\(ctx\.pack\.id, \{ truck: ctx\.nextTruck, cases: finalPack\.cases \}\)/,
-    'only the controller owns the default atomic truck+cases+validation-signature commit');
-  assert.match(app, /const TruckChangeController = createTruckChangeController\(\{/,
-    'one controller instance is injected into both screens');
-});
-
-test('RECON controller is single-flight, double-submit safe, and commits truck+cases once', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const harness = makeTruckChangeHarness();
-  const pack = { id: 'p', truck: RECON_RECT, cases: [reconInst('far', 210, 8, 0)] };
-  const before = JSON.stringify(pack);
-  const commits = [];
-  const controller = Controller.createTruckChangeController({
-    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
-    CaseLibrary: { getCases: () => RECON_CASE_LIB },
-    UIComponents: harness.UIComponents,
-    documentRef: harness.documentRef,
-  });
-  const nextTruck = { ...RECON_RECT, length: 120 };
-  assert.equal(controller.request({ pack, nextTruck }).status, 'preview');
-  assert.equal(controller.request({ pack, nextTruck }).status, 'busy', 'a second request is rejected while preview is open');
-  const action = harness.modals[0].config.actions.find(candidate => candidate.label === 'Move to staging');
-  assert.equal(JSON.stringify(pack), before, 'state remains unchanged before confirmation');
-  const first = action.onClick();
-  const second = action.onClick();
-  assert.equal(first, true);
-  assert.equal(second, false, 'repeat click is ignored');
-  harness.modals[0].ref.close();
-  assert.equal(commits.length, 1, 'one atomic commit');
-  assert.equal(commits[0].patch.truck.length, 120);
-  assert.equal(commits[0].patch.cases[0].placement, 'staged');
-  assert.equal(commits[0].patch.cases[0].transform.position.y, RECON_DIMS.height / 2,
-    'staged center is exactly half-height');
-  assert.equal(JSON.stringify(pack), before, 'controller preserves the caller snapshot');
-});
-
-test('C5T 128 staged instances with 54 missing definitions survive confirmed shape changes and Cancel', async () => {
-  const PackLib = await import(packLibraryPath.href);
-  const StateStore = await import(stateStorePath.href);
-  const Controller = await import(truckChangeControllerPath.href);
-  const cases = Array.from({ length: 128 }, (_, index) => ({
-    ...reconInst(`c5t-${index}`, 30 + (index % 8) * 28, 8, 100 + Math.floor(index / 8) * 24),
-    caseId: index < 74 ? 'c' : 'missing', placement: 'staged',
-    instanceNotes: `Preserve note ${index}`, deliverySequence: index + 1,
-  }));
-  const editorView = { position: { x: 7, y: 4, z: 6 }, target: { x: 3, y: 0, z: 0 } };
-  StateStore.init({ caseLibrary: RECON_CASE_LIB, packLibrary: [{ id: 'c5t', truck: RECON_RECT, cases, editorView }],
-    currentPackId: 'c5t', folderLibrary: [], preferences: {} });
-  for (const nextTruck of [reconFB(), RECON_RECT, RECON_WW]) {
-    const source = PackLib.getById('c5t');
-    const before = JSON.stringify(source);
-    const harness = makeTruckChangeHarness();
-    const previews = [];
-    const controller = Controller.createTruckChangeController({ PackLibrary: PackLib,
-      CaseLibrary: { getCases: () => RECON_CASE_LIB }, UIComponents: harness.UIComponents,
-      documentRef: harness.documentRef });
-    const request = () => controller.request({ pack: PackLib.getById('c5t'), nextTruck,
-      renderPreview: preview => previews.push(preview) });
-    const result = request();
-    assert.equal(result.status, 'preview');
-    assert.equal(result.reconciliation.summary.unresolved, 54);
-    assert.ok(harness.modals[0].config.actions.some(action => action.label === 'Apply change'),
-      `${nextTruck.shapeMode}: missing staged definitions do not suppress confirmation`);
-    assert.equal(previews[0].pack.cases.length, 74, 'unresolved geometry is excluded only from the scene');
-    assert.equal(JSON.stringify(PackLib.getById('c5t')), before, 'preview does not persist');
-    harness.click(0, 'Cancel');
-    assert.equal(JSON.stringify(PackLib.getById('c5t')), before, 'Cancel restores the committed Pack');
-    request();
-    assert.equal(harness.click(1, 'Apply change'), true);
-    const applied = PackLib.getById('c5t');
-    assert.deepEqual(applied.truck, nextTruck);
-    assert.equal(applied.cases.length, 128);
-    assert.deepEqual(applied.cases.map(inst => inst.id), cases.map(inst => inst.id));
-    assert.deepEqual(applied.cases.filter(inst => inst.caseId === 'missing'), cases.slice(74),
-      'unresolved staged poses, notes and metadata survive byte-equivalent without fabricated data');
-    assert.ok(applied.cases.every(inst => inst.placement === 'staged'));
-    assert.deepEqual(applied.editorView, editorView);
-    const committed = JSON.stringify(applied);
-    StateStore.undo();
-    assert.equal(JSON.stringify(PackLib.getById('c5t')), before, 'one Undo restores truck and cargo together');
-    StateStore.redo();
-    assert.equal(JSON.stringify(PackLib.getById('c5t')), committed);
-  }
-});
-
-test('C5T untrusted packed geometry falls back to unresolved staging while resolved cargo remains validated', async () => {
-  const PackLib = await import(packLibraryPath.href);
-  const Controller = await import(truckChangeControllerPath.href);
-  const unresolved = { ...reconInst('missing-packed', 30, 8, 0), caseId: 'missing',
-    orientedDims: { ...RECON_DIMS }, instanceNotes: 'Keep source information' };
-  const noGeometry = { ...reconInst('missing-no-geometry', 80, 8, 0), caseId: 'missing' };
-  const malformed = { ...reconInst('malformed-packed', 90, 8, 0), transform: { position: null, rotation: { x: 0, y: 0, z: 0 } } };
-  const survivor = { ...reconInst('resolved-survivor', 30, 8, 0), placement: 'packed' };
-  const invalid = { ...reconInst('resolved-invalid', 400, 8, 0), placement: 'packed' };
-  const pack = { id: 'c5t-mixed', truck: RECON_RECT, cases: [unresolved, noGeometry, malformed, survivor, invalid] };
-  const before = JSON.stringify(pack);
-  const harness = makeTruckChangeHarness();
-  const previews = [];
-  const commits = [];
-  const controller = Controller.createTruckChangeController({
-    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
-    CaseLibrary: { getCases: () => RECON_CASE_LIB }, UIComponents: harness.UIComponents,
-    documentRef: harness.documentRef });
-  const request = () => controller.request({ pack, nextTruck: RECON_WW, renderPreview: preview => previews.push(preview) });
-  const result = request();
-  assert.ok(result.reconciliation.kept.includes(survivor.id), 'untrusted packed cargo is not a ghost blocker');
-  assert.ok(result.reconciliation.invalid.includes(invalid.id));
-  assert.match(harness.modals[0].config.content.textContent, /3.*packed.*staging/,
-    'existing feedback explains the unresolved packed fallback');
-  harness.click(0, 'Cancel');
-  assert.equal(JSON.stringify(pack), before);
-  assert.equal(commits.length, 0);
-  request();
-  assert.equal(harness.click(1, 'Move to staging'), true);
-  const final = commits[0].patch.cases;
-  assert.equal(final.length, pack.cases.length, 'no cargo is discarded at the preview/commit boundary');
-  for (const original of [unresolved, noGeometry, malformed]) {
-    assert.deepEqual(final.find(inst => inst.id === original.id), { ...original, placement: 'staged' });
-  }
-  assert.deepEqual(final.find(inst => inst.id === survivor.id).transform.position, survivor.transform.position);
-  assert.equal(final.find(inst => inst.id === invalid.id).placement, 'staged');
-  assertCanonicalReconLayoutSafe(PackLib, final.filter(inst => ![unresolved.id, noGeometry.id, malformed.id].includes(inst.id)),
-    RECON_WW, RECON_CASE_LIB, 'C5T resolved physical cargo');
-  assert.equal(JSON.stringify(pack), before);
-});
-
-test('RECON Truck Change Contract B preserves semantic counts and commits its exact grouped preview', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const caseLibrary = [
-    { id: 'A', name: 'Large', orientationLock: 'any', dimensions: { length: 30, width: 20, height: 10 }, weight: 20 },
-    { id: 'B', name: 'Small', orientationLock: 'any', dimensions: { length: 20, width: 14, height: 12 }, weight: 20 },
-  ];
-  const identity = { x: 0, y: 0, z: 0 };
-  const make = (id, caseId, position, placement = 'packed') => ({
-    id, caseId, placement, hidden: false,
-    transform: { position, rotation: identity, scale: { x: 1, y: 1, z: 1 } },
-    orientedDims: { ...caseLibrary.find(candidate => candidate.id === caseId).dimensions },
-  });
-  const survivor = make('survivor', 'A', { x: 50, y: 5, z: 0 });
-  const safeStage = make('safe-stage', 'A', { x: 15, y: 5, z: 70 }, 'staged');
-  const unsafeStageA = { ...make('unsafe-stage-a', 'A', { x: 70, y: 40, z: 70 }, 'staged'), packedProfile: 'max-capacity' };
-  const unsafeStageB = { ...make('unsafe-stage-b', 'B', { x: 10000, y: 6, z: 10000 }, 'staged'), packedProfile: 'max-capacity' };
-  const invalidA = { ...make('invalid-a', 'A', { x: 190, y: 5, z: 0 }), packedProfile: 'max-capacity' };
-  const invalidB = { ...make('invalid-b', 'B', { x: 210, y: 6, z: 20 }), packedProfile: 'max-capacity' };
-  const pack = {
-    id: 'contract-b-controller', truck: RECON_RECT,
-    cases: [survivor, safeStage, unsafeStageA, unsafeStageB, invalidA, invalidB],
-  };
-  const sourceSnapshot = JSON.stringify(pack);
-  const nextTruck = { ...RECON_RECT, length: 120 };
-
-  const run = () => {
-    const harness = makeTruckChangeHarness();
-    const previews = [];
-    const commits = [];
-    const controller = Controller.createTruckChangeController({
-      PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
-      CaseLibrary: { getCases: () => caseLibrary },
-      UIComponents: harness.UIComponents,
-      documentRef: harness.documentRef,
-    });
-    const result = controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) });
-    return { harness, previews, commits, result };
-  };
-
-  const cancelled = run();
-  assert.deepEqual(cancelled.result.reconciliation.summary, {
-    kept: 1, adjusted: 0, invalid: 2,
-    stagedUnchanged: 1, stagedAdjusted: 2, unresolved: 0, malformed: 0,
-  }, 'grouped layout does not merge or inflate reconciliation categories');
-  const summaryRows = cancelled.harness.modals[0].config.content.children[1].children.map(child => child.textContent);
-  assert.deepEqual(summaryRows, [
-    '1 kept in place',
-    '0 safely adjusted',
-    '2 no longer fit (shown in staging preview)',
-    '1 existing staged items unchanged',
-    '2 unsafe staged items corrected',
-  ], 'modal counts retain their original semantic meaning');
-  const cancelledPreview = cancelled.previews[0].pack.cases;
-  assert.deepEqual(cancelledPreview.find(inst => inst.id === survivor.id), survivor,
-    'valid packed survivor remains byte-equivalent in preview');
-  assert.deepEqual(cancelledPreview.find(inst => inst.id === safeStage.id), safeStage,
-    'valid existing staged cargo remains byte-equivalent in preview');
-  cancelled.harness.click(0, 'Cancel');
-  assert.equal(JSON.stringify(pack), sourceSnapshot, 'Cancel leaves the source cases byte-equivalent');
-
-  const applied = run();
-  assert.deepEqual(applied.previews[0].pack.cases, cancelledPreview,
-    'repeated identical Truck Change operations produce byte-equivalent grouped previews');
-  const groupedIds = ['unsafe-stage-a', 'unsafe-stage-b', 'invalid-a', 'invalid-b'];
-  for (const id of groupedIds) {
-    const inst = applied.previews[0].pack.cases.find(candidate => candidate.id === id);
-    const dims = caseLibrary.find(candidate => candidate.id === inst.caseId).dimensions;
-    assert.equal(inst.placement, 'staged');
-    assert.deepEqual(inst.transform.rotation, identity);
-    assert.deepEqual(inst.orientedDims, dims);
-    assert.equal(inst.transform.position.y, dims.height / 2);
-    assert.equal(Object.prototype.hasOwnProperty.call(inst, 'packedProfile'), false);
-  }
-  assertCanonicalReconLayoutSafe(PackLib, applied.previews[0].pack.cases, nextTruck, caseLibrary,
-    'Truck Change Contract B preview');
-  applied.harness.click(0, 'Move to staging');
-  assert.equal(applied.commits.length, 1, 'one confirmation creates one commit');
-  assert.deepEqual(applied.commits[0].patch.cases, applied.previews[0].pack.cases,
-    'Move to staging commits the exact already-rendered grouped plan');
-  assert.match(applied.harness.toasts.at(-1).message, /2 item\(s\) moved to staging/,
-    'toast uses only the two invalid IDs, not the four combined layout targets');
-});
-
-test('RECON Truck Change Apply commits the grouped stagedAdjusted preview without moving safe staging', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const safeStage = {
-    ...reconInst('safe-stage', 30, 8, 80),
-    placement: 'staged',
-    orientedDims: { ...RECON_DIMS },
-  };
-  const unsafeStage = {
-    ...reconInst('unsafe-stage', 70, 40, 80),
-    placement: 'staged',
-    packedProfile: 'max-capacity',
-  };
-  const pack = { id: 'staged-adjusted-apply', truck: RECON_RECT, cases: [safeStage, unsafeStage] };
-  const nextTruck = { ...RECON_RECT, width: 95 };
-  const harness = makeTruckChangeHarness();
-  const previews = [];
-  const commits = [];
-  const controller = Controller.createTruckChangeController({
-    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
-    CaseLibrary: { getCases: () => RECON_CASE_LIB },
-    UIComponents: harness.UIComponents,
-    documentRef: harness.documentRef,
-  });
-
-  const result = controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) });
-  assert.equal(result.status, 'preview');
-  assert.equal(result.reconciliation.summary.stagedUnchanged, 1);
-  assert.equal(result.reconciliation.summary.stagedAdjusted, 1);
-  assert.equal(result.reconciliation.summary.invalid, 0);
-  assert.deepEqual(previews[0].pack.cases.find(inst => inst.id === safeStage.id), safeStage,
-    'safe existing staged cargo is not included in the grouped correction plan');
-  const corrected = previews[0].pack.cases.find(inst => inst.id === unsafeStage.id);
-  assert.equal(corrected.placement, 'staged');
-  assert.deepEqual(corrected.transform.rotation, { x: 0, y: 0, z: 0 });
-  assert.deepEqual(corrected.orientedDims, RECON_DIMS);
-  assert.equal(corrected.transform.position.y, RECON_DIMS.height / 2);
-  assert.equal(Object.prototype.hasOwnProperty.call(corrected, 'packedProfile'), false);
-
-  harness.click(0, 'Apply change');
-  assert.equal(commits.length, 1);
-  assert.deepEqual(commits[0].patch.cases, previews[0].pack.cases,
-    'Apply change commits the exact grouped correction preview');
+  assertReconLayoutSafe(PackLib, PackLib.stagePlacementIds((r2).nextPack, (r2).invalid, { ...RECON_RECT, height: 28 }, RECON_CASE_LIB).pack.cases, { ...RECON_RECT, height: 28 }, 'height-clip stack');
 });
 
 test('RECON grouped staging expands 521 genuine corrections beyond the preferred work area safely', async () => {
@@ -683,82 +358,6 @@ test('RECON large staging adjusts physical hazards and unsupported drift using a
   );
 });
 
-test('RECON adjusted-only preview shows exact counts and applies the proposed pose only after confirmation', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const harness = makeTruckChangeHarness();
-  const pack = { id: 'p', truck: RECON_RECT, cases: [reconInst('floating', 30, 40, 0)] };
-  const before = JSON.stringify(pack);
-  const commits = [];
-  const previews = [];
-  const controller = Controller.createTruckChangeController({
-    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
-    CaseLibrary: { getCases: () => RECON_CASE_LIB },
-    UIComponents: harness.UIComponents,
-    documentRef: harness.documentRef,
-  });
-  const result = controller.request({
-    pack,
-    nextTruck: { ...RECON_RECT, width: 95 },
-    successMessage: 'Truck updated',
-    renderPreview: preview => previews.push(preview),
-  });
-  assert.equal(result.status, 'preview');
-  assert.deepEqual(result.reconciliation.summary, {
-    kept: 0, adjusted: 1, invalid: 0,
-    stagedUnchanged: 0, stagedAdjusted: 0, unresolved: 0, malformed: 0,
-  });
-  assert.equal(JSON.stringify(pack), before, 'adjusted pose is preview-only');
-  assert.equal(previews[0].pack.cases[0].transform.position.y, 8,
-    'ephemeral scene receives the safely adjusted pose');
-  harness.click(0, 'Apply change');
-  assert.equal(commits.length, 1);
-  assert.equal(commits[0].patch.cases[0].transform.position.y, 8);
-  assert.match(harness.toasts.at(-1).message, /1 item\(s\) safely adjusted/);
-});
-
-test('RECON Standard, Wheel Wells, Front Overhang, and C2 use one ephemeral preview callback', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const transitions = [
-    { label: 'Standard', source: { ...RECON_RECT, length: 239 }, next: RECON_RECT },
-    { label: 'Wheel Wells', source: RECON_RECT, next: RECON_WW },
-    { label: 'Front Overhang', source: RECON_RECT, next: reconFB() },
-  ];
-  for (const transition of transitions) {
-    const harness = makeTruckChangeHarness();
-    const previews = [];
-    const pack = { id: `p-${transition.label}`, truck: transition.source, cases: [reconInst('floor', 30, 8, 0)] };
-    const controller = Controller.createTruckChangeController({
-      PackLibrary: PackLib,
-      CaseLibrary: { getCases: () => RECON_CASE_LIB },
-      UIComponents: harness.UIComponents,
-      documentRef: harness.documentRef,
-    });
-    controller.request({ pack, nextTruck: transition.next, renderPreview: preview => previews.push(preview) });
-    assert.equal(previews.length, 1, `${transition.label} invokes the shared preview path once`);
-    assert.equal(previews[0].pack.truck.shapeMode, transition.next.shapeMode, `${transition.label} previews proposed geometry`);
-    harness.click(0, 'Cancel');
-  }
-
-  const harness = makeTruckChangeHarness();
-  const previews = [];
-  const sourceTruck = reconFB(43.2);
-  const nextTruck = reconFB(43.3);
-  const deck = reconInst('deck-without-wall', 262, 51.2, 0);
-  const pack = { id: 'p-c2', truck: sourceTruck, cases: [deck] };
-  const controller = Controller.createTruckChangeController({
-    PackLibrary: PackLib,
-    CaseLibrary: { getCases: () => RECON_CASE_LIB },
-    UIComponents: harness.UIComponents,
-    documentRef: harness.documentRef,
-  });
-  controller.request({ pack, nextTruck, renderPreview: preview => previews.push(preview) });
-  assert.equal(previews[0].pack.cases[0].placement, 'staged',
-    'C2-unretained deck cargo is shown in staging during preview');
-  assert.equal(pack.cases[0].placement, 'packed', 'C2 preview does not mutate the source pack');
-});
-
 test('RECON CaseScene sync removes an existing mesh when its case definition becomes unresolved', async () => {
   const previousThree = globalThis.THREE;
   const previousDocument = globalThis.document;
@@ -816,101 +415,6 @@ test('RECON CaseScene sync removes an existing mesh when its case definition bec
     if (previousDocument === undefined) delete globalThis.document;
     else globalThis.document = previousDocument;
   }
-});
-
-test('RECON repack reports partial failure and requires a second explicit staging decision', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const Controller = await import(`${truckChangeControllerPath.href}?t=${Date.now()}-${Math.random()}`);
-  const cubeLib = [{ id: 'cube', name: 'Cube', orientationLock: 'any', dimensions: { length: 20, width: 20, height: 20 }, weight: 10 }];
-  const failedId = '5585711a-785a-4605-ba77-782525d00819';
-  const packedRotation = { x: 0, y: Math.PI / 2, z: 0 };
-  const cube = (id, x) => ({
-    ...reconInst(id, x, 10, 0),
-    caseId: 'cube',
-    packedProfile: 'max-capacity',
-    orientedDims: { length: 20, width: 20, height: 20 },
-    transform: { ...reconInst(id, x, 10, 0).transform, rotation: packedRotation },
-  });
-  const pack = { id: 'p', truck: RECON_RECT, cases: [cube('a', 100), cube(failedId, 140)] };
-  const nextTruck = { length: 30, width: 20, height: 20, shapeMode: 'rect' };
-  const harness = makeTruckChangeHarness();
-  const commits = [];
-  const previews = [];
-  let restores = 0;
-  const controller = Controller.createTruckChangeController({
-    PackLibrary: { ...PackLib, update: (id, patch) => { commits.push({ id, patch }); return { id, ...patch }; } },
-    CaseLibrary: { getCases: () => cubeLib },
-    UIComponents: harness.UIComponents,
-    documentRef: harness.documentRef,
-  });
-
-  const request = () => controller.request({
-    pack,
-    nextTruck,
-    renderPreview: preview => previews.push(preview),
-    restoreControls: () => { restores++; },
-  });
-  request();
-  assert.equal(previews[0].pack.cases.every(inst => inst.placement === 'staged'), true,
-    'initial preview shows invalid items in canonical staging, not as packed cargo');
-  harness.click(0, 'Repack invalid');
-  assert.equal(commits.length, 0, 'partial repack has not committed or silently staged');
-  assert.equal(previews[1].pack.cases.find(inst => inst.id === 'a').placement, 'packed',
-    'partial repack preview shows successfully repacked cargo as packed');
-  assert.equal(previews[1].pack.cases.find(inst => inst.id === failedId).placement, 'staged',
-    'partial repack preview never presents failed cargo as packed');
-  assert.deepEqual(previews[1].pack.cases.find(inst => inst.id === 'a').transform.rotation, packedRotation,
-    'successful repack retains its packed solver pose');
-  assert.equal(previews[1].pack.cases.find(inst => inst.id === 'a').packedProfile, 'max-capacity',
-    'successful physically valid Max Capacity survivor retains its profile');
-  assert.deepEqual(previews[1].pack.cases.find(inst => inst.id === failedId).transform.rotation, { x: 0, y: 0, z: 0 },
-    'remaining repack failure previews with deterministic staging rotation');
-  assert.equal(Object.prototype.hasOwnProperty.call(previews[1].pack.cases.find(inst => inst.id === failedId), 'packedProfile'), false,
-    'remaining repack failure loses its packed profile when staged');
-  const secondContent = harness.modals[1].config.content;
-  assert.match(secondContent.children[0].textContent, /Could not be repacked: 1 item\./);
-  assert.equal(secondContent.children[1].children[0].textContent, '1 Cube',
-    'failed items are grouped by human-readable case name');
-  assert.doesNotMatch(secondContent.children.map(child => child.textContent).join(' '), new RegExp(failedId),
-    'raw UUID is omitted from primary user-facing copy');
-  assert.doesNotMatch(secondContent.children.map(child => child.textContent).join(' '), /Still unresolved/,
-    'repack failures are not mislabeled as unresolved references');
-  harness.click(1, 'Keep current truck and cancel');
-  assert.equal(commits.length, 0);
-  assert.equal(restores, 1, 'second-decision cancel restores controls');
-
-  request();
-  harness.click(2, 'Repack invalid');
-  harness.click(3, 'Move remaining items to staging');
-  assert.equal(commits.length, 1, 'second explicit choice commits once');
-  const committedCases = commits[0].patch.cases;
-  assert.equal(committedCases.find(c => c.id === 'a').placement, 'packed');
-  assert.equal(committedCases.find(c => c.id === failedId).placement, 'staged');
-  assert.deepEqual(committedCases.find(c => c.id === 'a').transform.rotation, packedRotation);
-  assert.deepEqual(committedCases.find(c => c.id === failedId).transform.rotation, { x: 0, y: 0, z: 0 });
-  assert.deepEqual(committedCases, previews[3].pack.cases,
-    'residual-failure confirmation commits the exact repack preview plan');
-  assert.match(harness.toasts.at(-1).message, /1 moved to staging/,
-    'residual-failure toast uses only the failedIds category');
-  assertCanonicalReconLayoutSafe(PackLib, committedCases, nextTruck, cubeLib, 'partial repack');
-});
-
-test('RECON repack complete failure returns explicit metadata and never stages implicitly', async () => {
-  const PackLib = await import(`${packLibraryPath.href}?t=${Date.now()}-${Math.random()}`);
-  const oversizedLib = [{ id: 'oversized', name: 'Oversized', orientationLock: 'any', dimensions: { length: 40, width: 30, height: 30 }, weight: 20 }];
-  const cases = [
-    { ...reconInst('too-big-a', 100, 15, 0), caseId: 'oversized' },
-    { ...reconInst('too-big-b', 150, 15, 0), caseId: 'oversized' },
-  ];
-  const nextTruck = { length: 30, width: 20, height: 20, shapeMode: 'rect' };
-  const recon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck: RECON_RECT, cases }, nextTruck, oversizedLib);
-  const outcome = PackLib.repackInvalidPlacements(recon, nextTruck, oversizedLib);
-  assert.deepEqual(outcome.repackedIds, []);
-  assert.deepEqual(outcome.stagedIds, []);
-  assert.deepEqual(outcome.failedIds, ['too-big-a', 'too-big-b']);
-  assert.equal(outcome.warnings.length, 2);
-  assert.ok(outcome.pack.cases.every(c => c.placement === 'packed'),
-    'complete failure preserves the preview poses and does not silently stage');
 });
 
 test('RECON canonical dimensions use the shared rotation helper and THREE-backed bounds', async () => {
@@ -1111,7 +615,175 @@ test('PHASE-C2 production solver gates floor, filler, lane, repeated, B2A/B2C, s
   const deckInst = phc2Instance('deck-invalid', deckCase.id, { x: 256.8, y: 51.2, z: -39 }, deckCase.dimensions);
   const recon = PackLib.reconcilePlacementsForTruck({ id: 'p', truck, cases: [deckInst] }, truck, [deckCase]);
   assert.deepEqual(recon.invalid, ['deck-invalid'], 'final/reconciliation gate rejects an unretained deck item');
-  const repacked = PackLib.repackInvalidPlacements(recon, truck, [deckCase]);
-  const repackedInst = repacked.pack.cases.find(inst => inst.id === 'deck-invalid');
-  assert.ok(repackedInst.transform.position.x <= 228, 'Repack Invalid places it on the main floor, not the empty deck');
+
+});
+
+// Final C5 product contract: every physical truck change stages the committed Pack.
+async function stabilizationHarness(cases = [reconInst('packed', 30, 8, 0)], caseLibrary = RECON_CASE_LIB) {
+  const PackLib = await import(packLibraryPath.href);
+  const StateStore = await import(stateStorePath.href);
+  const { createTruckChangeController } = await import(truckChangeControllerPath.href);
+  const pack = { id: 'stabilization', title: 'Disposable', truck: RECON_RECT, cases };
+  const results = { packId: pack.id, previewEnded: false, options: [{ cases: [] }], viewIndex: 0 };
+  StateStore.init({ currentPackId: pack.id, currentScreen: 'editor', packLibrary: [pack], caseLibrary,
+    selectedInstanceIds: [cases[0]?.id], autoPackResults: results, folderLibrary: [], preferences: {} });
+  const harness = makeTruckChangeHarness();
+  const controller = createTruckChangeController({ PackLibrary: PackLib,
+    CaseLibrary: { getCases: () => caseLibrary }, UIComponents: harness.UIComponents, documentRef: harness.documentRef });
+  return { PackLib, StateStore, controller, harness, pack: PackLib.getById(pack.id), results, caseLibrary };
+}
+
+test('C5 stabilization truck change stages every committed instance, preserves data, and is one Undo/Redo action', async () => {
+  const cases = [reconInst('packed', 30, 8, 0), reconInst('rotated', 70, 12, 0),
+    { ...reconInst('staged', 30, 8, 100), placement: 'staged', hidden: true }];
+  cases[1].transform.rotation = { x: Math.PI / 2, y: 0, z: 0 };
+  cases[1].orientationLocked = true;
+  cases[1].lockedRotation = { x: 0, y: 0, z: 0 }; // An intentionally different planning target.
+  cases[1].packedProfile = 'max-capacity';
+  cases[1].customMetadata = { owner: 'keep me' };
+  const h = await stabilizationHarness(cases);
+  const before = JSON.stringify(h.pack);
+  let restores = 0;
+  const request = () => h.controller.request({ pack: h.pack, nextTruck: RECON_WW,
+    restoreControls: () => { restores++; } });
+  assert.equal(request().status, 'preview');
+  const modal = h.harness.modals[0].config;
+  assert.equal(modal.title, 'Change truck layout?');
+  assert.equal(modal.content.textContent, 'Changing the truck layout will place all Cases in staging. You can arrange them again manually or use AutoPack.');
+  assert.deepEqual(modal.actions.map(action => action.label), ['Cancel', 'Apply Changes']);
+  h.harness.click(0, 'Cancel');
+  assert.equal(JSON.stringify(h.PackLib.getById(h.pack.id)), before);
+  assert.deepEqual(h.StateStore.get('autoPackResults'), h.results);
+  assert.equal(h.StateStore.undo(), false, 'Cancel adds no history');
+  assert.equal(restores, 1);
+  request();
+  assert.equal(h.controller.request({ pack: h.pack, nextTruck: RECON_WW }).status, 'busy');
+  const apply = h.harness.modals[1].config.actions[1].onClick;
+  assert.equal(h.harness.click(1, 'Apply Changes'), true);
+  assert.equal(apply(), false, 'a repeated or stale Apply cannot commit');
+  const applied = h.PackLib.getById(h.pack.id);
+  assert.deepEqual(applied.truck, RECON_WW);
+  assert.deepEqual(applied.cases.map(inst => inst.id), cases.map(inst => inst.id));
+  assert.equal(applied.stats.packedCases, 0);
+  assert.equal(applied.stats.stagedCases, 3);
+  assert.equal(h.StateStore.get('autoPackResults'), null);
+  assert.deepEqual(h.StateStore.get('selectedInstanceIds'), []);
+  const withoutPlacement = inst => {
+    const clone = structuredClone(inst);
+    delete clone.placement; delete clone.packedProfile; delete clone.transform.position;
+    return clone;
+  };
+  applied.cases.forEach((inst, i) => assert.deepEqual(withoutPlacement(inst), withoutPlacement(cases[i])));
+  const bounds = applied.cases.map(inst => {
+    const dims = h.PackLib.getCanonicalInstanceEffectiveDims(inst, h.caseLibrary[0]).dims;
+    assert.equal(inst.transform.position.y, dims.height / 2);
+    return h.PackLib.makeAabb(inst.transform.position, dims);
+  });
+  bounds.forEach((box, i) => {
+    assert.ok(box.min.z > RECON_WW.width / 2, 'staging lies outside the truck');
+    bounds.slice(i + 1).forEach(other => assert.equal(packImportAabbsOverlap(box, other), false));
+  });
+  assert.equal(h.StateStore.undo(), true);
+  assert.equal(JSON.stringify(h.PackLib.getById(h.pack.id)), before);
+  assert.equal(h.StateStore.undo(), false, 'exactly one history action');
+  assert.equal(h.StateStore.redo(), true);
+  assert.deepEqual(h.PackLib.getById(h.pack.id), applied);
+});
+
+test('C5 stabilization truck change stages missing definitions without fabricating geometry', async () => {
+  const missing = { ...reconInst('missing', 30, 8, 0), caseId: 'missing',
+    orientedDims: { length: 31, width: 19, height: 17 }, packedProfile: 'max-capacity',
+    orientationLocked: true, lockedRotation: { x: 0, y: 0, z: 0 },
+    customMetadata: { owner: 'preserve me' } };
+  const cases = [reconInst('good', 70, 8, 0), missing];
+  const h = await stabilizationHarness(cases);
+  const before = structuredClone(h.pack);
+  h.controller.request({ pack: h.pack, nextTruck: RECON_WW });
+  assert.equal(h.harness.click(0, 'Apply Changes'), true);
+  const applied = h.PackLib.getById(h.pack.id);
+  assert.deepEqual(applied.truck, RECON_WW);
+  assert.deepEqual(applied.cases.map(inst => inst.id), cases.map(inst => inst.id));
+  assert.ok(applied.cases.every(inst => inst.placement === 'staged'));
+  const expectedMissing = structuredClone(missing);
+  expectedMissing.placement = 'staged';
+  delete expectedMissing.packedProfile;
+  assert.deepEqual(applied.cases[1], expectedMissing,
+    'unresolved source pose, stored dimensions, and unrelated data remain untrusted and unchanged');
+  const known = applied.cases[0];
+  const dims = h.PackLib.getCanonicalInstanceEffectiveDims(known, h.caseLibrary[0]).dims;
+  assert.equal(known.transform.position.y, dims.height / 2);
+  assert.ok(h.PackLib.makeAabb(known.transform.position, dims).min.z > RECON_WW.width / 2,
+    'the known Case receives a real staging position');
+  assert.equal(h.StateStore.get('autoPackResults'), null);
+  assert.equal(h.StateStore.undo(), true);
+  assert.deepEqual(h.PackLib.getById(h.pack.id), before);
+  assert.equal(h.StateStore.undo(), false, 'the change is one history action');
+  assert.equal(h.StateStore.redo(), true);
+  assert.deepEqual(h.PackLib.getById(h.pack.id), applied);
+});
+
+test('C5 stabilization truck change refuses malformed geometry, duplicate IDs, and stale workspaces atomically', async () => {
+  for (const bad of [
+    { ...reconInst('bad-pose', 30, 8, 0), transform: { rotation: { x: NaN, y: 0, z: 0 } } },
+    reconInst('good', 30, 8, 0), // duplicate ID
+  ]) {
+    const h = await stabilizationHarness([reconInst('good', 30, 8, 0), bad]);
+    const before = JSON.stringify(h.pack);
+    h.controller.request({ pack: h.pack, nextTruck: RECON_WW });
+    assert.equal(h.harness.click(0, 'Apply Changes'), false);
+    assert.equal(JSON.stringify(h.PackLib.getById(h.pack.id)), before);
+    assert.deepEqual(h.StateStore.get('autoPackResults'), h.results);
+    assert.equal(h.StateStore.undo(), false);
+    assert.match(h.harness.toasts.at(-1).message, /No changes were applied/);
+    h.harness.click(0, 'Cancel');
+  }
+  const h = await stabilizationHarness();
+  const storage = await import('../../src/core/storage.js');
+  const originalScope = storage.getWorkspaceScope();
+  h.controller.request({ pack: h.pack, nextTruck: RECON_WW });
+  try {
+    storage.setWorkspaceScope('different-stabilization-workspace');
+    assert.equal(h.harness.click(0, 'Apply Changes'), false);
+    assert.deepEqual(h.PackLib.getById(h.pack.id), h.pack);
+    assert.equal(h.StateStore.undo(), false);
+  } finally { storage.setWorkspaceScope(originalScope); h.harness.click(0, 'Cancel'); }
+});
+
+test('C5 stabilization truck change recognizes physical changes and bypasses staging for unchanged metadata', async () => {
+  const { truckGeometryEqual } = await import(truckChangeControllerPath.href);
+  const source = { ...RECON_WW, shapeConfig: {} };
+  assert.equal(truckGeometryEqual(source, { ...source, shapeConfig: {
+    wellHeight: source.height * 0.35, wellWidth: source.width * 0.15,
+    wellLength: source.length * 0.35, wellOffsetFromRear: source.length * 0.25,
+  } }), true, 'omitted dimensions and their geometry defaults are identical');
+  for (const truck of [{ ...RECON_RECT, length: 120 }, { ...RECON_RECT, width: 80 },
+    { ...RECON_RECT, height: 80 }, RECON_WW, reconFB()]) {
+    assert.equal(truckGeometryEqual(RECON_RECT, truck), false);
+  }
+  for (const key of ['wellHeight', 'wellWidth', 'wellLength', 'wellOffsetFromRear']) {
+    assert.equal(truckGeometryEqual(RECON_WW, { ...RECON_WW,
+      shapeConfig: { ...RECON_WW.shapeConfig, [key]: (RECON_WW.shapeConfig?.[key] ?? 10) + 1 } }), false);
+  }
+  for (const key of ['bonusLength', 'bonusHeight']) {
+    const truck = reconFB();
+    assert.equal(truckGeometryEqual(truck, { ...truck, shapeConfig: { ...truck.shapeConfig, [key]: truck.shapeConfig[key] + 1 } }), false);
+  }
+  const h = await stabilizationHarness();
+  assert.equal(h.controller.request({ pack: h.pack, nextTruck: RECON_RECT }).status, 'unchanged');
+  assert.equal(h.harness.modals.length, 0);
+  assert.equal(h.controller.request({ pack: h.pack, nextTruck: { ...RECON_RECT, label: 'metadata' },
+    commitWhenUnchanged: true, commit: final => h.PackLib.update(final.id, { title: 'New title', truck: final.truck }) }).status, 'committed');
+  assert.deepEqual(h.PackLib.getById(h.pack.id).cases, h.pack.cases);
+  assert.deepEqual(h.StateStore.get('autoPackResults'), h.results);
+  assert.equal(h.controller.request({ pack: h.pack, nextTruck: { ...RECON_RECT, width: Infinity } }).status, 'failed');
+});
+
+test('C5 stabilization truck change restores Results and selection when saving fails', async () => {
+  const h = await stabilizationHarness();
+  const before = h.StateStore.snapshot();
+  h.controller.request({ pack: h.pack, nextTruck: RECON_WW, commit: () => null });
+  assert.equal(h.harness.click(0, 'Apply Changes'), false);
+  assert.deepEqual(h.StateStore.snapshot(), before);
+  assert.equal(h.StateStore.undo(), false);
+  h.harness.click(0, 'Cancel');
 });

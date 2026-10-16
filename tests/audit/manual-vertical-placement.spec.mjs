@@ -927,6 +927,73 @@ test('MANUAL-GROUP cargo and selected-sibling overlaps fail atomic preflight', a
     'selected siblings that require separation must reject atomically');
 });
 
+test('MANUAL-GROUP staged selections settle rigidly without AutoPack handling gates', async () => {
+  const ordinary = makeVerticalCase({ id: 'A-Test-03' });
+  const alias = makeVerticalCase({ id: 'Alias', orientationLock: 'onSide', weight: 20 });
+  const noTop = makeVerticalCase({ id: 'support', noStackOnTop: true, stackable: false, weight: 1 });
+  const EditorScreen = await loadEditorScreenModule();
+
+  for (const count of [2, 3, 6]) {
+    const ids = Array.from({ length: count }, (_, i) => `moved-${i}`);
+    const instances = [
+      makeVerticalInstance(noTop.id, 'fixed-support', { x: 105, y: 5, z: 0 }),
+      ...ids.map((id, i) => makeVerticalInstance(i === 1 ? alias.id : ordinary.id, id,
+        { x: 140 + i * 15, y: 5, z: 0 },
+        { placement: 'staged', orientationTarget: { x: 0, y: 0, z: 0 }, customLabel: id })),
+    ];
+    const { StateStore, PackLibrary, packId } = await setupVerticalPack({
+      cases: [ordinary, alias, noTop], instances, packId: `manual-group-${count}`,
+    });
+    const before = PackLibrary.getById(packId);
+    const proposed = before.cases.map(inst => ids.includes(inst.id)
+      ? { ...inst, placement: 'packed', transform: {
+        ...inst.transform,
+        position: { x: 10 + ids.indexOf(inst.id) * 15, y: 5.3, z: 0 },
+      } }
+      : inst);
+    const preflight = PackLibrary.revalidateManualPlacements(
+      { ...before, cases: proposed }, [ordinary, alias, noTop],
+      { beforePack: before, manualGeometry: true, rejectProposedCollisions: true, repairDependents: true }
+    );
+    assert.deepEqual(EditorScreen.validateAtomicManualGroupResult(proposed, preflight, ids), { ok: true },
+      `${count} selected Cases must accept the same floor correction`);
+    const committed = PackLibrary.update(packId, { cases: preflight.pack.cases });
+    for (const id of ids) {
+      const actual = committed.cases.find(inst => inst.id === id);
+      assert.equal(actual.placement, 'packed');
+      assert.equal(actual.transform.position.y, 5);
+      assert.equal(actual.customLabel, id);
+      assert.deepEqual(actual.orientationTarget, { x: 0, y: 0, z: 0 });
+    }
+    assert.deepEqual(committed.cases.find(inst => inst.id === 'fixed-support'), before.cases[0],
+      'untouched cargo must remain byte-equivalent');
+    assert.equal(StateStore.undo(), true);
+    assert.deepEqual(PackLibrary.getById(packId).cases, before.cases);
+    assert.equal(StateStore.redo(), true);
+    assert.deepEqual(PackLibrary.getById(packId).cases, committed.cases);
+  }
+
+  const { PackLibrary, packId } = await setupVerticalPack({
+    cases: [ordinary, alias, noTop],
+    instances: [
+      makeVerticalInstance(noTop.id, 'fixed-support', { x: 20, y: 5, z: 0 }),
+      makeVerticalInstance(alias.id, 'staged-alias', { x: 140, y: 5, z: 0 }, { placement: 'staged' }),
+    ],
+    packId: 'manual-advisory-support',
+  });
+  const source = PackLibrary.getById(packId);
+  const resolved = PackLibrary.findManualVerticalPlacement(source, [ordinary, alias, noTop], 'staged-alias', {
+    mode: 'resolve', desiredPosition: { x: 20, y: 15, z: 0 }, manualGeometry: true,
+  });
+  assert.equal(resolved.ok, true, 'orientation, no-top and support weight remain advisory for manual editing');
+  const collision = PackLibrary.findManualVerticalPlacement(source, [ordinary, alias, noTop], 'staged-alias', {
+    mode: 'resolve', desiredPosition: { x: 20, y: 5, z: 0 }, manualGeometry: true,
+    rejectProposedCollisions: true,
+  });
+  assert.equal(collision.ok, false, 'a real Case overlap must still be rejected');
+  assert.deepEqual(PackLibrary.getById(packId).cases, source.cases, 'rejected proposal must not mutate source');
+});
+
 test('MANUAL-GROUP Front Overhang cab void rejects a new proposal without repairing untouched staged source', async () => {
   const caseData = makeVerticalCase({ id: 'case-group-cab' });
   const proposed = [
@@ -1297,16 +1364,16 @@ test('MANUAL-VERTICAL drag release for a single packed case resolves through val
       block.indexOf('if (anyCollides && groupIds.length === 1)'),
     'staged truck release must reach canonical Pack validation before the stale scene collision gate'
   );
-  assert.match(src, /function tryCommitStagedIntoTruck\([\s\S]*findManualVerticalPlacement\(\s*\n\s*pack, CaseLibrary\.getCases\(\), inst\.id,[\s\S]*exact: true/,
-    'staged release must validate the exact candidate pose through the normal manual hard rules');
-  assert.match(src, /function tryCommitStagedIntoTruck\(packId, pack, inst, obj, groupIds, startMap\) \{[\s\S]*PackLibrary\.revalidateManualPlacements\(\s*\n\s*\{ \.\.\.pack, cases: candidateCases \},\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true, beforePack: pack \}/,
-    'staged-to-packed preflight must use pure manual revalidation with dependent repair');
-  assert.match(src, /PackLibrary\.updateCasesWithManualRevalidation\(\s*\n\s*packId,\s*\n\s*candidateCases,\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true \}/,
-    'accepted staged-to-packed releases must still commit through manual revalidation with dependent repair');
-  assert.match(src, /preflightSelf\.placement === 'packed' &&[\s\S]*positionsShareManualXZ\(preflightSelf\.transform\.position, desiredPosition\)/,
-    'staged-to-packed acceptance must reject self-repairs that change the dragged case X/Z');
-  assert.match(src, /stagedCandidateIsInsideUsableTruckZone\(pack, inst, desiredPosition\)[\s\S]*Cannot place this staged case in the truck safely/,
-    'inside-truck staged candidates rejected by hard rules must not fall through as successful placements');
+  assert.match(src, /function tryCommitStagedIntoTruck\([\s\S]*findManualVerticalPlacement\(\s*\n\s*pack, CaseLibrary\.getCases\(\), inst\.id,[\s\S]*manualGeometry: true, rejectProposedCollisions: true/,
+    'staged release must use manual physical validation and refuse a proposed cargo collision');
+  assert.match(src, /function tryCommitStagedIntoTruck\(packId, pack, inst, obj, groupIds, startMap\) \{[\s\S]*PackLibrary\.revalidateManualPlacements\(\s*\n\s*\{ \.\.\.pack, cases: candidateCases \},\s*\n\s*CaseLibrary\.getCases\(\),\s*\n\s*\{ repairDependents: true, beforePack: pack, manualGeometry: true \}/,
+    'staged-to-packed preflight must use manual physical revalidation with dependent repair');
+  assert.match(src, /PackLibrary\.update\(packId, \{ cases: preflight\.pack\.cases \}\)/,
+    'accepted staged-to-packed releases must commit exactly the vetted placement');
+  assert.match(src, /preflightSelf\.placement === 'packed' &&[\s\S]*positionsShareManualXZ\(preflightSelf\.transform\.position, resolved\.position\)/,
+    'staged-to-packed acceptance must reject self-repairs that change the resolved X/Z');
+  assert.match(src, /stagedCandidateIsInsideUsableTruckZone\(pack, inst, desiredPosition\)[\s\S]*preflight\.invalidReasons/,
+    'inside-truck staged candidates rejected by hard geometry must report the reason');
   assert.match(src, /if \(stagedCandidateIsInsideUsableTruckZone\(pack, inst, desiredPosition\)\) \{[\s\S]*return true;\s*\n\s*\}\s*\n\s*return false;/,
     'outside-truck staged candidates must fall through to the legacy staged release path');
   assert.match(block, /groupIds\.length > 1 && tryCommitAtomicManualGroup\(packId, pack, groupIds, startMap\)/,
@@ -1331,14 +1398,14 @@ test('MANUAL-GROUP editor release preflights atomically, repairs dependents, and
   assert.ok(atomicStart >= 0 && atomicEnd > atomicStart, 'atomic manual group commit helper must exist');
   const atomicBlock = src.slice(atomicStart, atomicEnd);
 
-  assert.match(atomicBlock, /PackLibrary\.revalidateManualPlacements\([\s\S]*\{ repairDependents: true \}/,
-    'group placement must run a pure preflight with dependent repair enabled');
+  assert.match(atomicBlock, /PackLibrary\.revalidateManualPlacements\([\s\S]*manualGeometry: true, rejectProposedCollisions: true/,
+    'group placement must run a pure manual physical preflight');
   assert.match(atomicBlock, /validateAtomicManualGroupResult\(candidate\.cases, preflight, groupIds\)/,
-    'preflight must require exact selected-case transforms and placement states');
+    'preflight must preserve selected-case placement and rigid geometry');
   assert.match(atomicBlock, /if \(!atomicResult\.ok[\s\S]*revertAtomicManualGroup\(/,
     'any selected correction must revert the visible group before persistence');
-  assert.match(atomicBlock, /commitCasesWithManualRevalidation\(packId, candidate\.cases, \{ repairDependents: true \}\)/,
-    'an accepted group must commit with dependent repair enabled');
+  assert.match(atomicBlock, /PackLibrary\.update\(packId, \{ cases: preflight\.pack\.cases \}\)/,
+    'an accepted group must commit the verified settled positions in one history write');
   assert.match(atomicBlock, /formatManualGroupMoveMessage\(result, groupIds, baseMessage\)/,
     'the accepted outcome must report non-selected repaired or staged cargo');
 

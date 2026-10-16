@@ -851,7 +851,7 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
     assert.equal(await page.evaluate(() => document.getElementById('after').inert), false);
   });
 
-  await t.test('actual Truck Change cancellation and replacement preserve the surviving parent and truck data', async () => {
+  await t.test('actual Truck Change cancellation preserves the surviving parent and truck data', async () => {
     await setup();
     await page.evaluate(async () => {
       const { createTruckChangeController } = await import('/src/ui/truck-change-controller.js');
@@ -861,10 +861,7 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
       window.controller = createTruckChangeController({ UIComponents: ui,
         CaseLibrary: { getCases: () => [] },
         PackLibrary: {
-          reconcilePlacementsForTruck: () => ({ nextPack: pack, kept: [], adjusted: [], invalid: ['case'], unresolved: [], malformed: [], summary: {} }),
-          getPackedReconciliationCompleteness: () => ({ validationComplete: true }),
           stagePlacementIds: source => ({ pack: source, stagedIds: ['case'], failedIds: [] }),
-          repackInvalidPlacements: () => ({ pack, repackedIds: [], failedIds: ['case'] }),
           update: () => { throw Error('Cancel must not commit'); },
         },
       });
@@ -876,8 +873,7 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
       controller.request({ pack, nextTruck: { ...pack.truck, length: 90 }, restoreControls: () => { restoredControls++; } });
     });
     assert.equal(await page.evaluate(() => document.getElementById('before').inert && document.body.classList.contains('modal-open')), true);
-    await page.getByRole('button', { name: 'Repack invalid', exact: true }).click();
-    assert.equal(await page.getByRole('dialog').count(), 2, 'replacement does not stack a stale Truck Change dialog');
+    assert.equal(await page.getByRole('dialog').count(), 2, 'confirmation retains its parent modal');
     await page.keyboard.press('Escape');
     assert.equal(await active(), 'truck-trigger');
     assert.equal(await page.evaluate(() => JSON.stringify(pack)), await page.evaluate(() => originalPack));

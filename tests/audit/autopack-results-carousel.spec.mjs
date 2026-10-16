@@ -8,6 +8,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import { stagePlacementIds } from '../../src/services/pack-library.js';
+import { createTruckChangeController } from '../../src/ui/truck-change-controller.js';
 
 const editorScreenPath = new URL('../../src/screens/editor-screen.js', import.meta.url);
 const enginePath = new URL('../../src/services/autopack-engine.js', import.meta.url);
@@ -2284,10 +2286,8 @@ test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspecto
     unpack.indexOf('endAutoPackResultsPreview();') < unpack.indexOf("beginOperation('unpacking'"),
   'Unpack ends a Results preview before it claims the lifecycle slot');
   const truck = sliceFn(src, 'function applyTruckGeometryChange(pack, nextTruck, successMsg) {', 'function renderTruckInspector(');
-  assert.ok(truck.indexOf('endAutoPackResultsPreview();') >= 0 &&
-    truck.indexOf('endAutoPackResultsPreview();') < truck.indexOf('OperationLifecycle.isBusy()') &&
-    truck.indexOf('endAutoPackResultsPreview();') < truck.indexOf("beginOperation('changingTruck'"),
-  'Truck Change ends a Results preview before its busy check and lifecycle slot');
+  assert.match(truck, /TruckChangeController\.request\(\{[\s\S]*?restoreControls:/,
+    'Truck Change uses the confirmation controller and restores controls on Cancel');
   const exportScene = sliceFn(src, 'function getExportScene() {', 'const shellEl');
   assert.match(exportScene, /endAutoPackResultsPreview\(\);\n\s*const scene = getPreviewScene\(\);/,
     'visual export ends a Results preview before resolving authority');
@@ -2303,4 +2303,72 @@ test('AUTOPACK-RESULTS-PREVIEW one viewed option drives card, scene and Inspecto
     'Space Utilization uses the same candidate-or-committed resolution');
   assert.doesNotMatch(src, /relaxed-handling-profile|Relaxed handling profile/,
     'the Inspector repeats no relaxed-profile notice; the Results card carries the Max Capacity warning');
+
+  const f = await resultsSyncFixture({ maxCapacity: true });
+  try {
+    const Storage = await import(new URL('../../src/core/storage.js', import.meta.url).href);
+    const pack = () => f.PackLibrary.getById(f.winner.id);
+    const project = previewProjector(f, src, () => ({ busy: false }));
+    f.patchResults({ viewIndex: 1 }, 'run-A');
+    const candidate = project(pack());
+    assert.ok(candidate);
+    assert.notEqual(candidate.cases[0].transform.position.x, pack().cases[0].transform.position.x);
+    const before = f.StateStore.snapshot();
+    const resultsBefore = f.StateStore.get('autoPackResults');
+    const modals = [];
+    const committedSources = [];
+    const controller = createTruckChangeController({
+      PackLibrary: {
+        ...f.PackLibrary,
+        stagePlacementIds(source, ids, nextTruck, cases, options) {
+          committedSources.push(source);
+          assert.strictEqual(source, pack(), 'staging reads the committed Pack, never the preview');
+          assert.notStrictEqual(source, candidate);
+          return stagePlacementIds(source, ids, nextTruck, cases, options);
+        },
+      },
+      CaseLibrary: { getCases: () => [f.caseData] },
+      UIComponents: { showToast() {}, showModal(config) {
+        modals.push(config);
+        return { modal: null, close: () => config.onClose?.() };
+      } },
+      documentRef: { createElement: () => ({ textContent: '' }) },
+    });
+    const nextTruck = { ...pack().truck, length: 260 };
+    let restores = 0;
+    const request = () => controller.request({ pack: pack(), nextTruck,
+      restoreControls: () => { restores++; } });
+
+    assert.equal(request().status, 'preview');
+    assert.deepEqual(modals[0].actions.map(action => action.label), ['Cancel', 'Apply Changes']);
+    assert.deepEqual(f.StateStore.snapshot(), before, 'opening the dialog commits no preview cargo');
+    assert.strictEqual(f.StateStore.get('autoPackResults'), resultsBefore);
+    assert.equal(f.writes.length, 0);
+    assert.equal(JSON.parse(Storage.exportAppJSON()).data.packLibrary[0].cases[0].transform.position.x, 20,
+      'portable persistence still contains committed cargo, not the viewed candidate');
+    modals[0].onClose();
+    assert.equal(restores, 1);
+    assert.deepEqual(f.StateStore.snapshot(), before, 'Cancel leaves Pack and truck unchanged');
+    assert.strictEqual(f.StateStore.get('autoPackResults'), resultsBefore, 'Cancel preserves Results state');
+    assert.equal(JSON.parse(Storage.exportAppJSON()).data.packLibrary[0].cases[0].transform.position.x, 20);
+    assert.deepEqual(project(pack())?.cases, candidate.cases, 'Cancel preserves the viewed preview');
+    assert.equal(f.StateStore.undo(), true);
+    assert.deepEqual(pack(), f.pre, 'Cancel added no history action');
+    assert.equal(f.StateStore.redo(), true);
+    assert.deepEqual(pack(), f.winner);
+
+    assert.equal(request().status, 'preview');
+    assert.equal(modals[1].actions[1].onClick(), true);
+    assert.equal(committedSources.length, 1);
+    assert.equal(f.writes.length, 1, 'Apply makes one committed Pack write');
+    assert.equal(pack().truck.length, 260);
+    assert.deepEqual(pack().cases.map(inst => inst.id), before.packLibrary[0].cases.map(inst => inst.id));
+    assert.ok(pack().cases.every(inst => inst.placement === 'staged'));
+    assert.equal(f.StateStore.get('autoPackResults'), null, 'Apply invalidates old Results');
+    assert.equal(project(pack()), null, 'the old candidate can no longer preview');
+    assert.equal(f.StateStore.undo(), true);
+    assert.deepEqual(pack(), f.winner, 'Undo restores the committed cargo, not the preview');
+    assert.equal(f.StateStore.redo(), true);
+    assert.ok(pack().cases.every(inst => inst.placement === 'staged'));
+  } finally { f.unsubscribe(); }
 });

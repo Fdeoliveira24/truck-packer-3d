@@ -1021,7 +1021,7 @@ export function createSceneRuntime({
       const lengthW = toWorld(getTotalTruckLengthInches(truckInches));
       const widthW = toWorld(Number(truckInches?.width) || 102);
       const heightW = toWorld(Number(truckInches?.height) || 98);
-      const target = { x: lengthW / 2, y: Math.min(6, heightW / 2), z: 0 };
+      const target = { x: lengthW / 2, y: heightW / 2, z: 0 };
       const direction = new THREE.Vector3(
         Math.max(12, lengthW * 0.42),
         Math.max(12, heightW * 2.8),
@@ -1078,12 +1078,13 @@ export function createSceneRuntime({
       const normalized = normalizeEditorView(view);
       if (!normalized) return null;
       cancelFocus();
-      camera.position.set(normalized.cameraPosition.x, normalized.cameraPosition.y, normalized.cameraPosition.z);
-      controls.target.set(normalized.target.x, normalized.target.y, normalized.target.z);
-      // Clear any OrbitControls damping left by the previous Pack before this
-      // Pack takes ownership of the one runtime camera.
+      // Drain the previous view's pending pan/orbit/zoom before assigning the
+      // opening pose. Disabling damping alone would apply that motion to it.
       const damping = controls.enableDamping;
       controls.enableDamping = false;
+      controls.update();
+      camera.position.set(normalized.cameraPosition.x, normalized.cameraPosition.y, normalized.cameraPosition.z);
+      controls.target.set(normalized.target.x, normalized.target.y, normalized.target.z);
       controls.update();
       controls.enableDamping = damping;
       return getEditorView();

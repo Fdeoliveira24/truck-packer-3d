@@ -228,10 +228,14 @@ function truckHarness(PackLibrary, CaseLibrary) {
 }
 
 for (const customCommit of [false, true]) {
-  test(`HANDLING-RULES-P0A Truck Change certifies final staged set atomically (${customCommit ? 'Packs callback' : 'default commit'})`, async () => {
+  test(`HANDLING-RULES-P0A Truck Change stages every Case atomically (${customCommit ? 'Packs callback' : 'default commit'})`, async () => {
     const { StateStore, PackLibrary, CaseLibrary } = await freshModules();
     const caseA = mkCase();
-    const pack = { ...activePackFixture(), cases: [mkInst('cargo', 'case-a', { x: 60, y: 5, z: 0 })] };
+    const packed = { ...mkInst('cargo', 'case-a', { x: 60, y: 5, z: 0 }),
+      instanceNotes: 'Keep this note', orientationTarget: { x: 0, y: 0, z: 0 }, packedProfile: 'max-capacity' };
+    const staged = { ...mkInst('already-staged', 'case-a', { x: 130, y: 5, z: 0 }, 'staged'),
+      customMetadata: { owner: 'QA' } };
+    const pack = { ...activePackFixture(), cases: [packed, staged] };
     pack.handlingRulesValidatedSignature = PackLibrary.buildHandlingRulesValiditySignature(pack, [caseA]);
     initFixture(StateStore, caseA, pack);
     const before = StateStore.snapshot();
@@ -243,9 +247,24 @@ for (const customCommit of [false, true]) {
       options.commit = runInNewContext(`(${callback})`, { PackLibrary, packId: pack.id, metadata: { title: 'Updated' } });
     }
     assert.equal(controller.request(options).status, 'preview');
-    assert.equal(modals[0].actions.find(a => a.label === 'Move to staging').onClick(), true);
+    assert.equal(modals[0].title, 'Change truck layout?');
+    assert.equal(modals[0].content.textContent,
+      'Changing the truck layout will place all Cases in staging. You can arrange them again manually or use AutoPack.');
+    assert.deepEqual(modals[0].actions.map(a => a.label), ['Cancel', 'Apply Changes']);
+    assert.deepEqual(StateStore.snapshot(), before, 'opening the dialog changes no committed cargo');
+    assert.equal(modals[0].actions[1].onClick(), true);
     const after = StateStore.snapshot();
-    assert.equal(after.packLibrary[0].cases[0].placement, 'staged');
+    assert.equal(after.packLibrary[0].truck.length, 30);
+    assert.deepEqual(after.packLibrary[0].cases.map(i => i.id), ['cargo', 'already-staged']);
+    assert.ok(after.packLibrary[0].cases.every(i => i.placement === 'staged'));
+    assert.deepEqual(after.packLibrary[0].cases[0].instanceNotes, packed.instanceNotes);
+    assert.deepEqual(after.packLibrary[0].cases[0].orientationTarget, packed.orientationTarget);
+    assert.deepEqual(after.packLibrary[0].cases[1].customMetadata, staged.customMetadata);
+    assert.equal(after.packLibrary[0].cases[0].packedProfile, undefined, 'packed-only metadata is removed');
+    assert.notDeepEqual(after.packLibrary[0].cases[0].transform.position, packed.transform.position,
+      'a staged Case receives an actual staging pose');
+    assert.deepEqual(after.caseLibrary, before.caseLibrary, 'Case definitions remain unchanged');
+    if (customCommit) assert.equal(after.packLibrary[0].title, 'Updated');
     assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, undefined, 'C4 never writes a validation certificate');
     assert.equal(PackLibrary.isHandlingRulesValidationRequired(after.packLibrary[0], [caseA]), false);
     assert.equal(StateStore.undo(), true);
@@ -257,25 +276,63 @@ for (const customCommit of [false, true]) {
 }
 
 for (const kind of ['missing', 'malformed']) {
-  test(`HANDLING-RULES-P0A Truck Change preserves ${kind} packed cargo through explicit staging without certifying`, async () => {
+  test(`HANDLING-RULES-P0A Truck Change handles ${kind} cargo without fabrication or partial commit`, async () => {
     const { StateStore, PackLibrary, CaseLibrary } = await freshModules();
     const pack = { ...activePackFixture(), cases: [incompleteInstance(kind)], handlingRulesValidatedSignature: 'v1:OLD' };
+    if (kind === 'missing') {
+      pack.cases[0].packedProfile = 'max-capacity';
+      const preserved = mkInst('missing-staged', 'missing-case', { x: 5, y: 5, z: 47 }, 'staged');
+      preserved.orientedDims = { length: 10, width: 10, height: 10 };
+      preserved.instanceNotes = 'Keep unresolved source';
+      pack.cases.push(preserved, mkInst('known', 'case-a', { x: 60, y: 5, z: 0 }));
+    }
     initFixture(StateStore, mkCase(), pack);
     const before = StateStore.snapshot();
     const { controller, modals } = truckHarness(PackLibrary, CaseLibrary);
     const nextTruck = { ...RECT_TRUCK, length: 30 };
     controller.request({ pack, nextTruck });
-    assert.deepEqual(modals[0].actions.map(a => a.label), ['Apply change', 'Cancel']);
+    assert.deepEqual(modals[0].actions.map(a => a.label), ['Cancel', 'Apply Changes']);
     assert.deepEqual(StateStore.snapshot(), before);
-    assert.equal(modals[0].actions.find(a => a.label === 'Apply change').onClick(), true);
-    const after = PackLibrary.getById(pack.id);
-    assert.deepEqual(after.truck, nextTruck);
-    assert.deepEqual(after.cases, [{ ...pack.cases[0], placement: 'staged' }],
-      'untrusted source data is preserved without fabricated geometry or deletion');
-    assert.equal(after.handlingRulesValidatedSignature, undefined, 'unresolved fallback never certifies the layout');
-    assert.equal(StateStore.undo(), true);
-    assert.deepEqual(StateStore.snapshot(), before, 'one Undo restores the original truck and packed instance');
-    assert.equal(StateStore.undo(), false);
+    if (kind === 'missing') {
+      assert.equal(modals[0].actions[1].onClick(), true);
+      const after = StateStore.snapshot();
+      const [unresolvedPacked, unresolvedStaged, known] = after.packLibrary[0].cases;
+      const expectedPacked = structuredClone(pack.cases[0]);
+      expectedPacked.placement = 'staged';
+      delete expectedPacked.packedProfile;
+      assert.deepEqual(unresolvedPacked, expectedPacked, 'packed unresolved cargo keeps its untrusted pose and metadata');
+      assert.deepEqual(unresolvedStaged, pack.cases[1], 'already staged unresolved cargo is unchanged');
+      assert.equal(known.placement, 'staged');
+      assert.notDeepEqual(known.transform.position, pack.cases[2].transform.position);
+      assert.ok(Math.abs(known.transform.position.x - unresolvedStaged.transform.position.x) >= 10 ||
+        Math.abs(known.transform.position.z - unresolvedStaged.transform.position.z) >= 10,
+      'stored unresolved bounds reserve space without certifying that geometry');
+      assert.deepEqual(after.packLibrary[0].cases.map(i => i.id), pack.cases.map(i => i.id));
+      assert.deepEqual(after.packLibrary[0].truck, nextTruck);
+      assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, undefined);
+      assert.equal(StateStore.undo(), true);
+      assert.deepEqual(StateStore.snapshot(), before);
+      assert.equal(StateStore.undo(), false);
+      assert.equal(StateStore.redo(), true);
+      assert.deepEqual(StateStore.snapshot(), after);
+    } else {
+      assert.equal(modals[0].actions[1].onClick(), true,
+        'the real Case definition supplies dimensions for a trustworthy staging pose');
+      const after = StateStore.snapshot();
+      const moved = after.packLibrary[0].cases[0];
+      assert.deepEqual(after.packLibrary[0].truck, nextTruck);
+      assert.equal(moved.id, pack.cases[0].id);
+      assert.equal(moved.placement, 'staged');
+      assert.ok(Object.values(moved.transform.position).every(Number.isFinite));
+      assert.deepEqual(moved.transform.rotation, pack.cases[0].transform.rotation);
+      assert.equal(after.packLibrary[0].handlingRulesValidatedSignature, undefined,
+        'successful staging does not certify the new layout');
+      assert.equal(StateStore.undo(), true);
+      assert.deepEqual(StateStore.snapshot(), before, 'one Undo restores the malformed source exactly');
+      assert.equal(StateStore.undo(), false);
+      assert.equal(StateStore.redo(), true);
+      assert.deepEqual(StateStore.snapshot(), after);
+    }
   });
 }
 
@@ -302,8 +359,9 @@ test('HANDLING-RULES-P0A Truck Change staging failure cannot publish a signature
   } };
   const { controller, modals } = truckHarness(failingLibrary, CaseLibrary);
   controller.request({ pack, nextTruck: { ...RECT_TRUCK, length: 30 } });
-  assert.equal(modals[0].actions.find(a => a.label === 'Move to staging').onClick(), false);
+  assert.equal(modals[0].actions.find(a => a.label === 'Apply Changes').onClick(), false);
   assert.deepEqual(StateStore.snapshot(), before);
+  assert.equal(StateStore.undo(), false, 'failed staging does not create a history action');
 });
 
 const indexHtml = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');

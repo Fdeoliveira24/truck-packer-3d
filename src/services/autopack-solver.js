@@ -348,7 +348,7 @@ function getCandidateSupports(candidateAabb, packed, tolerance = 0.05) {
   const bottom = candidateAabb.min.y;
   return structuralPlacements(packed).filter(placement =>
     Math.abs(bottom - placement.aabb.max.y) <= tolerance &&
-    computeXzOverlapArea(candidateAabb, placement.aabb) > 0.05
+    computeXzOverlapArea(candidateAabb, placement.aabb) > 0
   );
 }
 
@@ -392,7 +392,7 @@ function createStackCapacityCache(packed) {
       for (const child of byBottom.get(key) || []) {
         if (child === support) continue;
         if (Math.abs(child.aabb.min.y - top) > tolerance) continue;
-        if (computeXzOverlapArea(child.aabb, support.aabb) <= 0.05) continue;
+        if (computeXzOverlapArea(child.aabb, support.aabb) <= 0) continue;
         count++;
       }
     }
@@ -2435,14 +2435,18 @@ function directSupportDependents(placement, packed) {
   return (packed || []).filter(child =>
     child !== placement &&
     Math.abs(child.aabb.min.y - placement.aabb.max.y) <= CONTACT_EPS &&
-    computeXzOverlapArea(child.aabb, placement.aabb) > 0.05
+    computeXzOverlapArea(child.aabb, placement.aabb) > 0
   );
 }
 
 function movedPlacementPreservesDependents(placement, candidate, packed, zones, retentionContext, wheelWell) {
-  const dependents = directSupportDependents(placement, packed);
-  if (!dependents.length) return true;
   const candidatePacked = packed.map(entry => entry === placement ? candidate : entry);
+  // A forward move can acquire new direct children as well as lose old ones.
+  // Recheck both sets: the new contacts may exhaust this support's child cap.
+  const dependents = new Set([
+    ...directSupportDependents(placement, packed),
+    ...directSupportDependents(candidate, candidatePacked),
+  ]);
   for (const child of dependents) {
     const packedWithoutChild = candidatePacked.filter(entry => entry !== child);
     if (!placementHasValidVerticalSupport(child, packedWithoutChild, zones, wheelWell)) return false;

@@ -1,7 +1,6 @@
-/**
- * Shared confirmation controller for every production truck-geometry writer.
- * It keeps reconciliation pure until the user accepts one complete transaction.
- */
+/** Shared, atomic confirmation for truck-layout changes. */
+import * as StateStore from '../core/state-store.js';
+import { captureScopeContext, isScopeContextCurrent } from '../core/storage.js';
 
 function normalizedTruckGeometry(truck = {}) {
   const mode = truck.shapeMode === 'wheelWells' || truck.shapeMode === 'frontBonus'
@@ -12,15 +11,15 @@ function normalizedTruckGeometry(truck = {}) {
     : {};
   const shapeConfig = mode === 'wheelWells'
     ? {
-        wellHeight: Number(cfg.wellHeight) || 0,
-        wellWidth: Number(cfg.wellWidth) || 0,
-        wellLength: Number(cfg.wellLength) || 0,
-        wellOffsetFromRear: Number(cfg.wellOffsetFromRear) || 0,
+        wellHeight: Number(cfg.wellHeight ?? Number(truck.height) * 0.35),
+        wellWidth: Number(cfg.wellWidth ?? Number(truck.width) * 0.15),
+        wellLength: Number(cfg.wellLength ?? Number(truck.length) * 0.35),
+        wellOffsetFromRear: Number(cfg.wellOffsetFromRear ?? Number(truck.length) * 0.25),
       }
     : mode === 'frontBonus'
       ? {
           bonusLength: Number(cfg.bonusLength) || 0,
-          bonusHeight: Number(cfg.bonusHeight) || 0,
+          bonusHeight: Number(cfg.bonusHeight ?? Number(truck.height) * 0.45),
           bonusWidth: Number(truck.width) || 0,
         }
       : {};
@@ -45,345 +44,78 @@ export function createTruckChangeController({
 }) {
   let active = null;
 
-  function appendCaseCountList(content, ids, pack, caseLibrary) {
-    const caseById = new Map((caseLibrary || []).map(caseData => [caseData.id, caseData]));
-    const instanceById = new Map(((pack && pack.cases) || []).map(inst => [inst.id, inst]));
-    const counts = new Map();
-    for (const id of ids || []) {
-      const inst = instanceById.get(id);
-      const caseData = inst ? caseById.get(inst.caseId) : null;
-      const label = String(caseData?.name || inst?.name || 'Unknown case').trim() || 'Unknown case';
-      counts.set(label, (counts.get(label) || 0) + 1);
+  function reportFailure(error) {
+    UIComponents.showToast(error?.message || 'Truck change could not be saved. No changes were applied.',
+      'error', { title: 'Truck change' });
+  }
+
+  function validateTruck(truck) {
+    const { length, width, height } = truck;
+    if (![length, width, height].every(value => typeof value === 'number' && Number.isFinite(value) && value > 0) ||
+        ![undefined, 'rect', 'wheelWells', 'frontBonus'].includes(truck.shapeMode)) {
+      throw new Error('Enter valid truck dimensions. No changes were applied.');
     }
-    if (!counts.size) return;
-    const list = documentRef.createElement('ul');
-    list.className = 'tp3d-truck-change-summary';
-    [...counts.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .forEach(([label, count]) => {
-        const item = documentRef.createElement('li');
-        item.className = 'tp3d-truck-change-summary__row';
-        const countEl = documentRef.createElement('span');
-        countEl.className = 'tp3d-truck-change-summary__count';
-        countEl.textContent = `${count} `;
-        item.appendChild(countEl);
-        const labelEl = documentRef.createElement('span');
-        labelEl.className = 'tp3d-truck-change-summary__label';
-        labelEl.textContent = label;
-        item.appendChild(labelEl);
-        list.appendChild(item);
+    const cfg = truck.shapeConfig || {};
+    const limits = truck.shapeMode === 'wheelWells'
+      ? { wellHeight: height, wellWidth: width / 2, wellLength: length, wellOffsetFromRear: length }
+      : truck.shapeMode === 'frontBonus' ? { bonusLength: length, bonusHeight: height } : {};
+    if (Object.entries(limits).some(([key, max]) => cfg[key] !== undefined &&
+        (typeof cfg[key] !== 'number' || !Number.isFinite(cfg[key]) || cfg[key] < 0 || cfg[key] > max))) {
+      throw new Error('Enter valid truck layout dimensions. No changes were applied.');
+    }
+  }
+
+  function apply(ctx) {
+    if (active !== ctx || ctx.committed || ctx.inFlight) return false;
+    ctx.inFlight = true;
+    try {
+      if (!isScopeContextCurrent(ctx.scope)) throw new Error('Workspace changed. No truck changes were saved.');
+      validateTruck(ctx.nextTruck);
+      // Results can show a different layout. Only the durable Pack owns cargo.
+      const pack = PackLibrary.getById(ctx.pack.id);
+      if (!pack || !Array.isArray(pack.cases)) throw new Error('Load Plan is unavailable. No changes were applied.');
+      const ids = pack.cases.map(inst => inst?.id);
+      if (ids.some(id => !id) || new Set(ids).size !== ids.length) {
+        throw new Error('Case instance IDs need review. No changes were applied.');
+      }
+      const staged = PackLibrary.stagePlacementIds(pack, ids, ctx.nextTruck, CaseLibrary.getCases(), {
+        grouped: true, preserveRotation: true, preserveMissingDefinitions: true,
       });
-    content.appendChild(list);
-  }
-
-  function buildSafePreview(ctx, sourcePack, stagedIds, excludedIds = []) {
-    const ids = [...new Set([
-      ...(ctx.reconciliation?.stagedAdjusted || []),
-      ...(stagedIds || []),
-    ])];
-    const staged = ids.length
-      ? PackLibrary.stagePlacementIds(
-          sourcePack,
-          ids,
-          ctx.nextTruck,
-          ctx.caseLibrary,
-          { grouped: true }
-        )
-      : { pack: sourcePack, stagedIds: [], failedIds: [] };
-    const excluded = new Set([...(excludedIds || []), ...(staged.failedIds || [])]);
-    return {
-      pack: {
-        ...staged.pack,
-        truck: ctx.nextTruck,
-      },
-      stagedIds: staged.stagedIds || [],
-      failedIds: staged.failedIds || [],
-      excludedIds: [...excluded],
-    };
-  }
-
-  function renderPreview(ctx, preview) {
-    if (typeof ctx.renderPreview !== 'function') return;
-    // Excluding untrustworthy geometry is a scene concern, never deletion from
-    // the full Pack transaction that confirmation will commit.
-    const excluded = new Set(preview.excludedIds || []);
-    ctx.renderPreview({ ...preview, pack: { ...preview.pack,
-      cases: (preview.pack.cases || []).filter(inst => !excluded.has(inst.id)),
-    } });
-  }
-
-  function makeSummaryContent(recon, heading, unresolvedPackedCount = 0) {
-    const content = documentRef.createElement('div');
-    const intro = documentRef.createElement('div');
-    intro.className = 'tp3d-editor-sub-sm';
-    intro.textContent = heading;
-    content.appendChild(intro);
-
-    // One bordered summary group: a scannable count, then its meaning. Zero rows
-    // stay visible but subdued; a non-zero "no longer fit" row is the decision row.
-    const list = documentRef.createElement('ul');
-    list.className = 'tp3d-truck-change-summary';
-    const rows = [
-      { count: recon.summary.kept, label: 'kept in place' },
-      { count: recon.summary.adjusted, label: 'safely adjusted' },
-      { count: recon.summary.invalid, label: 'no longer fit', note: '(shown in staging preview)', decision: true },
-      { count: recon.summary.stagedUnchanged, label: 'existing staged items unchanged' },
-    ];
-    if (recon.summary.stagedAdjusted) rows.push({ count: recon.summary.stagedAdjusted, label: 'unsafe staged items corrected' });
-    if (recon.summary.unresolved) rows.push({ count: recon.summary.unresolved, label: 'unresolved items require attention' });
-    if (recon.summary.malformed) rows.push({ count: recon.summary.malformed, label: 'malformed items require attention' });
-    rows.forEach(row => {
-      const li = documentRef.createElement('li');
-      li.className = [
-        'tp3d-truck-change-summary__row',
-        row.count ? '' : 'is-zero',
-        row.decision && row.count ? 'is-no-longer-fit' : '',
-      ].filter(Boolean).join(' ');
-      // Word spaces live in the text so the row reads "N label" as one phrase;
-      // the count cell's trailing space collapses visually.
-      const count = documentRef.createElement('span');
-      count.className = 'tp3d-truck-change-summary__count';
-      count.textContent = `${row.count} `;
-      li.appendChild(count);
-      const label = documentRef.createElement('span');
-      label.className = 'tp3d-truck-change-summary__label';
-      const text = documentRef.createElement(row.decision && row.count ? 'strong' : 'span');
-      text.textContent = row.label;
-      label.appendChild(text);
-      if (row.note) {
-        const note = documentRef.createElement('span');
-        note.className = 'tp3d-truck-change-summary__note';
-        note.textContent = ` ${row.note}`;
-        label.appendChild(note);
+      if (staged.failedIds.length || staged.stagedIds.length !== ids.length ||
+          staged.pack.cases.length !== ids.length) {
+        throw new Error('Could not safely stage every Case. Check missing Case definitions or invalid geometry. No changes were applied.');
       }
-      li.appendChild(label);
-      list.appendChild(li);
-    });
-    content.appendChild(list);
-
-    if (recon.unresolved.length || recon.malformed.length) {
-      const blocked = documentRef.createElement('div');
-      blocked.className = 'muted tp3d-editor-sub-sm';
-      const messages = [];
-      if (recon.unresolved.length) {
-        messages.push(`${recon.unresolved.length} unresolved item(s) require source data or assessment`);
-      }
-      if (recon.malformed.length) {
-        messages.push(`${recon.malformed.length} malformed item(s) have invalid physical data`);
-      }
-      const completeness = PackLibrary.getPackedReconciliationCompleteness(recon.nextPack, recon);
-      blocked.textContent = `${messages.join('; ')}. ${completeness.validationComplete
-        ? 'These items are preserved in staging and still require attention.'
-        : 'Packed physical data must be resolved before changing the truck.'}`;
-      if (unresolvedPackedCount) {
-        blocked.textContent += ` ${unresolvedPackedCount} packed item(s) will move to unresolved staging.`;
-      }
-      content.appendChild(blocked);
-    }
-    const previewNote = documentRef.createElement('div');
-    previewNote.className = 'muted tp3d-editor-sub-sm';
-    previewNote.textContent = 'The scene shows the proposed truck. Items that no longer fit are shown in staging. No changes are saved until you confirm.';
-    content.appendChild(previewNote);
-    return content;
-  }
-
-  function disableActions(ctx, disabled) {
-    const modal = ctx.modalRef && ctx.modalRef.modal;
-    if (!modal || typeof modal.querySelectorAll !== 'function') return;
-    modal.querySelectorAll('button').forEach(button => { button.disabled = disabled; });
-  }
-
-  function finishContext(ctx) {
-    if (active === ctx) active = null;
-    ctx.inFlight = false;
-    ctx.modalRef = null;
-  }
-
-  function showManagedModal(ctx, config) {
-    const originalOnClose = config.onClose;
-    const modalRef = UIComponents.showModal({
-      ...config,
-      // Follow-up decisions replace this flow's modal; they are not its children.
-      parentOwnerId: ctx.modalRef ? ctx.modalRef.owner.parentId : undefined,
-      dismissible: config.dismissible !== false,
-      onClose: () => {
-        if (ctx.suppressRestoreOnce) {
-          ctx.suppressRestoreOnce = false;
-        } else {
-          if (!ctx.committed && typeof ctx.restoreControls === 'function') ctx.restoreControls();
-          finishContext(ctx);
-        }
-        if (typeof originalOnClose === 'function') originalOnClose();
-      },
-    });
-    ctx.modalRef = modalRef;
-    return modalRef;
-  }
-
-  function guarded(ctx, action) {
-    return () => {
-      if (ctx.inFlight || ctx.committed) return false;
-      ctx.inFlight = true;
-      disableActions(ctx, true);
+      const results = StateStore.get('autoPackResults');
+      const selection = StateStore.get('selectedInstanceIds');
+      const clearResults = results?.packId === pack.id;
+      const clearSelection = StateStore.get('currentPackId') === pack.id;
+      const transient = {};
+      if (clearResults) transient.autoPackResults = null;
+      if (clearSelection) transient.selectedInstanceIds = [];
+      StateStore.set(transient, { skipHistory: true, skipNotify: true });
+      let committed;
       try {
-        return action();
-      } catch (error) {
-        ctx.inFlight = false;
-        disableActions(ctx, false);
-        UIComponents.showToast(
-          error && error.message ? error.message : 'Truck change could not be completed.',
-          'error',
-          { title: 'Truck change' }
-        );
-        return false;
+        committed = ctx.commit
+          ? ctx.commit(staged.pack)
+          : PackLibrary.update(pack.id, { truck: ctx.nextTruck, cases: staged.pack.cases });
+        if (!committed) throw new Error('Truck change could not be saved. No changes were applied.');
+      } finally {
+        if (!committed) {
+          if (clearResults) transient.autoPackResults = results;
+          if (clearSelection) transient.selectedInstanceIds = selection;
+          StateStore.set(transient, { skipHistory: true, skipNotify: true });
+        }
       }
-    };
-  }
-
-  function commit(ctx, finalPack, message) {
-    // Only the reconciled geometry-change flow reaches this commit. Recheck
-    // the final poses against current Cases without repairing or publishing;
-    // the unchanged-geometry metadata save deliberately bypasses certification.
-    const currentCases = CaseLibrary.getCases();
-    const finalReconciliation = PackLibrary.reconcilePlacementsForTruck(
-      finalPack, ctx.nextTruck, currentCases, { preserveStagedPositions: true }
-    );
-    const completeness = PackLibrary.getPackedReconciliationCompleteness(finalPack, finalReconciliation);
-    if (!completeness.validationComplete || finalReconciliation.invalid.length || finalReconciliation.adjusted.length) {
-      throw new Error('Load Plan validation is incomplete. No truck changes were saved.');
+      ctx.committed = true;
+      ctx.onCommitted?.(committed);
+      UIComponents.showToast(ctx.successMessage || 'Truck updated. All Cases are in staging.', 'success', { title: 'Truck' });
+      return true;
+    } catch (error) {
+      reportFailure(error);
+      return false;
+    } finally {
+      ctx.inFlight = false;
     }
-    const committed = ctx.commit
-      ? ctx.commit(finalPack)
-      : PackLibrary.update(ctx.pack.id, { truck: ctx.nextTruck, cases: finalPack.cases });
-    if (!committed) throw new Error('Truck change could not be saved. No changes were applied.');
-    ctx.committed = true;
-    if (typeof ctx.onCommitted === 'function') ctx.onCommitted(committed);
-    if (message) UIComponents.showToast(message, 'success', { title: 'Truck' });
-    return true;
-  }
-
-  function showRemainingDecision(ctx, outcome) {
-    const preview = buildSafePreview(ctx, outcome.pack, outcome.failedIds);
-    renderPreview(ctx, {
-      kind: 'repack',
-      pack: preview.pack,
-      keptIds: ctx.reconciliation.kept,
-      adjustedIds: ctx.reconciliation.adjusted.map(entry => entry.id),
-      repackedIds: outcome.repackedIds,
-      stagedPreviewIds: preview.stagedIds,
-      excludedIds: preview.excludedIds,
-    });
-    const content = documentRef.createElement('div');
-    const summary = documentRef.createElement('div');
-    summary.className = 'tp3d-editor-sub-sm';
-    const repackedLabel = `${outcome.repackedIds.length} item${outcome.repackedIds.length === 1 ? '' : 's'} repacked.`;
-    const failedLabel = `Could not be repacked: ${outcome.failedIds.length} item${outcome.failedIds.length === 1 ? '' : 's'}.`;
-    summary.textContent = `${repackedLabel} ${failedLabel}`;
-    content.appendChild(summary);
-    appendCaseCountList(content, outcome.failedIds, outcome.pack, ctx.caseLibrary);
-    const note = documentRef.createElement('div');
-    note.className = 'muted tp3d-editor-sub-sm';
-    note.textContent = 'Items that could not be repacked are shown in the staging preview. No truck or cargo changes have been saved yet.';
-    content.appendChild(note);
-
-    const followUpModal = showManagedModal(ctx, {
-      title: 'Some items still do not fit',
-      content,
-      actions: [
-        { label: 'Keep current truck and cancel' },
-        {
-          label: 'Move remaining items to staging',
-          variant: 'primary',
-          onClick: guarded(ctx, () => {
-            if (preview.failedIds.length) {
-              throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
-            }
-            return commit(
-              ctx,
-              preview.pack,
-              `Truck updated. ${outcome.repackedIds.length} repacked and ${outcome.failedIds.length} moved to staging.`
-            );
-          }),
-        },
-      ],
-    });
-    followUpModal.modal?.classList?.add('tp3d-truck-change-modal');
-  }
-
-  function showPreview(ctx) {
-    const recon = ctx.reconciliation;
-    const blocked = !PackLibrary.getPackedReconciliationCompleteness(recon.nextPack, recon).validationComplete;
-    // DOM order is the reading and Tab order: decisions first, Cancel last.
-    const actions = [];
-    const excludedIds = [
-      ...recon.unresolved.map(entry => entry.id),
-      ...recon.malformed.map(entry => entry.id),
-    ];
-    const preview = buildSafePreview(ctx, recon.nextPack, recon.invalid, excludedIds);
-    renderPreview(ctx, {
-      kind: 'reconciliation',
-      pack: preview.pack,
-      keptIds: recon.kept,
-      adjustedIds: recon.adjusted.map(entry => entry.id),
-      repackedIds: [],
-      stagedPreviewIds: preview.stagedIds,
-      excludedIds: preview.excludedIds,
-    });
-
-    if (!blocked && recon.invalid.length === 0) {
-      actions.push({
-        label: 'Apply change',
-        variant: 'primary',
-        onClick: guarded(ctx, () => {
-          if (preview.failedIds.length) {
-            throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
-          }
-          return commit(
-            ctx,
-            preview.pack,
-            recon.adjusted.length
-              ? `${ctx.successMessage}. ${recon.adjusted.length} item(s) safely adjusted.`
-              : ctx.successMessage
-          );
-        }),
-      });
-    } else if (!blocked) {
-      actions.push({
-        label: 'Repack invalid',
-        variant: 'primary',
-        onClick: guarded(ctx, () => {
-          const outcome = PackLibrary.repackInvalidPlacements(recon, ctx.nextTruck, ctx.caseLibrary);
-          if (!outcome.failedIds.length) {
-            const finalPlan = buildSafePreview(ctx, outcome.pack, []);
-            if (finalPlan.failedIds.length) {
-              throw new Error(`Could not safely stage ${finalPlan.failedIds.length} item(s). No changes were applied.`);
-            }
-            return commit(ctx, finalPlan.pack, `Truck updated. ${outcome.repackedIds.length} item(s) repacked.`);
-          }
-          ctx.inFlight = false;
-          ctx.suppressRestoreOnce = true;
-          showRemainingDecision(ctx, outcome);
-          return true;
-        }),
-      });
-      actions.push({
-        label: 'Move to staging',
-        onClick: guarded(ctx, () => {
-          if (preview.failedIds.length) {
-            throw new Error(`Could not safely stage ${preview.failedIds.length} item(s). No changes were applied.`);
-          }
-          return commit(ctx, preview.pack, `Truck updated. ${recon.invalid.length} item(s) moved to staging.`);
-        }),
-      });
-    }
-    actions.push({ label: 'Cancel' });
-
-    const modalRef = showManagedModal(ctx, {
-      title: 'Truck change',
-      content: makeSummaryContent(recon, 'Changing the truck affects placed cases:', ctx.unresolvedPackedIds.length),
-      actions,
-    });
-    modalRef.modal?.classList?.add('tp3d-truck-change-modal');
   }
 
   function request(options = {}) {
@@ -394,100 +126,40 @@ export function createTruckChangeController({
       UIComponents.showToast('Finish the current truck change first.', 'warning', { title: 'Truck change' });
       return { status: 'busy' };
     }
-
-    if (truckGeometryEqual(pack.truck, nextTruck)) {
-      if (options.commitWhenUnchanged && typeof options.commit === 'function') {
-        try {
-          const committed = options.commit({ ...pack, truck: nextTruck, cases: pack.cases || [] });
-          if (committed) {
-            if (typeof options.onCommitted === 'function') options.onCommitted(committed);
-            if (options.successMessage) {
-              UIComponents.showToast(options.successMessage, 'success', { title: 'Truck' });
-            }
-          } else {
-            UIComponents.showToast('Load plan update could not be saved.', 'error', { title: 'Truck change' });
-          }
-          return { status: committed ? 'committed' : 'failed' };
-        } catch (error) {
-          UIComponents.showToast(error && error.message ? error.message : 'Load plan update could not be saved.', 'error', { title: 'Truck change' });
-          return { status: 'failed' };
-        }
-      }
-      return { status: 'unchanged' };
-    }
-
-    let caseLibrary;
-    let reconciliation;
-    let unresolvedPackedIds = [];
     try {
-      caseLibrary = CaseLibrary.getCases();
-      reconciliation = (pack.cases || []).length
-        ? PackLibrary.reconcilePlacementsForTruck(pack, nextTruck, caseLibrary)
-        : null;
-      if (reconciliation) {
-        const caseIds = new Set(caseLibrary.map(caseData => caseData.id));
-        const untrustedIds = new Set([
-          ...reconciliation.unresolved.filter(entry => !caseIds.has(entry.caseId)).map(entry => entry.id),
-          ...reconciliation.malformed.map(entry => entry.id),
-        ]);
-        unresolvedPackedIds = (pack.cases || [])
-          .filter(inst => inst && inst.placement !== 'staged' && untrustedIds.has(inst.id))
-          .map(inst => inst.id);
-        if (unresolvedPackedIds.length) {
-          const fallbackIds = new Set(unresolvedPackedIds);
-          // No trusted envelope exists to allocate a physical staging pose.
-          // Preserve source data and change only placement state, then rerun
-          // reconciliation so these items cannot block or support resolved cargo.
-          const stagedPack = { ...pack, cases: pack.cases.map(inst => fallbackIds.has(inst.id)
-            ? { ...inst, placement: 'staged' } : inst) };
-          reconciliation = PackLibrary.reconcilePlacementsForTruck(stagedPack, nextTruck, caseLibrary);
-        }
+      validateTruck(nextTruck);
+      if (truckGeometryEqual(pack.truck, nextTruck)) {
+        if (!options.commitWhenUnchanged || !options.commit) return { status: 'unchanged' };
+        const committed = options.commit({ ...pack, truck: nextTruck });
+        if (!committed) throw new Error('Load plan update could not be saved.');
+        options.onCommitted?.(committed);
+        if (options.successMessage) UIComponents.showToast(options.successMessage, 'success', { title: 'Truck' });
+        return { status: 'committed' };
       }
+      const ctx = { ...options, scope: captureScopeContext(), committed: false, inFlight: false };
+      const content = documentRef.createElement('p');
+      content.textContent = 'Changing the truck layout will place all Cases in staging. You can arrange them again manually or use AutoPack.';
+      active = ctx;
+      const modal = UIComponents.showModal({
+        title: 'Change truck layout?',
+        content,
+        actions: [
+          { label: 'Cancel' },
+          { label: 'Apply Changes', variant: 'primary', onClick: () => apply(ctx) },
+        ],
+        onClose: () => {
+          if (active === ctx) active = null;
+          if (!ctx.committed) /** @type {{ restoreControls?: () => void }} */ (ctx).restoreControls?.();
+        },
+      });
+      modal.modal?.classList?.add('tp3d-truck-change-modal');
+      return { status: 'preview' };
     } catch (error) {
-      UIComponents.showToast(
-        error && error.message ? error.message : 'Truck change could not be previewed.',
-        'error',
-        { title: 'Truck change' }
-      );
+      active = null;
+      reportFailure(error);
       return { status: 'failed' };
     }
-    const ctx = {
-      pack,
-      nextTruck,
-      caseLibrary,
-      unresolvedPackedIds,
-      commit: options.commit,
-      onCommitted: options.onCommitted,
-      restoreControls: options.restoreControls,
-      renderPreview: options.renderPreview,
-      successMessage: options.successMessage || 'Truck updated',
-      committed: false,
-      inFlight: false,
-      suppressRestoreOnce: false,
-      modalRef: null,
-    };
-
-    if (!(pack.cases || []).length) {
-      try {
-        commit(ctx, { ...pack, truck: nextTruck, cases: [] }, options.successMessage || 'Truck updated.');
-        finishContext(ctx);
-        return { status: 'committed' };
-      } catch (error) {
-        UIComponents.showToast(error.message, 'error', { title: 'Truck change' });
-        if (typeof options.restoreControls === 'function') options.restoreControls();
-        return { status: 'failed' };
-      }
-    }
-
-    ctx.reconciliation = reconciliation;
-    active = ctx;
-    showPreview(ctx);
-    return { status: 'preview', reconciliation: ctx.reconciliation };
   }
 
-  return {
-    request,
-    isActive: () => Boolean(active),
-    truckGeometryEqual,
-  };
+  return { request, isActive: () => Boolean(active), truckGeometryEqual };
 }

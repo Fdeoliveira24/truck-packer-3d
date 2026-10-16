@@ -188,7 +188,7 @@ export function countDirectStackChildren(support, packed, tolerance = CONTACT_EP
   for (const placement of packed) {
     if (placement === support) continue;
     if (Math.abs(placement.aabb.min.y - supportTop) > tolerance) continue;
-    if (computeXzOverlapArea(placement.aabb, support.aabb) <= 0.05) continue;
+    if (computeXzOverlapArea(placement.aabb, support.aabb) <= 0) continue;
     count++;
   }
   return count;

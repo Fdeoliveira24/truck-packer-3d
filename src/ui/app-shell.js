@@ -14,6 +14,7 @@ export function createAppShell({
   StateStore,
   PackLibrary,
   Utils,
+  Router = null,
   beforeNavigate = null,
 }) {
   const AppShell = (() => {
@@ -36,6 +37,7 @@ export function createAppShell({
       packs: { title: 'Load Plans', subtitle: 'Load plan library' },
       cases: { title: 'Cases', subtitle: 'Inventory management' },
       editor: { title: 'Editor', subtitle: '3D workspace' },
+      'import-export': { title: 'Import / Export', subtitle: 'Transfer workspace data' },
       updates: { title: 'Release Notes', subtitle: 'Verified product changes' },
       roadmap: { title: 'Roadmap', subtitle: 'Published product plans' },
     };
@@ -90,8 +92,10 @@ export function createAppShell({
       syncSidebarState();
     }
 
-    function navigate(screenKey) {
+    function navigate(screenKey, { fromRoute = false } = {}) {
+      if (!fromRoute) Router?.setScreen(screenKey);
       const previousScreen = StateStore.get('currentScreen');
+      if (fromRoute && previousScreen === screenKey) return;
       // Optional synchronous observer: a failed preview must never veto navigation.
       try {
         if (beforeNavigate && previousScreen !== screenKey) beforeNavigate(previousScreen, screenKey);

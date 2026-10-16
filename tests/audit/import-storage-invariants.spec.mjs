@@ -80,11 +80,11 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
   assert.match(app, /title:\s*['"]Export Workspace Backup['"][\s\S]*label:\s*['"]Export Workspace Backup['"]/,
     'Workspace export modal must use backup title and CTA');
   assert.match(index, /Import Load Plan\(s\)/,
-    'Load Plans screen header button must use Import Load Plan(s)');
+    'Import / Export page must use Import Load Plan(s)');
   assert.doesNotMatch(index, />\s*Import Load Plan JSON\s*</,
-    'Load Plans screen toolbar button must not say Import Load Plan JSON');
-  assert.match(index, /Download Cases Template[\s\S]*Import Cases/,
-    'Cases buttons must use explicit template and import labels');
+    'Import / Export action must not say Import Load Plan JSON');
+  assert.match(index, /Import Cases[\s\S]*Export Cases[\s\S]*Download Cases Template/,
+    'Import / Export actions must use explicit Case labels and approved order');
   assert.match(importApp, /title:\s*['"]Import App Backup['"]/,
     'Import App dialog must use Import App Backup title');
   assert.match(importApp, /Replace Local App Data/,
@@ -95,6 +95,20 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
     'Both load plan context menus must use Export Load Plan JSON');
   assert.match(help, /Import \/ Export Help[\s\S]*Workspace Backup[\s\S]*Load Plan JSON[\s\S]*Cases CSV\/XLSX/,
     'Top-bar Help modal must match the import/export help scope');
+});
+
+test('Import / Export owns the four library transfer actions while contextual exports stay in their libraries', async () => {
+  const index = await fs.readFile(indexHtmlPath, 'utf8');
+  const packs = index.split('id="screen-packs"')[1].split('id="screen-cases"')[0];
+  const cases = index.split('id="screen-cases"')[1].split('id="screen-import-export"')[0];
+  const transfer = index.split('id="screen-import-export"')[1].split('id="screen-editor"')[0];
+  for (const id of ['btn-cases-import', 'btn-cases-export', 'btn-cases-template', 'btn-import-pack']) {
+    assert.equal((index.match(new RegExp(`id="${id}"`, 'g')) || []).length, 1, `${id} has one owner`);
+    assert.match(transfer, new RegExp(`id="${id}"`), `${id} is on Import / Export`);
+    assert.doesNotMatch(packs + cases, new RegExp(`id="${id}"`), `${id} left the library headers`);
+  }
+  assert.match(packs, /id="btn-new-pack"[\s\S]*id="btn-packs-bulk-export"/);
+  assert.match(cases, /id="btn-new-case"/);
 });
 
 test('UI-COPY-EXPORT-IMPORT-1 removes fake release notes and stale roadmap commitments', async () => {

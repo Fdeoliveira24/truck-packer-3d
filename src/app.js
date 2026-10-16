@@ -1500,6 +1500,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       StateStore,
       PackLibrary,
       Utils,
+      Router,
       beforeNavigate: (from, to) => ExportService?.flushPackPreviewBeforeNavigation(from, to),
     });
 
@@ -1512,7 +1513,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     function openSettingsFromRoute() {
       const current = StateStore.get('currentScreen');
-      const stable = ['packs', 'cases', 'editor', 'updates', 'roadmap'].includes(current) ? current : 'packs';
+      const stable = ['packs', 'cases', 'editor', 'import-export', 'updates', 'roadmap'].includes(current) ? current : 'packs';
       Router.replaceScreen(stable);
       AppShell.navigate(stable);
       if (!BootState.appReady) {
@@ -2718,7 +2719,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
 
     function captureLiveWorkspaceUiState() {
       const currentScreen = StateStore.get('currentScreen');
-      if (!['editor', 'cases', 'updates', 'roadmap'].includes(currentScreen)) return null;
+      if (!['editor', 'cases', 'import-export', 'updates', 'roadmap'].includes(currentScreen)) return null;
       return {
         currentScreen,
         currentPackId: StateStore.get('currentPackId') || null,
@@ -5093,6 +5094,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           applyWorkspaceScopedLocalState(hintedOrgId, {
             seedIfMissing: false,
             force: true,
+            // The router has already selected the URL screen. Keep a safe
+            // library/info route through the first signed-in storage load.
+            preserveLiveUi: !_isConfirmedUserSwitch &&
+              ['cases', 'import-export', 'updates', 'roadmap'].includes(StateStore.get('currentScreen')),
           });
           // Re-render all screens with the new user's data
           try { renderAll(); } catch { /* ignore */ }
@@ -7283,7 +7288,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
             routeNotFoundActive = false;
             ErrorOverlay.hide();
             if (screen === 'settings') openSettingsFromRoute();
-            else AppShell.navigate(screen);
+            else AppShell.navigate(screen, { fromRoute: true });
             RecoverableErrorOverlay.syncRecoverableErrorOverlay();
           },
           onNotFound: () => {

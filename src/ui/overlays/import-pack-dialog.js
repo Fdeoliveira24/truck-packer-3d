@@ -122,10 +122,17 @@ export function createImportPackDialog({
     const chipsEl = doc.createElement('div');
     chipsEl.className = 'tp3d-ic-cols';
 
-    const chipsLabel = doc.createElement('div');
+    const chipsHeading = doc.createElement('div');
+    chipsHeading.className = 'tp3d-ic-cols-heading';
+    const chipsLabel = doc.createElement('span');
     chipsLabel.className = 'tp3d-ic-cols-label';
     chipsLabel.textContent = 'PACK STRUCTURE';
-    chipsEl.appendChild(chipsLabel);
+    chipsHeading.appendChild(chipsLabel);
+    const requiredLegend = doc.createElement('span');
+    requiredLegend.className = 'tp3d-ic-required-legend';
+    requiredLegend.innerHTML = '<span class="tp3d-ic-chip-dot" aria-hidden="true"></span>Required';
+    chipsHeading.appendChild(requiredLegend);
+    chipsEl.appendChild(chipsHeading);
 
     const chipsWrap = doc.createElement('div');
     chipsWrap.className = 'tp3d-ic-chips';
@@ -143,9 +150,16 @@ export function createImportPackDialog({
       if (col.required) {
         const dot = doc.createElement('span');
         dot.className = 'tp3d-ic-chip-dot';
+        dot.setAttribute('aria-hidden', 'true');
         chip.appendChild(dot);
       }
       chip.appendChild(doc.createTextNode(col.label));
+      if (col.required) {
+        const requiredText = doc.createElement('span');
+        requiredText.className = 'visually-hidden';
+        requiredText.textContent = ' required';
+        chip.appendChild(requiredText);
+      }
       chipsWrap.appendChild(chip);
     });
     chipsEl.appendChild(chipsWrap);
@@ -381,7 +395,7 @@ export function createImportPackDialog({
     const footerNote = doc.createElement('span');
     footerNote.className = 'muted';
     footerNote.style.fontSize = 'var(--text-sm)';
-    footerNote.textContent = 'Nothing created until you confirm.';
+    footerNote.textContent = 'Select a file to enable import. Nothing created until you confirm.';
     footerLeft.appendChild(footerNote);
     footer.insertBefore(footerLeft, footer.firstChild);
 
@@ -431,7 +445,7 @@ export function createImportPackDialog({
       if (!parsedPayload) {
         importBtn.disabled = true;
         importBtn.textContent = 'Import load plan';
-        footerNote.textContent = 'Nothing created until you confirm.';
+        footerNote.textContent = 'Select a file to enable import. Nothing created until you confirm.';
         return;
       }
       if (parsedPayload.type === 'single') {
@@ -466,7 +480,9 @@ export function createImportPackDialog({
         importBtn.disabled = validCount === 0;
         importBtn.innerHTML = '';
         importBtn.appendChild(doc.createTextNode('Import ' + validCount + ' load plan' + (validCount !== 1 ? 's' : '')));
-        footerNote.textContent = 'Nothing created until you confirm.';
+        footerNote.textContent = validCount === 0
+          ? 'No valid load plans to import.'
+          : 'Nothing created until you confirm.';
       }
     }
 

@@ -255,6 +255,11 @@
             <i class="fa-solid fa-cube"></i>
             Editor
           </button>
+          <hr class="nav-separator" />
+          <button class="nav-btn" type="button" data-nav="import-export">
+            <i class="fa-solid fa-arrow-right-arrow-left" aria-hidden="true"></i>
+            Import / Export
+          </button>
         </nav>
 
         <div style="margin-top: auto">
@@ -306,10 +311,6 @@
                 </div>
               </div>
               <div class="row" id="packs-actions-default">
-                <button class="btn" id="btn-import-pack" type="button">
-                  <i class="fa-solid fa-file-import"></i>
-                  Import Load Plan(s)
-                </button>
                 <button class="btn btn-primary" id="btn-new-pack" type="button">
                   <i class="fa-solid fa-plus"></i>
                   New Load Plan
@@ -545,22 +546,10 @@
               <div class="grid" style="gap: 6px">
                 <div style="font-size: var(--text-2xl); font-weight: var(--font-semibold)">Cases</div>
                 <div class="muted" style="font-size: var(--text-sm)">
-                  Manage your inventory. Import via CSV/XLSX or create manually.
+                  Manage your inventory and create Cases manually.
                 </div>
               </div>
               <div class="row" id="cases-actions-default">
-                <button class="btn" id="btn-cases-template" type="button">
-                  <i class="fa-solid fa-download"></i>
-                  Download Cases Template
-                </button>
-                <button class="btn" id="btn-cases-import" type="button">
-                  <i class="fa-solid fa-file-import"></i>
-                  Import Cases
-                </button>
-                <button class="btn" id="btn-cases-export" type="button">
-                  <i class="fa-solid fa-file-export"></i>
-                  Export Cases
-                </button>
                 <button class="btn btn-primary" id="btn-new-case" type="button">
                   <i class="fa-solid fa-plus"></i>
                   New Case
@@ -745,7 +734,45 @@
             </div>
             <div class="card" id="cases-empty" style="display: none; margin-top: 16px">
               <div style="font-weight: var(--font-semibold); margin-bottom: 6px">No cases yet</div>
-              <div class="muted" style="font-size: var(--text-sm)">Add cases or import a CSV/XLSX template.</div>
+              <div class="muted" style="font-size: var(--text-sm)">Create a Case or use Import / Export to add cases from a file.</div>
+            </div>
+          </section>
+
+          <!-- ===== SCREEN: IMPORT / EXPORT ===== -->
+          <section class="screen" id="screen-import-export" aria-label="Import / Export">
+            <div class="tp3d-import-export-grid">
+              <section class="card tp3d-import-export-card" aria-labelledby="import-export-cases-title">
+                <div>
+                  <h2 id="import-export-cases-title">Cases</h2>
+                  <p class="muted">Bring cases into this workspace or download a copy.</p>
+                </div>
+                <div class="tp3d-import-export-actions">
+                  <button class="btn" id="btn-cases-import" type="button">
+                    <i class="fa-solid fa-file-import" aria-hidden="true"></i>
+                    Import Cases
+                  </button>
+                  <button class="btn" id="btn-cases-export" type="button" aria-haspopup="menu">
+                    <i class="fa-solid fa-file-export" aria-hidden="true"></i>
+                    Export Cases
+                  </button>
+                  <button class="btn" id="btn-cases-template" type="button">
+                    <i class="fa-solid fa-download" aria-hidden="true"></i>
+                    Download Cases Template
+                  </button>
+                </div>
+              </section>
+              <section class="card tp3d-import-export-card" aria-labelledby="import-export-packs-title">
+                <div>
+                  <h2 id="import-export-packs-title">Load Plans</h2>
+                  <p class="muted">Import a load plan or a batch of load plans.</p>
+                </div>
+                <div class="tp3d-import-export-actions">
+                  <button class="btn" id="btn-import-pack" type="button">
+                    <i class="fa-solid fa-file-import" aria-hidden="true"></i>
+                    Import Load Plan(s)
+                  </button>
+                </div>
+              </section>
             </div>
           </section>
 

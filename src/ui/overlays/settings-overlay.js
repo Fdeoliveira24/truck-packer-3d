@@ -3634,7 +3634,7 @@ export function createSettingsOverlay({
       },
       {
         heading: 'Cases CSV/XLSX',
-        body: 'Import Cases on the Cases screen uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.',
+        body: 'Import Cases on the Import / Export page uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.',
       },
       {
         heading: 'Safety Tip',

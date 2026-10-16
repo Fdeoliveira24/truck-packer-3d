@@ -810,11 +810,7 @@ export function createPacksScreen({
         openFoldersDropdown();
       });
 
-      if (btnImport && btnImport.parentElement === defaultActionsEl) {
-        defaultActionsEl.insertBefore(foldersButtonEl, btnImport);
-      } else {
-        defaultActionsEl.insertBefore(foldersButtonEl, defaultActionsEl.firstChild);
-      }
+      defaultActionsEl.insertBefore(foldersButtonEl, defaultActionsEl.firstChild);
       return foldersButtonEl;
     }
 

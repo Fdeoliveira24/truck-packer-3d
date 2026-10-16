@@ -174,10 +174,17 @@ export function createImportCasesDialog({
     const colsEl = doc.createElement('div');
     colsEl.className = 'tp3d-ic-cols';
 
-    const colsLabel = doc.createElement('div');
+    const colsHeading = doc.createElement('div');
+    colsHeading.className = 'tp3d-ic-cols-heading';
+    const colsLabel = doc.createElement('span');
     colsLabel.className = 'tp3d-ic-cols-label';
     colsLabel.textContent = 'COLUMNS';
-    colsEl.appendChild(colsLabel);
+    colsHeading.appendChild(colsLabel);
+    const requiredLegend = doc.createElement('span');
+    requiredLegend.className = 'tp3d-ic-required-legend';
+    requiredLegend.innerHTML = '<span class="tp3d-ic-chip-dot" aria-hidden="true"></span>Required';
+    colsHeading.appendChild(requiredLegend);
+    colsEl.appendChild(colsHeading);
 
     const colsChips = doc.createElement('div');
     colsChips.className = 'tp3d-ic-chips';
@@ -205,9 +212,16 @@ export function createImportCasesDialog({
       if (col.required) {
         const dot = doc.createElement('span');
         dot.className = 'tp3d-ic-chip-dot';
+        dot.setAttribute('aria-hidden', 'true');
         chip.appendChild(dot);
       }
       chip.appendChild(doc.createTextNode(col.label));
+      if (col.required) {
+        const requiredText = doc.createElement('span');
+        requiredText.className = 'visually-hidden';
+        requiredText.textContent = ' required';
+        chip.appendChild(requiredText);
+      }
       colsChips.appendChild(chip);
     });
     colsEl.appendChild(colsChips);
@@ -302,9 +316,11 @@ export function createImportCasesDialog({
     statsEl.className = 'tp3d-ic-stats';
 
     function makeStatCard(filterKey, dotClass, labelText) {
-      const card = doc.createElement('div');
+      const card = doc.createElement('button');
+      card.type = 'button';
       card.className = 'card tp3d-ic-stat';
       card.dataset.filter = filterKey;
+      card.setAttribute('aria-pressed', 'false');
 
       const countRow = doc.createElement('div');
       countRow.className = 'tp3d-ic-stat-count';
@@ -422,7 +438,7 @@ export function createImportCasesDialog({
     const footerNote = doc.createElement('span');
     footerNote.className = 'muted';
     footerNote.style.fontSize = 'var(--text-sm)';
-    footerNote.textContent = 'Nothing imported until you confirm.';
+    footerNote.textContent = 'Select a file to enable import. Nothing imported until you confirm.';
     footerLeft.appendChild(footerNote);
 
     const errReportBtn = doc.createElement('button');
@@ -535,7 +551,9 @@ export function createImportCasesDialog({
         { card: dupStat.card, key: 'duplicate' },
         { card: errStat.card, key: 'invalid' },
       ].forEach(({ card, key }) => {
-        card.classList.toggle('tp3d-ic-stat--active', activeFilter === key);
+        const isActive = activeFilter === key;
+        card.classList.toggle('tp3d-ic-stat--active', isActive);
+        card.setAttribute('aria-pressed', isActive ? 'true' : 'false');
       });
     }
 

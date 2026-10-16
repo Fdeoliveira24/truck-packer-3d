@@ -39,6 +39,8 @@ Preserve the recognizable orange-accent identity and current interaction contrac
 
 The same stylesheet has separate `--util-*` colors for Space Utilization density and diagnostic display. Those are capacity-analysis semantics, not a safety or compliance rating. Brand orange and warning amber are distinct roles even where their hues are close; choose by meaning. Light/dark themes are selected through Preferences (`src/services/preferences-manager.js`, `src/core/normalizer.js`, and Settings). Current preference values are `light` and `dark`; automatic/system theme and user-selected accent colors are not present.
 
+**Accessibility concern for the CSS audit:** Current primary buttons pair white `--accent-foreground` text with `--accent-primary: #ff9f1c`, approximately `2.05:1` contrast. Treat this as an unresolved accessibility issue in the upcoming CSS audit; this contract does not prescribe or implement the correction.
+
 **Proposed:** Use existing semantic properties before adding a color; check readable text, borders, hover, disabled, and focus in both themes for any later change. **Unresolved:** Some rules refer to `--bg-tertiary` or `--accent`, neither defined in the inspected root/dark token blocks (`styles/main.css`). The CSS audit should determine their intended replacement or definition; this draft assigns no value.
 
 ### 2.2 Type, space, shape, and depth — Current
@@ -108,7 +110,7 @@ The current Settings Preferences UI exposes light/dark theme and other task pref
 
 The application UI should frame the viewport as the primary planning surface: Case Browser and Inspector are readable side panels; toolbar and navigation controls remain legible against the scene; validation/status feedback has a clear owner and does not obscure cargo; spacing and responsive drawers preserve a useful viewport. Viewport focus and existing orbit/pan/zoom behavior remain usable. CSS can govern surrounding panels, overlays, typography, and control states.
 
-This contract does **not** define case/trailer materials, physical geometry, camera framing or controls, collision, packing, lighting, renderer architecture, visual-resource ownership, or the separate Claude 3D visual project. The professional 3D visual foundation contract and current technical source remain the relevant boundaries for that work. A visual treatment must never imply physical validation or override logistics truth.
+This contract does **not** define case/trailer materials, physical geometry, camera framing or controls, collision, packing, lighting, renderer architecture, visual-resource ownership, or the separate Claude 3D visual project. The professional 3D visual foundation contract and current technical source remain the relevant boundaries for that work. The previously rejected 3D visual implementation, reverted in PR #34, is not authorized or revived by this design contract. A visual treatment must never imply physical validation or override logistics truth.
 
 ## 8. Cargo Planner 3D examples
 

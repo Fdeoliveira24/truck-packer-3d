@@ -13,7 +13,7 @@
 
 // 'settings' is a compatibility entry only: app.js opens the Settings overlay for it
 // (there is no Settings screen).
-const KNOWN_SCREENS = new Set(['packs', 'cases', 'editor', 'updates', 'roadmap', 'settings']);
+const KNOWN_SCREENS = new Set(['packs', 'cases', 'editor', 'import-export', 'updates', 'roadmap', 'settings']);
 
 export const Router = {
   /**

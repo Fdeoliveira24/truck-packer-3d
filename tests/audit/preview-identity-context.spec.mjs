@@ -84,7 +84,7 @@ import * as CorePackLibrary from '/src/services/pack-library.js';
 import { createAutoPackEngine } from '/src/services/autopack-engine.js';
 import * as PreferencesManager from '/src/services/preferences-manager.js';
 import * as ImportExport from '/src/services/import-export.js';
-import { createCasesScreen } from '/src/screens/cases-screen.js';
+import { createImportExportScreen } from '/src/screens/import-export-screen.js';
 
 const APP_SUBSCRIBER = ${JSON.stringify(appSubscriber)};
 const PREVIEW_SCHEDULER = ${JSON.stringify(previewScheduler)};
@@ -502,16 +502,18 @@ window.probe = {
     for (let i = 0; i < a.length; i++) max = Math.max(max, Math.abs(a[i] - b[i]));
     return max;
   },
-  ensureCasesUI() {
-    if (!this.CasesUI) {
-      this.CasesUI = createCasesScreen({
-        Utils, UIComponents, PreferencesManager, CaseLibrary, PackLibrary, CategoryService, StateStore, ImportExport,
-        ImportCasesDialog: {}, createTableFooter, CardDisplayOverlay: {}, OperationLifecycle,
+  ensureImportExportUI() {
+    if (!this.ImportExportUI) {
+      this.ImportExportUI = createImportExportScreen({
+        StateStore, CaseLibrary, ImportExport, ImportCasesDialog: {}, ImportPackDialog: {},
+        UIComponents, Utils, OperationLifecycle, Storage: CoreStorage,
+        getWorkspaceName: () => CoreStorage.getWorkspaceScope(),
       });
-      this.CasesUI.init();
+      this.ImportExportUI.init();
     }
-    return this.CasesUI;
+    return this.ImportExportUI;
   },
+  caseDownloadGuard: Utils.downloadActionGuard,
   menuItem(label) {
     return [...document.querySelectorAll('.dropdown-menu .dropdown-item')].find(el => el.textContent.trim() === label) || null;
   },
@@ -1031,7 +1033,7 @@ test('EXPORT-A Workspace Backup dialog stays bound to its workspace scope, inclu
   CoreStorage.setWorkspaceScope('no-org');
 });
 
-test('PR-A real Chromium preview identity and navigation', { timeout: 240000 }, async t => {
+test('PR-A real Chromium preview identity and navigation', { timeout: 300000 }, async t => {
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);
@@ -2610,7 +2612,7 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       assert.deepEqual(await snapshot(), b, 'Redo exports exactly committed B');
     });
 
-    await t.test('identity: stale Pack and Case export menus never export after a scope change, including A→B→A', async () => {
+    await t.test('identity: stale Pack menus and Case download intents never export after a scope change, including A→B→A', async () => {
       await page.evaluate(() => window.probe.reset());
       await page.evaluate(() => window.probe.AppShell.navigate('packs'));
       await page.click('#packs-view-list');
@@ -2651,49 +2653,112 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
       assert.equal(fresh.data.pack.id, B);
       assert.equal(fresh.data.pack.title, 'Red B');
 
-      const caseMenu = await page.evaluate(async () => {
+      await page.evaluate(() => {
         const q = window.probe;
-        q.ensureCasesUI();
-        q.AppShell.navigate('cases');
-        document.getElementById('btn-cases-export').click();
-        const stale = q.menuItem('Case Catalog (JSON)');
+        q.ensureImportExportUI();
+        q.AppShell.navigate('import-export');
+      });
+      const format = page.getByRole('combobox', { name: 'Export format: JSON' });
+      assert.equal(await format.isVisible(), true, 'the current Import / Export format selector is available');
+      await format.click();
+      await page.getByRole('option', { name: 'JSON', exact: true }).click();
+      const downloadCases = page.getByRole('button', { name: 'Download cases', exact: true });
+      assert.equal(await downloadCases.isEnabled(), true);
+
+      const caseScope = await page.evaluate(async () => {
+        const q = window.probe;
+        const button = document.getElementById('btn-cases-export');
+        const selector = document.querySelector('#import-export-format-control .tp3d-select');
+        const guard = q.caseDownloadGuard;
+        const deferClick = () => {
+          const pending = [];
+          const run = guard.run;
+          guard.run = (key, action) => { pending.push({ key, action }); return true; };
+          try { button.click(); } finally { guard.run = run; }
+          return { pending, release: () => run.call(guard, pending[0].key, pending[0].action) };
+        };
         const seedA = q.StateStore.snapshot();
         const seedB = structuredClone(seedA);
         seedB.caseLibrary = [{ ...seedA.caseLibrary[0], id: 'workspace-b-only', name: 'Workspace B Only' }];
         seedB.packLibrary = [];
+        q.caseSeedA = seedA;
         const before = q.downloads.length;
         q.mark();
+
+        const staleB = deferClick();
+        const beforeSwitch = q.downloads.length - before;
         q.CoreStorage.setWorkspaceScope('fixture-b');
         q.StateStore.replace(seedB, { resetHistory: true });
-        stale.click();
+        const startedB = staleB.release();
         const afterB = q.downloads.length - before;
+
         q.CoreStorage.setWorkspaceScope('fixture-a');
         q.StateStore.replace(seedA, { resetHistory: true });
-        stale.click();
+        const staleABA = deferClick();
+        q.CoreStorage.setWorkspaceScope('fixture-b');
+        q.StateStore.replace(seedB, { resetHistory: true });
+        q.CoreStorage.setWorkspaceScope('fixture-a');
+        q.StateStore.replace(seedA, { resetHistory: true });
+        const startedABA = staleABA.release();
         const afterABA = q.downloads.length - before;
         const staleToasts = q.log.filter(e => e.type === 'toast').map(e => [e.message, e.tone]);
-        // Fresh menu in the current scope reads definitions when chosen, not when opened.
-        document.getElementById('btn-cases-export').click();
-        const current = q.menuItem('Case Catalog (JSON)');
+
+        // A fresh click uses the current workspace; a second rapid activation is guarded.
+        q.CoreStorage.setWorkspaceScope('fixture-b');
+        q.StateStore.replace(seedB, { resetHistory: true });
+        button.click();
+        button.click();
+        const afterFreshB = q.downloads.length - before;
+        const downloadB = q.downloads[q.downloads.length - 1];
+        const payloadB = JSON.parse(await downloadB.blob.text());
+
+        return {
+          screen: q.StateStore.get('currentScreen'), format: selector?.value,
+          pendingB: staleB.pending.length, pendingABA: staleABA.pending.length,
+          guardKeys: [...staleB.pending, ...staleABA.pending].map(item => item.key),
+          beforeSwitch, startedB, afterB, startedABA, afterABA, staleToasts,
+          afterFreshB, exportedB: payloadB.data.caseLibrary.map(c => c.id).sort(),
+          liveB: q.CaseLibrary.getCases().map(c => c.id).sort(),
+        };
+      });
+      assert.equal(caseScope.screen, 'import-export');
+      assert.equal(caseScope.format, 'json');
+      assert.equal(caseScope.pendingB, 1);
+      assert.equal(caseScope.pendingABA, 1);
+      assert.deepEqual(caseScope.guardKeys, ['case-catalog-json', 'case-catalog-json']);
+      assert.equal(caseScope.beforeSwitch, 0, 'the deferred click has not started a download');
+      assert.equal(caseScope.startedB, false, 'a stale download action is rejected by the guard');
+      assert.equal(caseScope.afterB, 0, 'a captured Case download intent cannot export after switching to B');
+      assert.equal(caseScope.startedABA, false, 'A→B→A does not restore a captured download intent');
+      assert.equal(caseScope.afterABA, 0, 'A→B→A produces no stale download');
+      assert.deepEqual(caseScope.staleToasts, [
+        ['The workspace changed. Choose Export again.', 'warning'],
+        ['The workspace changed. Choose Export again.', 'warning'],
+      ]);
+      assert.equal(caseScope.afterFreshB, 1, 'a fresh B download starts once despite a rapid repeat click');
+      assert.deepEqual(caseScope.exportedB, ['workspace-b-only'], 'B exports only B definitions');
+      assert.deepEqual(caseScope.exportedB, caseScope.liveB);
+
+      await page.waitForFunction(() => !window.probe.caseDownloadGuard.isActive('case-catalog-json'));
+      const freshA = await page.evaluate(async () => {
+        const q = window.probe;
+        q.CoreStorage.setWorkspaceScope('fixture-a');
+        q.StateStore.replace(q.caseSeedA, { resetHistory: true });
         q.CaseLibrary.upsert({ ...q.CaseLibrary.getCases()[0], id: 'added-after-open', name: 'Added After Open' });
-        current.click();
+        const before = q.downloads.length;
+        document.getElementById('btn-cases-export').click();
         const download = q.downloads[q.downloads.length - 1];
         const payload = JSON.parse(await download.blob.text());
         return {
-          found: Boolean(stale), afterB, afterABA, staleToasts,
+          downloads: q.downloads.length - before,
           exported: payload.data.caseLibrary.map(c => c.id).sort(),
           live: q.CaseLibrary.getCases().map(c => c.id).sort(),
         };
       });
-      assert.equal(caseMenu.found, true);
-      assert.equal(caseMenu.afterB, 0, 'stale Case menu in another workspace: nothing exported');
-      assert.equal(caseMenu.afterABA, 0, 'A→B→A: nothing exported');
-      assert.deepEqual(caseMenu.staleToasts, [
-        ['The workspace changed. Open Export again.', 'warning'],
-        ['The workspace changed. Open Export again.', 'warning'],
-      ]);
-      assert.deepEqual(caseMenu.exported, caseMenu.live, 'definitions come from the current scope at click time');
-      assert.ok(caseMenu.exported.includes('added-after-open'));
+      assert.equal(freshA.downloads, 1);
+      assert.deepEqual(freshA.exported, freshA.live, 'a fresh A click exports current A definitions');
+      assert.ok(freshA.exported.includes('added-after-open'));
+      assert.ok(!freshA.exported.includes('workspace-b-only'));
     });
 
     await t.test('restoration: render/copy/encode/context/clamp/blank/addImage failures download nothing and restore everything', async () => {

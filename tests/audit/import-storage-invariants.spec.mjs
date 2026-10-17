@@ -79,12 +79,12 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
     'App export modal must use backup title and CTA');
   assert.match(app, /title:\s*['"]Export Workspace Backup['"][\s\S]*label:\s*['"]Export Workspace Backup['"]/,
     'Workspace export modal must use backup title and CTA');
-  assert.match(index, /Import Load Plan\(s\)/,
-    'Load Plans screen header button must use Import Load Plan(s)');
+  assert.match(index, /Import Load Plans/,
+    'Import / Export page must name the Load Plans upload panel');
   assert.doesNotMatch(index, />\s*Import Load Plan JSON\s*</,
-    'Load Plans screen toolbar button must not say Import Load Plan JSON');
-  assert.match(index, /Download Cases Template[\s\S]*Import Cases/,
-    'Cases buttons must use explicit template and import labels');
+    'Import / Export action must not say Import Load Plan JSON');
+  assert.match(index, /Import Cases[\s\S]*Import Load Plans[\s\S]*Export Cases[\s\S]*Cases Template[\s\S]*Download CSV template/,
+    'Import / Export workspace must show both uploads, export, and the actual CSV template format');
   assert.match(importApp, /title:\s*['"]Import App Backup['"]/,
     'Import App dialog must use Import App Backup title');
   assert.match(importApp, /Replace Local App Data/,
@@ -95,6 +95,20 @@ test('UI-COPY-EXPORT-IMPORT-1 copy uses scoped backup import export wording', as
     'Both load plan context menus must use Export Load Plan JSON');
   assert.match(help, /Import \/ Export Help[\s\S]*Workspace Backup[\s\S]*Load Plan JSON[\s\S]*Cases CSV\/XLSX/,
     'Top-bar Help modal must match the import/export help scope');
+});
+
+test('Import / Export owns the four library transfer actions while contextual exports stay in their libraries', async () => {
+  const index = await fs.readFile(indexHtmlPath, 'utf8');
+  const packs = index.split('id="screen-packs"')[1].split('id="screen-cases"')[0];
+  const cases = index.split('id="screen-cases"')[1].split('id="screen-import-export"')[0];
+  const transfer = index.split('id="screen-import-export"')[1].split('id="screen-editor"')[0];
+  for (const id of ['btn-cases-import', 'btn-cases-export', 'btn-cases-template', 'btn-import-pack']) {
+    assert.equal((index.match(new RegExp(`id="${id}"`, 'g')) || []).length, 1, `${id} has one owner`);
+    assert.match(transfer, new RegExp(`id="${id}"`), `${id} is on Import / Export`);
+    assert.doesNotMatch(packs + cases, new RegExp(`id="${id}"`), `${id} left the library headers`);
+  }
+  assert.match(packs, /id="btn-new-pack"[\s\S]*id="btn-packs-bulk-export"/);
+  assert.match(cases, /id="btn-new-case"/);
 });
 
 test('UI-COPY-EXPORT-IMPORT-1 removes fake release notes and stale roadmap commitments', async () => {
@@ -335,15 +349,15 @@ test('PACK-IMPORT-SCHEMA-1 single import success path closes modal after import'
     'Single-pack import success must close the modal after importing');
 });
 
-test('PACK-IMPORT-SCHEMA-1 pack import modal uses pack-only class and batch close is gated by imported count', async () => {
+test('PACK-IMPORT-SCHEMA-1 pack import keeps legacy modal styling and discloses partial batch results', async () => {
   const src = await fs.readFile(importPackDialogPath, 'utf8');
   assert.match(src, /classList\.add\(['"]tp3d-ic-modal['"],\s*['"]tp3d-ip-modal['"]\)/,
     'Pack import modal must include pack-only tp3d-ip-modal class alongside shared tp3d-ic-modal');
   assert.match(
     src,
     // Export Integrity C: disclosed placement repairs downgrade the tone to warning.
-    /UIComponents\.showToast\(msg, imported > 0 && !repairs \? ['"]success['"] : ['"]warning['"]\);\s*if\s*\(imported\s*>\s*0\)\s*\{\s*modalObj\.close\(\);\s*\}/,
-    'Batch import should close modal only when imported > 0'
+    /status = imported > 0 && skipped === 0 && !repairs \? ['"]success['"] : ['"]warning['"][\s\S]*UIComponents\.showToast\(msg, status\);\s*if\s*\(imported\s*>\s*0\)\s*\{\s*modalObj\.close\(\);/,
+    'Batch import reports skipped entries as warnings and closes review only when imported > 0'
   );
   assert.doesNotMatch(src, /imported\s*===\s*0[\s\S]*modalObj\.close\(\)/,
     'Batch import with zero successful imports must keep modal open');
@@ -978,10 +992,10 @@ test('CARGO-RULE-V1 normalizeAppData (reload/import) preserves all handling rule
 });
 
 test('CARGO-RULE-V1 export/download action chains reach the right builder and sanitize filenames', async () => {
-  const casesSrc = await fs.readFile(casesScreenPath, 'utf8');
+  const transferSrc = await fs.readFile(new URL('../../src/screens/import-export-screen.js', import.meta.url), 'utf8');
   const packsSrc = await fs.readFile(packsScreenPath, 'utf8');
   // Cases template
-  assert.match(casesSrc, /ImportExport\.downloadCasesTemplate\(\)/, 'cases template button calls downloadCasesTemplate');
+  assert.match(transferSrc, /ImportExport\.downloadCasesTemplate\(\)/, 'transfer page template button calls downloadCasesTemplate');
   // Pack export -> restorable builder -> downloadText with the shared safe filename (Export Integrity C)
   assert.match(packsSrc, /ImportExport\.buildRestorablePackExportJSON\(pack\)/, 'pack export uses the restorable Load Plan builder');
   assert.match(packsSrc, /Utils\.downloadText\(Utils\.buildLoadPlanFilename\(pack, 'json'\), json\)/, 'pack export filename is sanitized');

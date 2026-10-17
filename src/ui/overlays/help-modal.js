@@ -43,7 +43,7 @@ export function createHelpModal({ UIComponents } = {}) {
                     <div style="height:8px"></div>
                     <div><strong>Load Plan JSON</strong>: Export Load Plan JSON (from the load plan menu) downloads a single load plan and its cases. Import Load Plan JSON adds that load plan to your library without replacing other load plans.</div>
                     <div style="height:4px"></div>
-                    <div><strong>Cases CSV/XLSX</strong>: Import Cases on the Cases screen uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.</div>
+                    <div><strong>Cases CSV/XLSX</strong>: Import Cases on the Import / Export page uploads CSV or XLSX. Valid rows are added; duplicate names and invalid rows are skipped.</div>
                     <div style="height:8px"></div>
                     <div>Export an app backup before large imports so you can restore if needed.</div>
                   </div>

@@ -83,3 +83,39 @@ export function openImportDialogWithFilePicker({
 
   return { modal, fileInput };
 }
+
+/** Mount an existing import controller's content and footer in the transfer page. */
+export function mountInlineImportReview({ documentRef, host, title, content, confirmLabel, onConfirm, onClose }) {
+  const root = documentRef.createElement('div');
+  root.className = 'tp3d-ic-inline';
+
+  const heading = documentRef.createElement('h4');
+  heading.textContent = title;
+  root.appendChild(heading);
+  root.appendChild(content);
+
+  const footer = documentRef.createElement('div');
+  footer.className = 'modal-footer';
+  const cancel = documentRef.createElement('button');
+  cancel.className = 'btn';
+  cancel.type = 'button';
+  cancel.textContent = 'Cancel';
+  const confirm = documentRef.createElement('button');
+  confirm.className = 'btn btn-primary';
+  confirm.type = 'button';
+  confirm.textContent = confirmLabel;
+  confirm.addEventListener('click', onConfirm);
+  footer.append(cancel, confirm);
+  root.appendChild(footer);
+  host.replaceChildren(root);
+
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
+    if (host.contains(root)) host.replaceChildren();
+    if (typeof onClose === 'function') onClose();
+  };
+  cancel.addEventListener('click', close);
+  return { modal: root, close };
+}

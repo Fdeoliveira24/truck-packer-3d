@@ -16,6 +16,7 @@
 // shared helper does not support.
 
 import * as CoreStorage from '../../core/storage.js';
+import { mountInlineImportReview } from '../helpers/import-dialog-utils.js';
 
 /**
  * @param {{
@@ -45,13 +46,19 @@ export function createImportPackDialog({
   // SECTION: open()
   // ---------------------------------------------------------------------------
 
-  function open({ beforeMutate: openBeforeMutate = null } = {}) {
+  function open({ beforeMutate: openBeforeMutate = null, inlineHost = null, initialFile = null, onClose = null, onComplete = null } = {}) {
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedPayload = null; // { type: 'single'|'batch', payload, file }
     let parsedScope = null;
     let activeCaseFilter = 'all'; // all | ready | duplicates | invalid
+    let disposed = false;
+    let fileVersion = 0;
+    /** @type {any} */
+    // eslint-disable-next-line prefer-const -- mounted after the review content is built.
+    let modalObj;
 
     function mutationAllowed() {
+      if (disposed) return false;
       if (
         parsedScope &&
         Storage &&
@@ -63,6 +70,7 @@ export function createImportPackDialog({
             'Import stopped because the signed-in user or active workspace changed. Select the file again.',
           'warning'
         );
+        if (inlineHost) modalObj.close();
         return false;
       }
       const guard = typeof openBeforeMutate === 'function' ? openBeforeMutate : beforeMutate;
@@ -122,10 +130,17 @@ export function createImportPackDialog({
     const chipsEl = doc.createElement('div');
     chipsEl.className = 'tp3d-ic-cols';
 
-    const chipsLabel = doc.createElement('div');
+    const chipsHeading = doc.createElement('div');
+    chipsHeading.className = 'tp3d-ic-cols-heading';
+    const chipsLabel = doc.createElement('span');
     chipsLabel.className = 'tp3d-ic-cols-label';
     chipsLabel.textContent = 'PACK STRUCTURE';
-    chipsEl.appendChild(chipsLabel);
+    chipsHeading.appendChild(chipsLabel);
+    const requiredLegend = doc.createElement('span');
+    requiredLegend.className = 'tp3d-ic-required-legend';
+    requiredLegend.innerHTML = '<span class="tp3d-ic-chip-dot" aria-hidden="true"></span>Required';
+    chipsHeading.appendChild(requiredLegend);
+    chipsEl.appendChild(chipsHeading);
 
     const chipsWrap = doc.createElement('div');
     chipsWrap.className = 'tp3d-ic-chips';
@@ -143,9 +158,16 @@ export function createImportPackDialog({
       if (col.required) {
         const dot = doc.createElement('span');
         dot.className = 'tp3d-ic-chip-dot';
+        dot.setAttribute('aria-hidden', 'true');
         chip.appendChild(dot);
       }
       chip.appendChild(doc.createTextNode(col.label));
+      if (col.required) {
+        const requiredText = doc.createElement('span');
+        requiredText.className = 'visually-hidden';
+        requiredText.textContent = ' required';
+        chip.appendChild(requiredText);
+      }
       chipsWrap.appendChild(chip);
     });
     chipsEl.appendChild(chipsWrap);
@@ -156,6 +178,7 @@ export function createImportPackDialog({
     // ── PARSING AREA ────────────────────────────────────────────────────────
     const parsingArea = doc.createElement('div');
     parsingArea.className = 'tp3d-ic-area tp3d-ic-hidden';
+    parsingArea.setAttribute('role', 'status');
 
     const parsingCard = doc.createElement('div');
     parsingCard.className = 'card tp3d-ic-parsing-card';
@@ -208,7 +231,7 @@ export function createImportPackDialog({
     fileChipInfo.appendChild(fileChipMeta);
 
     const fileChipReplace = doc.createElement('button');
-    fileChipReplace.className = 'btn btn-ghost tp3d-ic-replace-btn';
+    fileChipReplace.className = 'btn tp3d-ic-replace-btn tp3d-ic-hidden';
     fileChipReplace.type = 'button';
     fileChipReplace.textContent = 'Replace';
 
@@ -219,15 +242,17 @@ export function createImportPackDialog({
     fileChipClear.innerHTML = '<i class="fa-solid fa-xmark"></i>';
     fileChipClear.addEventListener('click', ev => {
       ev.stopPropagation();
+      fileVersion += 1;
       parsedPayload = null;
+      parsedScope = null;
       fileInput.value = '';
       showState('dropzone');
       updateFooter();
+      if (inlineHost) modalObj.close();
     });
 
     fileChip.appendChild(fileChipIcon);
     fileChip.appendChild(fileChipInfo);
-    fileChip.appendChild(fileChipReplace);
     fileChip.appendChild(fileChipClear);
     parsedArea.appendChild(fileChip);
 
@@ -350,8 +375,19 @@ export function createImportPackDialog({
     content.appendChild(parsingArea);
     content.appendChild(parsedArea);
 
-    // ── Modal ────────────────────────────────────────────────────────────────
-    const modalObj = UIComponents.showModal({
+    modalObj = inlineHost ? mountInlineImportReview({
+      documentRef: doc,
+      host: inlineHost,
+      title: 'Review Load Plan import',
+      content,
+      confirmLabel: 'Import load plan',
+      onConfirm: () => doImport(),
+      onClose: () => {
+        disposed = true;
+        fileVersion += 1;
+        if (typeof onClose === 'function') onClose();
+      },
+    }) : UIComponents.showModal({
       title: 'Import Load Plan JSON',
       content,
       dismissible: false,
@@ -369,7 +405,7 @@ export function createImportPackDialog({
       ],
     });
 
-    modalObj.modal.classList.add('tp3d-ic-modal', 'tp3d-ip-modal');
+    if (!inlineHost) modalObj.modal.classList.add('tp3d-ic-modal', 'tp3d-ip-modal');
 
     const importBtn = modalObj.modal.querySelector('.modal-footer .btn-primary');
     importBtn.disabled = true;
@@ -381,9 +417,10 @@ export function createImportPackDialog({
     const footerNote = doc.createElement('span');
     footerNote.className = 'muted';
     footerNote.style.fontSize = 'var(--text-sm)';
-    footerNote.textContent = 'Nothing created until you confirm.';
+    footerNote.textContent = 'Select a file to enable import. Nothing created until you confirm.';
     footerLeft.appendChild(footerNote);
     footer.insertBefore(footerLeft, footer.firstChild);
+    footer.insertBefore(fileChipReplace, importBtn);
 
     // ── File input event ──────────────────────────────────────────────────
     fileInput.addEventListener('change', () => {
@@ -419,6 +456,8 @@ export function createImportPackDialog({
       parsingArea.classList.toggle('tp3d-ic-hidden', name !== 'parsing');
       parsedArea.classList.toggle('tp3d-ic-hidden',
         name !== 'single' && name !== 'batch' && name !== 'error');
+      fileChipReplace.classList.toggle('tp3d-ic-hidden',
+        name !== 'single' && name !== 'batch' && name !== 'error');
       if (name === 'single' || name === 'batch' || name === 'error') {
         singleDetail.classList.toggle('tp3d-ic-hidden', name !== 'single');
         batchDetail.classList.toggle('tp3d-ic-hidden', name !== 'batch');
@@ -431,7 +470,7 @@ export function createImportPackDialog({
       if (!parsedPayload) {
         importBtn.disabled = true;
         importBtn.textContent = 'Import load plan';
-        footerNote.textContent = 'Nothing created until you confirm.';
+        footerNote.textContent = 'Select a file to enable import. Nothing created until you confirm.';
         return;
       }
       if (parsedPayload.type === 'single') {
@@ -466,7 +505,9 @@ export function createImportPackDialog({
         importBtn.disabled = validCount === 0;
         importBtn.innerHTML = '';
         importBtn.appendChild(doc.createTextNode('Import ' + validCount + ' load plan' + (validCount !== 1 ? 's' : '')));
-        footerNote.textContent = 'Nothing created until you confirm.';
+        footerNote.textContent = validCount === 0
+          ? 'No valid load plans to import.'
+          : 'Nothing created until you confirm.';
       }
     }
 
@@ -1080,6 +1121,7 @@ export function createImportPackDialog({
       regenBtn.type = 'button';
       regenBtn.textContent = 'Assign New Load Plan Number';
       regenBtn.addEventListener('click', () => {
+        if (!parsedFileIsCurrent(fileVersion, parsedScope)) return;
         payload.pack.loadPlanNumber = null;
         renderSinglePackPreview(payload, file, kb);
       });
@@ -1129,17 +1171,20 @@ export function createImportPackDialog({
 
     // ── File handler ──────────────────────────────────────────────────────
     async function handleFile(file) {
-      if (!file) return;
-      parsedScope =
+      if (!file || disposed) return;
+      const version = ++fileVersion;
+      parsedPayload = null;
+      const scope = parsedScope =
         Storage && typeof Storage.captureScopeContext === 'function'
           ? Storage.captureScopeContext()
           : null;
       activeCaseFilter = 'all';
+      updateFooter();
 
       // Show file chip immediately with filename
       fileChipName.textContent = file.name;
       const kb = Math.round((file.size / 1024) * 10) / 10;
-      fileChipMeta.textContent = kb + ' KB · reading…';
+      fileChipMeta.textContent = 'JSON · ' + kb + ' KB · reading…';
 
       parsingName.textContent = 'Reading ' + file.name + '…';
       showState('parsing');
@@ -1147,9 +1192,11 @@ export function createImportPackDialog({
       let text;
       try {
         text = await file.text();
+        if (!parsedFileIsCurrent(version, scope)) return;
       } catch (err) {
+        if (!parsedFileIsCurrent(version, scope)) return;
         const normalized = normalizeImportError(err, 'Could not read this file. Please try again.');
-        fileChipMeta.textContent = kb + ' KB · read failed';
+        fileChipMeta.textContent = 'JSON · ' + kb + ' KB · read failed';
         renderError(normalized.message, normalized.heading);
         parsedPayload = null;
         showState('error');
@@ -1196,7 +1243,7 @@ export function createImportPackDialog({
           const { validCount, skippedCount } = renderBatchList(payloads);
           fileChipMeta.textContent =
             payloads.length + ' load plan' + (payloads.length !== 1 ? 's' : '') +
-            ' · ' + kb + ' KB · parsed just now';
+            ' · JSON · ' + kb + ' KB · parsed just now';
           parsedPayload = { type: 'batch', payloads, valid: validCount, skipped: skippedCount, file };
           showState('batch');
           updateFooter();
@@ -1210,7 +1257,6 @@ export function createImportPackDialog({
       try {
         const payload = ImportExport.parsePackImportJSON(text);
         const pack = payload.pack;
-        const bundledCases = Array.isArray(payload.bundledCases) ? payload.bundledCases : [];
 
         if (!pack || !pack.truck || !Array.isArray(pack.cases)) {
           throw new Error('Invalid load plan format — missing truck or cases list.');
@@ -1227,15 +1273,11 @@ export function createImportPackDialog({
         const caseCount = pack.cases.length;
         fileChipMeta.textContent =
           caseCount + ' case' + (caseCount !== 1 ? 's' : '') +
-          ' · ' + kb + ' KB · parsed just now';
+          ' · JSON · ' + kb + ' KB · parsed just now';
 
-        parsedPayload = { type: 'single', payload, file };
-
-        renderPackSummary(pack, bundledCases);
-        renderCasesTable(pack, bundledCases);
-        showState('single');
-        updateFooter();
+        renderSinglePackPreview(payload, file, kb);
       } catch (err) {
+        if (!parsedFileIsCurrent(version, scope)) return;
         fileChipMeta.textContent = kb + ' KB · parsed just now';
         const normalized = normalizeImportError(err, 'Could not parse this load plan file.');
         renderError(normalized.message, normalized.heading);
@@ -1243,6 +1285,20 @@ export function createImportPackDialog({
         showState('error');
         updateFooter();
       }
+    }
+
+    function parsedFileIsCurrent(version, scope) {
+      if (disposed || version !== fileVersion) return false;
+      if (scope && Storage && typeof Storage.isScopeContextCurrent === 'function' &&
+          !Storage.isScopeContextCurrent(scope)) {
+        UIComponents.showToast(
+          Storage.IMPORT_SCOPE_CHANGED_MESSAGE || 'The workspace changed. Select the file again.',
+          'warning'
+        );
+        if (inlineHost) modalObj.close();
+        return false;
+      }
+      return true;
     }
 
     // ── Import ────────────────────────────────────────────────────────────
@@ -1259,8 +1315,17 @@ export function createImportPackDialog({
           if (renamed > 0) message += ` · ${renamed} case${renamed !== 1 ? 's' : ''} renamed to keep different local cargo`;
           UIComponents.showToast(message, repairs ? 'warning' : 'success');
           modalObj.close();
+          if (inlineHost && typeof onComplete === 'function') {
+            onComplete({ message, status: repairs ? 'warning' : 'success' });
+          }
         } catch (err) {
           UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
+          if (inlineHost) {
+            parsedPayload = null;
+            renderError((err && err.message) || 'Import failed.', 'Import failed');
+            showState('error');
+            updateFooter();
+          }
         }
         return;
       }
@@ -1302,6 +1367,12 @@ export function createImportPackDialog({
             'warning'
           );
           modalObj.close();
+          if (inlineHost && typeof onComplete === 'function') {
+            onComplete({
+              message: 'Imported ' + imported + ' load plan' + (imported !== 1 ? 's' : '') + ' before the operation started',
+              status: 'warning',
+            });
+          }
         }
         return;
       }
@@ -1318,11 +1389,18 @@ export function createImportPackDialog({
         const more = failures.length > 3 ? ` (+${failures.length - 3} more)` : '';
         msg += ' — ' + shown + more;
       }
-      UIComponents.showToast(msg, imported > 0 && !repairs ? 'success' : 'warning');
+      const status = imported > 0 && skipped === 0 && !repairs ? 'success' : 'warning';
+      UIComponents.showToast(msg, status);
       if (imported > 0) {
         modalObj.close();
+        if (inlineHost && typeof onComplete === 'function') {
+          onComplete({ message: msg, status });
+        }
       }
     }
+
+    if (initialFile) void handleFile(initialFile);
+    return { close: () => modalObj.close() };
   }
 
   // ---------------------------------------------------------------------------

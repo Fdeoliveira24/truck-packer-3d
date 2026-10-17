@@ -89,7 +89,12 @@ test('LOAD-PLAN-TERM-2 create/edit/duplicate/delete actions are customer-labelle
   ]);
 
   assert.match(html, /New Load Plan/, 'the primary create button must say New Load Plan');
-  assert.match(html, /Import Load Plan\(s\)/, 'the import button must say Import Load Plan(s)');
+  assert.match(html, /<h4 id="import-export-packs-title">Import Load Plans<\/h4>/,
+    'the inline upload panel must be labelled Import Load Plans');
+  assert.match(html, /<p id="import-export-packs-formats">Single or batch JSON<\/p>/,
+    'the inline upload panel must describe both supported Load Plan formats');
+  assert.match(html, /<button[^>]*id="btn-import-pack"[^>]*aria-label="Browse Load Plan files"[^>]*aria-describedby="import-export-packs-formats"[^>]*>Browse files<\/button>/,
+    'the Browse button must expose its Load Plan purpose and format to assistive technology');
 
   assert.match(packs, /title:\s*'New Load Plan'/, 'the create modal title must say New Load Plan');
   assert.match(packs, /title:\s*'Edit Load Plan'/, 'the edit modal title must say Edit Load Plan');

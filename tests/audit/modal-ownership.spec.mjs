@@ -1261,6 +1261,13 @@ test('#/settings is a compatibility entry that settles on a stable screen and op
   ]);
   everyCall.push(...live.calls);
 
+  const transfer = harness({ screen: 'import-export', ready: true });
+  transfer.api.openSettingsFromRoute();
+  assert.deepEqual(transfer.calls, [
+    ['replaceScreen', 'import-export'], ['navigate', 'import-export'], ['openSettingsOverlay', 'preferences'],
+  ], 'Settings keeps the Import / Export route underneath its overlay');
+  everyCall.push(...transfer.calls);
+
   // A retired or unknown current screen falls back to Load Plans.
   const fallback = harness({ screen: 'settings', ready: true });
   fallback.api.openSettingsFromRoute();
@@ -1280,7 +1287,7 @@ test('#/settings is a compatibility entry that settles on a stable screen and op
     if (priorWindow === undefined) delete globalThis.window;
     else globalThis.window = priorWindow;
   }
-  assert.match(appSrc, /if \(screen === 'settings'\) openSettingsFromRoute\(\);\s*else AppShell\.navigate\(screen\);/);
+  assert.match(appSrc, /if \(screen === 'settings'\) openSettingsFromRoute\(\);\s*else AppShell\.navigate\(screen, \{ fromRoute: true \}\);/);
 
   // The legacy screen and its destructive Reset are gone.
   const html = readFileSync(new URL('../../index.html', import.meta.url), 'utf8');
@@ -1290,6 +1297,32 @@ test('#/settings is a compatibility entry that settles on a stable screen and op
   assert.throws(() => readFileSync(new URL('../../src/screens/settings-screen.js', import.meta.url)), /ENOENT/);
   const shell = readFileSync(new URL('../../src/ui/app-shell.js', import.meta.url), 'utf8');
   assert.doesNotMatch(shell, /settings:\s*\{ title/);
+});
+
+test('Import / Export hash route survives direct entry and return navigation', async () => {
+  const { Router } = await import('../../src/router.js');
+  const priorWindow = globalThis.window;
+  let onHashChange = null;
+  const seen = [];
+  globalThis.window = {
+    location: { hash: '#/import-export' },
+    addEventListener: (_type, listener) => { onHashChange = listener; },
+    removeEventListener: () => { onHashChange = null; },
+  };
+  try {
+    assert.deepEqual(Router.parseHash(), { screen: 'import-export', isNotFound: false });
+    const stop = Router.init({ onScreen: screen => seen.push(screen) });
+    globalThis.window.location.hash = '#/cases';
+    onHashChange();
+    globalThis.window.location.hash = '#/import-export';
+    onHashChange();
+    assert.deepEqual(seen, ['import-export', 'cases', 'import-export']);
+    stop();
+    assert.equal(onHashChange, null);
+  } finally {
+    if (priorWindow === undefined) delete globalThis.window;
+    else globalThis.window = priorWindow;
+  }
 });
 
 // P0-SM-OF-1: minimal fake DOM sufficient to actually run createUIComponents()'s

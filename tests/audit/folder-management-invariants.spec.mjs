@@ -642,8 +642,8 @@ test('phase 0.7C-1A folder dropdown is filter only and avoids CRUD move UI', asy
   const end = src.indexOf('\n    function initListHeaderSort()', start + 1);
   const dropdownBlock = start >= 0 && end > start ? src.slice(start, end) : '';
 
-  assert.match(src, /defaultActionsEl\.insertBefore\(foldersButtonEl, btnImport\)/,
-    'Folders button must be mounted before Import Pack in the top action area');
+  assert.match(src, /defaultActionsEl\.insertBefore\(foldersButtonEl, defaultActionsEl\.firstChild\)/,
+    'Folders button must remain first in the Load Plans top action area');
   assert.match(dropdownBlock, /label: `All Load Plans \(\$\{model\.totalCount\}\)`/,
     'Folders dropdown must include All Load Plans with count');
   assert.match(dropdownBlock, /label: `Unfiled \(\$\{model\.unfiledCount\}\)`/,

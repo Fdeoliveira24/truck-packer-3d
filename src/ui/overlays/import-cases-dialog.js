@@ -18,6 +18,7 @@
 import * as Defaults from '../../core/defaults.js';
 import * as CoreStorage from '../../core/storage.js';
 import { getCaseHandlingSummary } from '../../services/case-rule-summary.js';
+import { mountInlineImportReview } from '../helpers/import-dialog-utils.js';
 
 /**
  * @param {{
@@ -92,15 +93,21 @@ export function createImportCasesDialog({
   // SECTION: open()
   // ---------------------------------------------------------------------------
 
-  function open({ beforeMutate: openBeforeMutate = null } = {}) {
+  function open({ beforeMutate: openBeforeMutate = null, inlineHost = null, initialFile = null, onClose = null, onComplete = null } = {}) {
     // Per-open mutable state — fresh on every open() call so no stale leakage.
     let parsedResult = null;
     let parsedScope = null;
     let activeImportKind = 'spreadsheet'; // 'spreadsheet' | 'json'
     let pendingCatalogPlan = null; // set only for the JSON Case Catalog path
     let activeFilter = 'all'; // 'all' | 'valid' | 'duplicate' | 'invalid'
+    let disposed = false;
+    let fileVersion = 0;
+    /** @type {any} */
+    // eslint-disable-next-line prefer-const -- mounted after the review content is built.
+    let modalObj;
 
     function mutationAllowed() {
+      if (disposed) return false;
       if (
         parsedScope &&
         Storage &&
@@ -112,6 +119,7 @@ export function createImportCasesDialog({
             'Import stopped because the signed-in user or active workspace changed. Select the file again.',
           'warning'
         );
+        if (inlineHost) modalObj.close();
         return false;
       }
       const guard = typeof openBeforeMutate === 'function' ? openBeforeMutate : beforeMutate;
@@ -232,6 +240,7 @@ export function createImportCasesDialog({
     // ── PARSING AREA ────────────────────────────────────────────────────────
     const parsingArea = doc.createElement('div');
     parsingArea.className = 'tp3d-ic-area tp3d-ic-hidden';
+    parsingArea.setAttribute('role', 'status');
 
     const parsingCard = doc.createElement('div');
     parsingCard.className = 'card tp3d-ic-parsing-card';
@@ -284,7 +293,7 @@ export function createImportCasesDialog({
     fileChipInfo.appendChild(fileChipMeta);
 
     const fileChipReplace = doc.createElement('button');
-    fileChipReplace.className = 'btn btn-ghost tp3d-ic-replace-btn';
+    fileChipReplace.className = 'btn tp3d-ic-replace-btn tp3d-ic-hidden';
     fileChipReplace.type = 'button';
     fileChipReplace.textContent = 'Replace';
 
@@ -295,7 +304,9 @@ export function createImportCasesDialog({
     fileChipClear.innerHTML = '<i class="fa-solid fa-xmark"></i>';
     fileChipClear.addEventListener('click', ev => {
       ev.stopPropagation(); // must not bubble to modal-overlay close
+      fileVersion += 1;
       parsedResult = null;
+      parsedScope = null;
       pendingCatalogPlan = null;
       activeImportKind = 'spreadsheet';
       activeFilter = 'all';
@@ -303,11 +314,11 @@ export function createImportCasesDialog({
       showState('dropzone');
       updateImportBtn();
       updateFooterLeft();
+      if (inlineHost) modalObj.close();
     });
 
     fileChip.appendChild(fileChipIcon);
     fileChip.appendChild(fileChipInfo);
-    fileChip.appendChild(fileChipReplace);
     fileChip.appendChild(fileChipClear);
     parsedArea.appendChild(fileChip);
 
@@ -403,8 +414,26 @@ export function createImportCasesDialog({
     content.appendChild(parsingArea);
     content.appendChild(parsedArea);
 
-    // ── Modal ────────────────────────────────────────────────────────────────
-    const modalObj = UIComponents.showModal({
+    const errorArea = doc.createElement('div');
+    errorArea.className = 'tp3d-ic-inline-error tp3d-ic-hidden';
+    errorArea.setAttribute('role', 'alert');
+    content.appendChild(errorArea);
+
+    // The same review content and import decision can live in a dialog or in
+    // the dedicated transfer page. Existing direct callers retain the dialog.
+    modalObj = inlineHost ? mountInlineImportReview({
+      documentRef: doc,
+      host: inlineHost,
+      title: 'Review Cases import',
+      content,
+      confirmLabel: 'Import cases',
+      onConfirm: () => doImport(),
+      onClose: () => {
+        disposed = true;
+        fileVersion += 1;
+        if (typeof onClose === 'function') onClose();
+      },
+    }) : UIComponents.showModal({
       title: 'Import Cases',
       content,
       dismissible: false,
@@ -422,8 +451,7 @@ export function createImportCasesDialog({
       ],
     });
 
-    // Widen the modal for the preview table
-    modalObj.modal.classList.add('tp3d-ic-modal');
+    if (!inlineHost) modalObj.modal.classList.add('tp3d-ic-modal');
 
     // Import button ref for dynamic enable/disable + label
     const importBtn = modalObj.modal.querySelector('.modal-footer .btn-primary');
@@ -449,6 +477,7 @@ export function createImportCasesDialog({
     footerLeft.appendChild(errReportBtn);
 
     footer.insertBefore(footerLeft, footer.firstChild);
+    footer.insertBefore(fileChipReplace, importBtn);
 
     // ── File input event (also used by replace) ───────────────────────────
     fileInput.addEventListener('change', () => {
@@ -484,6 +513,8 @@ export function createImportCasesDialog({
       dropzoneArea.classList.toggle('tp3d-ic-hidden', name !== 'dropzone');
       parsingArea.classList.toggle('tp3d-ic-hidden', name !== 'parsing');
       parsedArea.classList.toggle('tp3d-ic-hidden', name !== 'parsed');
+      errorArea.classList.toggle('tp3d-ic-hidden', name !== 'error');
+      fileChipReplace.classList.toggle('tp3d-ic-hidden', name !== 'parsed' && name !== 'error');
     }
 
     // ── Dynamic updates ───────────────────────────────────────────────────
@@ -603,11 +634,12 @@ export function createImportCasesDialog({
           statusIcon.className = 'fa-solid fa-check';
         } else if (type === 'duplicate') {
           statusCircle.className = 'tp3d-ic-status-circle tp3d-ic-status-circle--muted';
-          statusIcon.className = 'fa-regular fa-copy';
+          statusIcon.className = 'fa-solid fa-minus';
         } else {
           statusCircle.className = 'tp3d-ic-status-circle tp3d-ic-status-circle--error';
           statusIcon.className = 'fa-solid fa-xmark';
         }
+        statusIcon.setAttribute('aria-hidden', 'true');
         statusCircle.appendChild(statusIcon);
         statusTd.appendChild(statusCircle);
 
@@ -707,15 +739,20 @@ export function createImportCasesDialog({
 
     // ── File handler ──────────────────────────────────────────────────────
     async function handleFile(file) {
-      if (!file) return;
-      parsedScope =
+      if (!file || disposed) return;
+      const version = ++fileVersion;
+      parsedResult = null;
+      pendingCatalogPlan = null;
+      const scope = parsedScope =
         Storage && typeof Storage.captureScopeContext === 'function'
           ? Storage.captureScopeContext()
           : null;
+      updateImportBtn();
+      updateFooterLeft();
 
       const ext = String((file && file.name) || '').split('.').pop().toLowerCase().trim();
       if (ext === 'json') {
-        await handleCaseCatalogJsonFile(file);
+        await handleCaseCatalogJsonFile(file, version, scope);
         return;
       }
 
@@ -726,6 +763,7 @@ export function createImportCasesDialog({
 
       try {
         const parsed = await ImportExport.parseAndValidateSpreadsheet(file);
+        if (!parsedFileIsCurrent(version, scope)) return;
         parsedResult = parsed;
         activeFilter = 'all';
 
@@ -741,7 +779,7 @@ export function createImportCasesDialog({
         const kb = Math.round((file.size / 1024) * 10) / 10;
         fileChipMeta.textContent =
           rowCount + ' row' + (rowCount !== 1 ? 's' : '') +
-          ' · ' + kb + ' KB · parsed just now';
+          ' · ' + ext.toUpperCase() + ' · ' + kb + ' KB · parsed just now';
 
         updateStatCards();
         renderPreviewRows();
@@ -749,9 +787,31 @@ export function createImportCasesDialog({
         updateFooterLeft();
         showState('parsed');
       } catch (err) {
-        showState('dropzone');
+        if (!parsedFileIsCurrent(version, scope)) return;
+        if (inlineHost) {
+          const kb = Math.round((file.size / 1024) * 10) / 10;
+          errorArea.textContent = file.name + ' · ' + ext.toUpperCase() + ' · ' + kb +
+            ' KB — ' + (err && err.message);
+          showState('error');
+        } else {
+          showState('dropzone');
+        }
         UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
       }
+    }
+
+    function parsedFileIsCurrent(version, scope) {
+      if (disposed || version !== fileVersion) return false;
+      if (scope && Storage && typeof Storage.isScopeContextCurrent === 'function' &&
+          !Storage.isScopeContextCurrent(scope)) {
+        UIComponents.showToast(
+          Storage.IMPORT_SCOPE_CHANGED_MESSAGE || 'The workspace changed. Select the file again.',
+          'warning'
+        );
+        if (inlineHost) modalObj.close();
+        return false;
+      }
+      return true;
     }
 
     // ── Case Catalog JSON file handler ────────────────────────────────────
@@ -759,13 +819,14 @@ export function createImportCasesDialog({
     // the reuse/conflict/reject decision purely (planCaseCatalogImport) so the
     // preview and the eventual commit in doImport() are the same deterministic
     // result — nothing is written to the Case Library until Import is clicked.
-    async function handleCaseCatalogJsonFile(file) {
+    async function handleCaseCatalogJsonFile(file, version, scope) {
       activeFilter = 'all';
       parsingName.textContent = 'Reading ' + file.name + '…';
       showState('parsing');
 
       try {
         const text = await file.text();
+        if (!parsedFileIsCurrent(version, scope)) return;
         const payload = ImportExport.parseCaseCatalogImportPayloadJSON(text);
         const cases = payload.cases;
         const plan = CaseLibrary.planCaseCatalogImport(cases, payload.categories);
@@ -777,7 +838,7 @@ export function createImportCasesDialog({
         const kb = Math.round((file.size / 1024) * 10) / 10;
         fileChipMeta.textContent =
           cases.length + ' case' + (cases.length !== 1 ? 's' : '') +
-          ' · ' + kb + ' KB · parsed just now';
+          ' · JSON · ' + kb + ' KB · parsed just now';
 
         updateStatCards();
         renderPreviewRows();
@@ -785,7 +846,14 @@ export function createImportCasesDialog({
         updateFooterLeft();
         showState('parsed');
       } catch (err) {
-        showState('dropzone');
+        if (!parsedFileIsCurrent(version, scope)) return;
+        if (inlineHost) {
+          const kb = Math.round((file.size / 1024) * 10) / 10;
+          errorArea.textContent = file.name + ' · JSON · ' + kb + ' KB — ' + (err && err.message);
+          showState('error');
+        } else {
+          showState('dropzone');
+        }
         UIComponents.showToast('Import failed: ' + (err && err.message), 'error');
       }
     }
@@ -835,8 +903,13 @@ export function createImportCasesDialog({
         if (categoryAdded > 0) {
           msg += ' · ' + categoryAdded + ' ' + (categoryAdded === 1 ? 'category' : 'categories') + ' added';
         }
-        UIComponents.showToast(msg, added > 0 || categoryAdded > 0 ? 'success' : 'warning');
+        const status = added > 0 || categoryAdded > 0
+          ? (skipCount > 0 ? 'warning' : 'success') : 'warning';
+        UIComponents.showToast(msg, status);
         modalObj.close();
+        if (inlineHost && typeof onComplete === 'function') {
+          onComplete({ message: msg, status });
+        }
         return;
       }
 
@@ -854,9 +927,16 @@ export function createImportCasesDialog({
         skipCount > 0
           ? result.added + ' case' + (result.added !== 1 ? 's' : '') + ' imported · ' + skipCount + ' skipped'
           : result.added + ' case' + (result.added !== 1 ? 's' : '') + ' imported';
-      UIComponents.showToast(msg, result.added > 0 ? 'success' : 'warning');
+      const status = result.added > 0 && skipCount === 0 ? 'success' : 'warning';
+      UIComponents.showToast(msg, status);
       modalObj.close();
+      if (inlineHost && typeof onComplete === 'function') {
+        onComplete({ message: msg, status });
+      }
     }
+
+    if (initialFile) void handleFile(initialFile);
+    return { close: () => modalObj.close() };
   }
 
   // ---------------------------------------------------------------------------

@@ -740,51 +740,83 @@
 
           <!-- ===== SCREEN: IMPORT / EXPORT ===== -->
           <section class="screen" id="screen-import-export" aria-label="Import / Export">
-            <div class="card tp3d-import-export-workspace">
-              <section class="tp3d-import-export-section" aria-labelledby="import-export-cases-title">
-                <div class="tp3d-import-export-heading">
-                  <h2 id="import-export-cases-title">Cases</h2>
+            <div class="tp3d-transfer-page-head">
+              <div>
+                <h2>Import / Export</h2>
+                <p>Bring cases and load plans into this workspace, or download case data.</p>
+              </div>
+              <div class="tp3d-transfer-workspace-label">
+                <span>Current workspace</span>
+                <strong id="import-export-workspace-name">Loading…</strong>
+              </div>
+            </div>
+            <div class="card tp3d-transfer-surface">
+              <section class="tp3d-transfer-section" aria-labelledby="import-export-import-title">
+                <div class="tp3d-transfer-section-heading">
+                  <span class="tp3d-transfer-section-icon" aria-hidden="true"><i class="fa-solid fa-file-arrow-up"></i></span>
+                  <div>
+                    <h3 id="import-export-import-title">Import</h3>
+                    <p>Choose a file to review before creating anything.</p>
+                  </div>
                 </div>
-                <div class="tp3d-import-export-actions">
-                  <button class="tp3d-import-export-action" id="btn-cases-import" type="button">
-                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-file-import"></i></span>
-                    <span class="tp3d-import-export-copy">
-                      <span class="tp3d-import-export-title">Import Cases</span>
-                      <span class="tp3d-import-export-description">CSV, XLSX or Case Catalog JSON</span>
-                    </span>
-                    <i class="fa-solid fa-chevron-right tp3d-import-export-indicator" aria-hidden="true"></i>
-                  </button>
-                  <button class="tp3d-import-export-action" id="btn-cases-export" type="button" aria-haspopup="menu">
-                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-file-export"></i></span>
-                    <span class="tp3d-import-export-copy">
-                      <span class="tp3d-import-export-title">Export Cases</span>
-                      <span class="tp3d-import-export-description">JSON, CSV or XLSX</span>
-                    </span>
-                    <i class="fa-solid fa-chevron-down tp3d-import-export-indicator" aria-hidden="true"></i>
-                  </button>
-                  <button class="tp3d-import-export-action" id="btn-cases-template" type="button">
-                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-download"></i></span>
-                    <span class="tp3d-import-export-copy">
-                      <span class="tp3d-import-export-title">Download Cases Template</span>
-                      <span class="tp3d-import-export-description">Spreadsheet template</span>
-                    </span>
-                    <i class="fa-solid fa-chevron-right tp3d-import-export-indicator" aria-hidden="true"></i>
-                  </button>
+                <div class="tp3d-transfer-upload-grid">
+                  <div class="tp3d-transfer-upload" id="import-export-cases-drop" role="group" aria-labelledby="import-export-cases-title">
+                    <div class="tp3d-transfer-upload-heading">
+                      <i class="fa-solid fa-box" aria-hidden="true"></i>
+                      <div>
+                        <h4 id="import-export-cases-title">Import Cases</h4>
+                        <p id="import-export-cases-formats">CSV, XLSX, or Case Catalog JSON</p>
+                      </div>
+                    </div>
+                    <div class="tp3d-transfer-upload-foot">
+                      <span>Drop a file here</span>
+                      <button class="btn" id="btn-cases-import" type="button" aria-label="Browse Case files" aria-describedby="import-export-cases-formats">Browse files</button>
+                    </div>
+                    <input id="import-export-cases-file" type="file" accept=".csv,.xlsx,.json,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,text/csv,application/json" hidden />
+                  </div>
+                  <div class="tp3d-transfer-upload" id="import-export-packs-drop" role="group" aria-labelledby="import-export-packs-title">
+                    <div class="tp3d-transfer-upload-heading">
+                      <i class="fa-solid fa-layer-group" aria-hidden="true"></i>
+                      <div>
+                        <h4 id="import-export-packs-title">Import Load Plans</h4>
+                        <p id="import-export-packs-formats">Single or batch JSON</p>
+                      </div>
+                    </div>
+                    <div class="tp3d-transfer-upload-foot">
+                      <span>Drop a file here</span>
+                      <button class="btn" id="btn-import-pack" type="button" aria-label="Browse Load Plan files" aria-describedby="import-export-packs-formats">Browse files</button>
+                    </div>
+                    <input id="import-export-packs-file" type="file" accept=".json,application/json" hidden />
+                  </div>
                 </div>
+                <section class="tp3d-transfer-review" id="import-export-review" aria-label="Import review" tabindex="-1" hidden></section>
               </section>
-              <section class="tp3d-import-export-section" aria-labelledby="import-export-packs-title">
-                <div class="tp3d-import-export-heading">
-                  <h2 id="import-export-packs-title">Load Plans</h2>
+              <section class="tp3d-transfer-section" aria-labelledby="import-export-export-title">
+                <div class="tp3d-transfer-section-heading">
+                  <span class="tp3d-transfer-section-icon" aria-hidden="true"><i class="fa-solid fa-file-arrow-down"></i></span>
+                  <div>
+                    <h3 id="import-export-export-title">Export</h3>
+                    <p>Download case data or a blank CSV template.</p>
+                  </div>
                 </div>
-                <div class="tp3d-import-export-actions">
-                  <button class="tp3d-import-export-action" id="btn-import-pack" type="button">
-                    <span class="tp3d-import-export-icon" aria-hidden="true"><i class="fa-solid fa-file-import"></i></span>
-                    <span class="tp3d-import-export-copy">
-                      <span class="tp3d-import-export-title">Import Load Plan(s)</span>
-                      <span class="tp3d-import-export-description">Individual or batch JSON</span>
-                    </span>
-                    <i class="fa-solid fa-chevron-right tp3d-import-export-indicator" aria-hidden="true"></i>
-                  </button>
+                <div class="tp3d-transfer-export-row">
+                  <div class="tp3d-transfer-export-copy">
+                    <h4>Export Cases</h4>
+                    <p>Download the cases in your current workspace.</p>
+                    <span class="tp3d-transfer-availability" id="import-export-cases-available"></span>
+                  </div>
+                  <div class="tp3d-transfer-export-controls">
+                    <span class="label" id="import-export-format-label">Format</span>
+                    <div id="import-export-format-control"></div>
+                    <button class="btn" id="btn-cases-export" type="button">Download cases</button>
+                  </div>
+                </div>
+                <div class="tp3d-transfer-export-row">
+                  <div class="tp3d-transfer-export-copy">
+                    <h4>Cases Template</h4>
+                    <p>A CSV starter file with the required columns.</p>
+                  </div>
+                  <button class="btn" id="btn-cases-template" type="button">Download CSV template</button>
                 </div>
               </section>
             </div>

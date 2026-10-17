@@ -61,7 +61,6 @@ export function createPacksScreen({
   StateStore,
   TrailerPresets,
   ImportExport,
-  ImportPackDialog,
   createTableFooter,
   AppShell,
   ExportService,
@@ -83,7 +82,6 @@ export function createPacksScreen({
     const filterEmptyEl = /** @type {HTMLElement} */ (document.getElementById('packs-filter-empty'));
     const filterEmptyMsg = /** @type {HTMLElement} */ (document.getElementById('packs-filter-empty-msg'));
     const btnNew = document.getElementById('btn-new-pack');
-    const btnImport = document.getElementById('btn-import-pack');
     const chipAll = document.getElementById('packs-filter-chip-all');
     const chipEmpty = document.getElementById('packs-filter-chip-empty');
     const chipPartial = document.getElementById('packs-filter-chip-partial');
@@ -564,7 +562,6 @@ export function createPacksScreen({
       wireChip(chipPartial, 'partial');
       wireChip(chipFull, 'full');
       btnNew.addEventListener('click', () => openNewPackModal());
-      btnImport.addEventListener('click', () => openImportPackDialog());
       ensureFoldersButton();
       btnViewGrid.addEventListener('click', () => setViewMode('grid'));
       btnViewList.addEventListener('click', () => setViewMode('list'));
@@ -2497,13 +2494,6 @@ export function createPacksScreen({
       if (mutationBlockedWhileBusy()) return;
       PackLibrary.remove(packId);
       UIComponents.showToast('Load plan deleted', 'info');
-    }
-
-    function openImportPackDialog() {
-      if (mutationBlockedWhileBusy()) return;
-      if (ImportPackDialog && typeof ImportPackDialog.open === 'function') {
-        ImportPackDialog.open({ beforeMutate: () => !mutationBlockedWhileBusy() });
-      }
     }
 
     function field(label, type, placeholder, required) {

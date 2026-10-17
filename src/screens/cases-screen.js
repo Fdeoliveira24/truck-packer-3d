@@ -17,7 +17,7 @@ import { openCaseModal as openSharedCaseModal } from '../ui/overlays/case-modal.
 import { openNotesOverlay } from '../ui/overlays/notes-overlay.js';
 import { getCaseHandlingSummary } from '../services/case-rule-summary.js';
 import { compareBusinessIdentityValues } from '../core/business-identity.js';
-import { captureScopeContext, getStorageScope, getWorkspaceScope, isScopeContextCurrent } from '../core/storage.js';
+import { getStorageScope, getWorkspaceScope } from '../core/storage.js';
 
 export function resetCasesSelection(selectedIds) {
   selectedIds.clear();
@@ -31,8 +31,6 @@ export function createCasesScreen({
   PackLibrary,
   CategoryService,
   StateStore,
-  ImportExport,
-  ImportCasesDialog,
   createTableFooter,
   CardDisplayOverlay,
   OperationLifecycle,
@@ -46,9 +44,6 @@ export function createCasesScreen({
     const emptyEl = /** @type {HTMLElement} */ (document.getElementById('cases-empty'));
     const selectAllEl = /** @type {HTMLInputElement} */ (document.getElementById('cases-select-all'));
     const btnNew = document.getElementById('btn-new-case');
-    const btnTemplate = document.getElementById('btn-cases-template');
-    const btnImport = document.getElementById('btn-cases-import');
-    const btnExport = document.getElementById('btn-cases-export');
     const btnManageCats = document.getElementById('btn-manage-categories');
     const btnViewGrid = document.getElementById('cases-view-grid');
     const btnViewList = document.getElementById('cases-view-list');
@@ -253,74 +248,6 @@ export function createCasesScreen({
       searchClearEl.addEventListener('click', clearSearch);
       updateSearchClearVisibility();
       btnNew.addEventListener('click', () => openCaseModal(null));
-      btnTemplate.addEventListener('click', () => Utils.downloadActionGuard.run('cases-template', () => {
-        try {
-          ImportExport.downloadCasesTemplate();
-          UIComponents.showToast('Download started', 'success');
-          return true;
-        } catch (err) {
-          console.error(err);
-          UIComponents.showToast('Download failed: ' + (err && err.message), 'error');
-          return false;
-        }
-      }));
-      btnImport.addEventListener('click', () => {
-        if (mutationBlockedWhileBusy()) return;
-        if (ImportCasesDialog && ImportCasesDialog.open) {
-          ImportCasesDialog.open({ beforeMutate });
-        }
-      });
-      btnExport &&
-        btnExport.addEventListener('click', ev => {
-          ev.stopPropagation();
-          if (!CaseLibrary.getCases().length) {
-            UIComponents.showToast('No cases to export', 'info');
-            return;
-          }
-          // The menu is bound to the workspace it was opened in. Case definitions
-          // are read when an export is chosen, in the same validated scope as the
-          // category metadata the catalog export reads, never from menu-open time.
-          const menuScope = captureScopeContext();
-          const exportCases = (key, download) => () => {
-            if (!isScopeContextCurrent(menuScope)) {
-              UIComponents.showToast('The workspace changed. Open Export again.', 'warning');
-              return;
-            }
-            const cases = CaseLibrary.getCases();
-            if (!cases.length) {
-              UIComponents.showToast('No cases to export', 'info');
-              return;
-            }
-            Utils.downloadActionGuard.run(key, () => {
-              try {
-                download(cases);
-                UIComponents.showToast('Download started', 'success');
-                return true;
-              } catch (err) {
-                console.error(err);
-                UIComponents.showToast('Export failed: ' + (err && err.message), 'error');
-                return false;
-              }
-            });
-          };
-          UIComponents.openDropdown(btnExport, [
-            {
-              label: 'Case Catalog (JSON)',
-              icon: 'fa-solid fa-file-code',
-              onClick: exportCases('case-catalog-json', cases => ImportExport.downloadCaseCatalogExportJSON(cases)),
-            },
-            {
-              label: 'Spreadsheet (CSV)',
-              icon: 'fa-solid fa-file-csv',
-              onClick: exportCases('cases-csv', cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'csv' })),
-            },
-            {
-              label: 'Spreadsheet (XLSX)',
-              icon: 'fa-solid fa-file-excel',
-              onClick: exportCases('cases-xlsx', cases => ImportExport.downloadCaseSpreadsheetExport(cases, { format: 'xlsx' })),
-            },
-          ]);
-        });
       btnManageCats &&
         btnManageCats.addEventListener('click', ev => {
           ev.stopPropagation();
@@ -1548,8 +1475,6 @@ export function createCasesScreen({
 
       UIComponents.showToast('Case deleted', 'info');
     }
-
-    // Import Cases dialog extracted to src/ui/overlays/import-cases-dialog.js
 
     return { init: initCasesUI, render, resetWorkspaceState };
   })();

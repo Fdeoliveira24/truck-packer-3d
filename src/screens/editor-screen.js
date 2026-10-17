@@ -4058,6 +4058,19 @@ export function createEditorScreen({
       return PackLibrary.getById(pack.id)?.editorView?.projection === projection;
     }
 
+    function applyZoomStep(direction) {
+      if (!isViewOwnerCurrent()) return false;
+      clearViewSettle();
+      viewGestureActive = false;
+      viewFocusActive = false;
+      focusRevision = null;
+      viewRevision++;
+      if (!SceneManager.zoomStep(direction)) return false;
+      clearActiveCameraPreset();
+      persistSettledView(viewRevision);
+      return true;
+    }
+
     function getCurrentCameraPack() {
       if (!isViewOwnerCurrent()) return null;
       const pack = PackLibrary.getById(viewOwner.packId);
@@ -4208,6 +4221,9 @@ export function createEditorScreen({
     const btnAutopack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-autopack'));
     const btnUnpack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-unpack'));
     const btnView = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-view'));
+    const zoomControlsEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-zoom-controls'));
+    const btnZoomIn = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-zoom-in'));
+    const btnZoomOut = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-zoom-out'));
     const btnShare = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-share'));
     const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
@@ -4359,6 +4375,9 @@ export function createEditorScreen({
       if (btnAutopack && op.kind !== 'autopacking') btnAutopack.disabled = !pack || busy;
       if (btnUnpack && op.kind !== 'unpacking') btnUnpack.disabled = !pack || busy || !(pack && (pack.cases || []).length);
       if (btnView) btnView.disabled = !pack;
+      const zoomUnavailable = !pack || !SceneManager.getCamera();
+      if (btnZoomIn) btnZoomIn.disabled = zoomUnavailable;
+      if (btnZoomOut) btnZoomOut.disabled = zoomUnavailable;
       if (btnShare) btnShare.disabled = !pack || busy;
       if (btnPng) btnPng.disabled = !pack || busy;
       if (btnPdf) btnPdf.disabled = !pack || busy;
@@ -5078,6 +5097,8 @@ export function createEditorScreen({
         });
       }
       btnLeft.addEventListener('click', () => togglePanel('left'));
+      btnZoomIn?.addEventListener('click', () => applyZoomStep(1));
+      btnZoomOut?.addEventListener('click', () => applyZoomStep(-1));
       btnRight.addEventListener('click', () => togglePanel('right'));
       btnLeftClose.addEventListener('click', () => setPanelVisible('left', false));
       btnRightClose.addEventListener('click', () => setPanelVisible('right', false));
@@ -5289,6 +5310,7 @@ export function createEditorScreen({
         return;
       }
       ensureScene();
+      syncZoomControls();
 
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
@@ -5350,6 +5372,13 @@ export function createEditorScreen({
       // re-request the freshness check so that Pack's thumbnail never stays stale.
       if (wasResultsPreview && previewScene && onPreviewViewSettled) queueMicrotask(() => onPreviewViewSettled());
       if (pendingViewSave) queueMicrotask(() => persistSettledView());
+    }
+
+    function syncZoomControls() {
+      if (!zoomControlsEl) return;
+      const visible = PreferencesManager.get().showZoomControls !== false;
+      if (!visible && zoomControlsEl.contains(document.activeElement)) viewportEl?.focus({ preventScroll: true });
+      zoomControlsEl.hidden = !visible;
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene
@@ -8229,7 +8258,7 @@ export function createEditorScreen({
       return ok ? out : null;
     }
 
-    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState,
+    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, syncZoomControls,
       getCurrentCameraPack, applyCameraProjection,
       getPreviewScene, getExportScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
   })();

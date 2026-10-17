@@ -30,7 +30,12 @@ function get() {
 
 function set(nextPrefs) {
   const normalized = normalizePreferences(nextPrefs);
-  StateStore.set({ preferences: normalized });
+  const previous = get();
+  const zoomVisibilityOnly = previous.showZoomControls !== normalized.showZoomControls &&
+    JSON.stringify({ ...previous, showZoomControls: normalized.showZoomControls }) === JSON.stringify(normalized);
+  StateStore.set({ preferences: normalized }, zoomVisibilityOnly
+    ? { notification: { type: 'zoom-controls-preference' } }
+    : {});
 
   // Notify listeners (UI can update).
   emit('preferences:changed', { preferences: normalized });

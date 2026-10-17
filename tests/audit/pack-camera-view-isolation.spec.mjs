@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import vm from 'node:vm';
+import * as THREE from 'three';
 import * as StateStore from '../../src/core/state-store.js';
 import * as PackLibrary from '../../src/services/pack-library.js';
 import { editorViewSignature, normalizeEditorView, normalizePack } from '../../src/core/normalizer.js';
@@ -66,6 +67,48 @@ test('projection and zoom metadata are Pack-owned and legacy poses stay Perspect
   assert.equal(promoted.editorView.projection, 'perspective');
   assert.equal(promoted.lastEdited, legacy.lastEdited);
   assert.equal(StateStore.undo(), false);
+});
+
+test('Editor zoom steps preserve target and direction in both projections and stop at OrbitControls limits', async () => {
+  const source = await readFile(new URL('../../src/editor/scene-runtime.js', import.meta.url), 'utf8');
+  const start = source.indexOf('    function zoomStep(direction) {');
+  const end = source.indexOf('    function focusOnWorldPoint(', start);
+  assert.ok(start >= 0 && end > start);
+  const target = new THREE.Vector3(1, 2, 3);
+  const camera = new THREE.PerspectiveCamera(45, 1, 0.01, 5000);
+  camera.position.set(11, 2, 3);
+  let changes = 0;
+  let cancellations = 0;
+  const controls = {
+    target, enableDamping: true, minDistance: 6, maxDistance: 20,
+    minZoom: 0.5, maxZoom: 2,
+    update() {}, dispatchEvent(event) { if (event.type === 'change') changes++; },
+  };
+  const sandbox = { camera, controls, cancelFocus: () => { cancellations++; } };
+  vm.createContext(sandbox);
+  vm.runInContext(source.slice(start, end), sandbox);
+  assert.equal(sandbox.zoomStep(1), true);
+  assert.ok(camera.position.distanceTo(target) < 10);
+  assert.deepEqual(target.toArray(), [1, 2, 3]);
+  assert.equal(camera.position.y, 2);
+  assert.equal(camera.position.z, 3);
+  for (let i = 0; i < 20; i++) sandbox.zoomStep(-1);
+  assert.equal(camera.position.distanceTo(target), 20);
+  assert.equal(sandbox.zoomStep(-1), false);
+  assert.equal(controls.enableDamping, true);
+
+  const orthographic = new THREE.OrthographicCamera(-5, 5, 5, -5, 0.01, 5000);
+  orthographic.position.set(11, 2, 3);
+  sandbox.camera = orthographic;
+  assert.equal(sandbox.zoomStep(1), true);
+  assert.ok(orthographic.zoom > 1);
+  for (let i = 0; i < 20; i++) sandbox.zoomStep(1);
+  assert.equal(orthographic.zoom, 2);
+  assert.equal(sandbox.zoomStep(1), false);
+  for (let i = 0; i < 20; i++) sandbox.zoomStep(-1);
+  assert.equal(orthographic.zoom, 0.5);
+  assert.deepEqual(orthographic.position.toArray(), [11, 2, 3]);
+  assert.ok(changes > 2 && cancellations > 2);
 });
 
 test('settled camera saves remain Pack-owned during an AutoPack preview', async () => {

@@ -4348,6 +4348,54 @@ body.tp3d-shared-modal-lock #app .nav {
   display: block;
 }
 
+.tp3d-editor-zoom-controls {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  transform: translateY(-50%);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+}
+
+.tp3d-editor-zoom-controls[hidden] {
+  display: none;
+}
+
+.tp3d-editor-zoom-controls button {
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+
+.tp3d-editor-zoom-controls button + button {
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-editor-zoom-controls button:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-editor-zoom-controls button:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -3px;
+}
+
+.tp3d-editor-zoom-controls button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 @media (min-width: 900px) {
   .editor-shell.is-left-panel-hidden {
     grid-template-columns: minmax(0, 1fr) var(--right-col);

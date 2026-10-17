@@ -7267,6 +7267,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           AutoPackPreviewScheduler.schedule();
           return;
         }
+        if (notification?.type === 'zoom-controls-preference') {
+          EditorUI.syncZoomControls();
+          return;
+        }
         if (changes.preferences || changes._undo || changes._redo || changes._replace) {
           const prefs = StateStore.get('preferences');
           if (prefs && prefs.theme) PreferencesManager.applyTheme(prefs.theme);

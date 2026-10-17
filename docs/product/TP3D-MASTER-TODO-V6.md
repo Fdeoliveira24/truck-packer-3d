@@ -1,6 +1,6 @@
 # Truck Packer 3D — Master TODO V6
 
-**Last updated:** 2026-10-11
+**Last updated:** 2026-10-17
 **Status:** Active operational roadmap.
 
 ---
@@ -33,6 +33,8 @@
 | Three.js runtime | `three@0.185.1` via npm/Vite (WebGLRenderer, r185.1) |
 | Vite | `8.2.1` |
 | Node requirement | `^20.19.0` or `>=22.12.0` |
+| Verified main after CI optimization (2026-10-17) | `a3c47f28c7930778771ac0806d398be22ed712a4` — PR #123 merged; main updated on GitHub |
+| Quality Gate cost policy | One automatic full Quality Gate for PRs targeting `main`; optional manual `workflow_dispatch`; no automatic full run after merge/push to `main`. Focused local checks during implementation; documentation-only changes require diff/status checks, not application suites. |
 
 ---
 
@@ -57,90 +59,89 @@
 | Cargo Instructions (Phases 1–3) | Standard Instructions, Instance Notes, Pack Notes Editor access | V5 milestones |
 | app.js P0 modularization | Billing/Org/Auth/AccountSwitcher extracted; app.js −27.8% (9,510 → 6,867 lines) | PR #7 |
 | P2 — Legacy / Dead Code | Removed disconnected legacy modules and test-pinned dead code; retired the legacy Settings screen safely (`#/settings` now opens Settings → Preferences; "Reset demo data" removed); removed broken `lint:report` and unused `knip.json`; corrected stale active contracts; KEEP/DEFER registry in Section 8 | PR #93, PR #94, PR #95 |
+| C5 stabilization | Scoped camera/orientation and staged Truck Change improvements; C5 packing-quality work remains paused | PR #117 |
+| Editor CSS cleanup + Import / Export navigation | Consolidated layout styling and improved import/export access | PR #119 |
+| Camera Phase 1 | Seven named Editor camera views, Fit Truck and interactive View menu | PR #120 |
+| Camera Phase 2 | Interactive Perspective / Orthographic projection, per-Load-Plan camera metadata, Settings integration and export support; live PDF acceptance passed | PR #121 |
+| Optional viewport Zoom Controls | Zoom In/Out for both projections; Settings On/Off visibility | PR #122 |
+| Quality Gate cost optimization | Preserve PR and manual full gate; stop duplicate full runs after merge | PR #123 |
 
 ---
 
 ## 4. Current Active / Next Milestone
 
-| Field | Current value |
-|---|---|
-| Task | C5B — Staging Preservation + Inspector Coherence |
-| Branch | `feat/phase-c5b-staging-inspector-coherence` |
-| Outcome | C5A merged through PR #111 at `e46acd3d548ce6a89f9f1036ee0ff684fc50e838`. C5B preserves authored staging, reserves existing footprints before allocation, and aligns preview Inspector metrics. |
-| Blocker state | C5B implemented locally; awaiting final consolidated review. Not committed or pushed. |
-| Next after merge | C5M — Manual Editor Authority Hardening (requires explicit implementation approval) |
-| Scope | C5B staging handoff and Inspector display authority only. C5A assessment/Apply authority, Max C4 policy, Unpack organization and committed persistence/export authority remain protected. |
+**Current status:** No feature implementation branch is authorized or active. Camera Phase 1, Camera Phase 2, and optional Editor Zoom Controls are complete and merged (PRs #120–#122). The owner accepted live PDF verification for Camera Phase 2 on 2026-10-17. PR #123 closed the duplicate full Quality Gate after merge.
+
+### Owner-approved next sequence (planning order, not blanket implementation authorization)
+
+| Order | Milestone | Intended outcome / contract to define | State |
+|---|---|---|---|
+| 1 | **Measurement Tool** | Interactive measurements of cargo, trailer dimensions, gaps and clearances in user-selected units. Specify point/edge selection, snapping, precision, temporary vs. saved measurements, and export visibility before coding. Measurement is informational, not transport-safety certification. | **NEXT — define and approve focused implementation contract** |
+| 2 | **Annotations: Text and Drawing** | Add notes/labels and graphical marks/arrows independently of cargo geometry. Define anchoring, editing, storage, visibility, permissions, and screenshot/PDF inclusion before coding. Text and Drawing can be scoped into small releases. | **PLANNED — after Measurement** |
+| 3 | **PDF Construction / Interactive Export Preview** | Clicking **Export PDF** opens a document-construction screen showing the proposed PDF. Users can modify the presentation/layout and content before selecting the final **Export PDF** action. Specify available editing, page reordering/layout, accurate print preview, templates/persistence, billing gates, and export safety in its product contract. Do not mutate cargo data by editing the document. | **PLANNED — after Annotations** |
+
+**Removed from roadmap:** Zoom to Area / Magnifying Glass. Do not implement or propose it as part of Zoom Controls or the Measurement Tool.
+
+**Owner sequencing:** Finish Measurement first, then Annotations (Text and Drawing), then PDF Construction. Each phase requires its own scoped acceptance and release checkpoint. Do not bundle these into a single implementation branch.
+
+**Held work:** C5 AutoPack quality and related follow-ups are **PAUSED** due to unresolved load realism/transport-quality concerns. C6 reporting is **DEFERRED**. No changes to separate stabilization, Claude visual, or Codex visual worktrees are authorized.
 
 ---
 
 ## 5. Candidate Workstreams (Unapproved)
 
-These are unapproved candidate workstreams **outside the locked Phase C sequence**, not an approved queue.
-
-**The approved Phase C sequence is governed by Section 5.5.** Nothing in Section 5 becomes active merely because it is listed. List order reflects prior discussion priority only — it does not imply approval or sequencing.
-
-A user must explicitly select and approve a workstream before any branch opens; update Section 4 only when that happens.
+These are unapproved candidates outside the owner-approved sequence in Section 4. No candidate is an active implementation merely because it appears here. Items remain subject to individual product decisions and owner authorization; the sequence in Section 4 takes precedence.
 
 1. **Professional 3D Editor Visual Foundation**
-   - Cargo box presentation, edges/lines, labels, materials
-   - Selection/hover clarity, contact cues
-   - Truck visual presentation, scene hierarchy
-   - Professional visual consistency
+   - Cargo box presentation, edges/lines, labels, materials; selection/hover clarity, contact cues; truck visual hierarchy
    - Do not rewrite renderer architecture
-   - **Reverted:** an implementation attempt (PR #29 `fix/editor-visual-resource-ownership`,
-     PR #31 `feat/editor-cargo-visual-language`, PR #33 `feat/editor-typography-annotation-foundation`)
-     was rejected and reverted in PR #34 `revert/rejected-editor-visual-experiments` (`6c305fc`).
-     Must not be restarted without explicit user approval.
+   - **Reverted:** PRs #29, #31, and #33 were rejected and reverted in PR #34 (`6c305fc`); no restart without explicit owner approval
 
-2. **Camera / View System**
-   - Named viewpoints: Front, Rear, Left, Right, Top, Isometric
-   - Orthographic / Perspective modes
-   - Future: crew/loader view, cutaway, saved viewpoints
+2. **PDF / Image Visualization Polish**
+   - Optional future image/report styling beyond the already planned **PDF Construction / Interactive Export Preview** workflow in Section 4
+   - Do not start a competing PDF export redesign before that product contract is settled
 
-3. **Real 3D Heatmap + Legend**
-   - Builds on finalized camera/view system
-   - Extends Generic Space Utilization Engine
-
-4. **PDF / Image Visualization Redesign**
-   - Reuse camera outputs and visualization infrastructure
-
-5. **Small 3D Visual Asset Spike** (GLB)
-   - Test representative GLB assets before a full library
-   - Representative cases: simple pallet, medium appliance, complex vehicle
+3. **Small 3D Visual Asset Spike (GLB)**
+   - Test representative GLB assets before a full library: simple pallet, medium appliance, complex vehicle
    - Test at 1 / 25 / 100 / 300 counts
 
-6. **Folder Sidebar Implementation**
+4. **Folder Sidebar Implementation**
 
-7. **Load Plans / Stops / Unload Sequence**
+5. **Load Plans / Stops / Unload Sequence**
    - Define sequencing/data model before Auto-Pack v2
 
-8. **Auto-Pack v2 / Strategy Revisit**
-   - Builds on finalized load/unload model
+6. **Auto-Pack v2 / Strategy Revisit**
+   - Builds on a finalized load/unload model; remains held with C5
 
-9. **Asset Manager + Curated Model Library**
+7. **Asset Manager + Curated Model Library**
 
-10. **Measured Renderer Optimization**
-    - Only after: GLBs, heatmap, richer visual scenes in production
+8. **Measured Renderer Optimization**
+   - Only after GLBs and richer visual scenes are available for realistic measurements
 
-11. **Expanded 3D World / Environment Work**
+9. **Expanded 3D World / Environment Work**
+   - Includes future 3D realism work, subject to explicit design approval
 
-12. **Email Delivery / Sharing**
+10. **Email Delivery / Sharing**
 
-13. **Broader Shortcut / UI Consolidation**
+11. **Broader Shortcut / UI Consolidation**
 
-14. **Settings Cleanup**
+12. **Settings Cleanup**
 
-15. **Beta / Launch Hardening**
-    - Sentry/observability before broad beta
-    - Code and security review
-    - Server/deployment review
-    - Production hardening
+13. **Beta / Launch Hardening**
+    - Observability, code/security audit, deployment/server review and production readiness before broad beta
+
+14. **Real 3D Heatmap + Legend — LOW PRIORITY / NEAR LAST**
+    - Optional visual enhancement, not required for core logistics planning
+    - Postpone until **after 3D realism and richer scene presentation**
+    - If later approved, build on the Generic Space Utilization Engine; capacity analysis only, not safety/compliance scoring
+
+**Completed, not a candidate:** Camera / View System (PRs #120–#121) and optional Zoom Controls (PR #122).
 
 ---
 
 ## 5.5. Phase C — Editor Authority & Workflow Continuity (C5 Cycle)
 
-**Status:** Locked product contract; C5A merged (PR #111). C5B implemented locally, awaiting final review.
+**Status:** Locked product contract; C5A merged (PR #111). PR #117 merged scoped C5 stabilization changes. **C5 further implementation is PAUSED by explicit owner decision.** The prior C5B review state below is historical only; it does not authorize resumption.
 
 ### Phase C Milestones
 
@@ -152,13 +153,13 @@ A user must explicitly select and approve a workstream before any branch opens; 
 | C4 | Assessment + Lifecycle Cutover | ✅ COMPLETE / MERGED | 4 | Read-only assessment and removal of hidden lifecycle repair |
 | C5-0 | Editor Authority Contract | 🔒 LOCKED | — | Documentation checkpoint (this update) |
 | C5A | Normal AutoPack Assessment + Results/Apply Authority | ✅ COMPLETE / MERGED (PR #111) | 5 | Candidate assessment, Balanced preference, transient Results authority and Apply |
-| C5B | Staging Preservation + Inspector Coherence | 🔍 IMPLEMENTED / AWAITING REVIEW | 6 | Manual staged poses and footprint reservations; coherent preview counts, loaded mass and utilization |
-| C5M | Manual Editor Authority Hardening | 📋 PENDING | 7 | Manual drag/move/rotate/stage/unstage and warning-vs-hard-rule boundary |
-| C5T | Truck Change Workflow Continuity | 📋 PENDING | 8 | Unresolved cargo preservation/fallback-to-staging without workflow blockage |
-| C5C | Max Capacity Policy | 📋 PENDING | 9 | Preserve relaxed Max handling with profile-aware assessment and Apply |
-| C5D | Packing Quality + Wheel-Well Search | 📋 PENDING | 10 | Avoidable-gap recovery, leftover-fit search and Wheel-Well seam competition |
-| C5E | Bounded AutoPack Presentation | 📋 PENDING | 11 | Adaptive bounded loading presentation without persistence authority |
-| C6 | Reporting + Integrated Closure | 📋 PENDING | 12 | Reporting, integrated validation and Phase C closure |
+| C5B | Staging Preservation + Inspector Coherence | ⏸️ PAUSED / HISTORICAL REVIEW STATE | 6 | Previous local work/review notes are not current implementation authorization; preserve existing branches/worktrees |
+| C5M | Manual Editor Authority Hardening | ⏸️ PAUSED | 7 | Manual drag/move/rotate/stage/unstage and warning-vs-hard-rule boundary |
+| C5T | Truck Change Workflow Continuity | ⏸️ PAUSED | 8 | Unresolved cargo preservation/fallback-to-staging without workflow blockage |
+| C5C | Max Capacity Policy | ⏸️ PAUSED | 9 | Preserve relaxed Max handling with profile-aware assessment and Apply |
+| C5D | Packing Quality + Wheel-Well Search | ⏸️ PAUSED | 10 | Avoidable-gap recovery, leftover-fit search and Wheel-Well seam competition |
+| C5E | Bounded AutoPack Presentation | ⏸️ PAUSED | 11 | Adaptive bounded loading presentation without persistence authority |
+| C6 | Reporting + Integrated Closure | 🔮 DEFERRED | 12 | Reporting, integrated validation and Phase C closure; not approved for current work |
 
 **C5D recorded transport-realism finding:** Normal AutoPack can produce tall exposed stack faces without meaningful longitudinal blocking. Balanced optimizes packing/layout heuristics but does not establish truck-wide braking restraint or complete transport securement. C5D should investigate passive restraint and layout realism without claiming to certify tiedowns, friction, load bars or regulatory securement. This is recorded for future investigation; C5A introduces no transport-restraint solver behavior.
 
@@ -194,10 +195,10 @@ See [AutoPack Engine Contract — Editor Authority and Automation Boundary](../e
 
 ### Execution Notes
 
-- C5A merged through PR #111. C5B local implementation awaits review; no commit or push yet. Keep C5M and C5T separate.
+- C5A merged through PR #111 and scoped C5 stabilization merged through PR #117. Earlier C5B local-implementation notes are superseded by the owner's pause; do not resume from an old worktree or branch without renewed approval. Keep C5M and C5T separate.
 - C5M owns manual drag/move/rotate/stage/unstage authority and handling rules warning behavior.
 - C5T owns unresolved cargo preservation and fallback behavior.
-- C5B is explicitly approved for implementation. C5M/C5T/C5C/C5D/C5E still require explicit approval.
+- **No C5 implementation is currently authorized.** C5B/C5M/C5T/C5C/C5D/C5E require new explicit owner approval; C6 remains deferred.
 
 ---
 
@@ -227,6 +228,12 @@ Not approved branches. Not active work. Require focused audits and product decis
 - Valid states: `active`, `trialing`, `trial_expired`, `included_in_plan`, `workspace_limit_reached`, `owner_subscription_required`, `billing_unavailable`.
 - Owners only for checkout, portal, plan, and payment.
 - Do not gate owner inheritance on `ownerUserId !== currentUserId`.
+
+### Development / CI Cost Policy
+
+- Full Quality Gate runs automatically on PRs targeting `main`; optional manual dispatch is available. No automatic full suite after merging/pushing to `main` (PR #123).
+- During implementation, use directly affected focused tests, typecheck as appropriate, and diff/status inspection. Do not duplicate broad local and GitHub CI runs.
+- Documentation-only updates require diff review and whitespace/status checks, not application test suites.
 
 ### AutoPack / Editor
 

@@ -3088,7 +3088,7 @@ export function createSettingsOverlay({
   function savePrefsFromForm({
     length, weight, theme, labelSize, hiddenOpacity, cameraProjection, applyCurrentProjection,
     currentCameraPackId, snappingEnabled, gridSize, screenshotResolution,
-    pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView, showZoomControls,
+    pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView, showCameraControls, showZoomControls,
   }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
@@ -3103,6 +3103,7 @@ export function createSettingsOverlay({
     next.export.screenshotResolution = screenshotResolution;
     next.export.pdfIncludeStats = pdfIncludeStats === 'true';
     next.showAutoPackLoadingOverlay = showAutoPackLoadingOverlay !== false;
+    next.showCameraControls = showCameraControls !== false;
     next.showZoomControls = showZoomControls !== false;
     next.autoPackResultsStartView = autoPackResultsStartView;
     const projectionChanged = next.camera.defaultView !== prev.camera.defaultView;
@@ -5114,11 +5115,23 @@ export function createSettingsOverlay({
       displayHeading.textContent = 'Editor Display';
       prefsCard.appendChild(displayHeading);
 
-      prefsCard.appendChild(row('Default Camera Projection', cameraProjection));
+      // Rows with helper text are top-aligned (see .tp3d-prefs-row--stacked) so the label,
+      // control and helper line up the same way for selects and switches. The helper is a
+      // grid item of its own row, below the control, so the select stays the row's second child.
+      const stackedRow = (label, control) => {
+        const stacked = row(label, control);
+        stacked.classList.add('tp3d-prefs-row--stacked');
+        return stacked;
+      };
+      const projectionRow = stackedRow('Default Camera Projection', cameraProjection);
+      projectionRow.classList.add('tp3d-prefs-row--select');
       const projectionHelper = doc.createElement('div');
+      projectionHelper.id = 'tp3d-prefs-camera-projection-help';
       projectionHelper.className = 'tp3d-prefs-helper';
       projectionHelper.textContent = 'Used when a Load Plan opens without a saved camera view. Existing plans keep their projection.';
-      prefsCard.appendChild(projectionHelper);
+      cameraProjection.setAttribute('aria-describedby', projectionHelper.id);
+      projectionRow.appendChild(projectionHelper);
+      prefsCard.appendChild(projectionRow);
 
       const activeCameraPack = getCurrentCameraPack?.();
       let applyCurrentProjection = null;
@@ -5158,43 +5171,65 @@ export function createSettingsOverlay({
         control.className = 'tp3d-prefs-control-stack';
         control.appendChild(applyCurrentProjection);
         control.appendChild(helper);
-        prefsCard.appendChild(row('Apply to current Load Plan', control));
+        prefsCard.appendChild(stackedRow('Apply to current Load Plan', control));
       }
 
-      const zoomVisibility = doc.createElement('button');
-      zoomVisibility.type = 'button';
-      zoomVisibility.className = 'tp3d-pref-switch';
-      zoomVisibility.dataset.role = 'zoom-controls-visibility';
-      zoomVisibility.setAttribute('role', 'switch');
-      zoomVisibility.setAttribute('aria-label', 'Show Zoom Controls');
-      const zoomTrack = doc.createElement('span');
-      zoomTrack.className = 'tp3d-pref-switch__track';
-      zoomTrack.setAttribute('aria-hidden', 'true');
-      const zoomThumb = doc.createElement('span');
-      zoomThumb.className = 'tp3d-pref-switch__thumb';
-      zoomTrack.appendChild(zoomThumb);
-      const zoomValue = doc.createElement('span');
-      zoomValue.className = 'tp3d-pref-switch__value';
-      zoomVisibility.appendChild(zoomTrack);
-      zoomVisibility.appendChild(zoomValue);
-      const setZoomVisibility = enabled => {
-        zoomVisibility.dataset.value = enabled ? 'on' : 'off';
-        zoomVisibility.setAttribute('aria-checked', String(enabled));
-        zoomVisibility.classList.toggle('is-on', enabled);
-        zoomValue.textContent = enabled ? 'On' : 'Off';
+      // On/Off switch plus helper text for the floating Editor control visibility
+      // preferences. Nothing is applied until Save changes.
+      const createVisibilitySwitch = ({ role, label, helperId, helperText, enabled }) => {
+        const button = doc.createElement('button');
+        button.type = 'button';
+        button.className = 'tp3d-pref-switch';
+        button.dataset.role = role;
+        button.setAttribute('role', 'switch');
+        button.setAttribute('aria-label', label);
+        const track = doc.createElement('span');
+        track.className = 'tp3d-pref-switch__track';
+        track.setAttribute('aria-hidden', 'true');
+        const thumb = doc.createElement('span');
+        thumb.className = 'tp3d-pref-switch__thumb';
+        track.appendChild(thumb);
+        const value = doc.createElement('span');
+        value.className = 'tp3d-pref-switch__value';
+        button.appendChild(track);
+        button.appendChild(value);
+        const setEnabled = on => {
+          button.dataset.value = on ? 'on' : 'off';
+          button.setAttribute('aria-checked', String(on));
+          button.classList.toggle('is-on', on);
+          value.textContent = on ? 'On' : 'Off';
+        };
+        setEnabled(enabled);
+        button.addEventListener('click', () => setEnabled(button.dataset.value !== 'on'));
+        const helper = doc.createElement('div');
+        helper.id = helperId;
+        helper.className = 'tp3d-prefs-helper';
+        helper.textContent = helperText;
+        button.setAttribute('aria-describedby', helper.id);
+        const control = doc.createElement('div');
+        control.className = 'tp3d-prefs-control-stack';
+        control.appendChild(button);
+        control.appendChild(helper);
+        return { button, control };
       };
-      setZoomVisibility(prefs.showZoomControls !== false);
-      zoomVisibility.addEventListener('click', () => setZoomVisibility(zoomVisibility.dataset.value !== 'on'));
-      const zoomHelper = doc.createElement('div');
-      zoomHelper.id = 'tp3d-prefs-zoom-controls-help';
-      zoomHelper.className = 'tp3d-prefs-helper';
-      zoomHelper.textContent = 'Show or hide the Zoom In and Zoom Out buttons in the 3D Editor. Mouse and trackpad zoom will remain available.';
-      zoomVisibility.setAttribute('aria-describedby', zoomHelper.id);
-      const zoomControl = doc.createElement('div');
-      zoomControl.className = 'tp3d-prefs-control-stack';
-      zoomControl.appendChild(zoomVisibility);
-      zoomControl.appendChild(zoomHelper);
-      prefsCard.appendChild(row('Show Zoom Controls', zoomControl));
+
+      const cameraVisibility = createVisibilitySwitch({
+        role: 'camera-controls-visibility',
+        label: 'Show Camera Controls',
+        helperId: 'tp3d-prefs-camera-controls-help',
+        helperText: 'Show or hide the Camera Views button in the 3D Editor. Camera navigation remains available.',
+        enabled: prefs.showCameraControls !== false,
+      });
+      prefsCard.appendChild(stackedRow('Show Camera Controls', cameraVisibility.control));
+
+      const zoomVisibility = createVisibilitySwitch({
+        role: 'zoom-controls-visibility',
+        label: 'Show Zoom Controls',
+        helperId: 'tp3d-prefs-zoom-controls-help',
+        helperText: 'Show or hide the Zoom In and Zoom Out buttons in the 3D Editor. Mouse and trackpad zoom will remain available.',
+        enabled: prefs.showZoomControls !== false,
+      });
+      prefsCard.appendChild(stackedRow('Show Zoom Controls', zoomVisibility.control));
 
       prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacityWrap));
 
@@ -5250,7 +5285,7 @@ export function createSettingsOverlay({
       autoPackLoadingControl.className = 'tp3d-prefs-control-stack';
       autoPackLoadingControl.appendChild(autoPackLoading);
       autoPackLoadingControl.appendChild(autoPackLoadingHelper);
-      prefsCard.appendChild(row('Show AutoPack loading screen', autoPackLoadingControl));
+      prefsCard.appendChild(stackedRow('Show AutoPack loading screen', autoPackLoadingControl));
 
       const autoPackResultsStartView = UIComponents.createSelect({
         label: 'AutoPack Results starting view', value: prefs.autoPackResultsStartView,
@@ -5342,7 +5377,8 @@ export function createSettingsOverlay({
           screenshotResolution: screenshotResolution.value,
           pdfIncludeStats: pdfIncludeStats.value,
           showAutoPackLoadingOverlay: autoPackLoading.dataset.value === 'on',
-          showZoomControls: zoomVisibility.dataset.value === 'on',
+          showCameraControls: cameraVisibility.button.dataset.value === 'on',
+          showZoomControls: zoomVisibility.button.dataset.value === 'on',
           autoPackResultsStartView: autoPackResultsStartView.value,
         })
       );

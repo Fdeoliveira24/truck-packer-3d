@@ -1124,6 +1124,16 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   assert.ok(find(el => el.className === 'tp3d-prefs-heading' && el.textContent === 'AutoPack'), 'AutoPack section heading');
   const loadingRow = rowFor('Show AutoPack loading screen');
   const startRow = rowFor('AutoPack Results starting view');
+  const cameraRow = rowFor('Show Camera Controls');
+  assert.ok(cameraRow, 'camera visibility belongs to Editor Display preferences');
+  const cameraVisibility = walk(cameraRow).find(el => el.dataset.role === 'camera-controls-visibility');
+  const cameraHelper = walk(cameraRow).find(el => el.className === 'tp3d-prefs-helper');
+  assert.equal(cameraVisibility.getAttribute('role'), 'switch');
+  assert.equal(cameraVisibility.getAttribute('aria-label'), 'Show Camera Controls');
+  assert.equal(cameraVisibility.getAttribute('aria-checked'), 'true', 'legacy preferences show camera controls');
+  assert.equal(cameraVisibility.getAttribute('aria-describedby'), cameraHelper.id);
+  assert.equal(cameraHelper.textContent,
+    'Show or hide the Camera Views button in the 3D Editor. Camera navigation remains available.');
   const zoomRow = rowFor('Show Zoom Controls');
   assert.ok(zoomRow, 'zoom visibility belongs to Editor Display preferences');
   const zoomVisibility = walk(zoomRow).find(el => el.dataset.role === 'zoom-controls-visibility');
@@ -1154,8 +1164,10 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
 
   loading.dispatchEvent({ type: 'click' });
   zoomVisibility.dispatchEvent({ type: 'click' });
+  cameraVisibility.dispatchEvent({ type: 'click' });
   assert.equal(loading.getAttribute('aria-checked'), 'false');
   assert.equal(zoomVisibility.getAttribute('aria-checked'), 'false');
+  assert.equal(cameraVisibility.getAttribute('aria-checked'), 'false');
   startView.value = 'recommended';
   assert.equal(saved.length, 0, 'controls do not save until Save changes');
   find(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').dispatchEvent({ type: 'click' });
@@ -1163,6 +1175,7 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   assert.deepEqual(toasts, [['Preferences saved', 'success']]);
   assert.equal(saved[0].showAutoPackLoadingOverlay, false);
   assert.equal(saved[0].showZoomControls, false);
+  assert.equal(saved[0].showCameraControls, false);
   assert.equal(saved[0].autoPackResultsStartView, 'recommended', 'the named value is stored, never an index');
   assert.deepEqual(saved[0].units, { length: 'ft', weight: 'kg' }, 'unrelated preferences are preserved');
 
@@ -1171,12 +1184,119 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   assert.equal(reopened.value, 'recommended', 'the saved starting view is shown again');
   assert.equal(walk(dom.doc.body).filter(el => el.dataset.role === 'zoom-controls-visibility').at(-1).getAttribute('aria-checked'),
     'false', 'the saved zoom visibility is shown again');
+  assert.equal(walk(dom.doc.body).filter(el => el.dataset.role === 'camera-controls-visibility').at(-1).getAttribute('aria-checked'),
+    'false', 'the saved camera visibility is shown again');
   walk(dom.doc.body).filter(el => el.dataset.role === 'zoom-controls-visibility').at(-1).dispatchEvent({ type: 'click' });
+  walk(dom.doc.body).filter(el => el.dataset.role === 'camera-controls-visibility').at(-1).dispatchEvent({ type: 'click' });
   settings.close();
   settings.open('preferences');
   assert.equal(walk(dom.doc.body).filter(el => el.dataset.role === 'zoom-controls-visibility').at(-1).getAttribute('aria-checked'),
     'false', 'closing without Save discards the pending zoom choice');
+  assert.equal(walk(dom.doc.body).filter(el => el.dataset.role === 'camera-controls-visibility').at(-1).getAttribute('aria-checked'),
+    'false', 'closing without Save discards the pending camera choice');
   settings.close();
+});
+
+test('Show Camera Controls and Show Zoom Controls save independently and the Editor Display rows share one layout', async t => {
+  const dom = installDom(t);
+  const { normalizePreferences } = await import('../../src/core/normalizer.js');
+  let prefs = normalizePreferences({ theme: 'light', labelFontSize: 18, units: { length: 'ft', weight: 'kg' } });
+  const saved = [];
+  const settings = createSettingsOverlay({
+    UIComponents: { ...dom.UI, showToast() {} }, documentRef: dom.doc,
+    getCurrentCameraPack: () => ({ id: 'A', title: 'Fixture' }),
+    applyCameraProjectionToPack: () => { throw new Error('saving visibility must never touch the open Load Plan'); },
+    PreferencesManager: {
+      get: () => prefs,
+      set: next => { prefs = normalizePreferences(next); saved.push(prefs); },
+      applyTheme() {},
+    },
+    Utils: { deepClone: value => structuredClone(value), clamp: (value, min, max) => Math.min(max, Math.max(min, value)) },
+  });
+  const walk = el => [el, ...el.children.flatMap(walk)];
+  const latest = role => walk(dom.doc.body).filter(el => el.dataset.role === role).at(-1);
+  const save = () => walk(dom.doc.body).filter(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').at(-1)
+    .dispatchEvent({ type: 'click' });
+  const switchState = role => latest(role).getAttribute('aria-checked');
+
+  settings.open('preferences');
+  const card = walk(dom.doc.body).find(el => el.className.split(' ').includes('tp3d-prefs-card'));
+  const rows = card.children;
+  const labelOf = row => row.children?.[0]?.textContent;
+  const headingIndex = rows.findIndex(el => el.className === 'tp3d-prefs-heading' && el.textContent === 'Editor Display');
+  const order = ['Default Camera Projection', 'Apply to current Load Plan', 'Show Camera Controls', 'Show Zoom Controls', 'Hidden Case Opacity', 'Label Font Size'];
+  assert.deepEqual(rows.slice(headingIndex + 1, headingIndex + 1 + order.length).map(labelOf), order,
+    'camera and zoom switches sit together under Editor Display, after the projection rows');
+  for (const label of order.slice(0, 4)) {
+    const row = rows.find(el => labelOf(el) === label);
+    assert.ok(row.className.split(' ').includes('tp3d-prefs-row--stacked'), `${label} uses the shared stacked-row alignment`);
+  }
+  const projectionRow = rows.find(el => labelOf(el) === 'Default Camera Projection');
+  assert.equal(projectionRow.children[1].getAttribute('role'), 'combobox', 'the select stays the row control');
+  assert.equal(projectionRow.children[2].className, 'tp3d-prefs-helper', 'its helper is a row item beneath the select');
+  assert.equal(projectionRow.children[1].getAttribute('aria-describedby'), projectionRow.children[2].id);
+  assert.equal(switchState('camera-controls-visibility'), 'true');
+  assert.equal(switchState('zoom-controls-visibility'), 'true');
+  settings.close();
+
+  // [camera, zoom] -> each preference changes without moving the other.
+  const combos = [[false, true], [true, false], [false, false], [true, true]];
+  let before = saved.length;
+  for (const [camera, zoom] of combos) {
+    settings.open('preferences');
+    for (const [role, want] of [['camera-controls-visibility', camera], ['zoom-controls-visibility', zoom]]) {
+      if ((switchState(role) === 'true') !== want) latest(role).dispatchEvent({ type: 'click' });
+    }
+    assert.equal(saved.length, before, 'toggling does not save until Save changes');
+    save();
+    before++;
+    assert.equal(saved.length, before);
+    assert.equal(prefs.showCameraControls, camera, `camera ${camera}`);
+    assert.equal(prefs.showZoomControls, zoom, `zoom ${zoom}`);
+    assert.equal(prefs.labelFontSize, 18, 'unrelated preferences are preserved');
+    assert.equal(prefs.camera.defaultView, 'perspective', 'default projection is untouched by a visibility save');
+    settings.close();
+  }
+  settings.open('preferences');
+  assert.equal(switchState('camera-controls-visibility'), 'true');
+  assert.equal(switchState('zoom-controls-visibility'), 'true');
+  settings.close();
+});
+
+test('Camera Views opens beside its trigger only when asked, and falls back to the default placement', async t => {
+  const dom = installDom(t);
+  const place = (anchorRect, placement, viewport = { w: 1280, h: 800 }, extra = {}) => {
+    dom.win.innerWidth = viewport.w;
+    dom.win.innerHeight = viewport.h;
+    const anchor = dom.doc.createElement('button');
+    anchor.id = `anchor-${Math.random()}`;
+    anchor.getBoundingClientRect = () => ({ ...anchorRect, right: anchorRect.left + anchorRect.width, bottom: anchorRect.top + anchorRect.height });
+    dom.doc.body.appendChild(anchor);
+    const menu = dom.UI.openDropdown(anchor, [{ label: 'Front' }, { label: 'Top' }],
+      { width: 156, minWidth: 156, role: 'placement-test', menuSemantics: true, ...(placement ? { placement } : {}), ...extra });
+    const style = menu.style;
+    const result = { left: Number.parseFloat(style.left), top: Number.parseFloat(style.top), width: Number.parseFloat(style.width) };
+    dom.UI.closeAllDropdowns();
+    return result;
+  };
+  const anchor = { left: 1180, top: 300, width: 36, height: 36 };
+  const side = place(anchor, 'left');
+  assert.ok(side.left + side.width <= anchor.left, 'the menu sits entirely to the left of the trigger');
+  assert.equal(side.top, 300, 'and is top-aligned with it');
+  const lifted = place(anchor, 'left', undefined, { placementLift: 32 });
+  assert.equal(lifted.top, 268, 'placementLift raises the side menu above its trigger by that many pixels');
+  assert.ok(lifted.left + lifted.width <= anchor.left, 'and it still opens to the left');
+  assert.equal(place({ ...anchor, top: 20 }, 'left', undefined, { placementLift: 32 }).top, 8,
+    'a raised menu never leaves the top of the viewport');
+  assert.equal(place(anchor, 'left', undefined, { placementLift: -50 }).top, 300, 'a negative lift is ignored');
+  const standard = place(anchor);
+  assert.equal(standard.top, 342, 'without the option the menu keeps opening below its trigger');
+  assert.equal(place(anchor, undefined, undefined, { placementLift: 32 }).top, 342,
+    'placementLift does nothing without the side placement, so other dropdowns are unaffected');
+  const lowTrigger = place({ ...anchor, top: 790 }, 'left', { w: 1280, h: 800 });
+  assert.ok(lowTrigger.top + 0 <= 800 - 8, 'the side menu stays inside the viewport vertically');
+  const tight = place({ left: 100, top: 300, width: 36, height: 36 }, 'left', { w: 320, h: 800 });
+  assert.ok(tight.left >= 8, 'with no room on the left it falls back to a clamped default placement');
 });
 
 test('Settings Preferences owns Snapping and Export preferences now that the legacy Settings screen is retired', async t => {

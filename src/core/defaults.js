@@ -54,6 +54,7 @@ export const defaultPreferences = {
   showLabels: true,
   showShadows: true,
   showBevels: true,
+  showCameraControls: true,
   showZoomControls: true,
   labelFontSize: 12,
   hiddenCaseOpacity: 0.3,

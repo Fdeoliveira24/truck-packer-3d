@@ -1471,10 +1471,43 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
       ['Fit Truck', 'fit'], ['Isometric', 'isometric'], ['Front', 'front'],
       ['Rear', 'rear'], ['Left', 'left'], ['Right', 'right'], ['Top', 'top'],
     ];
-    assert.equal(await page.getByRole('button', { name: 'View', exact: true }).count(), 1);
+    assert.equal(await page.getByRole('button', { name: 'Camera Views', exact: true }).count(), 1);
+    assert.equal(await page.locator('#viewport-toolbar #btn-editor-view').count(), 0,
+      'Camera Views is no longer a top toolbar action');
+    const stack = await page.locator('#editor-zoom-controls > button').evaluateAll(buttons =>
+      buttons.map(button => ({ id: button.id, top: button.getBoundingClientRect().top, left: button.getBoundingClientRect().left })));
+    assert.deepEqual(stack.map(item => item.id), ['btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out'],
+      'camera, Zoom In, Zoom Out from top to bottom');
+    assert.ok(stack[0].top < stack[1].top && stack[1].top < stack[2].top && new Set(stack.map(item => item.left)).size === 1,
+      'the three buttons form one aligned vertical column');
+    assert.equal(await page.locator('#btn-editor-view i').getAttribute('class'), 'fa-solid fa-video',
+      'a video-camera icon, not a photograph camera');
     await page.locator('#btn-editor-view').focus();
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('#btn-editor-view').getAttribute('aria-expanded'), 'true');
+    const placement = await page.evaluate(() => {
+      const rect = selector => document.querySelector(selector).getBoundingClientRect();
+      const button = rect('#btn-editor-view');
+      const menu = rect('[data-role="editor-view"]');
+      const overlaps = other => !(menu.right <= other.left || other.right <= menu.left ||
+        menu.bottom <= other.top || other.bottom <= menu.top);
+      return {
+        gap: button.left - menu.right, raised: button.top - menu.top,
+        inside: menu.left >= 0 && menu.top >= 0 &&
+          menu.right <= innerWidth && menu.bottom <= innerHeight,
+        coversZoom: overlaps(rect('#btn-editor-zoom-in')) || overlaps(rect('#btn-editor-zoom-out')),
+        coversCamera: overlaps(button),
+      };
+    });
+    assert.ok(placement.gap >= 0 && placement.gap <= 12, `the menu opens beside the camera button, to its left (${placement.gap}px)`);
+    assert.ok(placement.raised >= 24, `and sits a little higher than the button (${placement.raised}px)`);
+    assert.equal(placement.inside, true, 'and stays inside the browser window');
+    assert.equal(placement.coversZoom || placement.coversCamera, false, 'without covering the camera or zoom buttons');
+    assert.deepEqual(await page.locator('#btn-editor-view').evaluate(el => {
+      const style = getComputedStyle(el);
+      return [style.color, style.backgroundColor];
+    }), ['rgb(255, 159, 28)', 'rgba(255, 159, 28, 0.14)'],
+    'the open camera button uses the design.md brand orange, not the brown readable-accent text color');
     const presetGroup = page.locator('[data-role="editor-view"] [role="group"][aria-label="Camera view"]');
     const projectionGroup = page.locator('[data-role="editor-view"] [role="group"][aria-label="Projection"]');
     assert.deepEqual(await presetGroup.locator('[role="menuitemradio"]').allTextContents(),
@@ -1880,7 +1913,7 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
     const desktopToolbarRows = await page.locator('#viewport-toolbar').evaluate(toolbar =>
       new Set([...toolbar.querySelectorAll('button:not(.tp3d-toolbar-hidden-action)')]
         .map(button => Math.round(button.getBoundingClientRect().top))).size);
-    assert.equal(desktopToolbarRows, 1, 'desktop viewport toolbar keeps all six actions on one row');
+    assert.equal(desktopToolbarRows, 1, 'desktop viewport toolbar keeps all five actions on one row');
     assert.equal(await page.locator('#sidebar').evaluate(el => getComputedStyle(el).visibility), 'hidden');
     assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'false');
     await page.locator('#btn-sidebar').click();
@@ -1934,7 +1967,18 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
           return rect.left >= canvas.left && rect.right <= canvas.right && rect.top >= canvas.top && rect.bottom <= canvas.bottom;
         });
       });
-      assert.deepEqual(visible, [true, true, true, true, true, true], `toolbar fits at ${width}px`);
+      assert.deepEqual(visible, [true, true, true, true, true], `toolbar fits at ${width}px`);
+      const controls = await page.locator('#editor-zoom-controls').evaluate(group => {
+        const canvas = group.closest('.canvas-wrap').getBoundingClientRect();
+        const toolbar = document.getElementById('viewport-toolbar').getBoundingClientRect();
+        const rect = group.getBoundingClientRect();
+        return {
+          inside: rect.left >= canvas.left && rect.right <= canvas.right && rect.top >= canvas.top && rect.bottom <= canvas.bottom,
+          clearOfToolbar: rect.top >= toolbar.bottom || rect.bottom <= toolbar.top ||
+            rect.left >= toolbar.right || rect.right <= toolbar.left,
+        };
+      });
+      assert.deepEqual(controls, { inside: true, clearOfToolbar: true }, `camera and zoom controls fit clear of the toolbar at ${width}px`);
     }
     assert.equal(await page.locator('#editor-left').evaluate(el => getComputedStyle(el).visibility), 'hidden');
     assert.equal(await page.locator('#editor-right').evaluate(el => getComputedStyle(el).visibility), 'hidden');

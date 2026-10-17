@@ -931,6 +931,15 @@ export function createUIComponents() {
       // Backwards-compatible default: align dropdown's right edge with trigger's right edge.
       let left = rect.right - menuW;
       if (options.align === 'left') left = rect.left;
+      // Opt-in side placement (floating controls on the right edge): open beside the
+      // trigger, to its left, top-aligned (raised by the optional placementLift px) and
+      // kept inside the viewport. With no room on that side the default below/above
+      // placement above is kept.
+      if (options.placement === 'left' && rect.left - gap - menuW >= pad) {
+        left = rect.left - gap - menuW;
+        const lift = Number.isFinite(options.placementLift) ? Math.max(0, options.placementLift) : 0;
+        top = Math.max(pad, Math.min(rect.top - lift, Math.max(pad, vh - pad - menuH)));
+      }
       left = Math.max(pad, Math.min(left, Math.max(pad, vw - pad - menuW)));
 
       dropdown.style.left = `${Math.round(left)}px`;

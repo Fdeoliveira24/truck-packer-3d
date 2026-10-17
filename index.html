@@ -895,11 +895,6 @@
                     <i class="fa-solid fa-box-open"></i>
                     Unpack
                   </button>
-                  <button class="toolbar-btn" id="btn-editor-view" type="button" data-tooltip="Camera views" aria-label="View">
-                    <i class="fa-solid fa-eye" aria-hidden="true"></i>
-                    View
-                    <i class="fa-solid fa-chevron-down tp3d-toolbar-caret" aria-hidden="true"></i>
-                  </button>
                   <button class="toolbar-btn" id="btn-share" type="button" data-tooltip="Screenshot + PDF">
                     <i class="fa-solid fa-share-nodes"></i>
                     Share
@@ -918,7 +913,12 @@
                     PDF
                   </button>
                 </div>
-                <div class="tp3d-editor-zoom-controls" id="editor-zoom-controls" role="group" aria-label="Zoom controls">
+                <!-- Floating viewport controls, top to bottom: Camera Views, Zoom In, Zoom Out.
+                     Each button is hidden independently by its Settings preference. -->
+                <div class="tp3d-editor-zoom-controls" id="editor-zoom-controls" role="group" aria-label="Camera and zoom controls">
+                  <button id="btn-editor-view" type="button" aria-label="Camera Views" title="Camera Views">
+                    <i class="fa-solid fa-video" aria-hidden="true"></i>
+                  </button>
                   <button id="btn-editor-zoom-in" type="button" aria-label="Zoom In" title="Zoom In">
                     <i class="fa-solid fa-plus" aria-hidden="true"></i>
                   </button>

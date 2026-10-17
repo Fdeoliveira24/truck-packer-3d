@@ -28,13 +28,20 @@ function get() {
   return normalizePreferences(StateStore.get('preferences'));
 }
 
+// Floating Editor control visibility. A save that changes only these keys needs
+// no Editor render, so it is tagged and routed to a lightweight visibility sync.
+const VIEWPORT_CONTROL_KEYS = ['showCameraControls', 'showZoomControls'];
+
 function set(nextPrefs) {
   const normalized = normalizePreferences(nextPrefs);
   const previous = get();
-  const zoomVisibilityOnly = previous.showZoomControls !== normalized.showZoomControls &&
-    JSON.stringify({ ...previous, showZoomControls: normalized.showZoomControls }) === JSON.stringify(normalized);
-  StateStore.set({ preferences: normalized }, zoomVisibilityOnly
-    ? { notification: { type: 'zoom-controls-preference' } }
+  const controlVisibilityOnly = VIEWPORT_CONTROL_KEYS.some(key => previous[key] !== normalized[key]) &&
+    JSON.stringify({
+      ...previous,
+      ...Object.fromEntries(VIEWPORT_CONTROL_KEYS.map(key => [key, normalized[key]])),
+    }) === JSON.stringify(normalized);
+  StateStore.set({ preferences: normalized }, controlVisibilityOnly
+    ? { notification: { type: 'viewport-controls-preference' } }
     : {});
 
   // Notify listeners (UI can update).

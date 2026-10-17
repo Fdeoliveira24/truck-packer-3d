@@ -1779,9 +1779,12 @@ test('APP-STABILIZATION-PHASE3 Packs truck preview owns and releases the lifecyc
 });
 
 test('APP-STABILIZATION-PHASE3 Packs and Cases re-check guarded mutation commit edges', async () => {
-  const [packsSrc, casesSrc] = await Promise.all([
+  const [packsSrc, casesSrc, transferSrc, packDialogSrc, casesDialogSrc] = await Promise.all([
     fs.readFile(packsScreenPath, 'utf8'),
     fs.readFile(casesScreenPath, 'utf8'),
+    fs.readFile(new URL('../../src/screens/import-export-screen.js', import.meta.url), 'utf8'),
+    fs.readFile(importPackDialogPath, 'utf8'),
+    fs.readFile(importCasesDialogPath, 'utf8'),
   ]);
 
   assert.match(packsSrc, /function openPack\(packId\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;\s*const pack = PackLibrary\.open/,
@@ -1792,8 +1795,18 @@ test('APP-STABILIZATION-PHASE3 Packs and Cases re-check guarded mutation commit 
     'bulk pack delete checks both before and after confirmation');
   assert.match(packsSrc, /async function deletePack\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.remove/,
     'single pack delete checks both before and after confirmation');
-  assert.match(packsSrc, /ImportPackDialog\.open\(\{ beforeMutate: \(\) => !mutationBlockedWhileBusy\(\) \}\)/,
-    'pack import receives a commit-time lifecycle callback');
+  assert.match(transferSrc, /if \(OperationLifecycle && OperationLifecycle\.isBusy\(\)\)[\s\S]*?const controller = kind === 'cases' \? ImportCasesDialog : ImportPackDialog;[\s\S]*?activeReview = controller\.open\(\{/,
+    'both imports reject an active operation before opening the review');
+  assert.match(transferSrc, /beforeMutate: \(\) => \{[\s\S]*?StateStore\.get\('currentScreen'\) !== 'import-export'[\s\S]*?Storage\.isScopeContextCurrent\(activeScope\)/,
+    'both imports receive a commit-time screen and workspace callback');
+  for (const [name, dialogSrc] of [['load plan', packDialogSrc], ['case', casesDialogSrc]]) {
+    assert.match(dialogSrc, /function mutationAllowed\(\) \{[\s\S]*?guard\(\) === false[\s\S]*?OperationLifecycle\.isBusy\(\)/,
+      `${name} import rechecks the callback and lifecycle at commit`);
+  }
+  assert.match(packDialogSrc, /if \(!mutationAllowed\(\)\) return;\s*const result = PackLibrary\.importPackPayload/,
+    'single load plan import checks the guard immediately before writing');
+  assert.match(packDialogSrc, /for \(const payload of parsedPayload\.payloads \|\| \[\]\) \{\s*if \(!mutationAllowed\(\)\)/,
+    'batch load plan import checks the guard before each write');
   for (const mutation of [
     'FolderLibrary.createFolder',
     'FolderLibrary.renameFolder',
@@ -1809,8 +1822,10 @@ test('APP-STABILIZATION-PHASE3 Packs and Cases re-check guarded mutation commit 
 
   assert.match(casesSrc, /function openCaseModal\(existing\) \{\s*if \(mutationBlockedWhileBusy\(\)\) return;[\s\S]*beforeMutate/,
     'case create/edit entry and modal commit share the guard');
-  assert.match(casesSrc, /ImportCasesDialog\.open\(\{ beforeMutate \}\)/,
-    'case import receives a commit-time lifecycle callback');
+  assert.match(casesDialogSrc, /function doImport\(\) \{\s*if \(!hasImportableChanges\(\)\) return;\s*if \(!mutationAllowed\(\)\) return;/,
+    'case import checks the guard before either commit path');
+  assert.match(casesDialogSrc, /ImportExport\.importCaseRows\(parsedResult\.valid\);\s*if \(!mutationAllowed\(\)\) return;\s*StateStore\.set/,
+    'spreadsheet case import rechecks the guard immediately before state mutation');
   assert.match(casesSrc, /async function bulkDeleteSelected\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.commitCaseDeletion/,
     'bulk case delete checks both before and after confirmation');
   assert.match(casesSrc, /async function deleteCase\([\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*await UIComponents\.confirm[\s\S]*mutationBlockedWhileBusy\(\)[\s\S]*PackLibrary\.commitCaseDeletion/,

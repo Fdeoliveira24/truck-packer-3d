@@ -896,8 +896,8 @@ test('EXPORT-C-GUARD rapid repeats start one download; completion and failure re
 });
 
 test('EXPORT-C-GUARD every user export action runs through a download guard', async () => {
-  const [app, packs, cases, settings] = await Promise.all([
-    read('src/app.js'), read('src/screens/packs-screen.js'), read('src/screens/cases-screen.js'),
+  const [app, packs, transfer, settings] = await Promise.all([
+    read('src/app.js'), read('src/screens/packs-screen.js'), read('src/screens/import-export-screen.js'),
     read('src/ui/overlays/settings-overlay.js'),
   ]);
   assert.match(app, /return exportDownloadGuard\.run\('screenshot', exportScreenshot\);/);
@@ -906,10 +906,18 @@ test('EXPORT-C-GUARD every user export action runs through a download guard', as
   assert.match(app, /Utils\.downloadActionGuard\.run\('workspace-backup'/);
   assert.match(packs, /Utils\.downloadActionGuard\.run\(`load-plan-json:\$\{packId\}`/);
   assert.match(packs, /Utils\.downloadActionGuard\.run\('load-plan-batch-json'/);
-  assert.match(cases, /exportCases\('case-catalog-json'/);
-  assert.match(cases, /exportCases\('cases-csv'/);
-  assert.match(cases, /exportCases\('cases-xlsx'/);
-  assert.match(cases, /Utils\.downloadActionGuard\.run\(key,/);
+  for (const [value, label] of [['json', 'JSON'], ['csv', 'CSV'], ['xlsx', 'XLSX']]) {
+    assert.match(transfer, new RegExp(`\\{ value: '${value}', label: '${label}' \\}`),
+      `${label} remains a selectable Case export format`);
+  }
+  assert.match(transfer, /const key = choice === 'json' \? 'case-catalog-json' : `cases-\$\{choice\}`;/,
+    'Case exports retain format-specific guard keys');
+  assert.match(transfer, /Utils\.downloadActionGuard\.run\(key, \(\) => \{/,
+    'all Case export formats use the download guard');
+  assert.match(transfer, /if \(choice === 'json'\) ImportExport\.downloadCaseCatalogExportJSON\(cases\);\s*else ImportExport\.downloadCaseSpreadsheetExport\(cases, \{ format: choice \}\);/,
+    'JSON uses the catalog exporter and CSV/XLSX use the spreadsheet exporter');
+  assert.match(transfer, /Utils\.downloadActionGuard\.run\('cases-template'/,
+    'the Cases template download is guarded');
   assert.match(settings, /Utils\.downloadActionGuard\.run\('app-backup'/);
 });
 
@@ -974,7 +982,7 @@ test('EXPORT-C-OUTCOME Screenshot: one download per activation, "download starte
 });
 
 test('EXPORT-C-OUTCOME success says "download started"; failures are always visible', async () => {
-  const files = ['src/app.js', 'src/screens/packs-screen.js', 'src/screens/cases-screen.js', 'src/ui/overlays/settings-overlay.js'];
+  const files = ['src/app.js', 'src/screens/packs-screen.js', 'src/screens/import-export-screen.js', 'src/ui/overlays/settings-overlay.js'];
   const sources = await Promise.all(files.map(read));
   const all = sources.join('\n');
   for (const stale of ['Screenshot saved', 'PDF exported', 'App JSON exported', 'Load plan JSON exported', 'Backup saved']) {
@@ -988,10 +996,10 @@ test('EXPORT-C-OUTCOME success says "download started"; failures are always visi
   const exportPack = packs.slice(packs.indexOf('function exportPack('), packs.indexOf('async function deletePack('));
   assert.doesNotMatch(exportPack, /if \(!pack\) return;/, 'a missing Pack no longer fails silently');
   assert.match(exportPack, /toast\('Export failed: ' \+ \(err && err\.message\), 'error'\)/);
-  const cases = sources[2];
-  assert.match(cases, /UIComponents\.showToast\('Export failed: ' \+ \(err && err\.message\), 'error'\)/,
+  const transfer = sources[2];
+  assert.match(transfer, /UIComponents\.showToast\('Export failed: ' \+ \(err && err\.message\), 'error'\)/,
     'spreadsheet library failures are visible');
-  assert.match(cases, /UIComponents\.showToast\('Download failed: ' \+ \(err && err\.message\), 'error'\)/, 'template download');
+  assert.match(transfer, /UIComponents\.showToast\('Download failed: ' \+ \(err && err\.message\), 'error'\)/, 'template download');
 });
 
 // ===========================================================================

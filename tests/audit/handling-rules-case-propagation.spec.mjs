@@ -1698,8 +1698,15 @@ test('CASE-DELETION M2: the empty-library reset is skipped when categories are a
   assert.deepEqual(watch.writes, [['caseLibrary']], 'Cases remain: categories are left alone');
 });
 
+function extractDeleteCase() {
+  const start = casesSource.indexOf('async function deleteCase(caseId) {');
+  const end = casesSource.indexOf('\n    }\n\n    return { init: initCasesUI', start);
+  assert.ok(start >= 0 && end > start, 'the complete deleteCase function is extractable');
+  return casesSource.slice(start, end + '\n    }'.length);
+}
+
 test('CASE-DELETION UI: both Cases-screen delete paths delegate to the single orchestration, keep the toast, and warn about dependent cargo', () => {
-  const single = casesSource.slice(casesSource.indexOf('async function deleteCase(caseId) {'), casesSource.indexOf('// Import Cases dialog extracted'));
+  const single = extractDeleteCase();
   const bulk = casesSource.slice(casesSource.indexOf('async function bulkDeleteSelected() {'), casesSource.indexOf('function initTableHeaders() {'));
   assert.ok(single.length > 200 && bulk.length > 200);
   assert.match(single, /try\s*\{\s*result = PackLibrary\.commitCaseDeletion\(\[caseId\]\)/, 'single delete calls commitCaseDeletion inside try/catch');
@@ -1719,7 +1726,7 @@ function makeToastSpy() {
 function buildDeleteCase({ caseData = { id: 'case-1', name: 'Case A' }, packs = [], confirmResult = true, mutationBlocked = false, commitCaseDeletion }) {
   const toast = makeToastSpy();
   const errors = [];
-  const src = casesSource.slice(casesSource.indexOf('async function deleteCase(caseId) {'), casesSource.indexOf('// Import Cases dialog extracted')).trim();
+  const src = extractDeleteCase();
   const context = {
     CaseLibrary: { getById: () => caseData },
     PackLibrary: { getPacks: () => packs, commitCaseDeletion },

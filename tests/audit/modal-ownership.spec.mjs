@@ -1166,8 +1166,16 @@ test('Settings Preferences owns Snapping and Export preferences now that the leg
   let prefs = normalizePreferences({ theme: 'light', units: { length: 'ft', weight: 'kg' } });
   const saved = [];
   const toasts = [];
+  const projectionChanges = [];
+  let activeCameraPack = { id: 'A', title: 'Fixture' };
+  let allowProjectionApply = true;
   const settings = createSettingsOverlay({
     UIComponents: { ...dom.UI, showToast: (...args) => toasts.push(args) }, documentRef: dom.doc,
+    getCurrentCameraPack: () => activeCameraPack,
+    applyCameraProjectionToPack: (id, projection) => {
+      projectionChanges.push([id, projection]);
+      return allowProjectionApply;
+    },
     PreferencesManager: {
       get: () => prefs,
       set: next => { prefs = normalizePreferences(next); saved.push(prefs); },
@@ -1184,29 +1192,56 @@ test('Settings Preferences owns Snapping and Export preferences now that the leg
   const heading = text => find(el => el.className === 'tp3d-prefs-heading' && el.textContent === text);
 
   assert.ok(heading('Editor Snapping') && heading('Export'), 'Snapping and Export sections render in Preferences');
-  for (const label of ['Snapping', 'Grid Size (in)', 'Screenshot Resolution', 'Include Stats in PDF']) {
+  for (const label of ['Default Camera Projection', 'Snapping', 'Grid Size (in)', 'Screenshot Resolution', 'Include Stats in PDF']) {
     assert.ok(rowFor(label), `${label} renders as a Preferences row`);
   }
   const before = structuredClone(prefs);
   assert.equal(control('Snapping').value, String(before.snapping.enabled));
+  assert.equal(control('Default Camera Projection').value, 'perspective');
+  assert.equal(control('Default Camera Projection').getAttribute('role'), 'combobox');
+  assert.ok(find(el => el.className === 'tp3d-prefs-helper' &&
+    el.textContent === 'Used when a Load Plan opens without a saved camera view. Existing plans keep their projection.'));
+  const applySwitch = walk(rowFor('Apply to current Load Plan')).find(el => el.dataset.role === 'apply-current-camera-projection');
+  assert.equal(applySwitch.getAttribute('role'), 'switch');
+  assert.equal(applySwitch.getAttribute('aria-checked'), 'false');
+  assert.equal(applySwitch.getAttribute('aria-describedby'), 'tp3d-prefs-apply-current-camera-help');
   assert.equal(control('Grid Size (in)').value, String(before.snapping.gridSize));
   assert.equal(control('Screenshot Resolution').value, before.export.screenshotResolution);
   assert.equal(control('Include Stats in PDF').value, String(before.export.pdfIncludeStats));
 
   control('Snapping').value = String(!before.snapping.enabled);
+  control('Default Camera Projection').value = 'orthographic';
   control('Grid Size (in)').value = '0.1'; // below the 0.25 in floor
   control('Screenshot Resolution').value = '2560x1440';
   control('Include Stats in PDF').value = String(!before.export.pdfIncludeStats);
   assert.equal(saved.length, 0, 'controls do not save until Save changes');
   find(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').dispatchEvent({ type: 'click' });
   assert.equal(saved.length, 1);
-  assert.deepEqual(toasts, [['Preferences saved', 'success']]);
+  assert.deepEqual(toasts, [['Preferences saved. The current Load Plan kept its projection.', 'success']]);
+  assert.deepEqual(projectionChanges, [], 'saving the default alone does not apply to the current Pack');
   assert.equal(saved[0].snapping.enabled, !before.snapping.enabled);
+  assert.equal(saved[0].camera.defaultView, 'orthographic');
   assert.equal(saved[0].snapping.gridSize, 0.25, 'grid size keeps its 0.25 in floor');
   assert.equal(saved[0].export.screenshotResolution, '2560x1440');
   assert.equal(saved[0].export.pdfIncludeStats, !before.export.pdfIncludeStats);
   assert.deepEqual(saved[0].units, { length: 'ft', weight: 'kg' }, 'unrelated preferences are preserved');
   assert.equal(saved[0].hiddenCaseOpacity, before.hiddenCaseOpacity, 'unrelated preferences are preserved');
+  applySwitch.dispatchEvent({ type: 'click' });
+  assert.equal(applySwitch.getAttribute('aria-checked'), 'true');
+  find(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').dispatchEvent({ type: 'click' });
+  assert.deepEqual(projectionChanges, [['A', 'orthographic']]);
+  assert.equal(saved.length, 2);
+  assert.deepEqual(toasts.at(-1), ['Preferences saved. Projection applied to the current Load Plan.', 'success']);
+  allowProjectionApply = false;
+  control('Default Camera Projection').value = 'perspective';
+  find(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').dispatchEvent({ type: 'click' });
+  assert.equal(saved.length, 2, 'failed Apply does not save a partial default change');
+  assert.deepEqual(toasts.at(-1),
+    ['Could not apply projection to the current Load Plan. Preferences were not saved.', 'warning']);
+  settings.close();
+  activeCameraPack = null;
+  settings.open('preferences');
+  assert.equal(rowFor('Apply to current Load Plan'), undefined, 'Apply is hidden without an active Load Plan');
   settings.close();
 });
 

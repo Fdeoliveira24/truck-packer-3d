@@ -200,8 +200,9 @@ const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn creat
 const previewTimers = new Set();
 const AutoPackPreviewScheduler = createPreviewScheduler({
   StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => getActiveWorkspaceKey() + '|' + CoreStorage.captureScopeContext().generation,
-  getViewSignature: pack => Normalizer.editorViewSignature(
-    Normalizer.normalizeEditorView(pack.editorView) || SceneManager.getDefaultEditorView(pack.truck)),
+  getViewSignature: pack => EditorUI.getPreviewView()?.signature || Normalizer.editorViewSignature(
+    Normalizer.normalizeEditorView(pack.editorView) ||
+      SceneManager.getDefaultEditorView(pack.truck, PreferencesManager.get().camera.defaultView)),
   setTimer: (fn, delay) => {
     const timer = setTimeout(() => { previewTimers.delete(timer); fn(); }, delay);
     previewTimers.add(timer);
@@ -299,7 +300,7 @@ EditorUI.render();
 
 const livePack = () => PackLibrary.getById(StateStore.get('currentPackId'));
 window.probe = {
-  EditorUI, CaseScene, SceneManager, InteractionManager, PackLibrary, CoreStorage, CaseLibrary, CategoryService, Normalizer, AutoPackEngine, AutoPackPreviewScheduler, ExportService, PacksUI,
+  EditorUI, CaseScene, SceneManager, InteractionManager, PackLibrary, CoreStorage, CaseLibrary, CategoryService, Normalizer, PreferencesManager, AutoPackEngine, AutoPackPreviewScheduler, ExportService, PacksUI,
   previewVersion: PREVIEW_RENDER_VERSION,
   renderPreview: productionRenderPreviewToDataUrl,
   renderLegacy: productionRenderCameraToDataUrl,
@@ -2113,6 +2114,105 @@ const expectAllowed = (result, label) => {
 };
 const STILL_CHANGING = 'The load plan is still changing. Try again when the scene settles.';
 const BUSY = 'Finish the current operation before exporting.';
+
+test('A changed projection default does not stale the open Pack preview until reentry', { timeout: 120000 }, async () => {
+  assert.match(appSource, /getViewSignature: pack => EditorUI\.getPreviewView\(\)\?\.signature/);
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page);
+    const before = await page.evaluate(async () => {
+      const q = window.probe;
+      const captured = await q.ExportService.capturePackPreview(q.packId, { source: 'manual' });
+      const pack = q.PackLibrary.getById(q.packId);
+      return { captured, savedView: pack.editorView || null,
+        mode: q.SceneManager.getEditorView().projection,
+        thumbnail: pack.thumbnailViewSignature,
+        live: q.EditorUI.getPreviewView()?.signature };
+    });
+    assert.equal(before.captured, true);
+    assert.equal(before.savedView, null);
+    assert.equal(before.mode, 'perspective');
+    assert.equal(before.thumbnail, before.live);
+    await page.evaluate(() => {
+      const q = window.probe;
+      q.mark();
+      const current = q.PreferencesManager.get();
+      q.PreferencesManager.set({ ...current, camera: { ...current.camera, defaultView: 'orthographic' } });
+    });
+    await page.waitForTimeout(550);
+    const unchanged = await page.evaluate(() => {
+      const q = window.probe;
+      const pack = q.PackLibrary.getById(q.packId);
+      return { mode: q.SceneManager.getEditorView().projection, savedView: pack.editorView || null,
+        thumbnail: pack.thumbnailViewSignature, live: q.EditorUI.getPreviewView()?.signature,
+        writes: q.log.filter(entry => entry.type === 'write').length };
+    });
+    assert.equal(unchanged.mode, 'perspective');
+    assert.equal(unchanged.savedView, null);
+    assert.equal(unchanged.thumbnail, unchanged.live);
+    assert.equal(unchanged.writes, 0, 'changing only the default does not recapture an unchanged live view');
+    await page.evaluate(() => { const q = window.probe; q.AppShell.navigate('packs'); q.AppShell.navigate('editor'); });
+    await settlePreview(page);
+    const reopened = await page.evaluate(() => {
+      const q = window.probe;
+      return { mode: q.SceneManager.getEditorView().projection,
+        thumbnail: q.PackLibrary.getById(q.packId).thumbnailViewSignature,
+        live: q.EditorUI.getPreviewView()?.signature };
+    });
+    assert.equal(reopened.mode, 'orthographic');
+    assert.equal(reopened.thumbnail, reopened.live);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('Orthographic preview capture fits output aspect and restores live camera after failure', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await openPack(page);
+    const proof = await page.evaluate(() => {
+      const q = window.probe;
+      q.SceneManager.switchProjection('orthographic');
+      const camera = q.SceneManager.getCamera();
+      const renderer = q.SceneManager.getRenderer();
+      const scene = q.SceneManager.getScene();
+      const originalRender = renderer.render;
+      const originalEncode = HTMLCanvasElement.prototype.toDataURL;
+      const snapshot = () => ({ left: camera.left, right: camera.right, top: camera.top,
+        bottom: camera.bottom, zoom: camera.zoom, matrix: camera.projectionMatrix.toArray(),
+        size: renderer.getSize(new THREE.Vector2()).toArray() });
+      const before = snapshot();
+      let captureAspect = null;
+      let failure = null;
+      try {
+        renderer.render = function (renderedScene, renderedCamera) {
+          if (renderedScene === scene && renderedCamera === camera && captureAspect === null) {
+            captureAspect = (camera.right - camera.left) / (camera.top - camera.bottom);
+          }
+          return originalRender.call(this, renderedScene, renderedCamera);
+        };
+        q.renderPreview(camera, 640, 360);
+        const afterSuccess = snapshot();
+        HTMLCanvasElement.prototype.toDataURL = () => { throw new Error('injected encode'); };
+        try { q.renderPreview(camera, 640, 360); } catch (error) { failure = error.message; }
+        return { before, afterSuccess, afterFailure: snapshot(), captureAspect, failure };
+      } finally {
+        renderer.render = originalRender;
+        HTMLCanvasElement.prototype.toDataURL = originalEncode;
+        q.SceneManager.switchProjection('perspective');
+      }
+    });
+    assert.ok(Math.abs(proof.captureAspect - 640 / 360) < 1e-9);
+    assert.deepEqual(proof.afterSuccess, proof.before);
+    assert.deepEqual(proof.afterFailure, proof.before);
+    assert.equal(proof.failure, 'injected encode');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
 
 test('EXPORT-A real Chromium visual export identity, authority and fidelity', { timeout: 300000 }, async t => {
   const browser = await launch();

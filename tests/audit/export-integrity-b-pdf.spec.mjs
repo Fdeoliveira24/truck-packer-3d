@@ -112,11 +112,13 @@ function setup({ pack = mixedPack(), cases = [baseCase(), baseCase({ id: 'case-b
   return pack.id;
 }
 
-function runPdf(packId, { refused = false } = {}) {
+function runPdf(packId, { refused = false, projection = 'perspective' } = {}) {
   const record = { docs: 0, texts: [], images: [], captures: [], addPages: 0, saved: null, toasts: [], errors: [] };
   const truck = PackLibrary.getById(packId).truck;
   const scene = { background: null };
-  const camera = new THREE.PerspectiveCamera(40, 1.5, 0.1, 1000);
+  const camera = projection === 'orthographic'
+    ? new THREE.OrthographicCamera(-12, 12, 8, -8, 0.1, 1000)
+    : new THREE.PerspectiveCamera(40, 1.5, 0.1, 1000);
   const authority = { pack: PackLibrary.getById(packId) };
   const deps = {
     THREE,
@@ -651,6 +653,16 @@ test('EXPORT-B each view prints whole: heading and image share a page inside the
       assert.ok(image.y + image.h + 16 <= PAGE.height - PAGE.margin + 1e-6, `${heading} keeps its spacing above the margin`);
     });
   }
+});
+
+test('EXPORT-B active Orthographic main view is labeled separately from Top and Side', () => {
+  const record = runPdf(setup(), { projection: 'orthographic' });
+  const headings = body(record).map(entry => entry.text);
+  assert.ok(headings.includes('ORTHOGRAPHIC VIEW'));
+  assert.ok(!headings.includes('PERSPECTIVE VIEW'));
+  assert.ok(headings.includes('TOP VIEW'));
+  assert.ok(headings.includes('SIDE VIEW'));
+  assert.equal(record.images.length, 3);
 });
 
 test('EXPORT-B view rasters print at >= 180 PPI within the capture bounds and keep their aspect', () => {

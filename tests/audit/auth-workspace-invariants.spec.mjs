@@ -2347,7 +2347,7 @@ test('P0 EDITOR UNDO ATOMICITY: automatic preview capture writes skipHistory, ne
   const clearStart = appSrc.indexOf('function clearPackPreview(');
   const clearEnd = appSrc.indexOf('\n      }', clearStart);
   const clearBlock = appSrc.slice(clearStart, clearEnd);
-  assert.match(clearBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,\s*thumbnailRenderVersion: PREVIEW_RENDER_VERSION,\s*thumbnailVisualSignature: CaseScene\.getVisualSignature\(pack\),\s*thumbnailViewSignature: editorViewSignature\(normalizeEditorView\(pack\.editorView\) \|\|\s*SceneManager\.getDefaultEditorView\(pack\.truck\)\),\s*\}, \{ skipHistory: false \}\)/,
+  assert.match(clearBlock, /PackLibrary\.updatePreview\(packId, \{\s*thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,\s*thumbnailRenderVersion: PREVIEW_RENDER_VERSION,\s*thumbnailVisualSignature: CaseScene\.getVisualSignature\(pack\),\s*thumbnailViewSignature: editorViewSignature\(normalizeEditorView\(pack\.editorView\) \|\|\s*SceneManager\.getDefaultEditorView\(pack\.truck, PreferencesManager\.get\(\)\.camera\.defaultView\)\),\s*\}, \{ skipHistory: false \}\)/,
     'Clear Preview intentionally clears the image at the current visual and view signatures and remains undoable');
 });
 

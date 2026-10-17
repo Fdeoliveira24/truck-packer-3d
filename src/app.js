@@ -910,6 +910,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
       Defaults,
       Utils,
       getSceneManager: () => SceneManager,
+      getCurrentCameraPack: () => EditorUI?.getCurrentCameraPack(),
+      applyCameraProjectionToPack: (packId, projection) => EditorUI?.applyCameraProjection(projection, packId),
       getAccountSwitcher: () => AccountSwitcher,
       SupabaseClient,
       onExportApp: openExportAppModal,
@@ -1758,7 +1760,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
           thumbnailRenderVersion: PREVIEW_RENDER_VERSION,
           thumbnailVisualSignature: CaseScene.getVisualSignature(pack),
           thumbnailViewSignature: editorViewSignature(normalizeEditorView(pack.editorView) ||
-            SceneManager.getDefaultEditorView(pack.truck)),
+            SceneManager.getDefaultEditorView(pack.truck, PreferencesManager.get().camera.defaultView)),
         }, { skipHistory: false });
         UIComponents.showToast('Preview cleared', 'info', { title: 'Preview' });
         return true;
@@ -1977,7 +1979,8 @@ const TP3D_BUILD_STAMP = Object.freeze({
             pdf.gap(12);
           }
 
-          pdf.image('PERSPECTIVE VIEW', perspective, perspectiveSize);
+          pdf.image(SceneManager.getCamera().isOrthographicCamera ? 'ORTHOGRAPHIC VIEW' : 'PERSPECTIVE VIEW',
+            perspective, perspectiveSize);
           pdf.image('TOP VIEW', topView, topSize);
           pdf.image('SIDE VIEW', sideView, sideSize);
 
@@ -2364,6 +2367,9 @@ const TP3D_BUILD_STAMP = Object.freeze({
         const autoClearColor = renderer.autoClearColor;
         const autoClearDepth = renderer.autoClearDepth;
         const aspect = camera.aspect;
+        const orthoBounds = camera.isOrthographicCamera
+          ? { left: camera.left, right: camera.right, top: camera.top, bottom: camera.bottom, zoom: camera.zoom }
+          : null;
         const projection = camera.projectionMatrix.clone();
         const projectionInverse = camera.projectionMatrixInverse.clone();
         const grid = scene.getObjectByName('grid');
@@ -2384,6 +2390,10 @@ const TP3D_BUILD_STAMP = Object.freeze({
           if (camera.isPerspectiveCamera) {
             camera.aspect = width / height;
             camera.updateProjectionMatrix();
+          } else if (camera.isOrthographicCamera) {
+            camera.left = -camera.top * width / height;
+            camera.right = camera.top * width / height;
+            camera.updateProjectionMatrix();
           }
           renderer.render(scene, camera);
           // No await: the browser may clear the WebGL buffer after this task.
@@ -2393,6 +2403,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
         } finally {
           if (grid) grid.visible = gridVisible;
           if (camera.isPerspectiveCamera) camera.aspect = aspect;
+          if (orthoBounds) Object.assign(camera, orthoBounds);
           camera.projectionMatrix.copy(projection);
           camera.projectionMatrixInverse.copy(projectionInverse);
           renderer.setDrawingBufferSize(size.x, size.y, pixelRatio);
@@ -2423,8 +2434,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
       getActiveWorkspaceKey: () => `${getActiveWorkspaceKey()}|${CoreStorage.captureScopeContext().generation}`,
       getVisualSignature: pack => CaseScene.getVisualSignature(pack),
-      getViewSignature: pack => editorViewSignature(normalizeEditorView(pack.editorView) ||
-        SceneManager.getDefaultEditorView(pack.truck)),
+      // Saved Pack views remain the preview authority across opening resets.
+      // Without one, use the live view so a Settings default change does not
+      // re-capture the open Pack until it is reopened with that default.
+      getViewSignature: pack => editorViewSignature(normalizeEditorView(pack.editorView)) ||
+        EditorUI.getPreviewView()?.signature ||
+        editorViewSignature(SceneManager.getDefaultEditorView(pack.truck, PreferencesManager.get().camera.defaultView)),
     });
 
     // ==== UI: Packs Screen ====

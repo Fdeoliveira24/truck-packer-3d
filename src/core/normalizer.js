@@ -82,13 +82,23 @@ export function normalizeEditorView(value) {
   const distanceSquared = ['x', 'y', 'z'].reduce((sum, axis) =>
     sum + (cameraPosition[axis] - target[axis]) ** 2, 0);
   if (!(distanceSquared > 0.000001) || !Number.isFinite(distanceSquared)) return null;
-  return { cameraPosition, target };
+  const view = { cameraPosition, target };
+  if (Object.hasOwn(value, 'projection')) {
+    view.projection = value.projection === 'orthographic' ? 'orthographic' : 'perspective';
+  }
+  if (view.projection === 'orthographic') {
+    view.zoom = typeof value.zoom === 'number' && Number.isFinite(value.zoom) &&
+      value.zoom >= 0.05 && value.zoom <= 50
+      ? Math.round(value.zoom * EDITOR_VIEW_PRECISION) / EDITOR_VIEW_PRECISION : 1;
+  }
+  return view;
 }
 
 export function editorViewSignature(value) {
   const view = normalizeEditorView(value);
   return view ? JSON.stringify([view.cameraPosition.x, view.cameraPosition.y, view.cameraPosition.z,
-    view.target.x, view.target.y, view.target.z]) : null;
+    view.target.x, view.target.y, view.target.z,
+    ...(view.projection === 'orthographic' ? ['orthographic', view.zoom] : [])]) : null;
 }
 
 function finiteNumber(value, fallback) {

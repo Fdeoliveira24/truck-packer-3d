@@ -1479,7 +1479,9 @@ export function createCaseScene({
       if (!group || !camera) return;
       const aabb = getAabbWorld(gizmoTargetId);
       if (!aabb) return;
-      const scale = computeGizmoScale(camera.position.distanceTo(group.position));
+      const scale = camera.isOrthographicCamera
+        ? Math.max(0.04, Math.min(3.5, (camera.top - camera.bottom) / camera.zoom * 0.062))
+        : computeGizmoScale(camera.position.distanceTo(group.position));
       gizmoGroup.scale.setScalar(scale);
       // Anchor the whole arrow above the case top so faces/labels stay readable.
       gizmoGroup.position.set(group.position.x, aabb.max.y + 0.3 + 1.35 * scale, group.position.z);
@@ -3997,7 +3999,7 @@ export function createEditorScreen({
         CoreStorage.isScopeContextCurrent(viewOwner.scope));
     }
 
-    function persistSettledView(revision = viewRevision) {
+    function persistSettledView(revision = viewRevision, { explicit = false } = {}) {
       if (revision !== viewRevision || !isViewOwnerCurrent() ||
           viewGestureActive || viewFocusActive || viewPendingEnd) return false;
       // Camera metadata belongs to the Pack even while Results owns the cargo preview.
@@ -4009,10 +4011,11 @@ export function createEditorScreen({
       pendingViewSave = false;
       const view = SceneManager.getEditorView();
       const signature = editorViewSignature(view);
-      const saved = normalizeEditorView(pack.editorView) ||
-        SceneManager.getDefaultEditorView(pack.truck);
+      const stored = normalizeEditorView(pack.editorView);
+      const saved = stored || SceneManager.getDefaultEditorView(pack.truck,
+        PreferencesManager.get().camera.defaultView);
       if (!signature) return false;
-      if (signature === editorViewSignature(saved)) {
+      if ((!explicit || stored?.projection) && signature === editorViewSignature(saved)) {
         if (onPreviewViewSettled) onPreviewViewSettled();
         return false;
       }
@@ -4037,6 +4040,28 @@ export function createEditorScreen({
       // A command is a settled camera change; persist through the Pack owner.
       persistSettledView(viewRevision);
       return true;
+    }
+
+    function applyCameraProjection(projection, expectedPackId = viewOwner?.packId) {
+      if (!isViewOwnerCurrent()) return false;
+      if (viewOwner.packId !== expectedPackId) return false;
+      const pack = PackLibrary.getById(viewOwner.packId);
+      if (!pack || !['perspective', 'orthographic'].includes(projection)) return false;
+      clearViewSettle();
+      viewGestureActive = false;
+      viewFocusActive = false;
+      focusRevision = null;
+      viewRevision++;
+      if (!SceneManager.switchProjection(projection)) return false;
+      clearActiveCameraPreset();
+      persistSettledView(viewRevision, { explicit: true });
+      return PackLibrary.getById(pack.id)?.editorView?.projection === projection;
+    }
+
+    function getCurrentCameraPack() {
+      if (!isViewOwnerCurrent()) return null;
+      const pack = PackLibrary.getById(viewOwner.packId);
+      return pack ? { id: pack.id, title: pack.title } : null;
     }
 
     function scheduleViewSettle(revision) {
@@ -5171,11 +5196,22 @@ export function createEditorScreen({
           ];
           UIComponents.openDropdown(
             btnView,
-            presets.map(([label, preset]) => ({
-              label, rightIcon: 'fa-solid fa-check', radio: true,
-              checked: activeCameraPreset === preset,
-              onClick: () => applyCameraPreset(preset),
-            })),
+            [
+              { type: 'header', label: 'Camera View', fontSize: '14px' },
+              ...presets.map(([label, preset]) => ({
+                label, rightIcon: 'fa-solid fa-check', radio: true, radioGroup: 'Camera view',
+                checked: activeCameraPreset === preset,
+                onClick: () => applyCameraPreset(preset),
+              })),
+              { type: 'divider' },
+              { type: 'header', label: 'Projection', fontSize: '14px' },
+              ...['perspective', 'orthographic'].map(projection => ({
+                label: projection === 'perspective' ? 'Perspective' : 'Orthographic',
+                rightIcon: 'fa-solid fa-check', radio: true, radioGroup: 'Projection',
+                checked: Boolean(SceneManager.getCamera()?.isOrthographicCamera) === (projection === 'orthographic'),
+                onClick: () => applyCameraProjection(projection),
+              })),
+            ],
             { width: 156, minWidth: 156, align: 'left', role: 'editor-view', menuSemantics: true, toggle: true }
           );
         });
@@ -5291,7 +5327,11 @@ export function createEditorScreen({
         invalidateViewOwner();
         // Fit after the Inspector and viewport have their opening dimensions.
         // Same-Pack hydration and updates retain the user's active view.
-        SceneManager.applyEditorView(SceneManager.getDefaultEditorView(pack.truck));
+        const savedView = normalizeEditorView(pack.editorView);
+        const projection = savedView
+          ? savedView.projection || 'perspective'
+          : PreferencesManager.get().camera.defaultView;
+        SceneManager.applyEditorView(SceneManager.getDefaultEditorView(pack.truck, projection));
         pendingViewSave = false;
         viewOwner = { packId: pack.id, scope: CoreStorage.captureScopeContext() };
       }
@@ -8190,6 +8230,7 @@ export function createEditorScreen({
     }
 
     return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState,
+      getCurrentCameraPack, applyCameraProjection,
       getPreviewScene, getExportScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
   })();
 

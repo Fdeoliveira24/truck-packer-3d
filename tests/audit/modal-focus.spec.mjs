@@ -514,7 +514,7 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
     await setup('isolation-fixture');
     await page.evaluate(async () => {
       const { createSettingsOverlay } = await import('/src/ui/overlays/settings-overlay.js');
-      window.settings = createSettingsOverlay({ UIComponents: ui, PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' } }) }, Utils: {} });
+      window.settings = createSettingsOverlay({ UIComponents: ui, PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' }, camera: { defaultView: 'perspective' } }) }, Utils: {} });
       settings.open('resources');
     });
     assert.equal(await page.evaluate(() => Boolean(document.activeElement.closest('[role="dialog"]'))), true);
@@ -721,7 +721,7 @@ test('P0-SM-OF-5/6/7 real DOM modal focus and isolation', { timeout: 30000 }, as
     await setup();
     await page.evaluate(async () => {
       const { createSettingsOverlay } = await import('/src/ui/overlays/settings-overlay.js');
-      window.settings = createSettingsOverlay({ UIComponents: ui, PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' } }) }, Utils: {} });
+      window.settings = createSettingsOverlay({ UIComponents: ui, PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' }, camera: { defaultView: 'perspective' } }) }, Utils: {} });
       document.getElementById('before').focus();
       settings.open('preferences');
     });
@@ -1026,7 +1026,7 @@ test('Settings Resources Keyboard Shortcuts: native root card, in-pane reference
       window.ui = createUIComponents();
       const { createSettingsOverlay } = await import('/src/ui/overlays/settings-overlay.js');
       window.settings = createSettingsOverlay({ UIComponents: ui,
-        PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' } }) }, Utils: {} });
+        PreferencesManager: { get: () => ({ units: { length: 'in', weight: 'lb' }, camera: { defaultView: 'perspective' } }) }, Utils: {} });
       document.getElementById('before').focus();
       settings.open('resources');
     }, platform);

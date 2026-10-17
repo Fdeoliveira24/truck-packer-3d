@@ -1475,9 +1475,18 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
     await page.locator('#btn-editor-view').focus();
     await page.keyboard.press('Enter');
     assert.equal(await page.locator('#btn-editor-view').getAttribute('aria-expanded'), 'true');
-    assert.deepEqual(await page.locator('[data-role="editor-view"] [role="menuitemradio"]').allTextContents(),
+    const presetGroup = page.locator('[data-role="editor-view"] [role="group"][aria-label="Camera view"]');
+    const projectionGroup = page.locator('[data-role="editor-view"] [role="group"][aria-label="Projection"]');
+    assert.deepEqual(await presetGroup.locator('[role="menuitemradio"]').allTextContents(),
       views.map(([label]) => label));
-    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+    assert.deepEqual(await projectionGroup.locator('[role="menuitemradio"]').allTextContents(),
+      ['Perspective', 'Orthographic']);
+    assert.equal(await projectionGroup.getByRole('menuitemradio', { checked: true }).textContent(), 'Perspective');
+    assert.deepEqual(await page.locator('[data-role="editor-view"] .dropdown-menu > div')
+      .evaluateAll(rows => rows.filter(row => ['Camera View', 'Projection'].includes(row.textContent.trim()))
+        .map(row => [row.textContent.trim(), getComputedStyle(row).fontSize])),
+    [['Camera View', '14px'], ['Projection', '14px']]);
+    assert.equal(await presetGroup.getByRole('menuitemradio', { checked: true }).count(), 0,
       'the opening camera is not an explicitly selected preset');
     await page.keyboard.press('ArrowDown');
     assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), 'Isometric');
@@ -1520,7 +1529,7 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
       await page.locator('#btn-editor-view').click();
       const selected = page.getByRole('menuitemradio', { name: label, checked: true });
       assert.equal(await selected.count(), 1, `${label} alone is checked after selection`);
-      assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 1);
+      assert.equal(await presetGroup.getByRole('menuitemradio', { checked: true }).count(), 1);
       assert.equal(await selected.locator('i').getAttribute('aria-hidden'), 'true');
       assert.equal(await selected.locator('i').evaluate(icon => getComputedStyle(icon).color), 'rgb(255, 159, 28)');
       const menuSpacing = await selected.evaluate(row => {
@@ -1567,7 +1576,7 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
     assert.ok(cameraDelta(freeView.saved, freeView.moved) < 0.02,
       `manual orbit settles into Pack metadata: ${JSON.stringify(freeView)}`);
     await page.locator('#btn-editor-view').click();
-    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+    assert.equal(await presetGroup.getByRole('menuitemradio', { checked: true }).count(), 0,
       'manual orbit clears the selected preset');
     await page.getByRole('menuitemradio', { name: 'Fit Truck' }).click();
     const reframed = await page.evaluate(() => {
@@ -1595,7 +1604,7 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
     await page.mouse.move(midX, midY);
     await page.mouse.wheel(0, -280);
     await page.locator('#btn-editor-view').click();
-    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+    assert.equal(await presetGroup.getByRole('menuitemradio', { checked: true }).count(), 0,
       'manual zoom clears the selected preset');
     await page.getByRole('menuitemradio', { name: 'Fit Truck' }).click();
 
@@ -1604,7 +1613,7 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
       SceneManager.focusOnWorldPoint(SceneManager.getControls().target.clone().addScalar(4), { duration: 600 });
     });
     await page.locator('#btn-editor-view').click();
-    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+    assert.equal(await presetGroup.getByRole('menuitemradio', { checked: true }).count(), 0,
       'focusing a Case clears the selected preset');
     await page.getByRole('menuitemradio', { name: 'Front', exact: true }).click();
     await page.waitForTimeout(650);
@@ -1674,9 +1683,192 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
     assert.deepEqual(ownership.firstOpening, ownership.firstDefault, 'reopening preserves the current truck-centered policy');
     assert.equal(ownership.firstUnchanged, true, 'switching Packs does not overwrite prior camera metadata');
     await page.locator('#btn-editor-view').click();
-    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+    assert.equal(await presetGroup.getByRole('menuitemradio', { checked: true }).count(), 0,
       'opening another Pack clears the prior Pack selection');
     await page.keyboard.press('Escape');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
+test('Editor projection switches keep camera scale, controls, presets and Pack ownership', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const cargoBefore = await page.evaluate(() => window.probe.casesJson());
+    const before = await page.evaluate(() => {
+      const { SceneManager } = window.probe;
+      const camera = SceneManager.getCamera();
+      return { view: SceneManager.getEditorView(), visibleHeight: 2 * camera.position.distanceTo(SceneManager.getControls().target) *
+        Math.tan(camera.fov * Math.PI / 360) };
+    });
+    await page.locator('#btn-editor-view').click();
+    await page.getByRole('menuitemradio', { name: 'Orthographic' }).click();
+    const ortho = await page.evaluate(() => {
+      const { SceneManager, PackLibrary, StateStore } = window.probe;
+      const camera = SceneManager.getCamera();
+      return { view: SceneManager.getEditorView(), saved: PackLibrary.getById(StateStore.get('currentPackId')).editorView,
+        isOrtho: camera.isOrthographicCamera, controlsCamera: SceneManager.getControls().object === camera,
+        visibleHeight: (camera.top - camera.bottom) / camera.zoom };
+    });
+    assert.equal(ortho.isOrtho, true);
+    assert.equal(ortho.controlsCamera, true);
+    assert.deepEqual(ortho.view, ortho.saved);
+    assert.ok(Math.abs(ortho.visibleHeight / before.visibleHeight - 1) < 0.02);
+    assert.deepEqual(ortho.view.target, before.view.target);
+    await page.locator('#btn-editor-view').click();
+    assert.equal(await page.getByRole('group', { name: 'Projection' })
+      .getByRole('menuitemradio', { name: 'Orthographic', checked: true }).count(), 1);
+    assert.equal(await page.getByRole('group', { name: 'Camera view' })
+      .getByRole('menuitemradio', { checked: true }).count(), 0);
+    await page.keyboard.press('Escape');
+
+    const canvas = await page.locator('#viewport canvas').boundingBox();
+    assert.ok(canvas);
+    const x = canvas.x + canvas.width / 2;
+    const y = canvas.y + canvas.height / 2;
+    await page.mouse.move(x, y);
+    await page.mouse.wheel(0, -250);
+    await page.waitForTimeout(250);
+    await page.evaluate(() => window.probe.EditorUI.flushPendingView());
+    const zoomed = await page.evaluate(() => {
+      const { SceneManager, PackLibrary, StateStore } = window.probe;
+      return { zoom: SceneManager.getCamera().zoom,
+        saved: PackLibrary.getById(StateStore.get('currentPackId')).editorView.zoom };
+    });
+    assert.ok(zoomed.zoom > ortho.view.zoom);
+    assert.equal(zoomed.saved, Math.round(zoomed.zoom * 1000) / 1000);
+    await page.mouse.move(x, y);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move(x + 35, y + 20, { steps: 5 });
+    await page.mouse.up({ button: 'right' });
+    assert.notDeepEqual(await page.evaluate(() => window.probe.SceneManager.getEditorView().target), ortho.view.target);
+
+    for (const label of ['Fit Truck', 'Isometric', 'Front', 'Rear', 'Left', 'Right', 'Top']) {
+      await page.locator('#btn-editor-view').click();
+      await page.getByRole('group', { name: 'Camera view' }).getByRole('menuitemradio', { name: label, exact: true }).click();
+      assert.equal(await page.evaluate(() => window.probe.SceneManager.getCamera().isOrthographicCamera), true);
+    }
+    await page.locator('#btn-editor-view').click();
+    await page.getByRole('group', { name: 'Camera view' }).getByRole('menuitemradio', { name: 'Isometric' }).click();
+    await page.evaluate(() => {
+      const { SceneManager, CaseScene, PackLibrary, StateStore } = window.probe;
+      const first = PackLibrary.getById(StateStore.get('currentPackId')).cases[0];
+      const target = CaseScene.getObject(first.id).position;
+      SceneManager.applyEditorView({ projection: 'orthographic', zoom: 1,
+        target: { x: target.x, y: target.y, z: target.z },
+        cameraPosition: { x: target.x + 20, y: target.y + 20, z: target.z + 20 } });
+    });
+    const cargo = await page.evaluate(() => window.probe.cargoPoint());
+    assert.ok(cargo, 'Orthographic raycasting finds a visible Case');
+    await page.mouse.click(cargo.x, cargo.y);
+    assert.deepEqual(await page.evaluate(() => window.probe.selection()), [cargo.id]);
+    const beforeDrag = await page.evaluate(() => ({
+      cases: window.probe.casesJson(), poses: window.probe.poses(),
+    }));
+    await page.mouse.move(cargo.x, cargo.y);
+    await page.mouse.down();
+    await page.mouse.move(cargo.x + 35, cargo.y + 20, { steps: 5 });
+    const duringDrag = await page.evaluate(() => ({
+      cases: window.probe.casesJson(), poses: window.probe.poses(),
+    }));
+    assert.notEqual(duringDrag.poses, beforeDrag.poses, 'Orthographic drag moves a provisional Case pose');
+    assert.equal(duringDrag.cases, beforeDrag.cases, 'drag does not commit before release');
+    await page.evaluate(() => window.probe.SceneManager.getRenderer().domElement.dispatchEvent(
+      new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 })));
+    await page.mouse.up();
+    await page.waitForFunction(start => window.probe.SceneManager.getControls().enabled &&
+      window.probe.poses() === start, beforeDrag.poses, { timeout: 10000 });
+    await page.locator('#btn-editor-view').click();
+    await page.getByRole('menuitemradio', { name: 'Perspective' }).click();
+    assert.equal(await page.evaluate(() => window.probe.SceneManager.getControls().object ===
+      window.probe.SceneManager.getCamera() && window.probe.SceneManager.getCamera().isPerspectiveCamera), true);
+    const precedence = await page.evaluate(() => {
+      const { StateStore, PackLibrary, EditorUI, SceneManager } = window.probe;
+      const first = PackLibrary.getById('fixture-pack');
+      const saved = JSON.stringify(first.editorView);
+      const fresh = { ...first, id: 'projection-fresh', cases: [], editorView: null };
+      const legacy = { ...first, id: 'projection-legacy', cases: [], editorView: {
+        cameraPosition: { x: 999, y: 888, z: 777 }, target: { x: 1, y: 2, z: 3 } } };
+      StateStore.set({ preferences: { ...StateStore.get('preferences'), camera: { defaultView: 'orthographic' } } },
+        { skipHistory: true });
+      EditorUI.render();
+      const explicitUnaffected = SceneManager.getCamera().isPerspectiveCamera;
+      StateStore.set({ packLibrary: [first, fresh, legacy], currentPackId: fresh.id }, { skipHistory: true });
+      EditorUI.render();
+      const freshDefault = SceneManager.getCamera().isOrthographicCamera;
+      StateStore.set({ preferences: { ...StateStore.get('preferences'), camera: { defaultView: 'perspective' } } },
+        { skipHistory: true });
+      EditorUI.render();
+      const unchangedWithoutApply = SceneManager.getCamera().isOrthographicCamera &&
+        PackLibrary.getById(fresh.id).editorView === null;
+      const staleApplyRejected = EditorUI.applyCameraProjection('perspective', first.id) === false;
+      const appliedCurrent = EditorUI.applyCameraProjection('perspective', fresh.id);
+      const currentDefault = SceneManager.getCamera().isPerspectiveCamera;
+      const freshExplicit = PackLibrary.getById(fresh.id).editorView?.projection === 'perspective';
+      StateStore.set({ currentPackId: legacy.id }, { skipHistory: true });
+      EditorUI.render();
+      const legacyPerspective = SceneManager.getCamera().isPerspectiveCamera;
+      const legacyOpening = SceneManager.getEditorView();
+      const legacyExpected = SceneManager.getDefaultEditorView(legacy.truck);
+      const legacyApplied = EditorUI.applyCameraProjection('perspective', legacy.id);
+      const legacyExplicit = PackLibrary.getById(legacy.id).editorView?.projection === 'perspective';
+      StateStore.set({ currentPackId: first.id }, { skipHistory: true });
+      EditorUI.render();
+      const savedChoice = PackLibrary.getById(first.id).editorView?.projection === 'perspective';
+      return { explicitUnaffected, freshDefault, legacyPerspective,
+        unchangedWithoutApply, staleApplyRejected, appliedCurrent, currentDefault, freshExplicit,
+        legacyApplied, legacyExplicit, savedChoice,
+        legacyOpening, legacyExpected, firstUnchanged: JSON.stringify(PackLibrary.getById(first.id).editorView) === saved };
+    });
+    assert.equal(precedence.explicitUnaffected, true);
+    assert.equal(precedence.freshDefault, true);
+    assert.equal(precedence.unchangedWithoutApply, true);
+    assert.equal(precedence.staleApplyRejected, true);
+    assert.equal(precedence.appliedCurrent, true);
+    assert.equal(precedence.currentDefault, true);
+    assert.equal(precedence.freshExplicit, true);
+    assert.equal(precedence.legacyApplied, true);
+    assert.equal(precedence.legacyExplicit, true);
+    assert.equal(precedence.savedChoice, true);
+    assert.equal(precedence.legacyPerspective, true);
+    assert.deepEqual(precedence.legacyOpening, precedence.legacyExpected);
+    assert.equal(precedence.firstUnchanged, true);
+
+    for (const width of [1200, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const framing = await page.evaluate(() => {
+        const { SceneManager, EditorUI } = window.probe;
+        SceneManager.resize();
+        const trucks = [
+          { length: 120, width: 72, height: 70, shapeMode: 'rect' },
+          { length: 636, width: 102, height: 110, shapeMode: 'wheelWells',
+            shapeConfig: { wellWidth: 10, wellHeight: 20 } },
+          { length: 2400, width: 120, height: 120, shapeMode: 'frontBonus',
+            shapeConfig: { bonusLength: 180, bonusHeight: 50 } },
+        ];
+        let maxProjected = 0;
+        for (const truck of trucks) {
+          const length = truck.length + (truck.shapeMode === 'frontBonus' ? truck.shapeConfig.bonusLength : 0);
+          for (const preset of ['fit', 'isometric', 'front', 'rear', 'left', 'right', 'top']) {
+            SceneManager.applyEditorView(SceneManager.getPresetEditorView(truck, preset, 'orthographic'));
+            const camera = SceneManager.getCamera();
+            camera.updateMatrixWorld();
+            for (const x of [0, length]) for (const y of [0, truck.height]) {
+              for (const z of [-truck.width / 2, truck.width / 2]) {
+                const projected = new window.THREE.Vector3(
+                  SceneManager.toWorld(x), SceneManager.toWorld(y), SceneManager.toWorld(z)).project(camera);
+                maxProjected = Math.max(maxProjected, Math.abs(projected.x), Math.abs(projected.y));
+              }
+            }
+          }
+        }
+        EditorUI.render();
+        return maxProjected;
+      });
+      assert.ok(framing < 1, `${width}px Orthographic view fits custom truck bounds (${framing})`);
+    }
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore);
+    assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false);
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });

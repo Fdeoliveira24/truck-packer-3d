@@ -46,6 +46,28 @@ test('Pack views normalize, persist independently and survive workspace hydratio
     editorViewSignature(viewA), 'submillimeter camera noise is ignored');
 });
 
+test('projection and zoom metadata are Pack-owned and legacy poses stay Perspective', () => {
+  seed();
+  const ortho = { ...viewA, projection: 'orthographic', zoom: 2.5 };
+  PackLibrary.updateEditorView('A', ortho);
+  PackLibrary.updateEditorView('B', viewB);
+  assert.equal(PackLibrary.getById('A').editorView.projection, 'orthographic');
+  assert.equal(PackLibrary.getById('A').editorView.zoom, 2.5);
+  assert.equal(PackLibrary.getById('B').editorView.projection, undefined);
+  assert.notEqual(editorViewSignature(ortho), editorViewSignature(viewA));
+  assert.notEqual(editorViewSignature(ortho), editorViewSignature({ ...ortho, zoom: 3 }));
+  assert.equal(editorViewSignature({ ...viewA, projection: 'perspective' }), editorViewSignature(viewA));
+  assert.equal(normalizeEditorView({ ...ortho, zoom: Infinity }).zoom, 1);
+  assert.equal(normalizeEditorView({ ...ortho, zoom: -1 }).zoom, 1);
+  assert.equal(normalizeEditorView({ ...ortho, projection: 'unknown' }).projection, 'perspective');
+  const legacy = PackLibrary.getById('B');
+  const promoted = PackLibrary.updateEditorView('B', { ...viewB, projection: 'perspective' });
+  assert.notEqual(promoted, legacy, 'an explicit Perspective choice is retained even when its pose matches a legacy view');
+  assert.equal(promoted.editorView.projection, 'perspective');
+  assert.equal(promoted.lastEdited, legacy.lastEdited);
+  assert.equal(StateStore.undo(), false);
+});
+
 test('settled camera saves remain Pack-owned during an AutoPack preview', async () => {
   seed();
   const editor = await readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
@@ -55,6 +77,7 @@ test('settled camera saves remain Pack-owned during an AutoPack preview', async 
   const sourcePack = PackLibrary.getById('A');
   const sandbox = {
     StateStore, PackLibrary, normalizeEditorView, editorViewSignature,
+    PreferencesManager: { get: () => ({ camera: { defaultView: 'perspective' } }) },
     CoreStorage: { isScopeContextCurrent: scope => scope === 'current' },
     SceneManager: { getEditorView: () => viewA, getDefaultEditorView: () => viewB },
     getPreviewScene: () => null,

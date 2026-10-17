@@ -136,6 +136,8 @@ export function createSettingsOverlay({
   Defaults: _Defaults,
   Utils,
   getSceneManager,
+  getCurrentCameraPack,
+  applyCameraProjectionToPack,
   getAccountSwitcher,
   SupabaseClient,
   onExportApp: _onExportApp,
@@ -3084,7 +3086,8 @@ export function createSettingsOverlay({
   }
 
   function savePrefsFromForm({
-    length, weight, theme, labelSize, hiddenOpacity, snappingEnabled, gridSize, screenshotResolution,
+    length, weight, theme, labelSize, hiddenOpacity, cameraProjection, applyCurrentProjection,
+    currentCameraPackId, snappingEnabled, gridSize, screenshotResolution,
     pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView,
   }) {
     const prev = PreferencesManager.get();
@@ -3094,15 +3097,27 @@ export function createSettingsOverlay({
     next.theme = theme;
     next.labelFontSize = Utils.clamp(Number(labelSize) || 12, 8, 24);
     next.hiddenCaseOpacity = Utils.clamp(Number(hiddenOpacity) || 0.3, 0, 1);
+    next.camera.defaultView = cameraProjection;
     next.snapping.enabled = snappingEnabled === 'true';
     next.snapping.gridSize = Math.max(0.25, Number(gridSize) || 1);
     next.export.screenshotResolution = screenshotResolution;
     next.export.pdfIncludeStats = pdfIncludeStats === 'true';
     next.showAutoPackLoadingOverlay = showAutoPackLoadingOverlay !== false;
     next.autoPackResultsStartView = autoPackResultsStartView;
+    const projectionChanged = next.camera.defaultView !== prev.camera.defaultView;
+    if (applyCurrentProjection && (!currentCameraPackId ||
+        !applyCameraProjectionToPack?.(currentCameraPackId, cameraProjection))) {
+      UIComponents.showToast('Could not apply projection to the current Load Plan. Preferences were not saved.', 'warning');
+      return;
+    }
     PreferencesManager.set(next);
     PreferencesManager.applyTheme(next.theme);
-    UIComponents.showToast('Preferences saved', 'success');
+    const message = applyCurrentProjection
+      ? 'Preferences saved. Projection applied to the current Load Plan.'
+      : projectionChanged && currentCameraPackId
+        ? 'Preferences saved. The current Load Plan kept its projection.'
+        : 'Preferences saved';
+    UIComponents.showToast(message, 'success');
   }
 
   // Render Updates content inside the modal
@@ -5046,6 +5061,14 @@ export function createSettingsOverlay({
         options: [{ value: 'light', label: 'Light' }, { value: 'dark', label: 'Dark' }],
       });
 
+      const cameraProjection = UIComponents.createSelect({
+        label: 'Default Camera Projection', value: prefs.camera.defaultView,
+        options: [
+          { value: 'perspective', label: 'Perspective' },
+          { value: 'orthographic', label: 'Orthographic' },
+        ],
+      });
+
       const snappingPrefs = prefs.snapping || {};
       const exportPrefs = prefs.export || {};
 
@@ -5089,6 +5112,53 @@ export function createSettingsOverlay({
       displayHeading.className = 'tp3d-prefs-heading';
       displayHeading.textContent = 'Editor Display';
       prefsCard.appendChild(displayHeading);
+
+      prefsCard.appendChild(row('Default Camera Projection', cameraProjection));
+      const projectionHelper = doc.createElement('div');
+      projectionHelper.className = 'tp3d-prefs-helper';
+      projectionHelper.textContent = 'Used when a Load Plan opens without a saved camera view. Existing plans keep their projection.';
+      prefsCard.appendChild(projectionHelper);
+
+      const activeCameraPack = getCurrentCameraPack?.();
+      let applyCurrentProjection = null;
+      if (activeCameraPack?.id) {
+        applyCurrentProjection = doc.createElement('button');
+        applyCurrentProjection.type = 'button';
+        applyCurrentProjection.className = 'tp3d-pref-switch';
+        applyCurrentProjection.dataset.role = 'apply-current-camera-projection';
+        applyCurrentProjection.setAttribute('role', 'switch');
+        applyCurrentProjection.setAttribute('aria-label', 'Apply to current Load Plan');
+        applyCurrentProjection.setAttribute('aria-checked', 'false');
+        applyCurrentProjection.dataset.value = 'off';
+        const track = doc.createElement('span');
+        track.className = 'tp3d-pref-switch__track';
+        track.setAttribute('aria-hidden', 'true');
+        const thumb = doc.createElement('span');
+        thumb.className = 'tp3d-pref-switch__thumb';
+        track.appendChild(thumb);
+        const value = doc.createElement('span');
+        value.className = 'tp3d-pref-switch__value';
+        value.textContent = 'Off';
+        applyCurrentProjection.appendChild(track);
+        applyCurrentProjection.appendChild(value);
+        applyCurrentProjection.addEventListener('click', () => {
+          const enabled = applyCurrentProjection.dataset.value !== 'on';
+          applyCurrentProjection.dataset.value = enabled ? 'on' : 'off';
+          applyCurrentProjection.setAttribute('aria-checked', String(enabled));
+          applyCurrentProjection.classList.toggle('is-on', enabled);
+          value.textContent = enabled ? 'On' : 'Off';
+        });
+        const helper = doc.createElement('div');
+        helper.id = 'tp3d-prefs-apply-current-camera-help';
+        helper.className = 'tp3d-prefs-helper';
+        helper.textContent = 'Updates this Load Plan now. Other Load Plans are unchanged.';
+        applyCurrentProjection.setAttribute('aria-describedby', helper.id);
+        const control = doc.createElement('div');
+        control.className = 'tp3d-prefs-control-stack';
+        control.appendChild(applyCurrentProjection);
+        control.appendChild(helper);
+        prefsCard.appendChild(row('Apply to current Load Plan', control));
+      }
 
       prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacityWrap));
 
@@ -5228,6 +5298,9 @@ export function createSettingsOverlay({
           theme: theme.value,
           labelSize: labelSize.value,
           hiddenOpacity: hiddenOpacity.value,
+          cameraProjection: cameraProjection.value,
+          applyCurrentProjection: applyCurrentProjection?.dataset.value === 'on',
+          currentCameraPackId: activeCameraPack?.id || null,
           snappingEnabled: snappingEnabled.value,
           gridSize: gridSize.value,
           screenshotResolution: screenshotResolution.value,

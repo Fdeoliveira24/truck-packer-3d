@@ -24,6 +24,7 @@ export function createSceneRuntime({
   const SceneManager = (() => {
     const INCH_TO_WORLD = 0.05;
     const WORLD_TO_INCH = 1 / INCH_TO_WORLD;
+    const CAMERA_FOV = 40;
     let containerEl = null;
     let scene = null;
     let camera = null;
@@ -166,7 +167,7 @@ export function createSceneRuntime({
       refreshTheme();
 
       const { width, height } = getContainerSize();
-      camera = new THREE.PerspectiveCamera(40, width / height, 0.01, 5000);
+      camera = new THREE.PerspectiveCamera(CAMERA_FOV, width / height, 0.01, 5000);
       camera.position.set(28, 18, 20);
 
       renderer = new THREE.WebGLRenderer({
@@ -497,8 +498,8 @@ export function createSceneRuntime({
 
       renderer.clearDepth();
       axisScene.background = null;
-      if (axisCamera && camera && axisCamera.fov !== camera.fov) {
-        axisCamera.fov = camera.fov;
+      if (axisCamera && axisCamera.fov !== CAMERA_FOV) {
+        axisCamera.fov = CAMERA_FOV;
         axisCamera.updateProjectionMatrix();
       }
       // Move the axis camera further back to ensure tips/labels stay inside
@@ -519,7 +520,10 @@ export function createSceneRuntime({
       const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
       if (width === viewSize.width && height === viewSize.height && pixelRatio === viewSize.pixelRatio) return;
       viewSize = { width, height, pixelRatio };
-      camera.aspect = width / height;
+      if (camera.isOrthographicCamera) {
+        camera.left = -camera.top * width / height;
+        camera.right = camera.top * width / height;
+      } else camera.aspect = width / height;
       camera.updateProjectionMatrix();
       renderer.setPixelRatio(pixelRatio);
       renderer.setSize(width, height);
@@ -1017,7 +1021,7 @@ export function createSceneRuntime({
       updateTrailerShapeGuides(truckInches);
     }
 
-    function getPresetEditorView(truckInches, preset) {
+    function getPresetEditorView(truckInches, preset, projection = camera?.isOrthographicCamera ? 'orthographic' : 'perspective') {
       if (!truckInches) return null;
       const lengthW = toWorld(getTotalTruckLengthInches(truckInches));
       const widthW = toWorld(Number(truckInches?.width) || 102);
@@ -1049,14 +1053,14 @@ export function createSceneRuntime({
       const up = new THREE.Vector3().crossVectors(direction, right).normalize();
       const measuredSize = containerEl ? getContainerSize() : null;
       const size = measuredSize && measuredSize.width > 10 && measuredSize.height > 10 ? measuredSize : viewSize;
-      const tanVertical = Math.tan(((camera?.fov || 40) * Math.PI / 180) / 2);
+      const tanVertical = Math.tan((CAMERA_FOV * Math.PI / 180) / 2);
       const tanHorizontal = tanVertical * (size.width / size.height);
       let distance = 0;
       for (const x of [0, lengthW]) {
         for (const y of [0, heightW]) {
           for (const z of [-widthW / 2, widthW / 2]) {
             const corner = new THREE.Vector3(x - target.x, y - target.y, z);
-            const depth = corner.dot(direction);
+            const depth = projection === 'orthographic' ? 0 : corner.dot(direction);
             distance = Math.max(distance,
               depth + Math.abs(corner.dot(right)) / tanHorizontal,
               depth + Math.abs(corner.dot(up)) / tanVertical);
@@ -1065,6 +1069,7 @@ export function createSceneRuntime({
       }
       distance = Math.max(controls?.minDistance || 6, distance * 1.12);
       return normalizeEditorView({
+        projection, ...(projection === 'orthographic' ? { zoom: 1 } : {}),
         target,
         cameraPosition: {
           x: target.x + direction.x * distance,
@@ -1074,13 +1079,15 @@ export function createSceneRuntime({
       });
     }
 
-    function getDefaultEditorView(truckInches) {
-      return getPresetEditorView(truckInches, 'opening');
+    function getDefaultEditorView(truckInches, projection = 'perspective') {
+      return getPresetEditorView(truckInches, 'opening', projection);
     }
 
     function getEditorView() {
       if (!camera || !controls) return null;
       return normalizeEditorView({
+        projection: camera.isOrthographicCamera ? 'orthographic' : 'perspective',
+        ...(camera.isOrthographicCamera ? { zoom: camera.zoom } : {}),
         cameraPosition: { x: camera.position.x, y: camera.position.y, z: camera.position.z },
         target: { x: controls.target.x, y: controls.target.y, z: controls.target.z },
       });
@@ -1105,13 +1112,53 @@ export function createSceneRuntime({
       const damping = controls.enableDamping;
       controls.enableDamping = false;
       controls.update();
+      const projection = normalized.projection === 'orthographic' ? 'orthographic' : 'perspective';
+      if (Boolean(camera.isOrthographicCamera) !== (projection === 'orthographic')) {
+        const previous = camera;
+        camera = projection === 'orthographic'
+          ? new THREE.OrthographicCamera(-1, 1, 1, -1, 0.01, 5000)
+          : new THREE.PerspectiveCamera(CAMERA_FOV, viewSize.width / viewSize.height, 0.01, 5000);
+        camera.up.copy(previous.up);
+        camera.position.copy(previous.position);
+        controls.object = camera;
+      }
       camera.position.set(normalized.cameraPosition.x, normalized.cameraPosition.y, normalized.cameraPosition.z);
       controls.target.set(normalized.target.x, normalized.target.y, normalized.target.z);
+      if (camera.isOrthographicCamera) {
+        const distance = camera.position.distanceTo(controls.target);
+        camera.top = Math.max(0.01, distance * Math.tan((CAMERA_FOV * Math.PI / 180) / 2));
+        camera.bottom = -camera.top;
+        camera.left = -camera.top * viewSize.width / viewSize.height;
+        camera.right = -camera.left;
+        camera.zoom = normalized.zoom || 1;
+        controls.minZoom = 0.05;
+        controls.maxZoom = 50;
+      } else camera.aspect = viewSize.width / viewSize.height;
+      camera.updateProjectionMatrix();
       // Keep fitted views usable for unusually long trucks and narrow viewports.
       controls.maxDistance = Math.max(220, camera.position.distanceTo(controls.target) * 1.25);
       controls.update();
       controls.enableDamping = damping;
       return getEditorView();
+    }
+
+    function switchProjection(projection) {
+      if (!camera || !controls || !['perspective', 'orthographic'].includes(projection)) return null;
+      if (Boolean(camera.isOrthographicCamera) === (projection === 'orthographic')) return getEditorView();
+      const direction = camera.position.clone().sub(controls.target).normalize();
+      const visibleHeight = camera.isOrthographicCamera
+        ? (camera.top - camera.bottom) / camera.zoom
+        : 2 * camera.position.distanceTo(controls.target) * Math.tan((CAMERA_FOV * Math.PI / 180) / 2);
+      const distance = visibleHeight / (2 * Math.tan((CAMERA_FOV * Math.PI / 180) / 2));
+      return applyEditorView({
+        projection, zoom: 1,
+        target: { x: controls.target.x, y: controls.target.y, z: controls.target.z },
+        cameraPosition: {
+          x: controls.target.x + direction.x * distance,
+          y: controls.target.y + direction.y * distance,
+          z: controls.target.z + direction.z * distance,
+        },
+      });
     }
 
     function focusOnWorldPoint(targetWorld, options = {}) {
@@ -1230,6 +1277,7 @@ export function createSceneRuntime({
       getPresetEditorView,
       getEditorView,
       applyEditorView,
+      switchProjection,
       toggleGrid,
       toggleShadows,
       restoreShadows,

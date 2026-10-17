@@ -2568,8 +2568,10 @@ export function updateEditorView(packId, view) {
   const previousPack = getById(packId);
   const editorView = CoreNormalizer.normalizeEditorView(view);
   if (!previousPack || !editorView) return null;
-  if (CoreNormalizer.editorViewSignature(previousPack.editorView) ===
-      CoreNormalizer.editorViewSignature(editorView)) return previousPack;
+  const previousView = CoreNormalizer.normalizeEditorView(previousPack.editorView);
+  if (CoreNormalizer.editorViewSignature(previousView) ===
+      CoreNormalizer.editorViewSignature(editorView) &&
+      previousView?.projection === editorView.projection) return previousPack;
   const pack = { ...previousPack, editorView };
   StateStore.set({ packLibrary: getPacks().map(p => p === previousPack ? pack : p) }, {
     skipHistory: true,

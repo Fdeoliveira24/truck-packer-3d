@@ -682,6 +682,8 @@ export function createUIComponents() {
     wrap.style.visibility = 'hidden';
 
     const selectOptions = [];
+    let radioGroup = null;
+    let radioGroupName = '';
     const activateSelectOption = item => {
       if (item.disabled) return;
       closeAllDropdowns();
@@ -723,12 +725,15 @@ export function createUIComponents() {
         header.style.top = '0';
         header.style.background = 'var(--bg-secondary)';
         header.style.zIndex = '1';
+        if (item.fontSize) header.style.fontSize = item.fontSize;
         header.textContent = String(item.label || '');
         wrap.appendChild(header);
         return;
       }
 
       if (item && (item.type === 'divider' || item.divider === true)) {
+        radioGroup = null;
+        radioGroupName = '';
         const divider = document.createElement('div');
         divider.setAttribute('role', 'separator');
         divider.style.height = '1px';
@@ -839,7 +844,21 @@ export function createUIComponents() {
         invokeAction(item.onClick);
         if (manageTriggerState && anchorEl && typeof anchorEl.focus === 'function') anchorEl.focus();
       });
-      wrap.appendChild(btn);
+      if (menuSemantics && item.radio === true && item.radioGroup) {
+        const name = String(item.radioGroup);
+        if (!radioGroup || radioGroupName !== name) {
+          radioGroup = document.createElement('div');
+          radioGroup.setAttribute('role', 'group');
+          radioGroup.setAttribute('aria-label', name);
+          wrap.appendChild(radioGroup);
+          radioGroupName = name;
+        }
+        radioGroup.appendChild(btn);
+      } else {
+        radioGroup = null;
+        radioGroupName = '';
+        wrap.appendChild(btn);
+      }
     });
 
     const dropdown = document.createElement('div');

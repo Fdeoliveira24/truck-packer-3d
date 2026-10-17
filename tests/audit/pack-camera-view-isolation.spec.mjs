@@ -5,6 +5,7 @@ import vm from 'node:vm';
 import * as THREE from 'three';
 import * as StateStore from '../../src/core/state-store.js';
 import * as PackLibrary from '../../src/services/pack-library.js';
+import * as PreferencesManager from '../../src/services/preferences-manager.js';
 import { editorViewSignature, normalizeEditorView, normalizePack } from '../../src/core/normalizer.js';
 import { projectPortablePack, projectPortableWorkspacePack } from '../../src/core/import-schema.js';
 
@@ -109,6 +110,89 @@ test('Editor zoom steps preserve target and direction in both projections and st
   assert.equal(orthographic.zoom, 0.5);
   assert.deepEqual(orthographic.position.toArray(), [11, 2, 3]);
   assert.ok(changes > 2 && cancellations > 2);
+});
+
+test('Camera and zoom controls hide independently, dismiss an open menu and hand focus to the viewport', async () => {
+  const source = await readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
+  const start = source.indexOf('    function syncViewportControls() {');
+  const end = source.indexOf('    // Selection-only change.', start);
+  assert.ok(start >= 0 && end > start);
+  const build = (prefs, { active = null, menuOpen = false } = {}) => {
+    const control = () => { const el = { hidden: false }; el.contains = node => node === el; return el; };
+    const state = { closes: 0, viewportFocuses: 0, menuOpen };
+    const menuItem = {};
+    const menu = { contains: node => node === menuItem };
+    const controls = { zoomControlsEl: control(), btnView: control(), btnZoomIn: control(), btnZoomOut: control() };
+    const sandbox = {
+      ...controls,
+      PreferencesManager: { get: () => prefs },
+      UIComponents: { closeAllDropdowns: () => { state.closes++; state.menuOpen = false; } },
+      document: {
+        activeElement: active === 'menu' ? menuItem : active ? controls[active] : null,
+        querySelector: selector => (selector === '[data-dropdown="1"][data-role="editor-view"]' && state.menuOpen ? menu : null),
+      },
+    };
+    sandbox.viewportEl = { focus: () => { state.viewportFocuses++; sandbox.document.activeElement = sandbox.viewportEl; } };
+    vm.createContext(sandbox);
+    vm.runInContext(source.slice(start, end), sandbox);
+    return { sandbox, state, controls };
+  };
+
+  for (const [showCameraControls, showZoomControls] of [[true, true], [true, false], [false, true], [false, false]]) {
+    const { sandbox, controls } = build({ showCameraControls, showZoomControls });
+    sandbox.syncViewportControls();
+    assert.equal(controls.btnView.hidden, !showCameraControls, `camera ${showCameraControls} / zoom ${showZoomControls}`);
+    assert.equal(controls.btnZoomIn.hidden, !showZoomControls);
+    assert.equal(controls.btnZoomOut.hidden, !showZoomControls);
+    assert.equal(controls.zoomControlsEl.hidden, !showCameraControls && !showZoomControls,
+      'the floating group disappears only when no control remains, so no empty frame is left');
+  }
+
+  const legacy = build({});
+  legacy.sandbox.syncViewportControls();
+  assert.deepEqual([legacy.controls.btnView.hidden, legacy.controls.btnZoomIn.hidden, legacy.controls.zoomControlsEl.hidden],
+    [false, false, false], 'records without either field show every control');
+
+  const menuOpen = build({ showCameraControls: false, showZoomControls: true }, { active: 'menu', menuOpen: true });
+  menuOpen.sandbox.syncViewportControls();
+  assert.equal(menuOpen.state.closes, 1, 'hiding Camera Views dismisses its open menu');
+  assert.equal(menuOpen.state.viewportFocuses, 1, 'focus moves from the removed menu to the viewport');
+
+  const focusedCamera = build({ showCameraControls: false, showZoomControls: true }, { active: 'btnView' });
+  focusedCamera.sandbox.syncViewportControls();
+  assert.equal(focusedCamera.state.viewportFocuses, 1, 'a hidden focused button hands focus to the viewport');
+  assert.equal(focusedCamera.state.closes, 0, 'no menu is open, so nothing is dismissed');
+
+  const zoomOnly = build({ showCameraControls: true, showZoomControls: false }, { active: 'btnView', menuOpen: true });
+  zoomOnly.sandbox.syncViewportControls();
+  assert.equal(zoomOnly.state.closes, 0, 'a zoom-only change leaves the Camera Views menu open');
+  assert.equal(zoomOnly.state.viewportFocuses, 0, 'and does not take focus from the visible camera button');
+});
+
+test('Camera and zoom visibility saves take the lightweight route and every other preference change does not', () => {
+  seed(); // preferences: {} is a legacy record with neither visibility field
+  const routes = [];
+  const unsubscribe = StateStore.subscribe((changes, _state, notification) => {
+    if (changes.preferences) routes.push(notification?.type ?? null);
+  });
+  try {
+    const current = () => PreferencesManager.get();
+    assert.equal(current().showCameraControls, true, 'a record without the camera field defaults to On');
+    assert.equal(current().showZoomControls, true, 'a record without the zoom field defaults to On');
+    PreferencesManager.set({ ...current(), showCameraControls: false });
+    PreferencesManager.set({ ...current(), showZoomControls: false });
+    PreferencesManager.set({ ...current(), showCameraControls: true, showZoomControls: true });
+    assert.deepEqual(routes, Array(3).fill('viewport-controls-preference'),
+      'camera only, zoom only and both are visibility-only, so no Editor render is requested');
+    PreferencesManager.set({ ...current(), showCameraControls: false, labelFontSize: 20 });
+    PreferencesManager.set({ ...current(), camera: { ...current().camera, defaultView: 'orthographic' } });
+    assert.deepEqual(routes.slice(3), [null, null],
+      'a visibility change saved with another preference, or a projection default change, uses the normal route');
+    assert.equal(current().showCameraControls, false);
+    assert.equal(current().labelFontSize, 20, 'the other preference saved with it is kept');
+    assert.equal(current().showZoomControls, true, 'the other visibility preference is untouched');
+    assert.equal(current().camera.defaultView, 'orthographic');
+  } finally { unsubscribe(); }
 });
 
 test('settled camera saves remain Pack-owned during an AutoPack preview', async () => {

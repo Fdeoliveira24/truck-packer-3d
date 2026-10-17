@@ -5233,7 +5233,7 @@ export function createEditorScreen({
                 onClick: () => applyCameraProjection(projection),
               })),
             ],
-            { width: 156, minWidth: 156, align: 'left', role: 'editor-view', menuSemantics: true, toggle: true }
+            { width: 156, minWidth: 156, placement: 'left', placementLift: 32, role: 'editor-view', menuSemantics: true, toggle: true }
           );
         });
       }
@@ -5310,7 +5310,7 @@ export function createEditorScreen({
         return;
       }
       ensureScene();
-      syncZoomControls();
+      syncViewportControls();
 
       const packId = StateStore.get('currentPackId');
       const pack = PackLibrary.getById(packId);
@@ -5374,11 +5374,28 @@ export function createEditorScreen({
       if (pendingViewSave) queueMicrotask(() => persistSettledView());
     }
 
-    function syncZoomControls() {
+    // Camera Views, Zoom In and Zoom Out are shown or hidden independently by their
+    // Settings preferences; the floating group hides only when none remain. This is
+    // visibility only: it never renders the Editor or touches the scene, camera or Pack.
+    function syncViewportControls() {
       if (!zoomControlsEl) return;
-      const visible = PreferencesManager.get().showZoomControls !== false;
-      if (!visible && zoomControlsEl.contains(document.activeElement)) viewportEl?.focus({ preventScroll: true });
-      zoomControlsEl.hidden = !visible;
+      const prefs = PreferencesManager.get();
+      const showCamera = prefs.showCameraControls !== false;
+      const showZoom = prefs.showZoomControls !== false;
+      // Hiding the Camera Views button must also dismiss its open menu.
+      const openMenu = showCamera ? null : document.querySelector('[data-dropdown="1"][data-role="editor-view"]');
+      const hiding = [];
+      if (!showCamera && btnView) hiding.push(btnView);
+      if (!showZoom && btnZoomIn) hiding.push(btnZoomIn);
+      if (!showZoom && btnZoomOut) hiding.push(btnZoomOut);
+      const active = document.activeElement;
+      const focusLost = hiding.some(control => control.contains(active)) || Boolean(openMenu && openMenu.contains(active));
+      if (openMenu) UIComponents.closeAllDropdowns();
+      if (focusLost) viewportEl?.focus({ preventScroll: true });
+      if (btnView) btnView.hidden = !showCamera;
+      if (btnZoomIn) btnZoomIn.hidden = !showZoom;
+      if (btnZoomOut) btnZoomOut.hidden = !showZoom;
+      zoomControlsEl.hidden = !(showCamera || showZoom);
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene
@@ -8258,7 +8275,7 @@ export function createEditorScreen({
       return ok ? out : null;
     }
 
-    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, syncZoomControls,
+    return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, syncViewportControls,
       getCurrentCameraPack, applyCameraProjection,
       getPreviewScene, getExportScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
   })();

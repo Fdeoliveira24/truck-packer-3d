@@ -2796,6 +2796,40 @@ tr:hover td {
   line-height: var(--leading-normal);
 }
 
+/* Preferences rows with helper text. Scoped to the Preferences card so other
+   Settings tabs keep the shared row layout. The row is top-aligned and its label
+   is centered on the first control, so labels, selects and switches line up. The
+   helper sits directly beneath the control: inside a control stack (switches) or
+   as a grid item of the row (selects, which must stay the row's second child). */
+.tp3d-prefs-card {
+  --tp3d-pref-control-h: 34px;
+}
+
+.tp3d-prefs-card .tp3d-prefs-row--select {
+  --tp3d-pref-control-h: 36px;
+}
+
+.tp3d-prefs-card .tp3d-prefs-row--stacked {
+  align-items: start;
+  row-gap: var(--space-2);
+}
+
+/* The label's first line is centered on the first control; a second line hangs below. */
+.tp3d-prefs-card .tp3d-prefs-row--stacked > .tp3d-settings-row-label {
+  line-height: 1.5;
+  padding-top: calc((var(--tp3d-pref-control-h) - 1.5em) / 2);
+}
+
+/* In a select row the label spans the control and its helper, so a wrapped label
+   does not push the helper away from the select. */
+.tp3d-prefs-card .tp3d-prefs-row--select > .tp3d-settings-row-label {
+  grid-row: 1 / span 2;
+}
+
+.tp3d-prefs-card .tp3d-settings-row > .tp3d-prefs-helper {
+  grid-column: 2;
+}
+
 .tp3d-prefs-reset-position {
   min-height: 36px;
   padding: 6px 12px;
@@ -3009,6 +3043,18 @@ tr:hover td {
     grid-template-columns: 1fr;
     gap: 4px;
     padding: 12px 0;
+  }
+
+  .tp3d-prefs-card .tp3d-prefs-row--stacked > .tp3d-settings-row-label {
+    padding-top: 0;
+  }
+
+  .tp3d-prefs-card .tp3d-prefs-row--select > .tp3d-settings-row-label {
+    grid-row: auto;
+  }
+
+  .tp3d-prefs-card .tp3d-settings-row > .tp3d-prefs-helper {
+    grid-column: 1;
   }
 
   .tp3d-settings-danger-row {
@@ -4377,13 +4423,26 @@ body.tp3d-shared-modal-lock #app .nav {
   cursor: pointer;
 }
 
-.tp3d-editor-zoom-controls button + button {
+.tp3d-editor-zoom-controls button[hidden] {
+  display: none;
+}
+
+/* Separator only between visible buttons, so hiding the camera or zoom buttons
+   never leaves a stray line or gap. */
+.tp3d-editor-zoom-controls button:not([hidden]) ~ button:not([hidden]) {
   border-top: 1px solid var(--border-subtle);
 }
 
 .tp3d-editor-zoom-controls button:hover:not(:disabled) {
   background: var(--bg-hover);
   color: var(--text-primary);
+}
+
+/* Camera Views button while its menu is open: brand orange (design.md accent) on a
+   soft orange tint. --accent-readable is deliberately not used; it is a dark brown. */
+.tp3d-editor-zoom-controls button[aria-expanded='true'] {
+  background: var(--accent-primary-14);
+  color: var(--accent-primary);
 }
 
 .tp3d-editor-zoom-controls button:focus-visible {

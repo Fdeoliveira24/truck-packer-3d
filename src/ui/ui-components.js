@@ -751,7 +751,10 @@ export function createUIComponents() {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'dropdown-item';
-      if (menuSemantics) btn.setAttribute('role', 'menuitem');
+      if (menuSemantics) {
+        btn.setAttribute('role', item.radio === true ? 'menuitemradio' : 'menuitem');
+        if (item.radio === true) btn.setAttribute('aria-checked', item.checked ? 'true' : 'false');
+      }
 
       // Apply variant (e.g., danger for delete actions)
       if (item && item.variant) {
@@ -774,6 +777,7 @@ export function createUIComponents() {
       if (item.icon) {
         const icon = document.createElement('i');
         icon.className = item.icon;
+        icon.setAttribute('aria-hidden', 'true');
         if (item.iconColor) icon.style.color = String(item.iconColor);
         btn.appendChild(icon);
       }
@@ -804,6 +808,7 @@ export function createUIComponents() {
       } else if (item.rightIcon) {
         const iconRight = document.createElement('i');
         iconRight.className = item.rightIcon;
+        iconRight.setAttribute('aria-hidden', 'true');
         iconRight.style.color = item.rightIconColor || 'var(--accent-primary)';
         if (item.rightOnClick) {
           iconRight.style.cursor = 'pointer';
@@ -855,7 +860,7 @@ export function createUIComponents() {
 
     const preferredWidth = selectSemantics
       ? Math.max(180, anchorEl.getBoundingClientRect().width)
-      : Math.max(180, Number(options.width) || 220);
+      : Math.max(Number(options.minWidth) || 180, Number(options.width) || 220);
     dropdown.style.minWidth = `${preferredWidth}px`;
     dropdown.appendChild(wrap);
 
@@ -927,7 +932,8 @@ export function createUIComponents() {
     }
     if (menuSemantics) {
       const firstItem = /** @type {HTMLElement | null} */ (
-        wrap.querySelector('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])')
+        Array.from(wrap.querySelectorAll('[role="menuitem"], [role="menuitemradio"]'))
+          .find(item => !item.hasAttribute('disabled') && item.getAttribute('aria-disabled') !== 'true') || null
       );
       if (firstItem) firstItem.focus();
     }
@@ -971,7 +977,8 @@ export function createUIComponents() {
       }
       if (menuSemantics && ['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(ev.key)) {
         const menuItems = /** @type {HTMLElement[]} */ (
-          Array.from(wrap.querySelectorAll('[role="menuitem"]:not(:disabled):not([aria-disabled="true"])'))
+          Array.from(wrap.querySelectorAll('[role="menuitem"], [role="menuitemradio"]'))
+            .filter(item => !item.hasAttribute('disabled') && item.getAttribute('aria-disabled') !== 'true')
         );
         if (!menuItems.length) return;
         ev.preventDefault();

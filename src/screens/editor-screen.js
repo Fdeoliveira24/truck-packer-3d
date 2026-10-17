@@ -3965,6 +3965,13 @@ export function createEditorScreen({
     let viewSettleTimer = null;
     let pendingViewSave = false;
     let onPreviewViewSettled = null;
+    let activeCameraPreset = null;
+    let activePresetSignature = null;
+
+    function clearActiveCameraPreset() {
+      activeCameraPreset = null;
+      activePresetSignature = null;
+    }
 
     function clearViewSettle() {
       if (viewSettleTimer !== null) window.clearTimeout(viewSettleTimer);
@@ -3980,6 +3987,7 @@ export function createEditorScreen({
       viewFocusActive = false;
       focusRevision = null;
       pendingViewSave = false;
+      clearActiveCameraPreset();
       viewRevision++;
     }
 
@@ -4024,6 +4032,8 @@ export function createEditorScreen({
       focusRevision = null;
       viewRevision++;
       if (!SceneManager.applyEditorView(view)) return false;
+      activeCameraPreset = preset;
+      activePresetSignature = editorViewSignature(SceneManager.getEditorView());
       // A command is a settled camera change; persist through the Pack owner.
       persistSettledView(viewRevision);
       return true;
@@ -5155,18 +5165,18 @@ export function createEditorScreen({
       if (btnView) {
         btnView.addEventListener('click', ev => {
           ev.stopPropagation();
+          const presets = [
+            ['Fit Truck', 'fit'], ['Isometric', 'isometric'], ['Front', 'front'],
+            ['Rear', 'rear'], ['Left', 'left'], ['Right', 'right'], ['Top', 'top'],
+          ];
           UIComponents.openDropdown(
             btnView,
-            [
-              { label: 'Fit Truck', onClick: () => applyCameraPreset('fit') },
-              { label: 'Isometric', onClick: () => applyCameraPreset('isometric') },
-              { label: 'Front', onClick: () => applyCameraPreset('front') },
-              { label: 'Rear', onClick: () => applyCameraPreset('rear') },
-              { label: 'Left', onClick: () => applyCameraPreset('left') },
-              { label: 'Right', onClick: () => applyCameraPreset('right') },
-              { label: 'Top', onClick: () => applyCameraPreset('top') },
-            ],
-            { width: 188, align: 'left', role: 'editor-view', menuSemantics: true, toggle: true }
+            presets.map(([label, preset]) => ({
+              label, rightIcon: 'fa-solid fa-check', radio: true,
+              checked: activeCameraPreset === preset,
+              onClick: () => applyCameraPreset(preset),
+            })),
+            { width: 156, minWidth: 156, align: 'left', role: 'editor-view', menuSemantics: true, toggle: true }
           );
         });
       }
@@ -5201,6 +5211,10 @@ export function createEditorScreen({
         viewRevision++;
       });
       controls.addEventListener('change', () => {
+        if (activeCameraPreset && isViewOwnerCurrent() &&
+            editorViewSignature(SceneManager.getEditorView()) !== activePresetSignature) {
+          clearActiveCameraPreset();
+        }
         if (viewPendingEnd && isViewOwnerCurrent()) scheduleViewSettle(viewRevision);
       });
       controls.addEventListener('end', () => {
@@ -5216,6 +5230,7 @@ export function createEditorScreen({
           viewGestureActive = false;
           viewFocusActive = true;
           focusRevision = ++viewRevision;
+          clearActiveCameraPreset();
         },
         onComplete: () => {
           if (!isViewOwnerCurrent() || focusRevision !== viewRevision) return;

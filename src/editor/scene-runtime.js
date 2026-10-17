@@ -1027,11 +1027,14 @@ export function createSceneRuntime({
       // Side views stay just above the existing OrbitControls floor limit.
       // Top's tiny +Z component keeps a stable screen-up axis with world-up controls.
       const directions = {
-        fit: () => new THREE.Vector3(
+        opening: () => new THREE.Vector3(
           Math.max(12, lengthW * 0.42),
           Math.max(12, heightW * 2.8),
           Math.max(16, widthW * 3.8)
         ),
+        fit: () => camera && controls
+          ? camera.position.clone().sub(controls.target)
+          : directions.opening(),
         isometric: () => new THREE.Vector3(1, 1, 1),
         front: () => new THREE.Vector3(1, 0.021, 0),
         rear: () => new THREE.Vector3(-1, 0.021, 0),
@@ -1042,6 +1045,7 @@ export function createSceneRuntime({
       if (!Object.hasOwn(directions, preset)) return null;
       const direction = directions[preset]().normalize();
       const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), direction).normalize();
+      if (right.lengthSq() < 0.000001) right.set(1, 0, 0);
       const up = new THREE.Vector3().crossVectors(direction, right).normalize();
       const measuredSize = containerEl ? getContainerSize() : null;
       const size = measuredSize && measuredSize.width > 10 && measuredSize.height > 10 ? measuredSize : viewSize;
@@ -1071,7 +1075,7 @@ export function createSceneRuntime({
     }
 
     function getDefaultEditorView(truckInches) {
-      return getPresetEditorView(truckInches, 'fit');
+      return getPresetEditorView(truckInches, 'opening');
     }
 
     function getEditorView() {

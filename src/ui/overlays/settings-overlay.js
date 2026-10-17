@@ -3088,7 +3088,7 @@ export function createSettingsOverlay({
   function savePrefsFromForm({
     length, weight, theme, labelSize, hiddenOpacity, cameraProjection, applyCurrentProjection,
     currentCameraPackId, snappingEnabled, gridSize, screenshotResolution,
-    pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView,
+    pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView, showZoomControls,
   }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
@@ -3103,6 +3103,7 @@ export function createSettingsOverlay({
     next.export.screenshotResolution = screenshotResolution;
     next.export.pdfIncludeStats = pdfIncludeStats === 'true';
     next.showAutoPackLoadingOverlay = showAutoPackLoadingOverlay !== false;
+    next.showZoomControls = showZoomControls !== false;
     next.autoPackResultsStartView = autoPackResultsStartView;
     const projectionChanged = next.camera.defaultView !== prev.camera.defaultView;
     if (applyCurrentProjection && (!currentCameraPackId ||
@@ -5160,6 +5161,41 @@ export function createSettingsOverlay({
         prefsCard.appendChild(row('Apply to current Load Plan', control));
       }
 
+      const zoomVisibility = doc.createElement('button');
+      zoomVisibility.type = 'button';
+      zoomVisibility.className = 'tp3d-pref-switch';
+      zoomVisibility.dataset.role = 'zoom-controls-visibility';
+      zoomVisibility.setAttribute('role', 'switch');
+      zoomVisibility.setAttribute('aria-label', 'Show Zoom Controls');
+      const zoomTrack = doc.createElement('span');
+      zoomTrack.className = 'tp3d-pref-switch__track';
+      zoomTrack.setAttribute('aria-hidden', 'true');
+      const zoomThumb = doc.createElement('span');
+      zoomThumb.className = 'tp3d-pref-switch__thumb';
+      zoomTrack.appendChild(zoomThumb);
+      const zoomValue = doc.createElement('span');
+      zoomValue.className = 'tp3d-pref-switch__value';
+      zoomVisibility.appendChild(zoomTrack);
+      zoomVisibility.appendChild(zoomValue);
+      const setZoomVisibility = enabled => {
+        zoomVisibility.dataset.value = enabled ? 'on' : 'off';
+        zoomVisibility.setAttribute('aria-checked', String(enabled));
+        zoomVisibility.classList.toggle('is-on', enabled);
+        zoomValue.textContent = enabled ? 'On' : 'Off';
+      };
+      setZoomVisibility(prefs.showZoomControls !== false);
+      zoomVisibility.addEventListener('click', () => setZoomVisibility(zoomVisibility.dataset.value !== 'on'));
+      const zoomHelper = doc.createElement('div');
+      zoomHelper.id = 'tp3d-prefs-zoom-controls-help';
+      zoomHelper.className = 'tp3d-prefs-helper';
+      zoomHelper.textContent = 'Show or hide the Zoom In and Zoom Out buttons in the 3D Editor. Mouse and trackpad zoom will remain available.';
+      zoomVisibility.setAttribute('aria-describedby', zoomHelper.id);
+      const zoomControl = doc.createElement('div');
+      zoomControl.className = 'tp3d-prefs-control-stack';
+      zoomControl.appendChild(zoomVisibility);
+      zoomControl.appendChild(zoomHelper);
+      prefsCard.appendChild(row('Show Zoom Controls', zoomControl));
+
       prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacityWrap));
 
       labelSize.classList.add('tp3d-prefs-number-input');
@@ -5306,6 +5342,7 @@ export function createSettingsOverlay({
           screenshotResolution: screenshotResolution.value,
           pdfIncludeStats: pdfIncludeStats.value,
           showAutoPackLoadingOverlay: autoPackLoading.dataset.value === 'on',
+          showZoomControls: zoomVisibility.dataset.value === 'on',
           autoPackResultsStartView: autoPackResultsStartView.value,
         })
       );

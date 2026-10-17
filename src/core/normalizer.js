@@ -245,6 +245,7 @@ export function normalizePreferences(prefs) {
   next.showLabels = next.showLabels !== false;
   next.showShadows = next.showShadows !== false;
   next.showBevels = next.showBevels !== false;
+  next.showZoomControls = next.showZoomControls !== false;
   next.labelFontSize = CoreUtils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
   next.hiddenCaseOpacity = CoreUtils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
   next.showAutoPackLoadingOverlay = next.showAutoPackLoadingOverlay !== false;

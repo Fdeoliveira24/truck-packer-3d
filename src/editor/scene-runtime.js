@@ -1161,6 +1161,39 @@ export function createSceneRuntime({
       });
     }
 
+    function zoomStep(direction) {
+      if (!camera || !controls || (direction !== 1 && direction !== -1)) return false;
+      cancelFocus();
+      const damping = controls.enableDamping;
+      controls.enableDamping = false;
+      controls.update();
+      const factor = 1.2;
+      let changed;
+      if (camera.isOrthographicCamera) {
+        const next = Math.min(controls.maxZoom, Math.max(controls.minZoom,
+          camera.zoom * (direction === 1 ? factor : 1 / factor)));
+        changed = Math.abs(next - camera.zoom) > 1e-9;
+        if (changed) {
+          camera.zoom = next;
+          camera.updateProjectionMatrix();
+        }
+      } else {
+        const offset = camera.position.clone().sub(controls.target);
+        const distance = offset.length();
+        const next = Math.min(controls.maxDistance, Math.max(controls.minDistance,
+          distance * (direction === 1 ? 1 / factor : factor)));
+        changed = distance > 0 && Math.abs(next - distance) > 1e-9;
+        if (changed) camera.position.copy(controls.target).addScaledVector(offset, next / distance);
+      }
+      if (changed) {
+        controls.update();
+        // Orthographic zoom does not necessarily cause OrbitControls to emit change.
+        controls.dispatchEvent({ type: 'change' });
+      }
+      controls.enableDamping = damping;
+      return changed;
+    }
+
     function focusOnWorldPoint(targetWorld, options = {}) {
       if (!controls || !camera) return;
       cancelFocus();
@@ -1278,6 +1311,7 @@ export function createSceneRuntime({
       getEditorView,
       applyEditorView,
       switchProjection,
+      zoomStep,
       toggleGrid,
       toggleShadows,
       restoreShadows,

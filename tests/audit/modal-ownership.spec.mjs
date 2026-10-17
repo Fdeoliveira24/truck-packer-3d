@@ -1124,6 +1124,15 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   assert.ok(find(el => el.className === 'tp3d-prefs-heading' && el.textContent === 'AutoPack'), 'AutoPack section heading');
   const loadingRow = rowFor('Show AutoPack loading screen');
   const startRow = rowFor('AutoPack Results starting view');
+  const zoomRow = rowFor('Show Zoom Controls');
+  assert.ok(zoomRow, 'zoom visibility belongs to Editor Display preferences');
+  const zoomVisibility = walk(zoomRow).find(el => el.dataset.role === 'zoom-controls-visibility');
+  const zoomHelper = walk(zoomRow).find(el => el.className === 'tp3d-prefs-helper');
+  assert.equal(zoomVisibility.getAttribute('role'), 'switch');
+  assert.equal(zoomVisibility.getAttribute('aria-checked'), 'true', 'legacy preferences show zoom controls');
+  assert.equal(zoomVisibility.getAttribute('aria-describedby'), zoomHelper.id);
+  assert.equal(zoomHelper.textContent,
+    'Show or hide the Zoom In and Zoom Out buttons in the 3D Editor. Mouse and trackpad zoom will remain available.');
   assert.ok(loadingRow && startRow, 'both AutoPack controls render as Preferences rows');
   const loading = walk(loadingRow).find(el => el.dataset.role === 'autopack-loading-visibility');
   const helper = walk(loadingRow).find(el => el.className === 'tp3d-prefs-helper');
@@ -1144,19 +1153,29 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   assert.equal(startView.value, '', 'a raw option index is not a choice');
 
   loading.dispatchEvent({ type: 'click' });
+  zoomVisibility.dispatchEvent({ type: 'click' });
   assert.equal(loading.getAttribute('aria-checked'), 'false');
+  assert.equal(zoomVisibility.getAttribute('aria-checked'), 'false');
   startView.value = 'recommended';
   assert.equal(saved.length, 0, 'controls do not save until Save changes');
   find(el => el.tagName === 'BUTTON' && el.textContent === 'Save changes').dispatchEvent({ type: 'click' });
   assert.equal(saved.length, 1);
   assert.deepEqual(toasts, [['Preferences saved', 'success']]);
   assert.equal(saved[0].showAutoPackLoadingOverlay, false);
+  assert.equal(saved[0].showZoomControls, false);
   assert.equal(saved[0].autoPackResultsStartView, 'recommended', 'the named value is stored, never an index');
   assert.deepEqual(saved[0].units, { length: 'ft', weight: 'kg' }, 'unrelated preferences are preserved');
 
   settings.open('preferences');
   const reopened = walk(dom.doc.body).filter(el => el.dataset.role === 'autopack-results-start-view').at(-1);
   assert.equal(reopened.value, 'recommended', 'the saved starting view is shown again');
+  assert.equal(walk(dom.doc.body).filter(el => el.dataset.role === 'zoom-controls-visibility').at(-1).getAttribute('aria-checked'),
+    'false', 'the saved zoom visibility is shown again');
+  walk(dom.doc.body).filter(el => el.dataset.role === 'zoom-controls-visibility').at(-1).dispatchEvent({ type: 'click' });
+  settings.close();
+  settings.open('preferences');
+  assert.equal(walk(dom.doc.body).filter(el => el.dataset.role === 'zoom-controls-visibility').at(-1).getAttribute('aria-checked'),
+    'false', 'closing without Save discards the pending zoom choice');
   settings.close();
 });
 

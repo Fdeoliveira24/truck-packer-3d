@@ -2434,11 +2434,12 @@ const TP3D_BUILD_STAMP = Object.freeze({
       capturePackPreview: (packId, options) => ExportService.capturePackPreview(packId, options),
       getActiveWorkspaceKey: () => `${getActiveWorkspaceKey()}|${CoreStorage.captureScopeContext().generation}`,
       getVisualSignature: pack => CaseScene.getVisualSignature(pack),
-      // A Settings default change does not move an already open Pack. Compare
-      // its settled live camera, then fall back to saved or opening metadata.
-      getViewSignature: pack => EditorUI.getPreviewView()?.signature ||
-        editorViewSignature(normalizeEditorView(pack.editorView) ||
-          SceneManager.getDefaultEditorView(pack.truck, PreferencesManager.get().camera.defaultView)),
+      // Saved Pack views remain the preview authority across opening resets.
+      // Without one, use the live view so a Settings default change does not
+      // re-capture the open Pack until it is reopened with that default.
+      getViewSignature: pack => editorViewSignature(normalizeEditorView(pack.editorView)) ||
+        EditorUI.getPreviewView()?.signature ||
+        editorViewSignature(SceneManager.getDefaultEditorView(pack.truck, PreferencesManager.get().camera.defaultView)),
     });
 
     // ==== UI: Packs Screen ====

@@ -200,9 +200,9 @@ const createPreviewScheduler = new Function(PREVIEW_SCHEDULER + '\\nreturn creat
 const previewTimers = new Set();
 const AutoPackPreviewScheduler = createPreviewScheduler({
   StateStore, PackLibrary, OperationLifecycle, capturePackPreview, getVisualSignature: pack => CaseScene.getVisualSignature(pack), getActiveWorkspaceKey: () => getActiveWorkspaceKey() + '|' + CoreStorage.captureScopeContext().generation,
-  getViewSignature: pack => EditorUI.getPreviewView()?.signature || Normalizer.editorViewSignature(
-    Normalizer.normalizeEditorView(pack.editorView) ||
-      SceneManager.getDefaultEditorView(pack.truck, PreferencesManager.get().camera.defaultView)),
+  getViewSignature: pack => Normalizer.editorViewSignature(Normalizer.normalizeEditorView(pack.editorView)) ||
+    EditorUI.getPreviewView()?.signature ||
+    Normalizer.editorViewSignature(SceneManager.getDefaultEditorView(pack.truck, PreferencesManager.get().camera.defaultView)),
   setTimer: (fn, delay) => {
     const timer = setTimeout(() => { previewTimers.delete(timer); fn(); }, delay);
     previewTimers.add(timer);
@@ -2116,7 +2116,7 @@ const STILL_CHANGING = 'The load plan is still changing. Try again when the scen
 const BUSY = 'Finish the current operation before exporting.';
 
 test('A changed projection default does not stale the open Pack preview until reentry', { timeout: 120000 }, async () => {
-  assert.match(appSource, /getViewSignature: pack => EditorUI\.getPreviewView\(\)\?\.signature/);
+  assert.match(appSource, /getViewSignature: pack => editorViewSignature\(normalizeEditorView\(pack\.editorView\)\) \|\|\s*EditorUI\.getPreviewView\(\)\?\.signature/);
   const browser = await launch();
   try {
     const { page, errors } = await openEditor(browser);

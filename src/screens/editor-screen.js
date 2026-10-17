@@ -4011,6 +4011,24 @@ export function createEditorScreen({
       return Boolean(PackLibrary.updateEditorView(pack.id, view));
     }
 
+    function applyCameraPreset(preset) {
+      if (!isViewOwnerCurrent()) return false;
+      const pack = PackLibrary.getById(viewOwner.packId);
+      if (!pack) return false;
+      SceneManager.resize();
+      const view = SceneManager.getPresetEditorView(pack.truck, preset);
+      if (!view) return false;
+      clearViewSettle();
+      viewGestureActive = false;
+      viewFocusActive = false;
+      focusRevision = null;
+      viewRevision++;
+      if (!SceneManager.applyEditorView(view)) return false;
+      // A command is a settled camera change; persist through the Pack owner.
+      persistSettledView(viewRevision);
+      return true;
+    }
+
     function scheduleViewSettle(revision) {
       if (viewSettleTimer !== null) window.clearTimeout(viewSettleTimer);
       viewSettleTimer = window.setTimeout(() => {
@@ -4154,6 +4172,7 @@ export function createEditorScreen({
     const caseListEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-case-list'));
     const btnAutopack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-autopack'));
     const btnUnpack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-unpack'));
+    const btnView = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-view'));
     const btnShare = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-share'));
     const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
@@ -4304,6 +4323,7 @@ export function createEditorScreen({
       setButtonWorking(btnUnpack, op.kind === 'unpacking', 'Moving to staging…');
       if (btnAutopack && op.kind !== 'autopacking') btnAutopack.disabled = !pack || busy;
       if (btnUnpack && op.kind !== 'unpacking') btnUnpack.disabled = !pack || busy || !(pack && (pack.cases || []).length);
+      if (btnView) btnView.disabled = !pack;
       if (btnShare) btnShare.disabled = !pack || busy;
       if (btnPng) btnPng.disabled = !pack || busy;
       if (btnPdf) btnPdf.disabled = !pack || busy;
@@ -5129,6 +5149,24 @@ export function createEditorScreen({
               { label: 'Export PDF', icon: 'fa-solid fa-file-pdf', onClick: () => btnPdf.click() },
             ],
             { width: 200, align: 'left', role: 'editor-share', menuSemantics: true }
+          );
+        });
+      }
+      if (btnView) {
+        btnView.addEventListener('click', ev => {
+          ev.stopPropagation();
+          UIComponents.openDropdown(
+            btnView,
+            [
+              { label: 'Fit Truck', onClick: () => applyCameraPreset('fit') },
+              { label: 'Isometric', onClick: () => applyCameraPreset('isometric') },
+              { label: 'Front', onClick: () => applyCameraPreset('front') },
+              { label: 'Rear', onClick: () => applyCameraPreset('rear') },
+              { label: 'Left', onClick: () => applyCameraPreset('left') },
+              { label: 'Right', onClick: () => applyCameraPreset('right') },
+              { label: 'Top', onClick: () => applyCameraPreset('top') },
+            ],
+            { width: 188, align: 'left', role: 'editor-view', menuSemantics: true, toggle: true }
           );
         });
       }

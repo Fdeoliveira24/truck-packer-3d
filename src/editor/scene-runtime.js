@@ -1017,17 +1017,35 @@ export function createSceneRuntime({
       updateTrailerShapeGuides(truckInches);
     }
 
-    function getDefaultEditorView(truckInches) {
+    function getPresetEditorView(truckInches, preset) {
+      if (!truckInches) return null;
       const lengthW = toWorld(getTotalTruckLengthInches(truckInches));
       const widthW = toWorld(Number(truckInches?.width) || 102);
       const heightW = toWorld(Number(truckInches?.height) || 98);
       const target = { x: lengthW / 2, y: heightW / 2, z: 0 };
-      const direction = new THREE.Vector3(
-        Math.max(12, lengthW * 0.42),
-        Math.max(12, heightW * 2.8),
-        Math.max(16, widthW * 3.8)
-      ).normalize();
+      // +X faces the cab; +Z is the truck's left when facing the cab.
+      // Side views stay just above the existing OrbitControls floor limit.
+      // Top's tiny +Z component keeps a stable screen-up axis with world-up controls.
+      const directions = {
+        opening: () => new THREE.Vector3(
+          Math.max(12, lengthW * 0.42),
+          Math.max(12, heightW * 2.8),
+          Math.max(16, widthW * 3.8)
+        ),
+        fit: () => camera && controls
+          ? camera.position.clone().sub(controls.target)
+          : directions.opening(),
+        isometric: () => new THREE.Vector3(1, 1, 1),
+        front: () => new THREE.Vector3(1, 0.021, 0),
+        rear: () => new THREE.Vector3(-1, 0.021, 0),
+        left: () => new THREE.Vector3(0, 0.021, 1),
+        right: () => new THREE.Vector3(0, 0.021, -1),
+        top: () => new THREE.Vector3(0, 1, 0.0001),
+      };
+      if (!Object.hasOwn(directions, preset)) return null;
+      const direction = directions[preset]().normalize();
       const right = new THREE.Vector3().crossVectors(new THREE.Vector3(0, 1, 0), direction).normalize();
+      if (right.lengthSq() < 0.000001) right.set(1, 0, 0);
       const up = new THREE.Vector3().crossVectors(direction, right).normalize();
       const measuredSize = containerEl ? getContainerSize() : null;
       const size = measuredSize && measuredSize.width > 10 && measuredSize.height > 10 ? measuredSize : viewSize;
@@ -1054,6 +1072,10 @@ export function createSceneRuntime({
           z: direction.z * distance,
         },
       });
+    }
+
+    function getDefaultEditorView(truckInches) {
+      return getPresetEditorView(truckInches, 'opening');
     }
 
     function getEditorView() {
@@ -1085,6 +1107,8 @@ export function createSceneRuntime({
       controls.update();
       camera.position.set(normalized.cameraPosition.x, normalized.cameraPosition.y, normalized.cameraPosition.z);
       controls.target.set(normalized.target.x, normalized.target.y, normalized.target.z);
+      // Keep fitted views usable for unusually long trucks and narrow viewports.
+      controls.maxDistance = Math.max(220, camera.position.distanceTo(controls.target) * 1.25);
       controls.update();
       controls.enableDamping = damping;
       return getEditorView();
@@ -1203,6 +1227,7 @@ export function createSceneRuntime({
       cancelFocus,
       setFocusViewCallbacks,
       getDefaultEditorView,
+      getPresetEditorView,
       getEditorView,
       applyEditorView,
       toggleGrid,

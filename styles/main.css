@@ -1949,6 +1949,19 @@ tr:hover td {
   background: var(--bg-hover);
 }
 
+.dropdown[data-role='editor-view'] .dropdown-menu {
+  width: 100%;
+  min-width: 0;
+}
+
+.dropdown[data-role='editor-view'] .dropdown-item[aria-checked='false'] i {
+  visibility: hidden;
+}
+
+.dropdown[data-role='editor-view'] .dropdown-item[aria-checked='true'] i {
+  color: var(--accent-primary);
+}
+
 .dropdown-item[data-status='1'] {
   cursor: default;
 }

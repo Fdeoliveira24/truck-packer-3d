@@ -24,6 +24,7 @@ const CASE_LIBRARY_PATH = new URL('../../src/services/case-library.js', import.m
 const PACKS_SCREEN_PATH = new URL('../../src/screens/packs-screen.js', import.meta.url);
 const MAIN_CSS_PATH = new URL('../../styles/main.css', import.meta.url);
 const UI_COMPONENTS_PATH = new URL('../../src/ui/ui-components.js', import.meta.url);
+const EDITOR_SCREEN_PATH = new URL('../../src/screens/editor-screen.js', import.meta.url);
 
 function baseCase(overrides = {}) {
   return {
@@ -1175,10 +1176,11 @@ test('BUSINESS-IDENTITY-UI Load Plan secondary identity metadata uses the 12px s
 });
 
 test('BUSINESS-IDENTITY-UI management view switching stays atomic and Load Plan rows have no stats hover tooltip', async () => {
-  const [casesSource, packsSource, uiSource] = await Promise.all([
+  const [casesSource, packsSource, uiSource, editorSource] = await Promise.all([
     fs.readFile(CASES_SCREEN_PATH, 'utf8'),
     fs.readFile(PACKS_SCREEN_PATH, 'utf8'),
     fs.readFile(UI_COMPONENTS_PATH, 'utf8'),
+    fs.readFile(EDITOR_SCREEN_PATH, 'utf8'),
   ]);
 
   for (const [label, source, preference, fallback] of [
@@ -1239,7 +1241,14 @@ test('BUSINESS-IDENTITY-UI management view switching stays atomic and Load Plan 
   assert.match(uiSource, /anchorEl\.setAttribute\('aria-haspopup', selectSemantics \? 'listbox' : 'menu'\)/);
   assert.match(uiSource, /anchorEl\.setAttribute\('aria-expanded', 'true'\)/);
   assert.match(uiSource, /dropdown\.setAttribute\('role', 'menu'\)/);
-  assert.match(uiSource, /btn\.setAttribute\('role', 'menuitem'\)/);
+  assert.match(uiSource, /btn\.setAttribute\('role', item\.radio === true \? 'menuitemradio' : 'menuitem'\)/,
+    'ordinary menu items retain menuitem while radio items use menuitemradio');
+  assert.match(editorSource, /presets\.map\(\(\[label, preset\]\) => \(\{[\s\S]*?radio: true,[\s\S]*?checked: activeCameraPreset === preset/,
+    'Editor camera presets use radio menu items with their current selection');
+  assert.match(uiSource, /if \(item\.radio === true\) btn\.setAttribute\('aria-checked', item\.checked \? 'true' : 'false'\)/,
+    'camera preset selection is exposed through aria-checked');
+  assert.match(uiSource, /querySelectorAll\('\[role="menuitem"\], \[role="menuitemradio"\]'\)/,
+    'keyboard focus includes both ordinary and radio menu items');
   assert.match(uiSource, /dropdownSemanticAnchorEl\.setAttribute\('aria-expanded', 'false'\)/);
   assert.match(uiSource, /\['ArrowDown', 'ArrowUp', 'Home', 'End'\]\.includes\(ev\.key\)/,
     'Sort menus support standard keyboard movement');

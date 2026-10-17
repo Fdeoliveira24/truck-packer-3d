@@ -1462,6 +1462,225 @@ test('UI hotfix management Grid, List and select-all checkboxes share computed v
   } finally { await browser.close(); }
 });
 
+test('Editor View commands fit truck bounds and preserve Pack camera ownership', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    const cargoBefore = await page.evaluate(() => window.probe.casesJson());
+    const views = [
+      ['Fit Truck', 'fit'], ['Isometric', 'isometric'], ['Front', 'front'],
+      ['Rear', 'rear'], ['Left', 'left'], ['Right', 'right'], ['Top', 'top'],
+    ];
+    assert.equal(await page.getByRole('button', { name: 'View', exact: true }).count(), 1);
+    await page.locator('#btn-editor-view').focus();
+    await page.keyboard.press('Enter');
+    assert.equal(await page.locator('#btn-editor-view').getAttribute('aria-expanded'), 'true');
+    assert.deepEqual(await page.locator('[data-role="editor-view"] [role="menuitemradio"]').allTextContents(),
+      views.map(([label]) => label));
+    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+      'the opening camera is not an explicitly selected preset');
+    await page.keyboard.press('ArrowDown');
+    assert.equal(await page.evaluate(() => document.activeElement.textContent.trim()), 'Isometric');
+    await page.keyboard.press('Escape');
+    assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-editor-view');
+    assert.equal(await page.locator('#btn-editor-view').getAttribute('aria-expanded'), 'false');
+
+    for (const [label, key] of views) {
+      await page.locator('#btn-editor-view').click();
+      assert.equal(await page.locator('#btn-editor-view').getAttribute('aria-expanded'), 'true',
+        `${label} menu opens`);
+      assert.equal(await page.getByRole('menuitemradio', { name: label, exact: true }).count(), 1,
+        `${label} has an accessible menu item name`);
+      await page.getByRole('menuitemradio', { name: label, exact: true }).click();
+      const proof = await page.evaluate(key => {
+        const { SceneManager, PackLibrary, StateStore } = window.probe;
+        const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+        const expected = SceneManager.getPresetEditorView(pack.truck, key);
+        const actual = SceneManager.getEditorView();
+        const saved = pack.editorView || SceneManager.getDefaultEditorView(pack.truck);
+        const fields = ['cameraPosition', 'target'];
+        const delta = Math.max(...fields.flatMap(field => ['x', 'y', 'z'].map(axis =>
+          Math.abs(actual[field][axis] - expected[field][axis]))));
+        const savedDelta = Math.max(...fields.flatMap(field => ['x', 'y', 'z'].map(axis =>
+          Math.abs(saved[field][axis] - actual[field][axis]))));
+        const direction = Object.fromEntries(['x', 'y', 'z'].map(axis =>
+          [axis, actual.cameraPosition[axis] - actual.target[axis]]));
+        return { delta, savedDelta, direction, hasSavedView: Boolean(pack.editorView),
+          perspective: SceneManager.getCamera().isPerspectiveCamera };
+      }, key);
+      assert.ok(proof.delta < 0.002, `${label} applies the fitted view`);
+      assert.ok(proof.savedDelta < 0.002, `${label} saves through the Pack`);
+      if (key !== 'fit') assert.equal(proof.hasSavedView, true);
+      assert.equal(proof.perspective, true);
+      if (key === 'front') assert.ok(proof.direction.x > 0 && Math.abs(proof.direction.z) < 0.002);
+      if (key === 'rear') assert.ok(proof.direction.x < 0 && Math.abs(proof.direction.z) < 0.002);
+      if (key === 'left') assert.ok(proof.direction.z > 0 && Math.abs(proof.direction.x) < 0.002);
+      if (key === 'right') assert.ok(proof.direction.z < 0 && Math.abs(proof.direction.x) < 0.002);
+      if (key === 'top') assert.ok(proof.direction.y > 0 && Math.abs(proof.direction.x) < 0.002);
+      await page.locator('#btn-editor-view').click();
+      const selected = page.getByRole('menuitemradio', { name: label, checked: true });
+      assert.equal(await selected.count(), 1, `${label} alone is checked after selection`);
+      assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 1);
+      assert.equal(await selected.locator('i').getAttribute('aria-hidden'), 'true');
+      assert.equal(await selected.locator('i').evaluate(icon => getComputedStyle(icon).color), 'rgb(255, 159, 28)');
+      const menuSpacing = await selected.evaluate(row => {
+        const menu = row.closest('[data-role="editor-view"]').getBoundingClientRect();
+        const label = row.querySelector('span').getBoundingClientRect();
+        const icon = row.querySelector('i').getBoundingClientRect();
+        return { width: menu.width, left: label.left - menu.left, right: menu.right - icon.right,
+          iconAfterLabel: icon.left > label.right };
+      });
+      assert.ok(menuSpacing.width <= 160, `${label} uses a compact View menu`);
+      assert.ok(Math.abs(menuSpacing.left - menuSpacing.right) <= 2,
+        `${label} has balanced left and right spacing: ${JSON.stringify(menuSpacing)}`);
+      assert.equal(menuSpacing.iconAfterLabel, true, `${label} checkmark follows the text`);
+      await page.keyboard.press('Escape');
+    }
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore);
+    assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false,
+      'camera commands add no cargo history');
+
+    await page.locator('#btn-editor-view').click();
+    await page.getByRole('menuitemradio', { name: 'Isometric', exact: true }).click();
+    const beforeOrbit = await page.evaluate(() => window.probe.SceneManager.getEditorView());
+    const canvas = await page.locator('#viewport canvas').boundingBox();
+    assert.ok(canvas);
+    const midX = canvas.x + canvas.width / 2;
+    const midY = canvas.y + canvas.height / 2;
+    await page.mouse.move(midX, midY);
+    await page.mouse.down();
+    await page.mouse.move(midX + 70, midY + 40, { steps: 6 });
+    await page.mouse.up();
+    await page.evaluate(() => window.probe.EditorUI.flushPendingView());
+    const freeView = await page.evaluate(() => {
+      const { SceneManager, PackLibrary, StateStore, EditorUI } = window.probe;
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      const moved = SceneManager.getEditorView();
+      EditorUI.render();
+      return { moved, afterRender: SceneManager.getEditorView(), saved: pack.editorView };
+    });
+    assert.deepEqual(freeView.afterRender, freeView.moved, 'same-Pack render retains manual orbit');
+    const cameraDelta = (a, b) => Math.max(...['cameraPosition', 'target'].flatMap(field =>
+      ['x', 'y', 'z'].map(axis => Math.abs(a[field][axis] - b[field][axis]))));
+    assert.ok(cameraDelta(freeView.moved, beforeOrbit) > 0.05,
+      `free orbit moves away from the preset: ${JSON.stringify(freeView)}`);
+    assert.ok(cameraDelta(freeView.saved, freeView.moved) < 0.02,
+      `manual orbit settles into Pack metadata: ${JSON.stringify(freeView)}`);
+    await page.locator('#btn-editor-view').click();
+    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+      'manual orbit clears the selected preset');
+    await page.getByRole('menuitemradio', { name: 'Fit Truck' }).click();
+    const reframed = await page.evaluate(() => {
+      const { SceneManager, PackLibrary, StateStore } = window.probe;
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      return { view: SceneManager.getEditorView(), saved: pack.editorView,
+        opening: SceneManager.getDefaultEditorView(pack.truck),
+        truck: pack.truck };
+    });
+    const direction = view => {
+      const vector = ['x', 'y', 'z'].map(axis => view.cameraPosition[axis] - view.target[axis]);
+      const length = Math.hypot(...vector);
+      return vector.map(component => component / length);
+    };
+    assert.ok(Math.hypot(...direction(freeView.moved).map((component, index) =>
+      component - direction(reframed.view)[index])) < 0.002,
+    'Fit Truck preserves the manually chosen direction');
+    assert.ok(cameraDelta(reframed.view, reframed.opening) > 0.05,
+      'Fit Truck does not restore the opening camera angle');
+    assert.ok(cameraDelta(reframed.view, reframed.saved) < 0.002);
+    assert.equal(reframed.view.target.x, reframed.truck.length * 0.05 / 2);
+    await page.locator('#btn-editor-view').click();
+    assert.equal(await page.getByRole('menuitemradio', { name: 'Fit Truck', checked: true }).count(), 1);
+    await page.keyboard.press('Escape');
+    await page.mouse.move(midX, midY);
+    await page.mouse.wheel(0, -280);
+    await page.locator('#btn-editor-view').click();
+    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+      'manual zoom clears the selected preset');
+    await page.getByRole('menuitemradio', { name: 'Fit Truck' }).click();
+
+    await page.evaluate(() => {
+      const { SceneManager } = window.probe;
+      SceneManager.focusOnWorldPoint(SceneManager.getControls().target.clone().addScalar(4), { duration: 600 });
+    });
+    await page.locator('#btn-editor-view').click();
+    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+      'focusing a Case clears the selected preset');
+    await page.getByRole('menuitemradio', { name: 'Front', exact: true }).click();
+    await page.waitForTimeout(650);
+    const afterFocus = await page.evaluate(() => {
+      const { SceneManager, PackLibrary, StateStore } = window.probe;
+      const pack = PackLibrary.getById(StateStore.get('currentPackId'));
+      return { actual: SceneManager.getEditorView(), expected: SceneManager.getPresetEditorView(pack.truck, 'front'),
+        saved: pack.editorView };
+    });
+    assert.ok(cameraDelta(afterFocus.actual, afterFocus.expected) < 0.002,
+      'a pending focus animation cannot overwrite a View command');
+    assert.ok(cameraDelta(afterFocus.saved, afterFocus.expected) < 0.002);
+
+    // Project every physical envelope corner through the real runtime camera.
+    // The front bonus extends +X; wheel wells stay inside the standard envelope.
+    for (const width of [1400, 320]) {
+      await page.setViewportSize({ width, height: 900 });
+      const fit = await page.evaluate(keys => {
+        const { SceneManager } = window.probe;
+        SceneManager.resize();
+        const trucks = [
+          { length: 120, width: 72, height: 70, shapeMode: 'rect' },
+          { length: 636, width: 102, height: 110, shapeMode: 'wheelWells',
+            shapeConfig: { wellWidth: 10, wellHeight: 20 } },
+          { length: 2400, width: 120, height: 120, shapeMode: 'frontBonus',
+            shapeConfig: { bonusLength: 180, bonusHeight: 50 } },
+        ];
+        let maxProjected = 0;
+        let maxDistance = 0;
+        for (const truck of trucks) {
+          const length = truck.length + (truck.shapeMode === 'frontBonus' ? truck.shapeConfig.bonusLength : 0);
+          for (const key of keys) {
+            SceneManager.applyEditorView(SceneManager.getPresetEditorView(truck, key));
+            const camera = SceneManager.getCamera();
+            camera.updateMatrixWorld();
+            maxDistance = Math.max(maxDistance, camera.position.distanceTo(SceneManager.getControls().target));
+            for (const x of [0, length]) for (const y of [0, truck.height]) {
+              for (const z of [-truck.width / 2, truck.width / 2]) {
+                const p = new window.THREE.Vector3(
+                  SceneManager.toWorld(x), SceneManager.toWorld(y), SceneManager.toWorld(z)).project(camera);
+                maxProjected = Math.max(maxProjected, Math.abs(p.x), Math.abs(p.y));
+              }
+            }
+          }
+        }
+        return { maxProjected, maxDistance };
+      }, views.map(([, key]) => key));
+      assert.ok(fit.maxProjected < 1, `${width}px viewport fits every truck and view (${fit.maxProjected})`);
+      if (width === 320) assert.ok(fit.maxDistance > 220, 'large narrow fit exceeds the legacy orbit cap');
+    }
+    const ownership = await page.evaluate(() => {
+      const { SceneManager, PackLibrary, StateStore, EditorUI } = window.probe;
+      const first = PackLibrary.getById('fixture-pack');
+      const saved = JSON.stringify(first.editorView);
+      const second = { ...first, id: 'camera-second', truck: { length: 240, width: 90, height: 80, shapeMode: 'rect' },
+        cases: [], editorView: null };
+      StateStore.set({ packLibrary: [first, second], currentPackId: second.id }, { skipHistory: true });
+      EditorUI.render();
+      const secondView = SceneManager.getEditorView();
+      const secondDefault = SceneManager.getDefaultEditorView(second.truck);
+      StateStore.set({ currentPackId: first.id }, { skipHistory: true });
+      EditorUI.render();
+      return { secondView, secondDefault, firstUnchanged: JSON.stringify(PackLibrary.getById(first.id).editorView) === saved,
+        firstOpening: SceneManager.getEditorView(), firstDefault: SceneManager.getDefaultEditorView(first.truck) };
+    });
+    assert.deepEqual(ownership.secondView, ownership.secondDefault, 'switching Packs fits the new truck');
+    assert.deepEqual(ownership.firstOpening, ownership.firstDefault, 'reopening preserves the current truck-centered policy');
+    assert.equal(ownership.firstUnchanged, true, 'switching Packs does not overwrite prior camera metadata');
+    await page.locator('#btn-editor-view').click();
+    assert.equal(await page.getByRole('menuitemradio', { checked: true }).count(), 0,
+      'opening another Pack clears the prior Pack selection');
+    await page.keyboard.press('Escape');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});
+
 test('Editor accessibility fixture keeps focusable regions, selection, Share and narrow toolbar usable', { timeout: 120000 }, async () => {
   const browser = await launch();
   try {
@@ -1469,7 +1688,7 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
     const desktopToolbarRows = await page.locator('#viewport-toolbar').evaluate(toolbar =>
       new Set([...toolbar.querySelectorAll('button:not(.tp3d-toolbar-hidden-action)')]
         .map(button => Math.round(button.getBoundingClientRect().top))).size);
-    assert.equal(desktopToolbarRows, 1, 'desktop viewport toolbar keeps all five actions on one row');
+    assert.equal(desktopToolbarRows, 1, 'desktop viewport toolbar keeps all six actions on one row');
     assert.equal(await page.locator('#sidebar').evaluate(el => getComputedStyle(el).visibility), 'hidden');
     assert.equal(await page.locator('#btn-sidebar').getAttribute('aria-expanded'), 'false');
     await page.locator('#btn-sidebar').click();
@@ -1523,7 +1742,7 @@ test('Editor accessibility fixture keeps focusable regions, selection, Share and
           return rect.left >= canvas.left && rect.right <= canvas.right && rect.top >= canvas.top && rect.bottom <= canvas.bottom;
         });
       });
-      assert.deepEqual(visible, [true, true, true, true, true], `toolbar fits at ${width}px`);
+      assert.deepEqual(visible, [true, true, true, true, true, true], `toolbar fits at ${width}px`);
     }
     assert.equal(await page.locator('#editor-left').evaluate(el => getComputedStyle(el).visibility), 'hidden');
     assert.equal(await page.locator('#editor-right').evaluate(el => getComputedStyle(el).visibility), 'hidden');

@@ -3965,6 +3965,13 @@ export function createEditorScreen({
     let viewSettleTimer = null;
     let pendingViewSave = false;
     let onPreviewViewSettled = null;
+    let activeCameraPreset = null;
+    let activePresetSignature = null;
+
+    function clearActiveCameraPreset() {
+      activeCameraPreset = null;
+      activePresetSignature = null;
+    }
 
     function clearViewSettle() {
       if (viewSettleTimer !== null) window.clearTimeout(viewSettleTimer);
@@ -3980,6 +3987,7 @@ export function createEditorScreen({
       viewFocusActive = false;
       focusRevision = null;
       pendingViewSave = false;
+      clearActiveCameraPreset();
       viewRevision++;
     }
 
@@ -4009,6 +4017,26 @@ export function createEditorScreen({
         return false;
       }
       return Boolean(PackLibrary.updateEditorView(pack.id, view));
+    }
+
+    function applyCameraPreset(preset) {
+      if (!isViewOwnerCurrent()) return false;
+      const pack = PackLibrary.getById(viewOwner.packId);
+      if (!pack) return false;
+      SceneManager.resize();
+      const view = SceneManager.getPresetEditorView(pack.truck, preset);
+      if (!view) return false;
+      clearViewSettle();
+      viewGestureActive = false;
+      viewFocusActive = false;
+      focusRevision = null;
+      viewRevision++;
+      if (!SceneManager.applyEditorView(view)) return false;
+      activeCameraPreset = preset;
+      activePresetSignature = editorViewSignature(SceneManager.getEditorView());
+      // A command is a settled camera change; persist through the Pack owner.
+      persistSettledView(viewRevision);
+      return true;
     }
 
     function scheduleViewSettle(revision) {
@@ -4154,6 +4182,7 @@ export function createEditorScreen({
     const caseListEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-case-list'));
     const btnAutopack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-autopack'));
     const btnUnpack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-unpack'));
+    const btnView = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-view'));
     const btnShare = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-share'));
     const btnPng = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-screenshot'));
     const btnPdf = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-pdf'));
@@ -4304,6 +4333,7 @@ export function createEditorScreen({
       setButtonWorking(btnUnpack, op.kind === 'unpacking', 'Moving to staging…');
       if (btnAutopack && op.kind !== 'autopacking') btnAutopack.disabled = !pack || busy;
       if (btnUnpack && op.kind !== 'unpacking') btnUnpack.disabled = !pack || busy || !(pack && (pack.cases || []).length);
+      if (btnView) btnView.disabled = !pack;
       if (btnShare) btnShare.disabled = !pack || busy;
       if (btnPng) btnPng.disabled = !pack || busy;
       if (btnPdf) btnPdf.disabled = !pack || busy;
@@ -5132,6 +5162,24 @@ export function createEditorScreen({
           );
         });
       }
+      if (btnView) {
+        btnView.addEventListener('click', ev => {
+          ev.stopPropagation();
+          const presets = [
+            ['Fit Truck', 'fit'], ['Isometric', 'isometric'], ['Front', 'front'],
+            ['Rear', 'rear'], ['Left', 'left'], ['Right', 'right'], ['Top', 'top'],
+          ];
+          UIComponents.openDropdown(
+            btnView,
+            presets.map(([label, preset]) => ({
+              label, rightIcon: 'fa-solid fa-check', radio: true,
+              checked: activeCameraPreset === preset,
+              onClick: () => applyCameraPreset(preset),
+            })),
+            { width: 156, minWidth: 156, align: 'left', role: 'editor-view', menuSemantics: true, toggle: true }
+          );
+        });
+      }
       const handleViewportChange = Utils.debounce(() => {
         if (StateStore.get('currentScreen') === 'editor') onActivated();
       }, 160);
@@ -5163,6 +5211,10 @@ export function createEditorScreen({
         viewRevision++;
       });
       controls.addEventListener('change', () => {
+        if (activeCameraPreset && isViewOwnerCurrent() &&
+            editorViewSignature(SceneManager.getEditorView()) !== activePresetSignature) {
+          clearActiveCameraPreset();
+        }
         if (viewPendingEnd && isViewOwnerCurrent()) scheduleViewSettle(viewRevision);
       });
       controls.addEventListener('end', () => {
@@ -5178,6 +5230,7 @@ export function createEditorScreen({
           viewGestureActive = false;
           viewFocusActive = true;
           focusRevision = ++viewRevision;
+          clearActiveCameraPreset();
         },
         onComplete: () => {
           if (!isViewOwnerCurrent() || focusRevision !== viewRevision) return;

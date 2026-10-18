@@ -16,6 +16,7 @@ import { assessCommittedPack } from './pack-assessment.js';
 export { assessCommittedPack } from './pack-assessment.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
+import * as CoreMeasurements from '../core/measurements.js';
 import { validatePortableCasePhysicalFields } from '../core/import-schema.js';
 import * as CaseLibrary from './case-library.js';
 import * as CategoryService from './category-service.js';
@@ -2525,6 +2526,7 @@ export function update(packId, patch, { skipHistory = false } = {}) {
     'truck',
     'cases',
     'groups',
+    'measurements',
   ];
   const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
   next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
@@ -2580,6 +2582,116 @@ export function updateEditorView(packId, view) {
   return pack;
 }
 
+// ============================================================================
+// SECTION: MEASUREMENTS (Measurement Tool V1)
+// ============================================================================
+// Measurements are authored Load Plan content, but they live outside cargo Undo/Redo: edits are
+// written with skipHistory, bump lastEdited, and are carried across Undo/Redo by the StateStore.
+// They never touch cargo, stats, thumbnails, AutoPack or any assessment.
+
+/** Normalized, never-destructive measurement list (unreadable records are wrapped, not dropped). */
+export function getMeasurements(packOrId) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  return CoreMeasurements.normalizeMeasurements(pack && pack.measurements);
+}
+
+/** Supported floor surfaces (main floor, Wheel Well tops, raised deck) from the authoritative usable zones. */
+export function getMeasurementFloors(pack) {
+  const truck = pack && pack.truck;
+  return CoreMeasurements.buildFloorSurfaces(truck, getTrailerUsableZones(truck));
+}
+
+/** Outer truck envelope (walls, ceiling, end planes) from the authoritative usable zones. */
+export function getMeasurementShell(pack) {
+  const truck = pack && pack.truck;
+  return CoreMeasurements.buildTruckShell(truck, getTrailerUsableZones(truck));
+}
+
+/** Derived validity and geometry for every measurement, from COMMITTED cargo poses and Case definitions. */
+export function resolveMeasurements(packOrId) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  if (!pack) return [];
+  const instances = new Map((pack.cases || []).filter(inst => inst && inst.id).map(inst => [inst.id, inst]));
+  return CoreMeasurements.resolveMeasurementList(pack.measurements, {
+    getInstance: id => instances.get(id) || null,
+    getCase: id => CaseLibrary.getById(id) || null,
+    floors: getMeasurementFloors(pack),
+    truck: pack.truck,
+  });
+}
+
+function commitMeasurements(previousPack, measurements) {
+  const now = Date.now();
+  const pack = { ...previousPack, measurements, lastEdited: now };
+  StateStore.markMeasurementEdit(previousPack.id, now);
+  StateStore.set({ packLibrary: getPacks().map(p => (p === previousPack ? pack : p)) }, {
+    skipHistory: true,
+    notification: { type: 'pack-measurements', previousPack, pack },
+  });
+  return pack;
+}
+
+/**
+ * @param {string} packId
+ * @param {{ start?: any, end?: any, label?: string | null }} [input]
+ * @returns {{ ok: true, measurement: any, pack: any } | { ok: false, reason: 'pack-not-found' | 'limit' | 'invalid' }}
+ */
+export function addMeasurement(packId, { start, end, label = null } = {}) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  if (current.length >= CoreMeasurements.MAX_MEASUREMENTS_PER_PACK) return { ok: false, reason: 'limit' };
+  const record = CoreMeasurements.createMeasurementRecord({ id: Utils.uuid(), start, end, label, now: Date.now() });
+  const checked = CoreMeasurements.validateMeasurementCollection([record]);
+  if (!checked.ok) return { ok: false, reason: 'invalid' };
+  const measurement = checked.measurements[0];
+  const pack = commitMeasurements(previousPack, [...current, measurement]);
+  return { ok: true, measurement, pack };
+}
+
+export function renameMeasurement(packId, measurementId, label) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  const index = current.findIndex(record => record.id === measurementId);
+  if (index === -1 || current[index].type !== CoreMeasurements.MEASUREMENT_TYPE_POINT_TO_POINT) {
+    return { ok: false, reason: 'not-found' };
+  }
+  const nextLabel = CoreMeasurements.normalizeMeasurementLabel(label);
+  if (nextLabel === current[index].label) return { ok: true, pack: previousPack, unchanged: true };
+  const next = current.map((record, i) => (i === index ? { ...record, label: nextLabel, updatedAt: Date.now() } : record));
+  return { ok: true, pack: commitMeasurements(previousPack, next) };
+}
+
+/**
+ * Reposition one endpoint of a completed measurement onto a new anchor. A measurement-only edit:
+ * it bumps lastEdited, stays out of cargo Undo/Redo, and never touches cargo. The new anchor is
+ * validated and an invalid one writes nothing.
+ * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' }}
+ */
+export function moveMeasurementEndpoint(packId, measurementId, which, anchor) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  const index = current.findIndex(record => record.id === measurementId);
+  if (index === -1 || current[index].type !== CoreMeasurements.MEASUREMENT_TYPE_POINT_TO_POINT) {
+    return { ok: false, reason: 'not-found' };
+  }
+  const moved = CoreMeasurements.replaceMeasurementEndpoint(current[index], which, anchor, Date.now());
+  if (!moved) return { ok: false, reason: 'invalid' };
+  const next = current.map((record, i) => (i === index ? moved : record));
+  return { ok: true, pack: commitMeasurements(previousPack, next) };
+}
+
+/** Deliberate, individual deletion. Editing or deleting cargo never calls this. */
+export function deleteMeasurement(packId, measurementId) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  if (!current.some(record => record.id === measurementId)) return { ok: false, reason: 'not-found' };
+  return { ok: true, pack: commitMeasurements(previousPack, current.filter(record => record.id !== measurementId)) };
+}
+
 export function remove(packId) {
   const packs = getPacks().filter(p => p.id !== packId);
   const current = StateStore.get('currentPackId');
@@ -2606,7 +2718,17 @@ export function duplicate(packId) {
   copy.thumbnailVisualSignature = null;
   copy.thumbnailViewSignature = null;
   copy.thumbnailRenderVersion = null;
-  copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
+  // Instance IDs are regenerated, so keep the exact old->new map and carry measurements across
+  // through it. A cargo anchor whose instance is not in the map is left as-is (stays Unresolved).
+  const instanceIdMap = new Map();
+  copy.cases = (copy.cases || []).map(i => {
+    const id = Utils.uuid();
+    if (i && typeof i.id === 'string') instanceIdMap.set(i.id, id);
+    return { ...i, id };
+  });
+  if (copy.measurements !== undefined) {
+    copy.measurements = CoreMeasurements.remapMeasurementInstanceIds(copy.measurements, instanceIdMap);
+  }
   StateStore.set({ packLibrary: [...getPacks(), copy] });
   return copy;
 }
@@ -3421,9 +3543,18 @@ export function planPackImport(payload) {
   pack.createdAt = pack.createdAt || now;
   pack.lastEdited = now;
 
+  // Measurements are validated strictly BEFORE anything is applied: a malformed collection, a
+  // duplicate measurement ID or more than the per-plan maximum rejects this Load Plan import.
+  // A structurally valid anchor to a missing instance is kept (it resolves as Unresolved).
+  const measurementCheck = CoreMeasurements.validateMeasurementCollection(pack.measurements);
+  if (measurementCheck.ok === false) {
+    throw new Error(`Pack import blocked: the measurements are not valid (${measurementCheck.error}). Nothing was imported.`);
+  }
+  const importedInstanceIdMap = new Map();
   pack.cases = (pack.cases || []).map(inst => {
     const next = Utils.deepClone(inst);
     next.id = Utils.uuid();
+    if (inst && typeof inst.id === 'string') importedInstanceIdMap.set(inst.id, next.id);
     next.caseId = caseIdMap.get(next.caseId) || next.caseId;
     next.transform.rotation ??= { x: 0, y: 0, z: 0 };
     next.transform.scale ??= { x: 1, y: 1, z: 1 };
@@ -3435,6 +3566,8 @@ export function planPackImport(payload) {
     }
     return next;
   });
+
+  pack.measurements = CoreMeasurements.remapMeasurementInstanceIds(measurementCheck.measurements, importedInstanceIdMap);
 
   // Final reference validation against the planned final case set.
   const finalCases = [...currentCases, ...newCases];

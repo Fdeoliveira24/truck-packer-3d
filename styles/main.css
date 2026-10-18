@@ -4440,9 +4440,396 @@ body.tp3d-shared-modal-lock #app .nav {
 
 /* Camera Views button while its menu is open: brand orange (design.md accent) on a
    soft orange tint. --accent-readable is deliberately not used; it is a dark brown. */
-.tp3d-editor-zoom-controls button[aria-expanded='true'] {
+.tp3d-editor-zoom-controls button[aria-expanded='true'],
+.tp3d-editor-zoom-controls button[aria-pressed='true'] {
   background: var(--accent-primary-14);
   color: var(--accent-primary);
+}
+
+/* Measurement Tool V1: a restrained dimension-line overlay. Thin neutral lines with short end ticks; the
+   brand orange is reserved for the selected or actively edited measurement. It is an SVG/DOM layer above
+   the canvas, so it can never appear in a canvas capture (Screenshot, PDF views, thumbnails, previews). */
+.tp3d-measure-labels {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tp3d-measure-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tp3d-measure-svg path {
+  fill: none;
+}
+
+/* A soft underlay in the surface colour keeps a thin line legible over any cargo colour, in both themes. */
+.tp3d-measure-svg__under {
+  stroke: var(--bg-elevated);
+  stroke-opacity: 0.72;
+  stroke-width: 3.5px;
+  stroke-linecap: round;
+}
+
+.tp3d-measure-svg__line,
+.tp3d-measure-svg__ticks,
+.tp3d-measure-svg__mark {
+  stroke: var(--text-primary);
+  stroke-width: 1.25px;
+}
+
+/* Line-style grips: only on the selected measurement, drawn longer than the end ticks. The pointer hit
+   area is larger than the grip and invisible (see GRIP_HIT_RADIUS_PX in measurement-tool.js). */
+.tp3d-measure-svg__grips {
+  display: none;
+  stroke: var(--accent-primary);
+  stroke-width: 2.5px;
+  stroke-linecap: round;
+}
+
+.tp3d-measure-svg__segment.is-selected .tp3d-measure-svg__line,
+.tp3d-measure-svg__segment.is-selected .tp3d-measure-svg__ticks {
+  stroke: var(--accent-primary);
+  stroke-width: 1.75px;
+}
+
+.tp3d-measure-svg__segment.is-selected .tp3d-measure-svg__grips {
+  display: inline;
+}
+
+.tp3d-measure-svg__segment.is-grip-hover .tp3d-measure-svg__grips {
+  stroke-width: 3.5px;
+}
+
+/* Measurement being created: accent, dashed. */
+.tp3d-measure-svg__segment.is-preview .tp3d-measure-svg__line,
+.tp3d-measure-svg__segment.is-preview .tp3d-measure-svg__ticks {
+  stroke: var(--accent-primary);
+  stroke-width: 1.5px;
+}
+
+.tp3d-measure-svg__segment.is-preview .tp3d-measure-svg__line,
+.tp3d-measure-svg__segment.is-preview .tp3d-measure-svg__under--line {
+  stroke-dasharray: 5 4;
+}
+
+/* Where an endpoint was before it was picked up. */
+.tp3d-measure-svg__segment.is-ghost {
+  opacity: 0.55;
+}
+
+.tp3d-measure-svg__segment.is-ghost .tp3d-measure-svg__under {
+  display: none;
+}
+
+.tp3d-measure-svg__segment.is-ghost .tp3d-measure-svg__line {
+  stroke-dasharray: 3 4;
+}
+
+.tp3d-measure-svg__marker.is-pending .tp3d-measure-svg__mark {
+  stroke: var(--accent-primary);
+  stroke-width: 1.75px;
+}
+
+.tp3d-measure-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  padding: 1px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  font-variant-numeric: tabular-nums;
+  line-height: 1.35;
+  white-space: nowrap;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.tp3d-measure-label[hidden] {
+  display: none;
+}
+
+.tp3d-measure-label.is-selected,
+.tp3d-measure-label--preview {
+  z-index: 1;
+  border-color: var(--accent-primary);
+}
+
+/* Compact, collapsible list. It sits below the Editor toolbar and left of the viewport controls. */
+.tp3d-measure-panel {
+  position: absolute;
+  top: 64px;
+  right: 58px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: 248px;
+  max-width: calc(100% - 70px);
+  max-height: min(320px, calc(100% - 140px));
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-md);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.tp3d-measure-panel[hidden] {
+  display: none;
+}
+
+.tp3d-measure-panel.is-collapsed {
+  width: auto;
+  min-width: 148px;
+}
+
+.tp3d-measure-panel__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  padding-left: 10px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.tp3d-measure-panel__head:active {
+  cursor: grabbing;
+}
+
+/* Dragged by its grip: positioned from the left/top the drag wrote, so the default right anchor is dropped. */
+.tp3d-measure-panel.is-dragged {
+  right: auto;
+}
+
+.tp3d-measure-panel.is-dragging,
+.tp3d-measure-panel.is-dragging * {
+  cursor: grabbing;
+}
+
+.tp3d-measure-panel__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1;
+  min-width: 0;
+  padding: 6px 10px 6px 8px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  text-align: left;
+  cursor: pointer;
+}
+
+/* No hover effect and no orange focus line on the header (it is also the drag handle). Keyboard focus
+   still has a quiet neutral cue, and aria-expanded carries the state for assistive tech. */
+.tp3d-measure-panel__toggle:focus {
+  outline: none;
+}
+
+.tp3d-measure-panel__toggle:focus-visible {
+  background: var(--bg-hover);
+}
+
+/* Far right, like the AutoPack Results header: up collapses, down restores. */
+.tp3d-measure-panel__chevron {
+  flex: none;
+  margin-left: auto;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+}
+
+.tp3d-measure-panel__title {
+  flex: none;
+}
+
+.tp3d-measure-panel__count {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  font-variant-numeric: tabular-nums;
+}
+
+.tp3d-measure-panel__body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tp3d-measure-panel__body[hidden] {
+  display: none;
+}
+
+/* Guidance appears only when something is relevant; when empty it takes no space but stays a live region. */
+.tp3d-measure-panel__hint,
+.tp3d-measure-panel__notice {
+  padding: 0 10px 6px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.tp3d-measure-panel__hint:empty {
+  padding: 0;
+}
+
+.tp3d-measure-panel__notice {
+  color: var(--warning-readable);
+}
+
+.tp3d-measure-panel__notice[hidden] {
+  display: none;
+}
+
+.tp3d-measure-panel__list {
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.tp3d-measure-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  padding-right: 4px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-measure-row.is-selected {
+  background: var(--accent-primary-14);
+  box-shadow: inset 2px 0 0 var(--accent-primary);
+}
+
+.tp3d-measure-row__select {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  padding: 6px 4px 6px 10px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tp3d-measure-row__select:disabled {
+  cursor: default;
+}
+
+.tp3d-measure-row__select:focus {
+  outline: none;
+}
+
+.tp3d-measure-row__select:focus-visible {
+  background: var(--bg-hover);
+}
+
+.tp3d-measure-row__select[hidden],
+.tp3d-measure-row__input[hidden],
+.tp3d-measure-row__btn[hidden],
+.tp3d-measure-row__issue[hidden] {
+  display: none;
+}
+
+.tp3d-measure-row__name {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: var(--font-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-measure-row__value {
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-measure-row__value.is-needs-review,
+.tp3d-measure-row__value.is-unresolved {
+  font-size: 11px;
+  font-weight: var(--font-medium);
+}
+
+.tp3d-measure-row__value.is-needs-review {
+  color: var(--warning-readable);
+}
+
+.tp3d-measure-row__value.is-unresolved {
+  color: var(--error);
+}
+
+.tp3d-measure-row__issue {
+  grid-column: 1 / -1;
+  padding: 0 10px 6px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.tp3d-measure-row__btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tp3d-measure-row__btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-measure-row__btn:focus {
+  outline: none;
+}
+
+.tp3d-measure-row__btn:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-measure-row__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tp3d-measure-row__input {
+  grid-column: 1;
+  min-width: 0;
+  margin: 3px 4px 3px 8px;
+  padding: 3px 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.tp3d-measure-row__input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
 }
 
 .tp3d-editor-zoom-controls button:focus-visible {
@@ -4817,8 +5204,9 @@ body.tp3d-shared-modal-lock #app .nav {
   white-space: nowrap;
 }
 
-/* 2×3 dot-grid drag grip. */
-.tp3d-autopack-results__grip {
+/* 2×3 dot-grid drag grip (shared with the Measurements panel so both look identical). */
+.tp3d-autopack-results__grip,
+.tp3d-measure-panel__grip {
   display: grid;
   grid-template-columns: repeat(2, 3px);
   grid-auto-rows: 3px;
@@ -4827,7 +5215,8 @@ body.tp3d-shared-modal-lock #app .nav {
   cursor: grab;
 }
 
-.tp3d-autopack-results__grip-dot {
+.tp3d-autopack-results__grip-dot,
+.tp3d-measure-panel__grip-dot {
   width: 3px;
   height: 3px;
   border-radius: 50%;
@@ -4835,7 +5224,8 @@ body.tp3d-shared-modal-lock #app .nav {
   opacity: 0.5;
 }
 
-.tp3d-autopack-results__header:active .tp3d-autopack-results__grip {
+.tp3d-autopack-results__header:active .tp3d-autopack-results__grip,
+.tp3d-measure-panel__head:active .tp3d-measure-panel__grip {
   cursor: grabbing;
 }
 

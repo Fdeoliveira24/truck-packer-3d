@@ -29,6 +29,7 @@ import {
   assertItemCodeAvailable,
   migrateLoadPlanNumbers,
 } from './business-identity.js';
+import { normalizeMeasurements } from './measurements.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
 const EDITOR_VIEW_PRECISION = 1000;
@@ -247,6 +248,7 @@ export function normalizePreferences(prefs) {
   next.showBevels = next.showBevels !== false;
   next.showCameraControls = next.showCameraControls !== false;
   next.showZoomControls = next.showZoomControls !== false;
+  next.showMeasurementTool = next.showMeasurementTool !== false;
   next.labelFontSize = CoreUtils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
   next.hiddenCaseOpacity = CoreUtils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
   next.showAutoPackLoadingOverlay = next.showAutoPackLoadingOverlay !== false;
@@ -501,6 +503,10 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     thumbnailViewSignature: typeof p?.thumbnailViewSignature === 'string' && p.thumbnailViewSignature
       ? p.thumbnailViewSignature : null,
     editorView: normalizeEditorView(p?.editorView),
+    // Explicit field: this function is a whitelist, so a missing entry would silently drop the
+    // collection on restore/import. Older plans become []; unreadable records are wrapped
+    // verbatim (never dropped) so the original data survives and is surfaced for recovery.
+    measurements: normalizeMeasurements(p?.measurements),
   };
 }
 

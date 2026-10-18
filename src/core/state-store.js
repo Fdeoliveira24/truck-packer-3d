@@ -19,6 +19,10 @@ let state = null;
 let history = [];
 let historyPointer = -1;
 const subscribers = [];
+// Latest measurement-edit time per Load Plan. Measurement edits are deliberately outside cargo
+// history, so Undo/Redo must not roll `lastEdited` back past them. History is in-memory and
+// session-scoped, so this watermark is too; it is cleared whenever history is reset.
+const measurementEditMarks = new Map();
 
 function historySlice(s) {
   return deepClone({
@@ -41,6 +45,7 @@ function init(initialState) {
   state = deepClone(withWorkspaceDefaults(initialState));
   history = [historySlice(state)];
   historyPointer = 0;
+  measurementEditMarks.clear();
 }
 
 function get(key) {
@@ -68,6 +73,7 @@ function replace(nextState, options = {}) {
   if (options.resetHistory) {
     history = [historySlice(state)];
     historyPointer = 0;
+    measurementEditMarks.clear();
   } else if (!options.skipHistory) {
     pushHistory(historySlice(state));
   }
@@ -81,6 +87,14 @@ function snapshot() {
 function resetHistory() {
   history = [historySlice(state)];
   historyPointer = 0;
+  measurementEditMarks.clear();
+}
+
+/** Record that a Load Plan's measurements were edited outside cargo history (see restoreCargoHistory). */
+function markMeasurementEdit(packId, editedAt) {
+  if (!packId) return;
+  const time = Number(editedAt);
+  if (Number.isFinite(time)) measurementEditMarks.set(String(packId), time);
 }
 
 function pushHistory(entry) {
@@ -95,10 +109,21 @@ function restoreCargoHistory(entry) {
   const currentViews = new Map((state.packLibrary || [])
     .filter(pack => pack && pack.id && Object.hasOwn(pack, 'editorView'))
     .map(pack => [pack.id, pack.editorView]));
-  restored.packLibrary = (restored.packLibrary || []).map(pack =>
-    pack && typeof pack === 'object' && currentViews.has(pack.id)
-      ? { ...pack, editorView: deepClone(currentViews.get(pack.id)) }
-      : pack);
+  // Measurements are authored Load Plan content that lives outside cargo history: Undo/Redo keeps
+  // the current collection (so deleting cargo and undoing it re-resolves the same anchors) and
+  // never moves `lastEdited` back past a measurement edit.
+  const currentMeasurements = new Map((state.packLibrary || [])
+    .filter(pack => pack && pack.id && Object.hasOwn(pack, 'measurements'))
+    .map(pack => [pack.id, pack.measurements]));
+  restored.packLibrary = (restored.packLibrary || []).map(pack => {
+    if (!pack || typeof pack !== 'object') return pack;
+    let next = pack;
+    if (currentViews.has(pack.id)) next = { ...next, editorView: deepClone(currentViews.get(pack.id)) };
+    if (currentMeasurements.has(pack.id)) next = { ...next, measurements: deepClone(currentMeasurements.get(pack.id)) };
+    const editedAt = measurementEditMarks.get(String(pack.id));
+    if (Number.isFinite(editedAt) && !(Number(next.lastEdited) >= editedAt)) next = { ...next, lastEdited: editedAt };
+    return next;
+  });
   return restored;
 }
 
@@ -142,4 +167,4 @@ function isSignificantChange(patch) {
   return keys.some(k => significant.includes(k));
 }
 
-export { init, get, set, replace, snapshot, resetHistory, undo, redo, subscribe };
+export { init, get, set, replace, snapshot, resetHistory, markMeasurementEdit, undo, redo, subscribe };

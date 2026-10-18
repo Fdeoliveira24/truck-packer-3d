@@ -3089,6 +3089,7 @@ export function createSettingsOverlay({
     length, weight, theme, labelSize, hiddenOpacity, cameraProjection, applyCurrentProjection,
     currentCameraPackId, snappingEnabled, gridSize, screenshotResolution,
     pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView, showCameraControls, showZoomControls,
+    showMeasurementTool,
   }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
@@ -3105,6 +3106,7 @@ export function createSettingsOverlay({
     next.showAutoPackLoadingOverlay = showAutoPackLoadingOverlay !== false;
     next.showCameraControls = showCameraControls !== false;
     next.showZoomControls = showZoomControls !== false;
+    next.showMeasurementTool = showMeasurementTool !== false;
     next.autoPackResultsStartView = autoPackResultsStartView;
     const projectionChanged = next.camera.defaultView !== prev.camera.defaultView;
     if (applyCurrentProjection && (!currentCameraPackId ||
@@ -5231,6 +5233,15 @@ export function createSettingsOverlay({
       });
       prefsCard.appendChild(stackedRow('Show Zoom Controls', zoomVisibility.control));
 
+      const measurementVisibility = createVisibilitySwitch({
+        role: 'measurement-tool-visibility',
+        label: 'Show Measurement Tool',
+        helperId: 'tp3d-prefs-measurement-tool-help',
+        helperText: 'Show or hide the ruler button in the 3D Editor. Saved measurements are kept either way.',
+        enabled: prefs.showMeasurementTool !== false,
+      });
+      prefsCard.appendChild(stackedRow('Show Measurement Tool', measurementVisibility.control));
+
       prefsCard.appendChild(row('Hidden Case Opacity', hiddenOpacityWrap));
 
       labelSize.classList.add('tp3d-prefs-number-input');
@@ -5379,6 +5390,7 @@ export function createSettingsOverlay({
           showAutoPackLoadingOverlay: autoPackLoading.dataset.value === 'on',
           showCameraControls: cameraVisibility.button.dataset.value === 'on',
           showZoomControls: zoomVisibility.button.dataset.value === 'on',
+          showMeasurementTool: measurementVisibility.button.dataset.value === 'on',
           autoPackResultsStartView: autoPackResultsStartView.value,
         })
       );

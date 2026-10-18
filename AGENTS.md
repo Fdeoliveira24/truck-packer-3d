@@ -101,14 +101,16 @@ See [docs/engineering/autopack-engine-contract.md — Editor Authority and Autom
 
 ---
 
-## Measurement Tool V1 Invariants (approved contract; implementation stage-gated)
+## Measurement Tool V1 Invariants (approved contract, revised 2026-10-17; implementation visually approved 2026-10-18)
 
-Full contract, acceptance gates and stages: [docs/product/TP3D-MASTER-TODO-V6.md — Section 4.1](./docs/product/TP3D-MASTER-TODO-V6.md#41-measurement-tool-v1--approved-contract). No stage is authorized until the owner releases it.
+Full contract, acceptance gates and stages: [docs/product/TP3D-MASTER-TODO-V6.md — Section 4.1](./docs/product/TP3D-MASTER-TODO-V6.md#41-measurement-tool-v1--approved-contract). The implementation is on the branch and locally validated, with specs pinning G1–G6 (`tests/audit/measurement-tool-*.spec.mjs`). Status: implementation visually approved and locally validated; GitHub Quality Gate and final merge approval pending.
 
 - The Measurement Tool is an illustrative, informational ruler. It never moves cargo and never influences placement, collision, handling rules, assessment, Space Utilization, AutoPack or the existing PDF. Not a clearance or safety/compliance feature.
 - Measurements belong to one Load Plan (`pack.measurements`, max 100, canonical inches). The distance is derived, never stored.
-- Cargo anchors reference the **instance ID** + box face + normalized position + geometry signature; box cargo only. Space anchors are physical floor surfaces only.
-- Never silently delete, relocate or substitute an anchor: an unresolvable measurement stays stored and visibly flagged.
+- A point can be placed on anything visible: any cargo surface (any shape; stored as a local point + **instance ID** + geometry signature), the truck floor/walls/ceiling, and the ground anywhere. Floor points are revalidated by geometry; truck-shell points flag Needs Review if the truck changes; nothing is ever relocated.
+- Never silently delete, relocate or substitute an anchor: an unresolvable measurement stays stored and visibly flagged. The only way an anchor changes is the owner's deliberate endpoint drag onto a supported surface (`PackLibrary.moveMeasurementEndpoint`): it is a measurement-only edit (`lastEdited`, no cargo Undo entry), it never moves, rotates, stages or selects cargo, and Escape, pointer cancel, a drop on nothing, a blocking operation or leaving the plan restores the original and writes nothing.
+- One Escape press exits Measurement Mode completely through the regular `exit()` routine (dropping an unfinished point or endpoint drag without writing; saved measurements stay) and is consumed in the capture phase. A modal, dropdown, text field or the load-status popover that owns Escape keeps it; with the mode off Escape is unchanged. Focus never goes to the ruler (it returns to the viewport, with no focus frame after mouse use). Cargo keys, including Delete, still act on the cargo selection; a gesture that loses its cargo is cancelled by `sync()` and writes nothing.
+- Measurements are read-only only while AutoPack, Unpack, Truck Change, a Truck Change preview or a transient AutoPack preview is active, and the message names that cause. A background thumbnail capture is a pixel readback, not an edit: it must never block measurements or cancel an unfinished one. Only a single distance is shown (no L/W/H).
 - A malformed stored measurement record is never silently dropped and then overwritten by autosave: preserve it, surface a recovery condition, block destructive persistence until resolved.
 - Cargo Undo/Redo preserves the current measurements and must not roll back `lastEdited` solely because measurement edits are excluded from cargo history.
 - A generic object spread is not persistence. `normalizePack` is a field whitelist; history, duplicate/import ID remap, export/backup projection and validation, and capture exclusion each need explicit handling (V6 §4.1 gates G1–G6).

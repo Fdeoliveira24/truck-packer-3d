@@ -34,6 +34,8 @@
 | Vite | `8.2.1` |
 | Node requirement | `^20.19.0` or `>=22.12.0` |
 | Verified main after CI optimization (2026-10-17) | `a3c47f28c7930778771ac0806d398be22ed712a4` — PR #123 merged; main updated on GitHub |
+| Verified main after Camera Controls Relocation (2026-10-17) | `c28fca550d827b67d855832ea913a57cf8423674` — PR #124 merged |
+| Measurement Tool V1 branch | `feat/editor-measurement-tool-v1`, created from `c28fca550d827b67d855832ea913a57cf8423674`; contract approved, no implementation yet (Section 4.1) |
 | Quality Gate cost policy | One automatic full Quality Gate for PRs targeting `main`; optional manual `workflow_dispatch`; no automatic full run after merge/push to `main`. Focused local checks during implementation; documentation-only changes require diff/status checks, not application suites. |
 
 ---
@@ -65,18 +67,19 @@
 | Camera Phase 2 | Interactive Perspective / Orthographic projection, per-Load-Plan camera metadata, Settings integration and export support; live PDF acceptance passed | PR #121 |
 | Optional viewport Zoom Controls | Zoom In/Out for both projections; Settings On/Off visibility | PR #122 |
 | Quality Gate cost optimization | Preserve PR and manual full gate; stop duplicate full runs after merge | PR #123 |
+| Camera controls relocation | Camera Views button moved into the floating viewport group above Zoom In/Out; independent Show Camera Controls setting on the lightweight visibility route | PR #124, `c28fca5` |
 
 ---
 
 ## 4. Current Active / Next Milestone
 
-**Current status:** No feature implementation branch is authorized or active. Camera Phase 1, Camera Phase 2, and optional Editor Zoom Controls are complete and merged (PRs #120–#122). The owner accepted live PDF verification for Camera Phase 2 on 2026-10-17. PR #123 closed the duplicate full Quality Gate after merge.
+**Current status:** Measurement Tool V1 is the next milestone. Its contract is owner-approved and locked (Section 4.1) and branch `feat/editor-measurement-tool-v1` exists from `c28fca5`, but **no implementation has started: the Stage 0 documentation checkpoint is owner-approved and Stage 1 requires separate owner authorization.** Camera Phase 1, Camera Phase 2, optional Zoom Controls and the Camera Controls relocation are complete and merged (PRs #120–#124). The owner accepted live PDF verification for Camera Phase 2 on 2026-10-17. PR #123 closed the duplicate full Quality Gate after merge.
 
 ### Owner-approved next sequence (planning order, not blanket implementation authorization)
 
 | Order | Milestone | Intended outcome / contract to define | State |
 |---|---|---|---|
-| 1 | **Measurement Tool** | Interactive measurements of cargo, trailer dimensions, gaps and clearances in user-selected units. Specify point/edge selection, snapping, precision, temporary vs. saved measurements, and export visibility before coding. Measurement is informational, not transport-safety certification. | **NEXT — define and approve focused implementation contract** |
+| 1 | **Measurement Tool V1** | Illustrative, informational point-to-point ruler saved with each Load Plan. Approved scope, non-goals, anchoring and persistence rules, and stage gates: Section 4.1. | **CONTRACT APPROVED — implementation not started; stage-gated** |
 | 2 | **Annotations: Text and Drawing** | Add notes/labels and graphical marks/arrows independently of cargo geometry. Define anchoring, editing, storage, visibility, permissions, and screenshot/PDF inclusion before coding. Text and Drawing can be scoped into small releases. | **PLANNED — after Measurement** |
 | 3 | **PDF Construction / Interactive Export Preview** | Clicking **Export PDF** opens a document-construction screen showing the proposed PDF. Users can modify the presentation/layout and content before selecting the final **Export PDF** action. Specify available editing, page reordering/layout, accurate print preview, templates/persistence, billing gates, and export safety in its product contract. Do not mutate cargo data by editing the document. | **PLANNED — after Annotations** |
 
@@ -85,6 +88,75 @@
 **Owner sequencing:** Finish Measurement first, then Annotations (Text and Drawing), then PDF Construction. Each phase requires its own scoped acceptance and release checkpoint. Do not bundle these into a single implementation branch.
 
 **Held work:** C5 AutoPack quality and related follow-ups are **PAUSED** due to unresolved load realism/transport-quality concerns. C6 reporting is **DEFERRED**. No changes to separate stabilization, Claude visual, or Codex visual worktrees are authorized.
+
+### 4.1 Measurement Tool V1 — Approved Contract
+
+**Status:** 🔒 Locked 2026-10-17 (owner-approved, including Stage 0 and the derived rules below; Stage 1 requires separate authorization). Branch `feat/editor-measurement-tool-v1`; baseline `c28fca550d827b67d855832ea913a57cf8423674`. Agent-facing summary: `AGENTS.md` (Measurement Tool V1 Invariants).
+
+**Nature:** An illustrative, informational point-to-point ruler. Measurements are planning references — not certified measurements, minimum-clearance results, or safety/compliance findings. It is not a placement, load-optimization or AutoPack feature, and it never changes handling rules, collision, cargo physics, assessment, Space Utilization or the existing PDF. Keep the user-facing experience simple.
+
+| # | Owner decision (locked) |
+|---|---|
+| 1 | Cargo anchors support **box-shaped cargo only**. Cylinder/drum cargo cannot be anchored: picking one shows a clear "unsupported" indication and places no point. |
+| 2 | A **malformed** measurement structure rejects import/restore under the existing strict contracts. A structurally valid record that references deleted or missing cargo is **retained as Unresolved**. |
+| 3 | Creating, renaming or deleting a measurement updates the Load Plan's `lastEdited` but **never creates a cargo Undo/Redo entry**. |
+| 4 | Fixed-space anchors: **physical floor surfaces only** — main floor, Wheel Well tops, over-cab/raised deck. No walls or ceiling in V1. |
+| 5 | A previously valid measurement that becomes unresolvable **stays stored and visibly flagged**. Never silently delete, relocate or substitute an anchor. |
+| 6 | **Maximum 100** saved measurements per Load Plan. |
+
+**Behavior**
+
+- *Control:* ruler button directly above Camera Views in the floating viewport group (order: Measurement, Camera Views, Zoom In, Zoom Out); active state uses the existing orange selected styling. Setting: Settings → Preferences → Editor Display → **Show Measurement Tool** (default On; existing Save changes; lightweight visibility route, no scene rebuild; independent of Show Camera/Zoom Controls). Hiding the button while the mode is active exits the mode and cancels an unfinished measurement; saved measurements are untouched.
+- *Interaction:* first valid click = Point A; pointer move previews line and distance; second valid click = Point B and saves. In the mode, primary clicks place points instead of selecting or dragging cargo and never change selection or placement; orbit, pan, wheel and trackpad stay available; Escape cancels an unfinished measurement; clicking the ruler again exits. Points need a supported surface (box-cargo face or floor); an empty pixel never invents depth.
+- *Record* (`pack.measurements`, owned by exactly one Load Plan, canonical inches): unique ID, type `point-to-point`, optional label, start anchor, end anchor, `createdAt`/`updatedAt`, `schemaVersion`. The distance is never stored: it is the 3D straight line between the currently resolved endpoints (X/Y/Z deltas may be shown), displayed in the user's Length unit, and never called clearance.
+- *Cargo anchor:* cargo **instance ID** (never Case ID), box face, normalized face position, geometry signature (shape + dimensions). A duplicated instance never inherits measurements; a replacement with the same Case never receives an anchor. *Floor anchor:* canonical inches position plus floor-surface reference; does not move with cargo.
+- *Validity (derived, never stored):* **Valid** = both anchors resolve. **Needs Review** = a referenced Case's shape/dimensions or the truck geometry changed so the reference is uncertain. **Unresolved** = cargo instance or surface gone, or record unreconstructable; shows an explanatory indicator, never a fabricated number. Validity re-derives automatically, so undoing a cargo deletion or restoring original dimensions returns a measurement to Valid.
+- *Management:* create several, rename, delete individually, see status. No endpoint-editing gizmo and no measurement Undo/Redo in V1 (delete and recreate). Editing or deleting cargo never deletes a measurement.
+
+**Anchoring and validity rules**
+
+| Topic | Rule |
+|---|---|
+| Cargo-local anchoring | Stored in the box's local frame (face + normalized position); no world coordinate is stored for cargo anchors. Resolved by a pure, THREE-free resolver from committed pose and Case dimensions: `transform.position`, right-angle `rotation` (Euler XYZ, `core/oriented-dims.js`), ignoring `transform.scale` and applying the same minimum-height floor as the scene's `applyTransform`. Parity with THREE is pinned across all right-angle rotations. Follows move, rotate, flip, stage/unstage and the committed AutoPack pose. |
+| Committed vs. transient | Saved data and creation use committed poses only. While a drag, gizmo hold, animation or AutoPack Results preview is shown, the overlay follows the pose the scene displays (it never floats) but nothing transient is persisted. |
+| Case change | Geometry-signature mismatch (shape or L/W/H) → Needs Review. Nothing is rewritten, rescaled or re-anchored. |
+| Space change | Floor anchors are revalidated by geometry against the current truck: same supported floor surface still present → Valid; surface present but its governing truck geometry changed so the reference is uncertain → Needs Review; surface gone → Unresolved. Never moved to another surface. Stage 1 defines and pins the exact predicate. |
+| Deleted / recovered cargo | Deleting an instance leaves its measurements stored and Unresolved. Undo restores the same instance ID and the anchor resolves again. Duplicate and import use an explicit old→new instance-ID map — never a guessed match. |
+
+**Acceptance gates — the six audit risk areas.** Each must be handled explicitly and pinned by a test. Passing `measurements` through a generic object spread is **not** sufficient for persistence or validation.
+
+| Gate | Required handling | Code surfaces |
+|---|---|---|
+| G1 Normalization / persistence | `normalizePack` is an explicit field whitelist: add `measurements`. Older plans normalize to `[]`; ≤100 enforced. **Non-destructive local recovery:** a malformed stored record must never be silently dropped and then overwritten by autosave. Local load never throws and never produces geometry from it; the original data is preserved, a recovery condition is surfaced, and destructive persistence of that Load Plan's measurements is prevented until the condition is resolved. Exact mechanism: Stage 1 design. | `core/normalizer.js` `normalizePack`/`normalizeAppData`; `PackLibrary.update` |
+| G2 Undo/Redo | History snapshots all of `packLibrary`; measurements must be carried across Undo/Redo from the current state per Load Plan (as `editorView` is), written with `skipHistory`, and added to the `lastEdited` keys. Cargo Undo/Redo must neither erase nor resurrect measurements, and must not roll back `lastEdited` solely because measurement edits are excluded from cargo history (Undo/Redo is otherwise unchanged). Exact mechanism: Stage 2 design. | `core/state-store.js` `restoreCargoHistory`; `PackLibrary.update` |
+| G3 Duplicate / import remap | `duplicate()` and `planPackImport()` regenerate instance IDs: both must apply one shared old→new map to cargo anchors. Unmapped anchors stay Unresolved. Instance IDs must be preserved by AutoPack Apply, Unpack, Truck Change and Add/Qty staging — assert in tests. | `services/pack-library.js` `duplicate`, `planPackImport`; `editor-screen.js` `buildAppliedAutoPackCases` |
+| G4 Export / backup / restore | Single and batch Load Plan export/import, Workspace Backup and Active Workspace Backup must all carry measurements via explicit projection, strict validation before normalization, and atomic apply. Malformed structure (including >100, duplicate IDs within a plan) rejects the whole import/restore. A cargo reference to a missing instance is **accepted** (Unresolved) — the dangling-`caseId` rejection rule must not be reused for it. | `core/import-schema.js` `projectPortablePack`, `projectPortableWorkspacePack`, `validateWorkspaceGraph`; `services/import-export.js` `validateWorkspacePack`, `parsePackImportJSON`, `parsePackBatchImportJSON` |
+| G5 Capture exclusion | Overlay lives in a separate render pass (as the axis widget does) or is explicitly hidden by the capture path; labels are DOM. Screenshot, PDF views, pack preview/thumbnail and AutoPack Results preview capture never show measurement graphics. Existing PDF unchanged. | `app.js` `captureExportViews`; `editor-screen.js` `beginExportCapture`; `editor/scene-runtime.js` |
+| G6 Pointer / keyboard ownership | One mode owner gates `onDown`/`onMove`/`onUp`/`onDblClick`/`onKeyDown`; no `stopPropagation` (OrbitControls shares the canvas); use the existing 3px click threshold; Escape cancels a pending measurement before `deselectAll` and the drawer-close handler; guard double-click zero-length and a pending point under Undo/Delete; Cargo `raycastFirst` is not reused as-is (no face data, cargo only). | `screens/editor-screen.js` interaction handlers; `ui/keyboard-manager.js` |
+
+**Derived rules — OWNER APPROVED 2026-10-17** (follow from decisions 2, 5 and 6 and the "never fabricate" principle):
+
+1. Only a Valid measurement shows a numeric distance; Needs Review and Unresolved show an explanatory indicator instead.
+2. More than 100 measurements in an import/restore is malformed and rejects the import; nothing is truncated, and the 100 cap blocks creation in the UI.
+3. Creating, renaming and deleting measurements is disabled while an Editor operation is busy or any transient preview (including AutoPack Results preview) is displayed; viewing remains available.
+4. A cargo instance whose Case definition is missing is Unresolved (geometry cannot be verified).
+5. Measurement IDs are unique within a Load Plan only; duplicate/import may regenerate them.
+
+**Non-goals:** Text Annotations, Drawing, PDF Construction, AutoPack changes, clearance/gap analysis or any safety or compliance claim, wall/ceiling/free-floating anchors, cylinder/drum anchors, endpoint-editing gizmo, measurement Undo/Redo, snapping beyond face/floor points, database or backend changes, and any change to existing PDF/image exports (data is stored only so the future PDF Construction milestone can consume it).
+
+**Implementation stages** (each requires explicit owner release; focused local checks per stage; owner visual acceptance and one PR Quality Gate at closeout):
+
+| Stage | Scope | Exit gate |
+|---|---|---|
+| 0 | This documentation checkpoint | ✅ Owner-approved 2026-10-17 (documentation commit on this branch) |
+| 1 | Data foundation, no UI: pure measurement module (schema, normalize/validate, resolver, validity, distance); `normalizePack` field; cap; G1 non-destructive local recovery | Legacy plan → `[]`; malformed/over-cap cases; malformed stored record is preserved, surfaced and not overwritten by autosave; resolver parity across all right-angle rotations; scale and min-height parity; signature and floor predicate; typecheck |
+| 2 | Lifecycle plumbing, no UI: G2 history carry-over, `skipHistory` writes and `lastEdited` (no rollback by Undo/Redo); G3 remap; G4 projection and validation | Tests modelled on `pack-camera-view-isolation.spec.mjs`; Undo/Redo keeps measurements and `lastEdited`; ID-set preservation asserted; round-trip for every import/export path including malformed rejection |
+| 3 | Setting and control shell: `showMeasurementTool` through defaults, normalizer, Settings and the visibility route; ruler button and mode flag, no tool behavior | Existing camera/zoom control tests stay green; lightweight-route test; hide-while-active exits mode |
+| 4 | Interaction (G6): mode owner, picking on box faces and floor, pending point, unsupported-shape indication, busy/preview gating, Escape order | Existing selection, drag, keyboard and modal-ownership tests stay green; new ownership tests; localhost QA |
+| 5 | Presentation: overlay pass and labels, list (rename/delete/status), G5 capture exclusion, disposal | Exclusion tests for screenshot/PDF/thumbnail/preview; both projections and themes; no resource growth across repeated toggles |
+| 6 | Closeout: owner visual acceptance, one PR Quality Gate, Section 3 row | Owner acceptance; gate green |
+
+**Open technical items (settle in Stage 1; none blocks the contract):** the mechanism for the G1 non-destructive local-recovery invariant (preserve the original record, surface the condition, block destructive autosave until resolved) and, in Stage 2, for the G2 `lastEdited` invariant; the floor-surface source of truth (the editor's `TrailerGeometry` duplicates `PackLibrary` zone formulas — consume one and pin parity); a measurement-specific length formatter (`formatLength` rounds inches to whole numbers); confirmation that Truck Change preserves instance IDs (not traced in the audit).
 
 ---
 

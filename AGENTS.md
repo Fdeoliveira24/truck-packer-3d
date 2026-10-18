@@ -1,6 +1,6 @@
 # AGENTS.md — Truck Packer 3D
 
-**Last updated:** 2026-08-08
+**Last updated:** 2026-10-17
 **Project:** Truck Packer 3D / Cargo Planner 3D — 3D cargo logistics planning application.
 
 ---
@@ -98,6 +98,20 @@ Current source wins over stale memory or Graphify results.
 - Automated solutions may be stricter than manual authoring.
 
 See [docs/engineering/autopack-engine-contract.md — Editor Authority and Automation Boundary](./docs/engineering/autopack-engine-contract.md#editor-authority-and-automation-boundary) for the full contract and [docs/product/TP3D-MASTER-TODO-V6.md — Phase C (C5-0)](./docs/product/TP3D-MASTER-TODO-V6.md#55-phase-c--editor-authority--workflow-continuity-c5-cycle) for execution status.
+
+---
+
+## Measurement Tool V1 Invariants (approved contract; implementation stage-gated)
+
+Full contract, acceptance gates and stages: [docs/product/TP3D-MASTER-TODO-V6.md — Section 4.1](./docs/product/TP3D-MASTER-TODO-V6.md#41-measurement-tool-v1--approved-contract). No stage is authorized until the owner releases it.
+
+- The Measurement Tool is an illustrative, informational ruler. It never moves cargo and never influences placement, collision, handling rules, assessment, Space Utilization, AutoPack or the existing PDF. Not a clearance or safety/compliance feature.
+- Measurements belong to one Load Plan (`pack.measurements`, max 100, canonical inches). The distance is derived, never stored.
+- Cargo anchors reference the **instance ID** + box face + normalized position + geometry signature; box cargo only. Space anchors are physical floor surfaces only.
+- Never silently delete, relocate or substitute an anchor: an unresolvable measurement stays stored and visibly flagged.
+- A malformed stored measurement record is never silently dropped and then overwritten by autosave: preserve it, surface a recovery condition, block destructive persistence until resolved.
+- Cargo Undo/Redo preserves the current measurements and must not roll back `lastEdited` solely because measurement edits are excluded from cargo history.
+- A generic object spread is not persistence. `normalizePack` is a field whitelist; history, duplicate/import ID remap, export/backup projection and validation, and capture exclusion each need explicit handling (V6 §4.1 gates G1–G6).
 
 ---
 

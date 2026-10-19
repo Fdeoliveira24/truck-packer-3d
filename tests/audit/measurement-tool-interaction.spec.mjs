@@ -235,11 +235,17 @@ test('G6 two clicks save one measurement, return to Ready and leave cargo, selec
   const before = await page.evaluate(() => ({ cases: window.probe.casesJson(), camera: window.probe.camera(), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited }));
 
   // Point A on cargo (any shape is measurable), Point B on the ground outside the truck.
+  const badge = () => page.evaluate(() => { const c = document.querySelector('.tp3d-measure-panel__count'); return { text: c.textContent, shown: getComputedStyle(c).display !== 'none' }; });
+  assert.deepEqual(await badge(), { text: '', shown: false }, 'no count badge while there are no measurements');
   const a = await page.evaluate(() => window.probe.cargoPoint('cargo-a'));
   await click(page, a);
   await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+  const hintTone =() => page.evaluate(() => document.querySelector('.tp3d-measure-panel__hint').dataset.tone || null);
+  assert.equal(await hintTone(), 'active', 'the guidance dot is orange while the second point is awaited');
   await click(page, await point(page, ...GROUND_B));
   await page.waitForFunction(() => window.probe.measurements().length === 1);
+  assert.equal(await hintTone(), 'success', 'and green right after the measurement is saved');
+  assert.deepEqual(await badge(), { text: '1', shown: true }, 'the count badge appears with the first measurement');
   const [first] = await page.evaluate(() => window.probe.measurements());
   assert.equal(first.start.kind, 'cargo', 'a cargo surface anchors to the cargo instance');
   assert.equal(first.start.instanceId, 'cargo-a');

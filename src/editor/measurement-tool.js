@@ -139,6 +139,7 @@ export function createMeasurementTool({
   let sceneIdsByKey = new Map(); // identity key -> the instance's own ID, for each unambiguous cargo item
   let lengthUnit = 'in';
   let statusMessage = '';
+  let statusTone = ''; // presentation only: colours the guidance dot ('success' after a save or move)
   let statusTimer = null;
   let renamingId = null;
   let lastBlockedReason = null;
@@ -206,13 +207,15 @@ export function createMeasurementTool({
     return { x: vector.x / scale, y: vector.y / scale, z: vector.z / scale };
   }
 
-  function setStatus(message, { sticky = false } = {}) {
+  function setStatus(message, { sticky = false, tone = '' } = {}) {
     statusMessage = message || '';
+    statusTone = statusMessage ? tone : '';
     if (statusTimer) window.clearTimeout(statusTimer);
     statusTimer = null;
     if (statusMessage && !sticky) {
       statusTimer = window.setTimeout(() => {
         statusMessage = '';
+        statusTone = '';
         statusTimer = null;
         renderPanel();
       }, STATUS_VISIBLE_MS);
@@ -908,6 +911,7 @@ export function createMeasurementTool({
     if (statusTimer) window.clearTimeout(statusTimer);
     statusTimer = null;
     statusMessage = '';
+    statusTone = '';
     if (doc) {
       doc.removeEventListener('keydown', onKeyDownCapture, true);
       doc.removeEventListener('pointerdown', onPointerDownCapture, true);
@@ -1024,7 +1028,7 @@ export function createMeasurementTool({
       return;
     }
     selectedId = outcome.measurement.id;
-    setStatus('Measurement saved.');
+    setStatus('Measurement saved.', { tone: 'success' });
   }
 
   // ==========================================================================
@@ -1161,7 +1165,7 @@ export function createMeasurementTool({
       UIComponents.showToast('Could not move this point.', 'error', { title: 'Measurements' });
       return;
     }
-    setStatus('Measurement updated.');
+    setStatus('Measurement updated.', { tone: 'success' });
   }
 
   // ==========================================================================
@@ -1526,13 +1530,21 @@ export function createMeasurementTool({
     return '';
   }
 
+  /** Colour of the dot beside the guidance: orange while a gesture is under way or something needs attention, green after a save. */
+  function guidanceTone(blockedNow) {
+    if (blockedNow) return 'active';
+    if (statusMessage) return statusTone || (pending || drag ? 'active' : '');
+    if (pending || drag || records.length >= MAX_MEASUREMENTS_PER_PACK) return 'active';
+    return '';
+  }
+
   function renderPanel() {
     if (!active || !doc) return;
     const parts = ensurePanel();
     if (!parts) return;
     const blockedNow = blockedReason();
 
-    const countText = String(records.length);
+    const countText = records.length ? String(records.length) : ''; // no badge for zero
     if (parts.count.textContent !== countText) parts.count.textContent = countText;
     parts.toggle.setAttribute('aria-expanded', panelCollapsed ? 'false' : 'true');
     const chevronClass = `fa-solid fa-chevron-${panelCollapsed ? 'down' : 'up'} tp3d-measure-panel__chevron`;
@@ -1541,6 +1553,11 @@ export function createMeasurementTool({
     parts.body.hidden = panelCollapsed;
     const hintText = guidanceText(blockedNow);
     if (parts.hint.textContent !== hintText) parts.hint.textContent = hintText;
+    const hintTone = guidanceTone(blockedNow);
+    if ((parts.hint.dataset.tone || '') !== hintTone) {
+      if (hintTone) parts.hint.dataset.tone = hintTone;
+      else delete parts.hint.dataset.tone;
+    }
     parts.warning.hidden = !records.some(record => record.type === MEASUREMENT_TYPE_UNREADABLE);
 
     const seen = new Set();

@@ -212,3 +212,63 @@ test('the r185 runtime requires WebGL 2 without changing Vite output targets', (
   assert.doesNotMatch(browserSource, /experimental-webgl/u);
   assert.match(viteSource, /target: \['chrome90', 'edge90', 'firefox103', 'safari13\.1'\]/u);
 });
+
+// ============================================================================
+// CI lane integrity. The PR Quality Gate is deliberately FAST (a small Chromium smoke set); the complete Chromium
+// suite is `npm run test:regression`. These checks keep both lanes honest: no spec can fall out of every lane, a
+// renamed test cannot silently leave the smoke set, and the workflow stays one cheap job with its stable identity.
+// ============================================================================
+const auditSpecs = () => readdirSync(join(repoRoot, 'tests/audit')).filter(name => name.endsWith('.spec.mjs')).sort();
+const specsIn = command => [...command.matchAll(/tests\/audit\/([\w.-]+\.spec\.mjs)/gu)].map(match => match[1]);
+const topLevelTitles = name => [...read(`tests/audit/${name}`).matchAll(/^test\(\s*(['"`])((?:\\.|(?!\1).)+)\1\s*,/gmu)].map(match => match[2]);
+
+test('CI lanes: every audit spec runs in the Node lane or the full browser regression, and the smoke specs are part of that regression', () => {
+  const regression = specsIn(packageJson.scripts['test:regression:browser']);
+  const excludedFromNode = [...packageJson.scripts['test:ci:node'].matchAll(/! -name '([^']+\.spec\.mjs)'/gu)].map(match => match[1]);
+  assert.deepEqual([...excludedFromNode].sort(), [...regression].sort(), 'the Node lane excludes exactly the Chromium specs, and the full regression runs exactly those');
+  const present = auditSpecs();
+  regression.forEach(name => assert.ok(present.includes(name), `${name} exists`));
+  assert.equal(new Set(regression).size, regression.length, 'no spec is listed twice');
+  // Everything that is not a Chromium spec is picked up by the Node lane's `find`, so no spec is orphaned.
+  const nodeLane = present.filter(name => !excludedFromNode.includes(name));
+  assert.ok(nodeLane.length > 30, `the Node lane runs ${nodeLane.length} specs`);
+  specsIn(packageJson.scripts['test:ci:browser']).forEach(name => assert.ok(regression.includes(name), `smoke spec ${name} is in the full regression`));
+  assert.equal(packageJson.scripts['test:regression'], 'npm run test:ci:node && npm run test:regression:browser');
+  assert.equal(packageJson.scripts['test:ci'], 'npm run test:ci:node && npm run test:ci:browser', 'the CI command pair is the fast gate');
+});
+
+test('CI lanes: the browser smoke selection names real tests, each exactly once', () => {
+  const [wholeFiles, patterned] = packageJson.scripts['test:ci:browser'].split(' && ');
+  const patternText = patterned.match(/--test-name-pattern="([^"]+)"/u)[1];
+  assert.match(patternText, /^\^\(\?:.+\)$/u, 'one anchored alternation');
+  const alternatives = patternText.slice('^(?:'.length, -1).split('|');
+  const titles = specsIn(patterned).flatMap(topLevelTitles);
+  assert.ok(titles.length > 50, `${titles.length} top-level titles were found in the selected specs`);
+  alternatives.forEach(alternative => {
+    const hits = titles.filter(title => new RegExp(`^${alternative}`, 'u').test(title));
+    assert.equal(hits.length, 1, `"${alternative}" must select exactly one test (selects ${hits.length}); a renamed test would silently leave the smoke set`);
+  });
+  assert.equal(new Set(alternatives).size, alternatives.length);
+  assert.ok(alternatives.length >= 15 && alternatives.length <= 25, `${alternatives.length} selected tests: the smoke set stays small`);
+  // The smoke specs run whole (no pattern) are the small ones, and none is also patterned.
+  const whole = specsIn(wholeFiles);
+  assert.ok(whole.length >= 1 && whole.every(name => !specsIn(patterned).includes(name)));
+});
+
+test('CI lanes: the Quality Gate workflow keeps its identity and stays one fast job', () => {
+  const workflow = read('.github/workflows/quality-gate.yml');
+  const code = workflow.split('\n').filter(line => !line.trim().startsWith('#')).join('\n');
+  assert.match(code, /^name: Quality Gate$/mu, 'workflow name');
+  assert.match(code, /^  quality-gate:$/mu, 'job id: the check name branch protection matches');
+  assert.deepEqual(code.match(/^ {2}[\w-]+:\s*$/gmu).filter(line => !/^ {2}(pull_request|push|workflow_dispatch):/u.test(line)).map(line => line.trim()), ['quality-gate:'], 'exactly one job');
+  assert.match(code, /pull_request:\s*\n\s+branches:\s*\n\s+- main/u);
+  assert.match(code, /workflow_dispatch:/u);
+  assert.match(code, /run: npm run test:ci:browser/u, 'the PR gate runs the fast browser lane');
+  assert.doesNotMatch(code, /test:regression/u, 'the full Chromium regression is not part of the PR gate');
+  assert.doesNotMatch(code, /^\s*(strategy|schedule):|cron:/mu, 'no matrix, no scheduled run');
+  const timeout = Number(code.match(/timeout-minutes: (\d+)/u)?.[1]);
+  assert.ok(timeout >= 8 && timeout <= 15, `fail-safe timeout is ${timeout} minutes`);
+  for (const step of ['npm run lint', 'npm run -s typecheck', 'npm run test:ci:node', 'npm run build', 'npm audit --omit=dev', 'git diff --check']) {
+    assert.ok(code.includes(step), `the fast gate still runs: ${step}`);
+  }
+});

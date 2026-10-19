@@ -672,6 +672,54 @@ const selectCargo = async (page, rect, id) => {
 };
 const pending = page => page.evaluate(() => /second point/i.test(window.probe.hint()));
 
+// Scene readiness, not a guess at how long a runner needs: the view (camera pose, projection and zoom) has not
+// changed for several consecutive animation frames, so the overlay is drawn for the pose the next click will see.
+const cameraSettled = async (page, frames = 6) => {
+  await page.evaluate(() => { window.__viewSettle = { key: null, stable: 0 }; });
+  await page.waitForFunction(required => {
+    const camera = window.probe.SceneManager.getCamera();
+    const key = [camera.isOrthographicCamera, camera.zoom, ...camera.matrixWorld.elements, ...camera.projectionMatrix.elements].join();
+    const state = window.__viewSettle;
+    state.stable = key === state.key ? state.stable + 1 : 0;
+    state.key = key;
+    return state.stable >= required;
+  }, frames, { polling: 'raf' });
+};
+// Everything that decides what a click at `target` does, so a failed step explains itself.
+const clickDiagnostics = (page, target) => page.evaluate(([x, y]) => {
+  const box = el => { if (!el) return null; const r = el.getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom].map(Math.round); };
+  const hit = document.elementFromPoint(x, y);
+  return {
+    target: [Math.round(x), Math.round(y)],
+    elementAtTarget: hit ? `${hit.tagName}.${String(hit.className).slice(0, 40)}` : null,
+    hint: window.probe.hint(),
+    selectedRows: document.querySelectorAll('.tp3d-measure-row.is-selected').length,
+    measurements: window.probe.measurements().length,
+    segments: [...document.querySelectorAll('.tp3d-measure-svg__segment')].map(group => ({
+      selected: group.classList.contains('is-selected'),
+      paths: [...group.querySelectorAll('path')].map(path => (path.getAttribute('d') || '').slice(0, 70)),
+    })),
+    labels: [...document.querySelectorAll('#editor-measure-labels > *')].map(box),
+    canvas: box(document.querySelector('#viewport canvas')),
+    panel: box(document.getElementById('editor-measure-panel')),
+    camera: window.probe.camera(),
+    selection: window.probe.selection(),
+    provisionalPose: window.probe.InteractionManager.hasProvisionalPose(),
+    operation: window.probe.OperationLifecycle.currentOperation().kind,
+  };
+}, [target.x, target.y]);
+// Start a measurement on a cargo the way a user does: once the view is settled, click the cargo and require Point A.
+async function startPointA(page, cargoId, label) {
+  await cameraSettled(page);
+  const target = await page.evaluate(id => window.probe.cargoPoint(id), cargoId);
+  await click(page, target);
+  try {
+    await page.waitForFunction(() => /second point/i.test(window.probe.hint()), null, { timeout: 15000 });
+  } catch (error) {
+    throw new Error(`${label}: clicking ${cargoId} did not start Point A.\n${JSON.stringify(await clickDiagnostics(page, target), null, 1)}\n${error.message}`);
+  }
+}
+
 test('P2-6 an unfinished Point A is cancelled when its cargo is nudged or rotated, but camera moves leave it alone', { timeout: 150000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
@@ -682,8 +730,7 @@ test('P2-6 an unfinished Point A is cancelled when its cargo is nudged or rotate
   const startBefore = await page.evaluate(() => window.probe.resolved()[0].start);
 
   // Point A on the selected cargo; orbit, zoom and a projection change are camera work, not cargo work.
-  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
-  await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+  await startPointA(page, 'cargo-b', 'first Point A');
   const camera = await page.evaluate(() => window.probe.camera());
   await page.mouse.move(rect.x + rect.w * 0.5, rect.y + rect.h * 0.3);
   await page.mouse.down();
@@ -692,7 +739,7 @@ test('P2-6 an unfinished Point A is cancelled when its cargo is nudged or rotate
   await page.mouse.wheel(0, -240);
   await page.waitForFunction(c => window.probe.camera() !== c, camera);
   await page.evaluate(() => { const v = window.probe.SceneManager.getEditorView(); window.probe.SceneManager.applyEditorView({ ...v, projection: v.projection === 'orthographic' ? 'perspective' : 'orthographic' }); });
-  await page.waitForTimeout(250);
+  await cameraSettled(page);
   assert.equal(await pending(page), true, 'camera orbit, zoom and projection never cancel Point A');
 
   // A committed nudge moves the cargo Point A was picked on: the unfinished measurement is dropped.
@@ -708,8 +755,7 @@ test('P2-6 an unfinished Point A is cancelled when its cargo is nudged or rotate
   assert.ok(Math.abs(startAfter.z - startBefore.z - 1) < 1e-6 && Math.abs(startAfter.x - startBefore.x) < 1e-6, 'a saved measurement follows the nudged cargo normally');
 
   // A rotation does the same.
-  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
-  await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+  await startPointA(page, 'cargo-b', 'Point A after the nudge');
   await viewportKey(page, 'r');
   await page.waitForFunction(() => !/second point/i.test(window.probe.hint()));
   assert.equal(await count(page), 1);

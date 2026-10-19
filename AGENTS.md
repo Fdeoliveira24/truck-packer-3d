@@ -167,6 +167,11 @@ Prefer the owner layer for bugs. Do not broaden scope beyond the owning file(s) 
 
 ## Testing
 
+**Two test levels (the GitHub gate is deliberately fast):**
+- **Fast PR Quality Gate** — runs automatically on pull requests into `main`, about 4–5 minutes on a hosted runner (one job, no matrix, 10-minute fail-safe): lint, typecheck, the full Node lane (`npm run test:ci:node`), a small Chromium smoke set (`npm run test:ci:browser`), the production build, the production dependency audit and a patch whitespace check. `npm run quality:ci` is its local mirror.
+- **Full regression** — `npm run test:regression` (the Node lane plus the complete Chromium suite, `npm run test:regression:browser`). It takes about 25 minutes on a hosted runner, so GitHub does not run it and there is no scheduled workflow. Run it locally before a major release or after a substantial high-risk change (editor, persistence, import/export, billing, auth, rendering).
+- The smoke set is the `--test-name-pattern` of `test:ci:browser` plus four small whole specs. A test belongs in it only if it guards a critical browser-only invariant at low cost; every browser test stays in the full regression. `three-r160-npm-vite.spec.mjs` fails if a selected test is renamed, if a spec belongs to no lane, or if the workflow stops being one fast job.
+
 **During implementation:**
 - Run directly affected focused tests only (normally 1–3 focused files or tight patterns)
 - Do NOT run the complete local Node suite
@@ -183,7 +188,7 @@ Prefer the owner layer for bugs. Do not broaden scope beyond the owning file(s) 
 - Lint/build only when the production change warrants them
 
 **GitHub:**
-- The full Quality Gate owns broad regression coverage
+- The fast Quality Gate owns routine PR regression coverage; the complete Chromium suite is the deliberate local `npm run test:regression`
 - Run it once per finished reviewable PR/checkpoint
 - If CI fails, diagnose reported failures with focused local reproduction
 - Do not respond to CI failure by blindly running every suite locally

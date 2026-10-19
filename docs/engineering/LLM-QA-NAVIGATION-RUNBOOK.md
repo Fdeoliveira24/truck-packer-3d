@@ -437,9 +437,11 @@ Test and CI commands below were verified from `package.json` and the Quality Gat
 | ----------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------- | ------------------ | --------------------------------- | --------------------------------- |
 | `npm test`                                | Local audit suite, including Chromium specs                     | Node.js, installed Chromium                | full local        | No                                | None                              |
 | `npm run test:ci:node`                    | 44 non-browser audit specs at concurrency 2                     | Node.js                                     | required CI lane  | No                                | None                              |
-| `npm run test:ci:browser`                 | Eight Chromium audit specs at concurrency 1                     | Node.js, installed Chromium                | required CI lane  | No                                | None                              |
-| `npm run test:ci`                         | Node lane, then browser lane                                     | Node.js, installed Chromium                | full local        | No                                | None                              |
-| `npm run quality:ci`                      | Local mirror: lint, typecheck, both lanes, build, audit          | Node.js, installed Chromium                | full local        | No                                | None                              |
+| `npm run test:ci:browser`                 | Fast Chromium smoke set: four small specs plus 17 selected tests from three large ones (about 75 s locally) | Node.js, installed Chromium (headless shell) | required CI lane  | No                                | None                              |
+| `npm run test:ci`                         | Node lane, then the fast browser smoke set (what the PR gate runs) | Node.js, installed Chromium                | required CI lane  | No                                | None                              |
+| `npm run quality:ci`                      | Local mirror of the PR gate: lint, typecheck, Node lane, smoke set, build, audit | Node.js, installed Chromium                | required CI lane  | No                                | None                              |
+| `npm run test:regression:browser`         | The complete Chromium suite: all eight specs at concurrency 1 (about 25 min on a hosted runner) | Node.js, installed Chromium                | full local        | No                                | None                              |
+| `npm run test:regression`                 | Full regression: Node lane, then the complete Chromium suite. Not run by GitHub | Node.js, installed Chromium                | full local        | No                                | None                              |
 | `node --test tests/behavioral/app-js-characterization.spec.mjs` | Auth/workspace/provider/identity transition characterization | Node.js, installed Chromium | Tier 2 domain | No | None |
 | `npm run test:all`                        | All audit tests including stress phases                          | Node.js, `TP3D_STRESS=1` env                | full               | No                                | None                              |
 | `npm run test:stress`                     | AutoPack perf stress phases only (PHASE-E1, E2A, E2B, A1-PERF-1) | Node.js                                     | focused            | No                                | None                              |
@@ -488,7 +490,8 @@ Choose the smallest tier that covers the changed contract. Do **not** run `npm t
 | 0 — Static micro | Docs, comments, trivial cleanup | Inspect the diff; run `git diff --check`. No test suite. |
 | 1 — Focused | Isolated helper, Settings UI, test cleanup | Run directly affected specs and relevant lint/typecheck. |
 | 2 — Domain | AutoPack, auth/storage, Three/rendering, import/recovery contracts | Run all tests owned by the affected contract. |
-| 3 — Final required Quality Gate | Complete PR candidate after the final material change | Let the single PR gate run the full Node lane, then the serial Chromium lane, plus lint, typecheck, build, production audit, and patch check. |
+| 3 — Final required Quality Gate | Complete PR candidate after the final material change | Let the single fast PR gate run: lint, typecheck, the full Node lane, the Chromium smoke set, build, production audit, and patch check. |
+| 4 — Full regression | Before a major release, or after a substantial high-risk change (editor, persistence, import/export, billing, auth, rendering) | Run `npm run test:regression` locally. GitHub does not run it and no schedule exists. |
 
 At Tier 2, auth, workspace, provider/session, and identity-transition changes also require the
 separate `tests/behavioral/app-js-characterization.spec.mjs` suite. It is not in the global PR gate.
@@ -525,8 +528,8 @@ over the baseline tree counts 583, a one-site measurement difference.
 ### Audit tests (`tests/audit/*.spec.mjs`)
 
 The non-browser specs import source modules and exercise logic in Node.js. Seven specs launch
-Chromium and cover browser behavior. The required PR Quality Gate runs these as separate Node and
-browser lanes in one job. They cover:
+Chromium and cover browser behavior. The required PR Quality Gate runs the Node lane in full and only
+a smoke selection of the Chromium specs (see `test:ci:browser`); `npm run test:regression` runs all of them. They cover:
 
 - AutoPack results carousel and strategy differentiation
 - Billing catalog and fixture safety

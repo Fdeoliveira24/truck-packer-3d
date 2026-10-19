@@ -36,7 +36,7 @@
 | Verified main after CI optimization (2026-10-17) | `a3c47f28c7930778771ac0806d398be22ed712a4` — PR #123 merged; main updated on GitHub |
 | Verified main after Camera Controls Relocation (2026-10-17) | `c28fca550d827b67d855832ea913a57cf8423674` — PR #124 merged |
 | Measurement Tool V1 branch | `feat/editor-measurement-tool-v1`, created from `c28fca550d827b67d855832ea913a57cf8423674`; contract approved; implementation visually approved by the owner on 2026-10-18 and locally validated (lint, typecheck, Node and browser lanes, build, audit); GitHub Quality Gate and final merge approval pending (Section 4.1) |
-| Quality Gate cost policy | One automatic full Quality Gate for PRs targeting `main`; optional manual `workflow_dispatch`; no automatic full run after merge/push to `main`. Focused local checks during implementation; documentation-only changes require diff/status checks, not application suites. |
+| Quality Gate cost policy | One automatic **fast** Quality Gate for PRs targeting `main` (about 4–5 minutes: static checks, the full Node lane, a small Chromium smoke set, build, production audit, patch whitespace; 10-minute fail-safe); the complete Chromium regression is the local `npm run test:regression`, run before major releases or after high-risk changes and never scheduled; optional manual `workflow_dispatch`; no automatic run after merge/push to `main`. Focused local checks during implementation; documentation-only changes require diff/status checks, not application suites. |
 
 ---
 
@@ -66,7 +66,8 @@
 | Camera Phase 1 | Seven named Editor camera views, Fit Truck and interactive View menu | PR #120 |
 | Camera Phase 2 | Interactive Perspective / Orthographic projection, per-Load-Plan camera metadata, Settings integration and export support; live PDF acceptance passed | PR #121 |
 | Optional viewport Zoom Controls | Zoom In/Out for both projections; Settings On/Off visibility | PR #122 |
-| Quality Gate cost optimization | Preserve PR and manual full gate; stop duplicate full runs after merge | PR #123 |
+| Quality Gate cost optimization | Preserve PR and manual gate; stop duplicate runs after merge | PR #123 |
+| Quality Gate speed | Split the PR gate (fast smoke) from the full local regression (`test:regression`); shell-only Chromium install; 10-minute fail-safe | Measurement Tool V1 PR |
 | Camera controls relocation | Camera Views button moved into the floating viewport group above Zoom In/Out; independent Show Camera Controls setting on the lightweight visibility route | PR #124, `c28fca5` |
 
 ---
@@ -314,7 +315,7 @@ Not approved branches. Not active work. Require focused audits and product decis
 
 ### Development / CI Cost Policy
 
-- Full Quality Gate runs automatically on PRs targeting `main`; optional manual dispatch is available. No automatic full suite after merging/pushing to `main` (PR #123).
+- The fast Quality Gate runs automatically on PRs targeting `main` (lint, typecheck, Node lane, Chromium smoke set, build, audit, patch check); optional manual dispatch is available. The complete Chromium regression (`npm run test:regression`) is local and deliberate, never automatic. No automatic suite after merging/pushing to `main` (PR #123).
 - During implementation, use directly affected focused tests, typecheck as appropriate, and diff/status inspection. Do not duplicate broad local and GitHub CI runs.
 - Documentation-only updates require diff review and whitespace/status checks, not application test suites.
 

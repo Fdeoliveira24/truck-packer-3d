@@ -4152,7 +4152,10 @@ export function createEditorScreen({
       }
       // Only the whitelisted derived-metadata boundary can rebind authority.
       // An ordinary Pack replacement still requires a full committed render.
-      if ((notification?.type === 'pack-preview' || notification?.type === 'pack-view') && previewScene &&
+      // A measurement-only edit is such a boundary: it replaces the Pack object but keeps the same
+      // cargo, truck and visual signature (the guards below and rebindPreviewPack re-check all three).
+      if ((notification?.type === 'pack-preview' || notification?.type === 'pack-view' ||
+          notification?.type === 'pack-measurements') && previewScene &&
           previewScene.pack === notification.previousPack &&
           PackLibrary.getById(notification.pack.id) === notification.pack &&
           CoreStorage.isScopeContextCurrent(previewScene.scope) &&
@@ -5235,6 +5238,8 @@ export function createEditorScreen({
           viewport: viewportEl,
           // The load-status popover closes on Escape first; Measurement Mode exits on the next one.
           escapeOwnedElsewhere: () => validationPopoverOpen,
+          // A live drag, gizmo stroke or held case displays cargo away from its committed pose.
+          hasProvisionalPose: () => Boolean(InteractionManager && InteractionManager.hasProvisionalPose && InteractionManager.hasProvisionalPose()),
         });
         btnMeasure.addEventListener('click', ev => {
           ev.stopPropagation();

@@ -1443,8 +1443,12 @@ test('PACK-PREVIEW-SCHEDULER wiring uses pre-navigation flush and shared manual 
     'one producer evaluates freshness for context and visual dependencies');
   assert.match(subscriber, /if \(notification\?\.type === 'pack-view'\) \{\s*AutoPackPreviewScheduler\.schedule\(\);\s*return;/,
     'settled camera metadata schedules preview freshness without reconstructing Editor');
-  assert.equal((subscriber.match(/AutoPackPreviewScheduler\.schedule\(\)/g) || []).length, 2,
-    'the subscriber schedules freshness once for Pack view metadata and once for normal visual dependencies');
+  // A measurement-only write replaces the Pack object and so aborts an in-flight capture: it re-requests
+  // freshness (a current thumbnail yields no candidate) without reconstructing the Editor.
+  assert.match(subscriber, /if \(notification\?\.type === 'pack-measurements'\) \{\s*PacksUI\.render\(\);\s*EditorUI\.syncMeasurements\(\);\s*AutoPackPreviewScheduler\.schedule\(\);\s*return;/,
+    'a measurement-only write schedules preview freshness without reconstructing Editor');
+  assert.equal((subscriber.match(/AutoPackPreviewScheduler\.schedule\(\)/g) || []).length, 3,
+    'the subscriber schedules freshness for Pack view metadata, after a measurement-only write, and for normal visual dependencies');
   assert.ok(subscriber.indexOf('EditorUI.render();') < subscriber.indexOf('if (previewContextChanged'),
     'Pack activation synchronizes Editor before preview freshness is scheduled');
   assert.ok(shellSrc.indexOf('beforeNavigate(previousScreen, screenKey)') < shellSrc.indexOf('StateStore.set({ currentScreen: screenKey }'));

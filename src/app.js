@@ -7285,10 +7285,14 @@ const TP3D_BUILD_STAMP = Object.freeze({
           return;
         }
         // Measurement-only write: already autosaved above. Refresh the overlay/list and the Load Plan
-        // card (lastEdited); no cargo, scene, Inspector or preview work is needed.
+        // card (lastEdited); no cargo, scene or Inspector work is needed. The edit replaced the Pack
+        // object, which aborts an automatic preview capture that was waiting for its frames, so the
+        // freshness check is requested again: it retries only when the preview is still missing or
+        // stale, and a current thumbnail finds no candidate (no needless recapture).
         if (notification?.type === 'pack-measurements') {
           PacksUI.render();
           EditorUI.syncMeasurements();
+          AutoPackPreviewScheduler.schedule();
           return;
         }
         if (notification?.type === 'viewport-controls-preference') {

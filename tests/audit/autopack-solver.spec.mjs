@@ -3828,8 +3828,11 @@ test('AUTO-PACK-A0B clipboard and duplicate flows preserve orientation lock meta
     'pasteClipboard must route clipboard instances through the shared safe duplicate helper');
   assert.match(safeBlock, /const next = Utils\.deepClone\(item\.inst\)/,
     'shared safe duplicate helper must preserve full instance metadata');
-  assert.match(safeBlock, /next\.id = Utils\.uuid\(\)/,
+  // Cargo instance IDs are unique within a Load Plan: new ids come from the shared minter (never a reused ID).
+  assert.match(safeBlock, /next\.id = mintInstanceId\(\)/,
     'shared safe duplicate helper must assign new ids after cloning metadata');
+  assert.ok(safeBlock.indexOf('Utils.deepClone(item.inst)') < safeBlock.indexOf('next.id = mintInstanceId()'),
+    'the new id replaces the cloned source id, not the other way round');
 });
 
 test('AUTO-PACK-A0B editor snapping uses usable-zone walls, not missing TrailerGeometry dimensions', async () => {

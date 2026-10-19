@@ -24,8 +24,8 @@ const subscriberEnd = appSource.indexOf('\n      });\n\n      try {\n        Rou
 assert.ok(subscriberAnchor >= 0 && subscriberStart > subscriberAnchor && subscriberEnd > subscriberStart,
   'app.js StateStore render subscriber is extractable');
 const appSubscriber = appSource.slice(subscriberStart + 'StateStore.subscribe('.length, subscriberEnd + '\n      }'.length);
-assert.match(appSubscriber, /notification\?\.type === 'pack-measurements'\) \{\s*PacksUI\.render\(\);\s*EditorUI\.syncMeasurements\(\);\s*return;/,
-  'a measurement-only write refreshes the card and the overlay without a scene, Inspector or preview render');
+assert.match(appSubscriber, /notification\?\.type === 'pack-measurements'\) \{\s*PacksUI\.render\(\);\s*EditorUI\.syncMeasurements\(\);\s*AutoPackPreviewScheduler\.schedule\(\);\s*return;/,
+  'a measurement-only write refreshes the card and the overlay without a scene or Inspector render, and re-requests the preview freshness check');
 
 const importMap = JSON.stringify({
   imports: { three: '/node_modules/three/build/three.module.js', 'three/addons/': '/node_modules/three/examples/jsm/' },
@@ -135,9 +135,10 @@ const canvas = () => SceneManager.getRenderer().domElement;
 const livePack = () => PackLibrary.getById(packId);
 const hintEl = () => document.querySelector('.tp3d-measure-panel__hint');
 window.probe = {
-  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, M,
+  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, InteractionManager, M,
   modalOwner: () => (UIComponents.modalOwnership.getActiveOwner() || {}).kind || null,
   measurements: () => PackLibrary.getMeasurements(packId),
+  resolved: () => PackLibrary.resolveMeasurements(packId),
   hint: () => (hintEl() ? hintEl().textContent : ''),
   selection: () => (StateStore.get('selectedInstanceIds') || []).slice(),
   casesJson: () => JSON.stringify(livePack().cases),
@@ -655,4 +656,405 @@ test('the Measurements panel drags by its grip like AutoPack Results, stays insi
     inside: (() => { const p = window.probe.box('#editor-measure-panel'); const v = window.probe.box('#viewport'); return p.r <= v.r && p.b <= v.b; })(),
   }));
   assert.deepEqual(collapsed, { gripVisible: true, down: true, listHidden: true, inside: true });
+});
+
+// ============================================================================
+// Audit remediation: gestures against committed cargo poses (P2-6) and provisional poses (P2-7)
+// ============================================================================
+const viewportKey = async (page, key) => { await page.focus('#viewport'); await page.keyboard.press(key); };
+const selectCargo = async (page, rect, id) => {
+  await page.click('#btn-editor-measure'); // off
+  await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h / 2);
+  await click(page, await page.evaluate(cargoId => window.probe.cargoPoint(cargoId), id));
+  await page.waitForFunction(cargoId => window.probe.selection().includes(cargoId), id);
+  await page.click('#btn-editor-measure'); // on
+  await page.waitForFunction(modeIsOn);
+};
+const pending = page => page.evaluate(() => /second point/i.test(window.probe.hint()));
+
+test('P2-6 an unfinished Point A is cancelled when its cargo is nudged or rotated, but camera moves leave it alone', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors, rect } = await openMeasuring(browser);
+  await selectCargo(page, rect, 'cargo-b');
+  await measure(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')), await point(page, ...GROUND_B));
+  const [saved] = await page.evaluate(() => window.probe.measurements());
+  const startBefore = await page.evaluate(() => window.probe.resolved()[0].start);
+
+  // Point A on the selected cargo; orbit, zoom and a projection change are camera work, not cargo work.
+  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
+  await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+  const camera = await page.evaluate(() => window.probe.camera());
+  await page.mouse.move(rect.x + rect.w * 0.5, rect.y + rect.h * 0.3);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + rect.w * 0.5 + 60, rect.y + rect.h * 0.3 + 20, { steps: 6 });
+  await page.mouse.up();
+  await page.mouse.wheel(0, -240);
+  await page.waitForFunction(c => window.probe.camera() !== c, camera);
+  await page.evaluate(() => { const v = window.probe.SceneManager.getEditorView(); window.probe.SceneManager.applyEditorView({ ...v, projection: v.projection === 'orthographic' ? 'perspective' : 'orthographic' }); });
+  await page.waitForTimeout(250);
+  assert.equal(await pending(page), true, 'camera orbit, zoom and projection never cancel Point A');
+
+  // A committed nudge moves the cargo Point A was picked on: the unfinished measurement is dropped.
+  await viewportKey(page, 'ArrowRight');
+  await page.waitForFunction(() => !/second point/i.test(window.probe.hint()));
+  assert.match(await page.evaluate(() => window.probe.hint()), /cargo for Point A changed/i);
+  assert.equal(await count(page), 1, 'nothing was created from the stale Point A');
+  assert.equal(await page.evaluate(() => window.probe.modalOwner()), null);
+  // The completed measurement keeps its anchors and simply follows the cargo.
+  const [after] = await page.evaluate(() => window.probe.measurements());
+  assert.deepEqual(after.start, saved.start, 'the stored anchor is untouched');
+  const startAfter = await page.evaluate(() => window.probe.resolved()[0].start);
+  assert.ok(Math.abs(startAfter.z - startBefore.z - 1) < 1e-6 && Math.abs(startAfter.x - startBefore.x) < 1e-6, 'a saved measurement follows the nudged cargo normally');
+
+  // A rotation does the same.
+  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
+  await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+  await viewportKey(page, 'r');
+  await page.waitForFunction(() => !/second point/i.test(window.probe.hint()));
+  assert.equal(await count(page), 1);
+
+  // With nothing changed, a fresh Point A completes as usual.
+  // (Cargo-a: a click on a drawn measurement's line selects it, and cargo-b's rotated start now lies across its centre.)
+  await measure(page, await page.evaluate(() => window.probe.cargoPoint('cargo-a')), await point(page, ...GROUND_A));
+  assert.equal(await count(page), 2);
+  assert.deepEqual(errors, []);
+});
+
+test('P2-6 an endpoint drag is cancelled when the cargo either endpoint refers to is moved, and writes nothing', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors, rect } = await openMeasuring(browser);
+  await selectCargo(page, rect, 'cargo-b');
+  await measure(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')), await point(page, ...GROUND_B));
+  const snapshot = JSON.stringify(await page.evaluate(() => window.probe.measurements()));
+  // A just-saved measurement is selected, so its grips are offered once the overlay has drawn them.
+  await page.waitForFunction(() => {
+    const grips = document.querySelector('.tp3d-measure-svg__segment.is-selected .tp3d-measure-svg__grips');
+    return !!grips && (grips.getAttribute('d') || '').length > 5;
+  });
+  const end = await point(page, ...GROUND_B);
+  await page.mouse.move(end.x + 8, end.y + 8);
+  await page.mouse.move(end.x, end.y);
+  await page.waitForFunction(() => document.querySelector('#viewport canvas').style.cursor === 'grab');
+  await page.mouse.down();
+  await page.mouse.move(end.x + 50, end.y - 30, { steps: 6 });
+  await page.waitForFunction(() => /Drag to a new position/.test(window.probe.hint()));
+
+  await viewportKey(page, 'ArrowRight'); // the cargo of the OTHER endpoint moves mid-drag
+  await page.waitForFunction(() => !/Drag to a new position/.test(window.probe.hint()));
+  assert.match(await page.evaluate(() => window.probe.hint()), /cargo.*changed.*cancelled/i);
+  await page.mouse.move(end.x + 70, end.y - 40, { steps: 3 });
+  await page.mouse.up();
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), snapshot, 'the measurement was not edited by the cancelled drag');
+  assert.deepEqual(errors, []);
+});
+
+// A REAL held case, made the way a person makes one: select cargo, grab the gizmo's vertical arrow and pull
+// it up into mid-air. The Editor keeps the pose scene-only ("Case held above the load. ... Esc cancels.") and
+// reports it through its own InteractionManager.hasProvisionalPose(); nothing is stubbed here.
+async function holdCaseWithGizmo(page, rect, id) {
+  await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h / 2);
+  await click(page, await page.evaluate(cargoId => window.probe.cargoPoint(cargoId), id));
+  await page.waitForFunction(cargoId => window.probe.selection().includes(cargoId) && window.probe.CaseScene.getGizmoHandleMeshes().length > 0, id);
+  // The tip of the vertical arrow: only that arrow's grab area reaches it.
+  const tip = await page.evaluate(() => {
+    const q = window.probe;
+    const handle = q.CaseScene.getGizmoHandleMeshes().find(mesh => mesh.userData.gizmoHandle === 'y');
+    const v = handle.localToWorld(new window.THREE.Vector3(0, 1.0, 0)).project(q.SceneManager.getCamera());
+    const r = document.querySelector('#viewport canvas').getBoundingClientRect();
+    return { x: r.left + ((v.x + 1) / 2) * r.width, y: r.top + ((1 - v.y) / 2) * r.height };
+  });
+  await page.mouse.move(tip.x, tip.y);
+  await page.mouse.down();
+  await page.mouse.move(tip.x, tip.y - 110, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.InteractionManager.hasProvisionalPose());
+}
+const heldState = (page, id) => page.evaluate(cargoId => {
+  const q = window.probe;
+  const committed = q.PackLibrary.getById('fixture-pack').cases.find(c => c.id === cargoId).transform.position;
+  return {
+    provisional: q.InteractionManager.hasProvisionalPose(),
+    sceneY: q.CaseScene.getObject(cargoId).position.y / 0.05,
+    committedY: committed.y,
+    mode: document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true',
+  };
+}, id);
+const modeOn = page => page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+const cargoBounds = (page, id) => page.evaluate(cargoId => {
+  const q = window.probe;
+  const inst = q.PackLibrary.getById('fixture-pack').cases.find(c => c.id === cargoId);
+  const dims = q.StateStore.get('caseLibrary').find(c => c.id === inst.caseId).dimensions;
+  const p = inst.transform.position;
+  return { min: { x: p.x - dims.length / 2, y: p.y - dims.height / 2, z: p.z - dims.width / 2 }, max: { x: p.x + dims.length / 2, y: p.y + dims.height / 2, z: p.z + dims.width / 2 } };
+}, id);
+const onBox = (point, box, slack = 0.05) => ['x', 'y', 'z'].every(axis => point[axis] >= box.min[axis] - slack && point[axis] <= box.max[axis] + slack);
+
+test('P2-7 a real held case (gizmo stroke) is never measured from its transient pose; Esc cancels it and the ruler resumes on the committed pose', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors, rect } = await openMeasuring(browser);
+  const original = await page.evaluate(() => window.probe.casesJson());
+  assert.equal(await page.evaluate(() => window.probe.InteractionManager.hasProvisionalPose()), false, 'nothing is held at the start');
+
+  await page.click('#btn-editor-measure'); // off: a stroke on cargo needs the ordinary pointer
+  await holdCaseWithGizmo(page, rect, 'cargo-a');
+  const held = await heldState(page, 'cargo-a');
+  assert.equal(held.provisional, true, 'the production signal reports the held pose');
+  assert.ok(held.sceneY > held.committedY + 50, `the mesh is shown away from its committed pose (${held.sceneY} vs ${held.committedY})`);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), original, 'the held pose is scene-only: the Load Plan still stores the committed pose');
+
+  // Measurement Mode on top of the hold: cargo picks are refused, other surfaces still work.
+  await page.click('#btn-editor-measure');
+  await modeOn(page);
+  const heldPoint = await page.evaluate(() => window.probe.cargoPoint('cargo-a'));
+  await click(page, heldPoint);
+  await page.waitForFunction(() => /held case/i.test(window.probe.hint()));
+  assert.match(await page.evaluate(() => window.probe.hint()), /Place or cancel the held case before measuring on cargo/);
+  assert.equal(await count(page), 0, 'no Point A was taken from the transient pose');
+  await click(page, await point(page, ...GROUND_A));
+  await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+  await click(page, heldPoint);
+  await page.waitForFunction(() => /held case/i.test(window.probe.hint()));
+  assert.equal(await count(page), 0, 'and no measurement is saved against the held pose either');
+  assert.equal((await heldState(page, 'cargo-a')).provisional, true, 'refusing a pick never settles the hold');
+
+  // The first Esc belongs to Measurement Mode; the hold is untouched. The second cancels the hold.
+  await viewportKey(page, 'Escape');
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'false');
+  const afterFirst = await heldState(page, 'cargo-a');
+  assert.deepEqual([afterFirst.provisional, afterFirst.sceneY > afterFirst.committedY + 50], [true, true], 'leaving the mode does not touch the held case');
+  await viewportKey(page, 'Escape');
+  await page.waitForFunction(() => !window.probe.InteractionManager.hasProvisionalPose());
+  const cancelled = await heldState(page, 'cargo-a');
+  assert.ok(Math.abs(cancelled.sceneY - cancelled.committedY) < 1e-6, 'the mesh is back on its committed pose');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), original, 'cargo geometry is exactly what it was');
+  assert.equal(await count(page), 0);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a cancelled hold leaves no Undo step');
+
+  // Normal measurement creation resumes, anchored to the committed surface.
+  await page.click('#btn-editor-measure');
+  await modeOn(page);
+  await measure(page, await point(page, ...GROUND_A), await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
+  const [saved] = await page.evaluate(() => window.probe.measurements());
+  assert.deepEqual([saved.end.kind, saved.end.instanceId], ['cargo', 'cargo-a']);
+  const resolved = await page.evaluate(() => window.probe.resolved()[0]);
+  assert.equal(resolved.status, 'valid');
+  assert.ok(onBox(resolved.end, await cargoBounds(page, 'cargo-a')), `the point is on the committed cargo surface, not the transient pose: ${JSON.stringify(resolved.end)}`);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), original, 'measuring never changes the cargo');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'and adds no cargo Undo step');
+  assert.deepEqual(errors, []);
+});
+
+test('P2-7 a real held case placed with Enter while the ruler is on: picks resume, and cargo Undo/Redo keeps the measurement', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors, rect } = await openMeasuring(browser);
+  const original = await page.evaluate(() => window.probe.casesJson());
+  await page.click('#btn-editor-measure');
+  await holdCaseWithGizmo(page, rect, 'cargo-a');
+  await page.click('#btn-editor-measure');
+  await modeOn(page);
+  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
+  await page.waitForFunction(() => /held case/i.test(window.probe.hint()));
+  assert.equal(await count(page), 0);
+
+  // The Editor's own placement (Enter) settles the hold through its validated release; the mode stays on.
+  await viewportKey(page, 'Enter');
+  await page.waitForFunction(() => !window.probe.InteractionManager.hasProvisionalPose());
+  const settled = await heldState(page, 'cargo-a');
+  assert.equal(settled.mode, true, 'placing the case does not leave Measurement Mode');
+  assert.ok(Math.abs(settled.sceneY - settled.committedY) < 1e-6, 'the mesh and the committed pose agree again');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), original, 'the supported drop is the pose it started from');
+
+  await measure(page, await point(page, ...GROUND_A), await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
+  const [saved] = await page.evaluate(() => window.probe.measurements());
+  assert.deepEqual([saved.end.kind, saved.end.instanceId], ['cargo', 'cargo-a'], 'picking on the settled cargo works as usual');
+  assert.ok(onBox((await page.evaluate(() => window.probe.resolved()[0])).end, await cargoBounds(page, 'cargo-a')));
+
+  // Cargo Undo/Redo is a cargo operation: it never erases or resurrects the measurement.
+  const history = await page.evaluate(() => {
+    const store = window.probe.StateStore;
+    const undone = store.undo();
+    const afterUndo = { measurements: window.probe.measurements().length, status: window.probe.resolved()[0].status };
+    const redone = store.redo();
+    return { undone, afterUndo, redone, afterRedo: { measurements: window.probe.measurements().length, status: window.probe.resolved()[0].status } };
+  });
+  assert.equal(history.undone, true, 'placing the case was one cargo Undo step');
+  assert.deepEqual(history.afterUndo, { measurements: 1, status: 'valid' });
+  assert.deepEqual(history.afterRedo, { measurements: 1, status: 'valid' });
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), original);
+  assert.deepEqual(errors, []);
+});
+
+test('ID-1 cargo whose ID another item shares is never measured or resolved onto an arbitrary item, and nothing stored is rewritten', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openMeasuring(browser);
+  await measure(page, await page.evaluate(() => window.probe.cargoPoint('cargo-a')), await point(page, ...GROUND_B));
+  const stored = JSON.stringify(await page.evaluate(() => window.probe.measurements()));
+  assert.equal(await page.evaluate(() => window.probe.resolved()[0].status), 'valid');
+
+  // Damaged stored data: two cargo items carry the same ID (the app never creates this; it is kept, not repaired).
+  const setCargoBId = id => page.evaluate(newId => {
+    const q = window.probe;
+    const pack = q.PackLibrary.getById('fixture-pack');
+    q.StateStore.set({ packLibrary: [{ ...pack, cases: pack.cases.map((c, index) => (index === 1 ? { ...c, id: newId } : c)) }] }, { skipHistory: true });
+  }, id);
+  await setCargoBId('cargo-a');
+  await page.waitForFunction(() => window.probe.PackLibrary.getById('fixture-pack').cases.every(c => c.id === 'cargo-a'));
+  const resolved = await page.evaluate(() => window.probe.resolved()[0]);
+  assert.deepEqual([resolved.status, resolved.reason, resolved.distance], ['unresolved', 'cargo-ambiguous', null], 'the stored measurement is not attached to either item');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), stored, 'the stored measurement is untouched');
+
+  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
+  await page.waitForFunction(() => /shares its ID/i.test(window.probe.hint()));
+  assert.equal(await count(page), 1, 'a pick on that cargo is refused with its own message and creates nothing');
+  assert.match(await page.evaluate(() => document.getElementById('editor-measure-panel').innerText), /More than one cargo item in this Load Plan has the same ID/);
+  // Other surfaces still measure normally in the same plan.
+  await measure(page, await point(page, ...GROUND_A), await point(page, ...GROUND_B));
+  assert.equal(await count(page), 2);
+
+  // Restoring a unique ID resolves the original measurement again: nothing was lost.
+  await setCargoBId('cargo-b');
+  await page.waitForFunction(() => window.probe.resolved()[0].status === 'valid');
+  assert.deepEqual(errors, []);
+});
+
+test('P1-2 a truck wall picked with the real tool remembers the effective zones: equivalent trucks stay Valid, a real change needs review, restoring recovers', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openMeasuring(browser);
+  // The rear wall (x = 0) seen from the camera side: the ray leaves the truck through it.
+  await measure(page, await point(page, 0, 55, 0), await point(page, ...GROUND_B));
+  const [saved] = await page.evaluate(() => window.probe.measurements());
+  assert.deepEqual([saved.start.kind, saved.start.surface], ['space', 'wall-rear'], 'a real pick on the truck shell');
+  const zones = await page.evaluate(() => window.probe.M.getTruckSignature(window.probe.PackLibrary.getById('fixture-pack').truck,
+    window.probe.PackLibrary.getMeasurementZones(window.probe.PackLibrary.getById('fixture-pack'))).zones);
+  assert.deepEqual(saved.start.truck.zones, zones, 'the anchor remembers the effective usable zones of the truck it was placed on');
+  const status = () => page.evaluate(() => { const r = window.probe.resolved()[0]; return [r.status, r.reason, r.distance === null ? null : typeof r.distance]; });
+  assert.deepEqual(await status(), ['valid', null, 'number']);
+
+  const setTruck = shape => page.evaluate(next => {
+    const q = window.probe;
+    const pack = q.PackLibrary.getById('fixture-pack');
+    q.StateStore.set({ packLibrary: [{ ...pack, truck: { ...pack.truck, ...next } }] }, { skipHistory: true });
+  }, shape);
+  await setTruck({ shapeMode: 'frontBonus', shapeConfig: { bonusLength: 0, bonusHeight: 40 } });
+  assert.deepEqual(await status(), ['valid', null, 'number'], 'a Front Overhang of length 0 is the same physical truck');
+  await setTruck({ shapeMode: 'frontBonus', shapeConfig: { bonusLength: 100, bonusHeight: 40 } });
+  await page.waitForFunction(() => window.probe.resolved()[0].status === 'needs-review');
+  assert.deepEqual(await status(), ['needs-review', 'truck-changed', null], 'a real overhang changes the truck: no number is offered');
+  assert.match(await page.evaluate(() => document.getElementById('editor-measure-panel').innerText), /Needs review[\s\S]*truck changed after this point was placed/i);
+  assert.deepEqual((await page.evaluate(() => window.probe.measurements()))[0].start, saved.start, 'the stored anchor is never moved to the new wall');
+  await setTruck({ shapeMode: 'rect', shapeConfig: {} });
+  await page.waitForFunction(() => window.probe.resolved()[0].status === 'valid');
+  assert.deepEqual(await status(), ['valid', null, 'number'], 'restoring the original geometry recovers the measurement');
+  assert.deepEqual(errors, []);
+});
+
+// ============================================================================
+// Final correction 1: only physically present truck surfaces are measurable (real Editor)
+// ============================================================================
+const setTruckShape = (page, next) => page.evaluate(shape => {
+  const q = window.probe;
+  const pack = q.PackLibrary.getById('fixture-pack');
+  q.StateStore.set({ packLibrary: [{ ...pack, truck: { ...pack.truck, ...shape } }] }, { skipHistory: true });
+}, next);
+
+test('P1-3 parity: the faces the Measurement Tool can use are exactly the wall and ceiling planes the scene draws', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openMeasuring(browser);
+  const configs = {
+    'standard truck': { shapeMode: 'rect', shapeConfig: {} },
+    'Front Overhang': { shapeMode: 'frontBonus', shapeConfig: { bonusLength: 100, bonusHeight: 40 } },
+    'Front Overhang with a high deck': { shapeMode: 'frontBonus', shapeConfig: { bonusLength: 60, bonusHeight: 90 } },
+    'Front Overhang of length 0': { shapeMode: 'frontBonus', shapeConfig: { bonusLength: 0, bonusHeight: 40 } },
+    'Wheel Wells': { shapeMode: 'wheelWells', shapeConfig: { wellHeight: 30, wellWidth: 20, wellLength: 100, wellOffsetFromRear: 100 } },
+  };
+  for (const [name, shape] of Object.entries(configs)) {
+    await setTruckShape(page, shape);
+    const { rendered, model } = await page.evaluate(() => {
+      const q = window.probe;
+      const truck = q.SceneManager.getScene().getObjectByName('truck');
+      const rendered = [];
+      truck.traverse(obj => {
+        // Walls and ceiling are the double-sided planes; the floor plane is front-sided and the guides are boxes.
+        if (obj.isMesh && obj.geometry.type === 'PlaneGeometry' && obj.material.side === window.THREE.DoubleSide) {
+          obj.updateWorldMatrix(true, false);
+          const box = new window.THREE.Box3().setFromObject(obj);
+          rendered.push([box.min.x, box.min.y, box.min.z, box.max.x, box.max.y, box.max.z].map(v => v / 0.05));
+        }
+      });
+      const model = q.PackLibrary.getMeasurementShellFaces(q.PackLibrary.getById('fixture-pack')).map(f => [...f.min, ...f.max]);
+      return { rendered, model };
+    });
+    const same = (a, b) => a.every((v, i) => Math.abs(v - b[i]) < 1e-3);
+    assert.equal(rendered.length, model.length, `${name}: ${rendered.length} planes drawn, ${model.length} faces modelled`);
+    for (const plane of rendered) assert.ok(model.some(face => same(face, plane)), `${name}: drawn plane ${JSON.stringify(plane)} is a measurable face`);
+    for (const face of model) assert.ok(rendered.some(plane => same(face, plane)), `${name}: measurable face ${JSON.stringify(face)} is drawn`);
+  }
+  assert.deepEqual(errors, []);
+});
+
+test('P1-3 real pointer: a click in the Front Overhang cab void never creates a truck wall; the real wall above the deck does', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openMeasuring(browser);
+  await setTruckShape(page, { shapeMode: 'frontBonus', shapeConfig: { bonusLength: 100, bonusHeight: 40 } }); // main box 636 in, deck from x = 636 to 736 at y >= 40
+  await page.waitForFunction(() => window.probe.PackLibrary.getMeasurementShellFaces(window.probe.PackLibrary.getById('fixture-pack')).length === 8);
+  const placeFirst = async target => {
+    const before = await count(page);
+    await click(page, await point(page, ...target));
+    await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+    await click(page, await point(page, ...GROUND_B));
+    await page.waitForFunction(n => window.probe.measurements().length === n + 1, before);
+    const all = await page.evaluate(() => window.probe.measurements());
+    const record = all[all.length - 1];
+    await page.evaluate(id => window.probe.PackLibrary.deleteMeasurement('fixture-pack', id), record.id);
+    await page.waitForFunction(n => window.probe.measurements().length === n, before);
+    return record.start;
+  };
+
+  // Default view, looking down at the front: a ray under the deck meets the real deck floor, identified as such.
+  const deckFloor = await placeFirst([686, 20, 0]);
+  assert.deepEqual([deckFloor.kind, deckFloor.surface], ['floor', 'deck'], 'the first real surface the ray meets is the deck floor, not a wall');
+
+  // From behind the truck at deck height, the rays through the void pass beneath the deck to the open ground beyond.
+  await page.evaluate(() => {
+    const q = window.probe;
+    const camera = q.SceneManager.getCamera();
+    camera.position.set(-500 * 0.05, 60 * 0.05, 0);
+    q.SceneManager.getControls().target.set(400 * 0.05, 60 * 0.05, 0);
+    q.SceneManager.getControls().update();
+    camera.updateMatrixWorld(true);
+  });
+  await page.waitForTimeout(300);
+  for (const y of [1, 10, 20, 39]) {
+    const start = await placeFirst([736, y, 0]);
+    assert.equal(String(start.surface).startsWith('wall-') || start.surface === 'ceiling', false, `(736, ${y}, 0) in the cab void: no wall point was created (${JSON.stringify(start)})`);
+    // Whatever real surface the ray meets first is what the anchor says it is: the ground beyond the truck or,
+    // for a ray that dips onto the deck just before the void, the deck floor.
+    assert.ok(['ground', 'deck'].includes(start.surface), `(736, ${y}, 0): identified as the real surface it is (${JSON.stringify(start)})`);
+    if (y <= 20) assert.equal(start.surface, 'ground', `(736, ${y}, 0): the ray passes beneath the deck to the open ground beyond`);
+  }
+
+  // The real front wall above the deck is still picked from the same view, exactly where it is, and stays Valid.
+  const wall = await placeFirst([736, 75, 0]);
+  assert.deepEqual([wall.kind, wall.surface], ['space', 'wall-front']);
+  assert.ok(Math.abs(wall.position.x - 736) < 0.05 && Math.abs(wall.position.y - 75) < 0.5 && Math.abs(wall.position.z) < 0.5, JSON.stringify(wall.position));
+  assert.equal(wall.truck.zones.length, 2, 'it remembers the main box and the deck');
+  await click(page, await point(page, 736, 75, 0));
+  await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
+  await click(page, await point(page, ...GROUND_B));
+  await page.waitForFunction(() => window.probe.measurements().length === 1);
+  assert.equal(await page.evaluate(() => window.probe.resolved()[0].status), 'valid');
+  // Raising the deck past the point removes the wall there: the measurement needs review, nothing moves.
+  const stored = JSON.stringify(await page.evaluate(() => window.probe.measurements()));
+  await setTruckShape(page, { shapeMode: 'frontBonus', shapeConfig: { bonusLength: 100, bonusHeight: 80 } });
+  await page.waitForFunction(() => window.probe.resolved()[0].status === 'needs-review');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), stored, 'the stored anchor is untouched');
+  assert.deepEqual(errors, []);
 });

@@ -27,6 +27,15 @@
  *   - The list panel can be dragged by its header grip (the same 2x3 dot grip as the AutoPack
  *     Results panel) so it never has to cover content. The position is a per-session view
  *     convenience: it is not saved with the Load Plan and never touches cargo or camera.
+ *   - Cargo anchors are only ever picked from, and only ever resolved against, COMMITTED poses. While
+ *     the Editor owns a provisional pose (a live drag, a gizmo stroke or a held case) a pick that lands
+ *     on cargo is refused, because the mesh is displayed away from the pose the Load Plan stores. An
+ *     unfinished Point A, or an endpoint drag, is dropped if the committed pose of any cargo it refers
+ *     to changes (a nudge, a rotation): it was begun against a different arrangement. Camera moves
+ *     never do. Saved measurements simply follow their cargo.
+ *   - Cargo whose instance ID another item in the Load Plan shares (damaged stored data; the app never
+ *     creates it) is never picked and never resolved: the pick is refused with its own message and the
+ *     stored measurements on that ID stay, flagged Unresolved, until the IDs are unique again.
  *   - A background thumbnail capture is a read-only pixel readback, not an edit. It does not make
  *     measurements read-only and never cancels an unfinished measurement. AutoPack, Unpack, Truck
  *     Change and AutoPack/Truck Change previews do, and the message names the real cause.
@@ -45,9 +54,11 @@ import {
   defaultMeasurementName,
   describeMeasurementReason,
   formatMeasurementLength,
+  instanceIdentityKey,
   measureBetween,
   measurementStatusLabel,
   resolveAnchor,
+  resolveCargoPose,
 } from '../core/measurements.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -60,6 +71,10 @@ const STATUS_VISIBLE_MS = 2600;
 const NOTICE_INTERVAL_MS = 1400;
 const GROUND_MAX_DISTANCE_WORLD = 800;
 const INCH_TO_WORLD_FALLBACK = 0.05;
+const AXIS_NAMES = ['x', 'y', 'z'];
+// A ray hit within this distance of a shell face's edge still counts as on it (half the anchor tolerance,
+// so the point built from it always validates).
+const SHELL_FACE_SLACK_INCHES = 0.005;
 const LABEL_MARGIN_PX = 12;
 // Dimension-line geometry, in screen pixels. The hit radii are invisible and deliberately larger
 // than the drawn grips, so a precise drag is easy without making the grips look heavy.
@@ -74,6 +89,10 @@ const ENDPOINT_CLICK_ZONE_PX = 14;
 // The list panel drags like the AutoPack Results panel: 5px threshold, kept 10px inside its host.
 const PANEL_MARGIN_PX = 10;
 const PANEL_DRAG_THRESHOLD_PX = 5;
+const HELD_POSE_NOTICE = 'Place or cancel the held case before measuring on cargo.';
+const AMBIGUOUS_CARGO_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so it cannot be measured.';
+// Why a pick that landed on cargo was refused (set on the pick outcome); each has its own message.
+const PICK_REFUSAL_NOTICE = { provisional: HELD_POSE_NOTICE, ambiguous: AMBIGUOUS_CARGO_NOTICE };
 // Operations that only read pixels back never block or cancel measurement editing.
 const PASSIVE_OPERATION_KINDS = new Set(['capturingPreview']);
 const BLOCKED_CAUSE_TEXT = Object.freeze({
@@ -101,9 +120,9 @@ export function createMeasurementTool({
   let els = { button: null, panel: null, labels: null, viewport: null };
   let bound = false;
   let active = false;
-  let pending = null; // { anchor, world: THREE.Vector3 } — Point A of a measurement being created
+  let pending = null; // { anchor, world: THREE.Vector3, poseKey } — Point A of a measurement being created
   let selectedId = null; // the completed measurement that shows grips
-  let drag = null; // { id, which, pointerId, candidate, dirty } — an endpoint being repositioned
+  let drag = null; // { id, which, pointerId, candidate, dirty, poseKeys } — an endpoint being repositioned
   let hover = null; // latest surface pick under the pointer
   let hoverGrip = null; // 'start' | 'end' when the pointer is over the selected measurement's grip
   let hoverMeasurementId = null;
@@ -117,6 +136,7 @@ export function createMeasurementTool({
   let rafId = null;
   let records = [];
   let results = [];
+  let sceneIdsByKey = new Map(); // identity key -> the instance's own ID, for each unambiguous cargo item
   let lengthUnit = 'in';
   let statusMessage = '';
   let statusTimer = null;
@@ -161,7 +181,8 @@ export function createMeasurementTool({
   /**
    * Why measurements cannot be created, moved, renamed or deleted right now, or null. A transient
    * Results/Truck Change preview is named first; then the running operation. A passive thumbnail
-   * capture is neither: it only reads pixels, and a measurement write simply makes it retry.
+   * capture is neither: it only reads pixels. A measurement write replaces the Pack object, which
+   * aborts a capture that is mid-flight; the app re-requests it (app.js, 'pack-measurements').
    */
   function blockedReason() {
     if (CaseScene.isTransientPreview && CaseScene.isTransientPreview()) return 'preview';
@@ -208,12 +229,43 @@ export function createMeasurementTool({
     UIComponents.showToast(message, tone, { title: 'Measurements' });
   }
 
+  // The Editor holds a scene-only pose (live drag, gizmo stroke, held case): meshes are not where the Load Plan says.
+  const provisionalPoseActive = () => typeof els.hasProvisionalPose === 'function' && Boolean(els.hasProvisionalPose());
+
+  /**
+   * The one cargo instance an ID names in the Load Plan. When more than one carries it (damaged data is
+   * kept, never repaired) it is `ambiguous` and no instance is returned: an anchor is never attached to
+   * an arbitrary one of them.
+   */
+  function lookupInstance(pack, instanceId) {
+    const key = instanceIdentityKey(instanceId);
+    const matches = key === null ? [] : (pack.cases || []).filter(inst => inst && instanceIdentityKey(inst.id) === key);
+    return { instance: matches.length === 1 ? matches[0] : null, ambiguous: matches.length > 1 };
+  }
+
+  /**
+   * Fingerprint of the COMMITTED pose of the cargo an anchor refers to, as the pure resolver reads it.
+   * A gesture records it when it starts and is dropped if it changes. Null for anchors that are not on cargo.
+   */
+  function cargoPoseKey(pack, anchor) {
+    if (!pack || !anchor || anchor.kind !== 'cargo') return null;
+    const { instance, ambiguous } = lookupInstance(pack, anchor.instanceId);
+    if (ambiguous) return 'ambiguous';
+    if (!instance) return 'missing';
+    const pose = resolveCargoPose(instance, CaseLibrary.getById(instance.caseId));
+    if (!pose) return 'invalid';
+    return [pose.center.x, pose.center.y, pose.center.z, pose.rotation.x, pose.rotation.y, pose.rotation.z]
+      .map(value => value.toFixed(6)).join(',');
+  }
+
   // ==========================================================================
   // SECTION: PICKING (anything visible: cargo, truck floor, truck shell, ground)
   // ==========================================================================
   function describeCargoHit(hit, pack) {
     const instanceId = hit.object && hit.object.userData ? hit.object.userData.instanceId : null;
-    const instance = instanceId ? (pack.cases || []).find(inst => inst && inst.id === instanceId) : null;
+    const { instance, ambiguous } = lookupInstance(pack, instanceId);
+    // Visible cargo that cannot be told apart from another item: refuse it (see pick) instead of guessing.
+    if (ambiguous) return { ambiguous: true, fromCargo: true, distance: hit.distance };
     if (!instance) return null;
     const caseData = CaseLibrary.getById(instance.caseId);
     hit.object.updateWorldMatrix(true, false);
@@ -224,7 +276,7 @@ export function createMeasurementTool({
     const anchor = buildCargoAnchor({ instanceId, local, caseData }) ||
       buildSpaceAnchor({ surface: 'free', point: worldVectorToInches(hit.point) });
     if (!anchor) return null;
-    return { kind: anchor.kind, anchor, world: hit.point.clone(), distance: hit.distance };
+    return { kind: anchor.kind, anchor, world: hit.point.clone(), distance: hit.distance, fromCargo: true };
   }
 
   // Ray / axis-aligned box entry distance (slab method) in world units, or null.
@@ -279,50 +331,34 @@ export function createMeasurementTool({
   }
 
   /**
-   * Truck walls, ceiling and end planes. The shell is see-through, so the surface the user sees
-   * "behind" is the far side: the point where the ray leaves the truck envelope.
+   * Truck walls, ceiling and end planes that physically exist (PackLibrary.getMeasurementShellFaces). The
+   * shell is see-through, so the surface the user sees "behind" is the far side: of all the faces the ray
+   * leaves the truck through, the farthest one. A ray that crosses a region with no face (the Front
+   * Overhang cab void) finds none there and falls through to the floor or the ground.
    */
   function pickShell(ray, pack) {
-    const shell = PackLibrary.getMeasurementShell(pack);
-    if (!shell) return null;
+    const faces = PackLibrary.getMeasurementShellFaces(pack);
+    if (!faces.length) return null;
     const scale = toWorldScale();
-    const min = { x: shell.xMin * scale, y: shell.yMin * scale, z: shell.zMin * scale };
-    const max = { x: shell.xMax * scale, y: shell.yMax * scale, z: shell.zMax * scale };
-    let tNear = -Infinity;
-    let tFar = Infinity;
-    let exitAxis = null;
-    let exitSign = 0;
-    for (const axis of ['x', 'y', 'z']) {
-      const origin = ray.origin[axis];
+    const slack = SHELL_FACE_SLACK_INCHES * scale;
+    let best = null;
+    faces.forEach(face => {
+      const axis = AXIS_NAMES[face.axis];
       const direction = ray.direction[axis];
-      if (Math.abs(direction) < 1e-9) {
-        if (origin < min[axis] || origin > max[axis]) return null;
-        continue;
-      }
-      const t1 = (min[axis] - origin) / direction;
-      const t2 = (max[axis] - origin) / direction;
-      tNear = Math.max(tNear, Math.min(t1, t2));
-      const far = Math.max(t1, t2);
-      if (far < tFar) {
-        tFar = far;
-        exitAxis = axis;
-        exitSign = direction > 0 ? 1 : -1;
-      }
-    }
-    if (exitAxis === null || tNear > tFar || tFar <= 0) return null;
-    // +X is the cab end, +Z the truck's left; the bottom face is the floor, handled by pickFloor.
-    let surface = null;
-    if (exitAxis === 'x') surface = exitSign > 0 ? 'wall-front' : 'wall-rear';
-    else if (exitAxis === 'z') surface = exitSign > 0 ? 'wall-left' : 'wall-right';
-    else if (exitSign > 0) surface = 'ceiling';
-    if (!surface) return null;
-    const world = new THREE.Vector3(
-      ray.origin.x + ray.direction.x * tFar,
-      ray.origin.y + ray.direction.y * tFar,
-      ray.origin.z + ray.direction.z * tFar
-    );
-    const anchor = buildSpaceAnchor({ surface, point: worldVectorToInches(world), truck: pack.truck });
-    return anchor ? { kind: 'space', anchor, world, distance: tFar } : null;
+      // Only faces the ray leaves through: a near wall is seen through, never picked.
+      if (direction * face.outward < 1e-9) return;
+      const t = (face.min[face.axis] * scale - ray.origin[axis]) / direction;
+      if (!(t > 0) || (best && best.t >= t)) return;
+      const hit = [ray.origin.x + ray.direction.x * t, ray.origin.y + ray.direction.y * t, ray.origin.z + ray.direction.z * t];
+      if (!hit.every((value, i) => value >= face.min[i] * scale - slack && value <= face.max[i] * scale + slack)) return;
+      best = { face, t, hit };
+    });
+    if (!best) return null;
+    const world = new THREE.Vector3(best.hit[0], best.hit[1], best.hit[2]);
+    // The anchor remembers the truck AND its effective usable zones, so a configuration change within one
+    // shape mode (Front Overhang length, Wheel Well size) is recognised later.
+    const anchor = buildSpaceAnchor({ surface: best.face.surface, point: worldVectorToInches(world), truck: pack.truck, zones: PackLibrary.getMeasurementZones(pack) });
+    return anchor ? { kind: 'space', anchor, world, distance: best.t } : null;
   }
 
   /** The ground plane anywhere, including outside the truck (staging area, yard). Never the sky. */
@@ -335,7 +371,12 @@ export function createMeasurementTool({
     return anchor ? { kind: 'space', anchor, world, distance: t } : null;
   }
 
-  function pick(clientX, clientY) {
+  /**
+   * The surface under a screen point, or null. `outcome.blocked` is set to 'provisional' when the nearest
+   * surface is cargo while the Editor holds a scene-only pose, and to 'ambiguous' when it is cargo whose
+   * ID another item shares: nothing is picked, and nothing behind that cargo is substituted for it.
+   */
+  function pick(clientX, clientY, outcome = null) {
     const camera = SceneManager.getCamera();
     const canvas = getCanvas();
     const pack = currentPack();
@@ -350,6 +391,14 @@ export function createMeasurementTool({
     if (cargoHit) best = describeCargoHit(cargoHit, pack);
     const floorHit = pickFloor(raycaster.ray, pack);
     if (floorHit && (!best || floorHit.distance < best.distance)) best = floorHit;
+    if (best && best.fromCargo && provisionalPoseActive()) {
+      if (outcome) outcome.blocked = 'provisional';
+      return null;
+    }
+    if (best && best.ambiguous) {
+      if (outcome) outcome.blocked = 'ambiguous';
+      return null;
+    }
     // Cargo and floor win; then the see-through truck shell; then the ground anywhere.
     return best || pickShell(raycaster.ray, pack) || pickGround(raycaster.ray);
   }
@@ -364,7 +413,9 @@ export function createMeasurementTool({
    */
   function liveAnchorWorld(anchor, committedPoint, target) {
     if (anchor.kind === 'cargo') {
-      const group = CaseScene.getObject(anchor.instanceId);
+      // The scene keys cargo by the instance's own ID; an anchor may carry the same identity in another
+      // spelling (a trimmed-equal ID), and an ID shared by several instances maps to none.
+      const group = CaseScene.getObject(anchor.instanceId) || CaseScene.getObject(sceneIdsByKey.get(instanceIdentityKey(anchor.instanceId)));
       const local = group ? cargoAnchorLocal(anchor) : null;
       if (group && local) {
         inchesToWorldVector(local, target);
@@ -940,14 +991,15 @@ export function createMeasurementTool({
       notice(`Limit of ${MAX_MEASUREMENTS_PER_PACK} measurements reached. Delete one to add another.`, 'warning');
       return;
     }
-    const picked = pick(clientX, clientY);
+    const pickOutcome = {};
+    const picked = pick(clientX, clientY, pickOutcome);
     hover = picked;
     if (!picked) {
-      notice('Nothing to measure there. Click cargo, the truck or the ground.');
+      notice(PICK_REFUSAL_NOTICE[pickOutcome.blocked] || 'Nothing to measure there. Click cargo, the truck or the ground.');
       return;
     }
     if (!pending) {
-      pending = { anchor: picked.anchor, world: picked.world.clone() };
+      pending = { anchor: picked.anchor, world: picked.world.clone(), poseKey: cargoPoseKey(pack, picked.anchor) };
       selectedId = null;
       setStatus('', { sticky: true });
       return;
@@ -1000,7 +1052,11 @@ export function createMeasurementTool({
   function beginDrag(which, ev) {
     const record = records.find(item => item.id === selectedId);
     if (!record) return;
-    drag = { id: record.id, which, pointerId: ev.pointerId, candidate: null, dirty: false, startX: ev.clientX, startY: ev.clientY };
+    const pack = currentPack();
+    drag = {
+      id: record.id, which, pointerId: ev.pointerId, candidate: null, dirty: false, startX: ev.clientX, startY: ev.clientY,
+      poseKeys: [cargoPoseKey(pack, record.start), cargoPoseKey(pack, record.end)],
+    };
     lastClient = { x: ev.clientX, y: ev.clientY };
     press = null;
     const canvas = getCanvas();
@@ -1037,7 +1093,8 @@ export function createMeasurementTool({
       return;
     }
     // The release position decides: resolve it freshly instead of trusting the last frame's pick.
-    commitMove(finished, blockedReason() ? null : pick(ev.clientX, ev.clientY));
+    const outcome = {};
+    commitMove(finished, blockedReason() ? null : pick(ev.clientX, ev.clientY, outcome), outcome.blocked);
   }
 
   function onDragCancel(ev) {
@@ -1073,7 +1130,7 @@ export function createMeasurementTool({
   }
 
   /** Persist a finished drag as one measurement-only edit, or leave the measurement untouched. */
-  function commitMove(finished, picked) {
+  function commitMove(finished, picked, blocked = null) {
     const pack = currentPack();
     const index = records.findIndex(item => item.id === finished.id);
     const record = records[index];
@@ -1088,7 +1145,7 @@ export function createMeasurementTool({
       return;
     }
     if (!picked) {
-      notice('Nothing to measure there. The point was left where it was.');
+      notice(`${PICK_REFUSAL_NOTICE[blocked] || 'Nothing to measure there.'} The point was left where it was.`);
       return;
     }
     const moving = finished.which === 'start' ? result.start : result.end;
@@ -1520,6 +1577,11 @@ export function createMeasurementTool({
     }
     records = PackLibrary.getMeasurements(pack);
     results = PackLibrary.resolveMeasurements(pack);
+    sceneIdsByKey = new Map();
+    (pack.cases || []).forEach(inst => {
+      const key = inst ? instanceIdentityKey(inst.id) : null;
+      if (key !== null) sceneIdsByKey.set(key, sceneIdsByKey.has(key) ? null : inst.id);
+    });
     if (selectedId && !records.some(record => record.id === selectedId)) selectedId = null;
     if (renamingId && !records.some(record => record.id === renamingId)) renamingId = null;
     if (pending && !pendingStillValid(pack)) {
@@ -1529,6 +1591,9 @@ export function createMeasurementTool({
       const index = records.findIndex(record => record.id === drag.id);
       if (index === -1 || !results[index] || results[index].status !== MEASUREMENT_STATUS.VALID) {
         cancelDrag('The measurement changed, so the move was cancelled.');
+      } else {
+        const poseKeys = [cargoPoseKey(pack, records[index].start), cargoPoseKey(pack, records[index].end)];
+        if (poseKeys.some((key, i) => key !== drag.poseKeys[i])) cancelDrag('The cargo changed, so the move was cancelled.');
       }
     }
     if (active) renderPanel();
@@ -1536,15 +1601,17 @@ export function createMeasurementTool({
 
   function pendingStillValid(pack) {
     const anchor = pending.anchor;
-    const instance = anchor.kind === 'cargo'
-      ? (pack.cases || []).find(inst => inst && inst.id === anchor.instanceId)
-      : null;
-    return resolveAnchor(anchor, {
-      instance,
-      caseData: instance ? CaseLibrary.getById(instance.caseId) : null,
+    const lookup = anchor.kind === 'cargo' ? lookupInstance(pack, anchor.instanceId) : null;
+    const resolution = resolveAnchor(anchor, {
+      getInstance: () => (lookup ? lookup.instance : null),
+      getCase: id => CaseLibrary.getById(id),
+      isInstanceAmbiguous: () => Boolean(lookup && lookup.ambiguous),
       floors: PackLibrary.getMeasurementFloors(pack),
       truck: pack.truck,
-    }).status === MEASUREMENT_STATUS.VALID;
+      zones: PackLibrary.getMeasurementZones(pack),
+    });
+    // Valid is not enough: the cargo must also still be posed as it was when Point A was picked on it.
+    return resolution.status === MEASUREMENT_STATUS.VALID && cargoPoseKey(pack, anchor) === pending.poseKey;
   }
 
   /** Show or hide the ruler per Settings. Hiding it while active exits the mode and cancels any gesture. */
@@ -1577,6 +1644,8 @@ export function createMeasurementTool({
     }
   }
 
+  // Leaves the mode and removes the overlay. The two store subscriptions registered once by bind() belong
+  // to the application-lifetime singleton (it is created once in app.js and never torn down), so they stay.
   function destroy() {
     exit();
     if (svg && svg.parentNode) svg.parentNode.removeChild(svg);

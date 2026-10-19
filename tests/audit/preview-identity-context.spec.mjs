@@ -72,6 +72,7 @@ import { createOperationLifecycle } from '/src/core/operation-lifecycle.js';
 import { TrailerPresets } from '/src/data/trailer-presets.js';
 import { createSceneRuntime } from '/src/editor/scene-runtime.js';
 import { createTrailerGeometry } from '/src/editor/trailer-geometry.js';
+import { createMeasurementTool } from '/src/editor/measurement-tool.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from '/src/screens/editor-screen.js';
 import { createTruckChangeController } from '/src/ui/truck-change-controller.js';
 import * as CoreUtils from '/src/core/utils/index.js';
@@ -84,6 +85,7 @@ import * as CorePackLibrary from '/src/services/pack-library.js';
 import { createAutoPackEngine } from '/src/services/autopack-engine.js';
 import * as PreferencesManager from '/src/services/preferences-manager.js';
 import * as ImportExport from '/src/services/import-export.js';
+import * as Measurements from '/src/core/measurements.js';
 import { createImportExportScreen } from '/src/screens/import-export-screen.js';
 
 const APP_SUBSCRIBER = ${JSON.stringify(appSubscriber)};
@@ -153,7 +155,9 @@ const AppShell = createAppShell({ StateStore, PackLibrary, Utils, beforeNavigate
 SceneManager = createSceneRuntime({ Utils, UIComponents, PreferencesManager, TrailerGeometry, StateStore });
 const CaseScene = createCaseScene({ SceneManager, CaseLibrary, CategoryService, PackLibrary, StateStore, TrailerGeometry, Utils, PreferencesManager });
 const OperationLifecycle = createOperationLifecycle();
-const InteractionManager = createInteractionManager({ SceneManager, CaseScene, StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, OperationLifecycle });
+// The real Measurement Tool (overlay, panel, pointer ownership) is part of this Editor, as in the app.
+const MeasurementTool = createMeasurementTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, PreferencesManager, UIComponents, OperationLifecycle });
+const InteractionManager = createInteractionManager({ SceneManager, CaseScene, StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, OperationLifecycle, MeasurementTool });
 
 ${previewVersionCode}
 ${captureCode}
@@ -225,7 +229,7 @@ const TruckChangeController = createTruckChangeController({ PackLibrary, CaseLib
 const EditorUI = createEditorScreen({
   StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, Utils, TrailerGeometry, CategoryService,
   AutoPackEngine, ExportService, SystemOverlay: { show() {}, hide() {} }, TrailerPresets, AppShell, SceneManager,
-  CaseScene, InteractionManager, TruckChangeController, OperationLifecycle,
+  CaseScene, InteractionManager, TruckChangeController, OperationLifecycle, MeasurementTool,
 });
 EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 const PacksUI = createPacksScreen({
@@ -300,7 +304,7 @@ EditorUI.render();
 
 const livePack = () => PackLibrary.getById(StateStore.get('currentPackId'));
 window.probe = {
-  EditorUI, CaseScene, SceneManager, InteractionManager, PackLibrary, CoreStorage, CaseLibrary, CategoryService, Normalizer, PreferencesManager, AutoPackEngine, AutoPackPreviewScheduler, ExportService, PacksUI,
+  EditorUI, CaseScene, SceneManager, InteractionManager, PackLibrary, Measurements, CoreStorage, CaseLibrary, CategoryService, Normalizer, PreferencesManager, AutoPackEngine, AutoPackPreviewScheduler, ExportService, PacksUI,
   previewVersion: PREVIEW_RENDER_VERSION,
   renderPreview: productionRenderPreviewToDataUrl,
   renderLegacy: productionRenderCameraToDataUrl,
@@ -354,6 +358,18 @@ window.probe = {
     }).map(inst => inst.id);
   },
   unpackButton: () => document.getElementById('btn-unpack').textContent.trim(),
+  // Screen point (client px) of a point given in Load Plan inches, and the Measurement overlay's drawn state.
+  screenOf(x, y, z) {
+    const rect = SceneManager.getRenderer().domElement.getBoundingClientRect();
+    const v = SceneManager.vecInchesToWorld({ x, y, z }).project(SceneManager.getCamera());
+    return { x: rect.left + ((v.x + 1) / 2) * rect.width, y: rect.top + ((1 - v.y) / 2) * rect.height };
+  },
+  overlay: () => ({
+    mode: document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true',
+    segments: document.querySelectorAll('.tp3d-measure-svg__segment').length,
+    labels: [...document.querySelectorAll('#editor-measure-labels *')].filter(el => el.textContent.trim()).length,
+    listed: document.querySelectorAll('.tp3d-measure-row').length,
+  }),
   // ── Export Integrity A ────────────────────────────────────────────────
   downloads: null,
   pdfs: [],
@@ -2971,6 +2987,312 @@ test('EXPORT-A real Chromium visual export identity, authority and fidelity', { 
     });
 
     assert.deepEqual(errors, [], 'no uncaught error or unhandled rejection');
+  } finally {
+    await browser.close();
+  }
+});
+
+
+// ============================================================================
+// Measurement Tool V1 audit remediation (P2-8): a measurement edit replaces the Pack object. The
+// automatic thumbnail capture must survive that, retry when it did not, and never run needlessly.
+// Real scheduler, real capture, real render subscriber.
+// ============================================================================
+const staleThumbnail = (page, id = A) => page.evaluate(id => {
+  const q = window.probe;
+  q.PackLibrary.updatePreview(id, {
+    thumbnail: null, thumbnailUpdatedAt: null, thumbnailSource: null,
+    thumbnailVisualSignature: 'stale', thumbnailViewSignature: 'stale',
+  }, { skipHistory: true });
+}, id);
+const addGroundMeasurement = (page, length = 40, id = A) => page.evaluate(([id, length]) => {
+  const q = window.probe;
+  const point = x => q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z: 0 } });
+  return q.PackLibrary.addMeasurement(id, { start: point(0), end: point(length) }).ok;
+}, [id, length]);
+const thumbnailIsCurrent = (page, id = A) => page.evaluate(id => {
+  const q = window.probe;
+  const pack = q.PackLibrary.getById(id);
+  return Boolean(pack.thumbnail) && pack.thumbnailVisualSignature === q.CaseScene.getVisualSignature(pack);
+}, id);
+
+test('P2-8 a measurement edit keeps the preview and export authority bound to the new Pack object', { timeout: 120000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page);
+    await settlePreview(page);
+    const before = await page.evaluate(() => Boolean(window.probe.EditorUI.getPreviewScene()));
+    assert.equal(before, true, 'fixture: the Editor holds preview authority for the open Pack');
+
+    assert.equal(await addGroundMeasurement(page), true);
+    const after = await page.evaluate(() => {
+      const q = window.probe;
+      const scene = q.EditorUI.getPreviewScene();
+      return { bound: Boolean(scene) && scene.pack === q.PackLibrary.getById(q.packId), exportable: Boolean(q.EditorUI.getExportScene()) };
+    });
+    assert.equal(after.bound, true, 'authority follows the replaced Pack object (cargo, truck and visuals are the same)');
+    assert.equal(after.exportable, true, 'Screenshot and PDF still have an export scene after a measurement edit');
+    const manual = await page.evaluate(() => window.probe.ExportService.capturePackPreview(window.probe.packId, { source: 'manual' }));
+    assert.equal(manual, true, 'a manual preview capture works straight after a measurement edit');
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('P2-8 an automatic capture invalidated by a measurement edit is retried, and a current thumbnail is never recaptured', { timeout: 180000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page);
+    await settlePreview(page);
+    assert.equal(await thumbnailIsCurrent(page), false, 'fixture: no image yet');
+
+    // Make the preview stale, then let the REAL scheduler start a capture and edit a measurement while
+    // its two-frame wait is open: the Pack object is replaced, so that attempt must abort.
+    await staleThumbnail(page);
+    await page.evaluate(() => {
+      const q = window.probe;
+      q.mark();
+      q.raceEdit = null;
+      const off = q.OperationLifecycle.subscribe(state => {
+        if (!state.busy || state.kind !== 'capturingPreview') return;
+        off();
+        requestAnimationFrame(() => {
+          const point = x => q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z: 0 } });
+          q.raceEdit = q.PackLibrary.addMeasurement(q.packId, { start: point(0), end: point(55) }).ok;
+        });
+      });
+      q.AutoPackPreviewScheduler.schedule();
+    });
+    await page.waitForFunction(() => window.probe.raceEdit === true, null, { timeout: 15000 });
+    await settlePreview(page);
+    await page.waitForFunction(() => {
+      const q = window.probe;
+      const pack = q.PackLibrary.getById(q.packId);
+      return Boolean(pack.thumbnail) && pack.thumbnailVisualSignature === q.CaseScene.getVisualSignature(pack);
+    }, null, { timeout: 20000 });
+    const log = await page.evaluate(() => ({
+      requests: window.probe.log.filter(e => e.type === 'request').length,
+      writes: window.probe.log.filter(e => e.type === 'write').length,
+      measurements: window.probe.PackLibrary.getMeasurements(window.probe.packId).length,
+    }));
+    assert.equal(log.measurements, 1, 'the measurement edit itself succeeded during the capture');
+    assert.ok(log.requests >= 2, `the invalidated attempt was followed by a retry (${log.requests} request(s))`);
+    assert.equal(log.writes, 1, 'exactly one thumbnail was written');
+
+    // A current thumbnail is left alone: further measurement edits request nothing.
+    await page.evaluate(() => window.probe.mark());
+    assert.equal(await addGroundMeasurement(page, 70), true);
+    await page.waitForTimeout(900);
+    await settlePreview(page);
+    const quiet = await page.evaluate(() => ({
+      requests: window.probe.log.filter(e => e.type === 'request').length,
+      writes: window.probe.log.filter(e => e.type === 'write').length,
+    }));
+    assert.deepEqual(quiet, { requests: 0, writes: 0 }, 'no recapture for a valid, current thumbnail');
+    assert.equal(await thumbnailIsCurrent(page), true);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+
+// ============================================================================
+// Measurement Tool V1 (second audit): the whole measurement lifecycle, driven through the REAL tool
+// (overlay, panel, pointer gestures) inside the real Editor with the production Screenshot/PDF/preview
+// code, must leave export and thumbnail authority intact and put no measurement graphics into any image.
+// ============================================================================
+const clickAt = async (page, p) => { await page.mouse.move(p.x, p.y); await page.mouse.down(); await page.mouse.up(); };
+const measurementsOf = (page, id = B) => page.evaluate(id => window.probe.PackLibrary.getMeasurements(id), id);
+const FLOOR_P = [30, 0, -30];
+const FLOOR_Q = [90, 0, 25];
+const FLOOR_R = [30, 0, 30];
+
+// One Screenshot and one PDF, each compared with an independent render of the same camera: exported pixels
+// equal the display pipeline, so nothing but the 3D scene (never an overlay, label or panel) is in an image.
+const exportProof = page => page.evaluate(async () => {
+  const q = window.probe;
+  const scene = q.SceneManager.getScene();
+  const theme = scene.background;
+  try {
+    const expected = q.referenceDisplay(q.SceneManager.getCamera(), 1920, 1080);
+    const before = q.downloads.length;
+    const frames = await q.captureEncodes(() => q.ExportService.captureScreenshot());
+    const frame = frames.find(f => f.width === 1920 && f.height === 1080);
+    const shot = { exported: Boolean(frame), difference: frame ? q.maxDifference(frame.pixels, expected) : null, downloads: q.downloads.length - before };
+    q.mark();
+    let doc = null;
+    const pdfFrames = await q.captureEncodes(() => { doc = q.exportPdf(); });
+    const views = q.exportViews();
+    scene.background = new THREE.Color('#ffffff'); // the print background the PDF views are rendered on
+    const differences = views.map((view, i) => (pdfFrames[i] ? q.maxDifference(pdfFrames[i].pixels, q.referenceDisplay(view.camera, view.width, view.height)) : null));
+    return {
+      shot, pdf: { saved: Boolean(doc && doc.saved), views: views.length, differences },
+      pdfText: doc ? doc.texts.map(entry => entry.value).filter(value => !/\d{1,2}[/:.-]\d{1,2}/.test(String(value))) : null,
+    };
+  } finally {
+    scene.background = theme;
+    q.SceneManager.render();
+  }
+});
+const expectCleanExports = (proof, label) => {
+  assert.deepEqual([proof.shot.exported, proof.shot.downloads, proof.shot.difference], [true, 1, 0], `${label}: Screenshot exports, equals the display pipeline`);
+  assert.deepEqual([proof.pdf.saved, proof.pdf.views], [true, 3], `${label}: PDF saved with its three views`);
+  assert.deepEqual(proof.pdf.differences, [0, 0, 0], `${label}: PDF views equal the display pipeline`);
+};
+
+test('EXPORT-M Screenshot, PDF and thumbnail authority hold through create, move and delete with the real overlay on', { timeout: 300000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page, B);
+    await settleExport(page);
+    await installAttempts(page);
+    await page.waitForFunction(() => window.probe.SceneManager.getCamera());
+    const control = await exportProof(page);
+    expectCleanExports(control, 'control, no measurements');
+    const controlThumbnail = await page.evaluate(() => window.probe.ExportService.capturePackPreview(window.probe.otherPackId, { source: 'manual' }));
+    assert.equal(controlThumbnail, true);
+    const baselineThumbnail = await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.otherPackId).thumbnail);
+
+    // CREATE through the real tool: Measurement Mode, two clicks on the truck floor.
+    const rect = await page.evaluate(() => { const r = document.querySelector('#viewport canvas').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; });
+    await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h - 30);
+    await page.click('#btn-editor-measure');
+    await page.waitForFunction(() => window.probe.overlay().mode);
+    await clickAt(page, await page.evaluate(p => window.probe.screenOf(...p), FLOOR_P));
+    await clickAt(page, await page.evaluate(p => window.probe.screenOf(...p), FLOOR_Q));
+    await page.waitForFunction(id => window.probe.PackLibrary.getMeasurements(id).length === 1, B);
+    await page.waitForFunction(() => window.probe.overlay().segments >= 1 && window.probe.overlay().labels >= 1);
+    const drawn = await page.evaluate(() => window.probe.overlay());
+    assert.ok(drawn.segments >= 1 && drawn.labels >= 1 && drawn.listed === 1, `fixture: the overlay is really drawn over the canvas (${JSON.stringify(drawn)})`);
+    await settleExport(page);
+    const afterCreate = await page.evaluate(() => {
+      const q = window.probe;
+      const scene = q.EditorUI.getPreviewScene();
+      return { bound: Boolean(scene) && scene.pack === q.PackLibrary.getById(q.otherPackId), exportable: Boolean(q.EditorUI.getExportScene()) };
+    });
+    assert.deepEqual(afterCreate, { bound: true, exportable: true }, 'creating a measurement keeps preview and export authority bound to the new Pack object');
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'after create');
+    const created = await exportProof(page);
+    expectCleanExports(created, 'after create, overlay drawn');
+    assert.deepEqual(created.pdfText, control.pdfText, 'the existing PDF content is unchanged by a measurement');
+
+    // Manual thumbnail capture works and is pixel-identical to the one taken without measurements.
+    const manual = await page.evaluate(() => window.probe.ExportService.capturePackPreview(window.probe.otherPackId, { source: 'manual' }));
+    assert.equal(manual, true, 'manual thumbnail capture works with a measurement and the overlay');
+    assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.otherPackId).thumbnail), baselineThumbnail,
+      'the thumbnail carries no measurement graphics');
+
+    // MOVE: drag the end grip to another floor point (a real endpoint drag).
+    await page.waitForFunction(() => {
+      const grips = document.querySelector('.tp3d-measure-svg__segment.is-selected .tp3d-measure-svg__grips');
+      return !!grips && (grips.getAttribute('d') || '').length > 5;
+    });
+    const grip = await page.evaluate(p => window.probe.screenOf(...p), FLOOR_Q);
+    const target = await page.evaluate(p => window.probe.screenOf(...p), FLOOR_R);
+    await page.mouse.move(grip.x + 6, grip.y + 6);
+    await page.mouse.move(grip.x, grip.y);
+    await page.waitForFunction(() => document.querySelector('#viewport canvas').style.cursor === 'grab');
+    await page.mouse.down();
+    await page.mouse.move((grip.x + target.x) / 2, (grip.y + target.y) / 2, { steps: 6 });
+    await page.mouse.move(target.x, target.y, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForFunction(() => {
+      const [m] = window.probe.PackLibrary.getMeasurements(window.probe.otherPackId);
+      return m && Math.abs(m.end.position.z - 30) < 1.5;
+    });
+    await settleExport(page);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'after move');
+    const moved = await exportProof(page);
+    expectCleanExports(moved, 'after move, overlay drawn');
+    assert.deepEqual(moved.pdfText, control.pdfText);
+
+    // Billing gates are exactly what they were: a failed billing state still refuses the PDF, never the Screenshot.
+    const gated = await page.evaluate(() => {
+      const q = window.probe;
+      const billing = window.__TP3D_BILLING;
+      window.__TP3D_BILLING = { getBillingState: () => ({ ok: false }) };
+      try { return q.attemptExports(); } finally { window.__TP3D_BILLING = billing; }
+    });
+    assert.deepEqual([gated.views, gated.downloads, gated.saved], [1, 1, null], 'billing unavailable: Screenshot only, no PDF');
+    assert.deepEqual(gated.toasts, [['Screenshot download started', 'success'], ['Billing unavailable. Please try again.', 'warning']]);
+
+    // DELETE through the real panel.
+    const [record] = await measurementsOf(page);
+    await page.click(`[data-measurement-id="${record.id}"] .tp3d-measure-row__delete`);
+    await page.waitForFunction(id => window.probe.PackLibrary.getMeasurements(id).length === 0, B);
+    await settleExport(page);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'after delete');
+    expectCleanExports(await exportProof(page), 'after delete');
+
+    // (The interrupted automatic capture and the never-recapture rule are pinned by the two P2-8 tests above.)
+    await page.click('#btn-editor-measure'); // leave Measurement Mode
+    assert.equal(await page.evaluate(() => window.probe.overlay().mode), false);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('EXPORT-M a measurement edit never lets a stale scene export after a Load Plan or workspace change', { timeout: 240000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page, B);
+    await settleExport(page);
+    await installAttempts(page);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'control');
+    const edit = (id, length) => page.evaluate(([id, length]) => {
+      const q = window.probe;
+      const a = q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x: 0, y: 0, z: 0 } });
+      const b = q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x: length, y: 0, z: 0 } });
+      return q.PackLibrary.addMeasurement(id, { start: a, end: b }).ok;
+    }, [id, length]);
+
+    // An edit of ANOTHER Load Plan's measurements while this one is open does not touch this scene's authority.
+    assert.equal(await edit(A, 33), true);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'another plan edited');
+    assert.equal(await page.evaluate(() => window.probe.EditorUI.getPreviewScene().pack === window.probe.PackLibrary.getById(window.probe.otherPackId)), true);
+
+    // A workspace change followed by a measurement edit must not resurrect the old scene's authority.
+    const rescoped = await page.evaluate(([id, length]) => {
+      const q = window.probe;
+      const a = q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x: 0, y: 0, z: 0 } });
+      const b = q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x: length, y: 0, z: 0 } });
+      q.CoreStorage.setWorkspaceScope('fixture-b');
+      const away = q.attemptExports();
+      const wrote = q.PackLibrary.addMeasurement(id, { start: a, end: b }).ok;
+      const afterEdit = q.attemptExports();
+      q.CoreStorage.setWorkspaceScope('fixture-a');
+      const back = q.attemptExports();
+      q.EditorUI.render();
+      return { away, wrote, afterEdit, back, rerendered: q.attemptExports() };
+    }, [B, 48]);
+    expectRejected(rescoped.away, STILL_CHANGING, 'workspace replaced');
+    assert.equal(rescoped.wrote, true);
+    expectRejected(rescoped.afterEdit, STILL_CHANGING, 'a measurement edit in a replaced workspace does not rebind the old scene');
+    expectRejected(rescoped.back, STILL_CHANGING, 'A→B→A with a measurement edit in between: still the stale scene');
+    expectAllowed(rescoped.rerendered, 'freshly rendered current scope');
+
+    // A Load Plan change: navigating to the other plan exports only that plan's scene.
+    await openPack(page, A);
+    await settleExport(page);
+    const switched = await page.evaluate(() => {
+      const q = window.probe;
+      const result = q.attemptExports();
+      return { result, scenePack: q.EditorUI.getExportScene()?.pack?.id ?? null, current: q.StateStore.get('currentPackId') };
+    });
+    expectAllowed(switched.result, 'other Load Plan after measurement edits');
+    assert.deepEqual([switched.scenePack, switched.current], [A, A]);
+    assert.deepEqual(errors, []);
   } finally {
     await browser.close();
   }

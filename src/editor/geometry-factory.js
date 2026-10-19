@@ -6,6 +6,8 @@
  * @author Truck Packer 3D Team
  */
 
+import { CARGO_CYLINDER_SEGMENTS } from '../core/measurements.js';
+
 /**
  * @typedef {{ length?: number, width?: number, height?: number }} CaseDims
  */
@@ -26,7 +28,7 @@ export function createCaseGeometry(caseData, toWorld) {
     if (shape === 'cylinder' || shape === 'drum') {
         // For cylinders: width and height define the circular cross-section
         const radius = Math.min(wW, hW) / 2;
-        const geo = new THREE.CylinderGeometry(radius, radius, lW, 24);
+        const geo = new THREE.CylinderGeometry(radius, radius, lW, CARGO_CYLINDER_SEGMENTS);
         // Rotate to lay on side (length along X axis, matching box orientation)
         geo.rotateZ(Math.PI / 2);
         return geo;

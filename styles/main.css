@@ -4475,6 +4475,12 @@ body.tp3d-shared-modal-lock #app .nav {
   pointer-events: none;
 }
 
+/* Saved measurements stay drawn (inert) above the callout layer. While a callout is being written its editor card is
+   the topmost surface in the viewport, so the lines and labels step beneath it instead of crossing its fields. */
+.canvas-wrap:has(.tp3d-annot-editor:not([hidden])) .tp3d-measure-labels {
+  z-index: 3;
+}
+
 .tp3d-measure-svg {
   position: absolute;
   inset: 0;
@@ -4960,6 +4966,12 @@ body.tp3d-shared-modal-lock #app .nav {
   inset: 0;
   z-index: 4;
   overflow: hidden;
+  pointer-events: none;
+}
+
+/* While Measurement Mode owns the scene, saved callouts stay drawn as a view only: nothing in the layer takes
+   a click, so it can never intercept a gesture meant for the active tool. */
+.tp3d-annot-layer.is-view-only * {
   pointer-events: none;
 }
 
@@ -5668,7 +5680,9 @@ body.tp3d-shared-modal-lock #app .nav {
   flex-direction: column;
   width: 300px;
   max-width: calc(100% - 70px);
-  max-height: min(520px, calc(100% - 140px));
+
+  /* The limit is set only while the AutoPack Results card sits below the panel; it can shrink the panel, never grow it. */
+  max-height: min(520px, calc(100% - 140px), var(--tp3d-annot-panel-limit, 520px));
   overflow: hidden;
   border: 1px solid var(--border-subtle);
   border-radius: 8px;

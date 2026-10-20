@@ -1296,7 +1296,33 @@ test('selecting an annotation by marker drag or by deletion Undo always clears t
   assert.deepEqual(errors, []);
 });
 
-test('real AutoPack: clean while it runs or previews, visible again on the applied committed layout, editing waits for Results to close, nothing is written', { timeout: 300000 }, async t => {
+// The editor card's controls are reachable by an ordinary click: each one is the topmost element at its own centre.
+const editorControls = page => page.evaluate(() => {
+  const editor = document.querySelector('.tp3d-annot-editor');
+  if (!editor || editor.hidden) return null;
+  const cancelSelector = '.tp3d-annot-editor__foot .tp3d-annot-btn:not(.tp3d-annot-btn--primary):not(.tp3d-annot-btn--danger)';
+  return Object.fromEntries([['title', '.tp3d-annot-editor__input'], ['save', '.tp3d-annot-btn--primary'], ['cancel', cancelSelector]].map(([name, selector]) => {
+    const el = editor.querySelector(selector);
+    if (!el) return [name, false];
+    // The fields live in a scrolling body that gives up height before any button is hidden; a field the card is
+    // too short to show is reached by scrolling (the wheel, or the focus a Tab brings). Save and Cancel never scroll.
+    if (name === 'title') el.scrollIntoView({ block: 'nearest' });
+    const r = el.getBoundingClientRect();
+    const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    // `true` when the control is topmost at its centre, otherwise what covers it (so a failure names the culprit).
+    return [name, hit === el || el.contains(hit) ? true : `${hit ? `${hit.tagName}.${hit.className}` : 'nothing'}`];
+  }));
+});
+const REACHABLE = { title: true, save: true, cancel: true };
+const boxOf = (page, selector) => page.evaluate(sel => window.probe.box(sel), selector);
+// Two animation frames: the overlays redraw on their own frame loops, so a state change is settled only after one.
+const frames = (page, n = 2) => page.evaluate(count => new Promise(resolve => {
+  const step = left => (left <= 0 ? resolve() : window.requestAnimationFrame(() => step(left - 1)));
+  step(count);
+}), n);
+const overlaps = (a, b) => Boolean(a && b) && !(a.r <= b.x || b.r <= a.x || a.b <= b.y || b.b <= a.y);
+
+test('real AutoPack: clean while it runs or previews; on the applied committed layout annotations are visible and editable beside Results (expanded, minimized or dragged) and Results never changes', { timeout: 480000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);
@@ -1304,19 +1330,33 @@ test('real AutoPack: clean while it runs or previews, visible again on the appli
   await page.click('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__eye');
   await page.waitForFunction(() => window.probe.annotations()[2].hidden === true);
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 2);
+  // A saved measurement beside the callouts: both kinds of saved graphics follow the same committed-scene rule.
+  await page.evaluate(() => {
+    const { M, PackLibrary } = window.probe;
+    const at = (x, z) => M.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z } });
+    if (!PackLibrary.addMeasurement('fixture-pack', { start: at(100, 70), end: at(260, 80) }).ok) throw new Error('measurement seed failed');
+  });
+  // A segment group exists before it is first drawn (display none): only a drawn line counts.
+  const segments = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(group => group.style.display !== 'none').length);
+  await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(group => group.style.display !== 'none').length === 1);
   const records = () => page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const measurementsNow = () => page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getMeasurements('fixture-pack')));
   const resultsState = () => page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults')));
+  const cargoNow = () => page.evaluate(() => window.probe.casesJson());
   const before = await records();
-  // Sample every frame: a pin or card drawn while an operation is running would show up here.
+  const measurementsBefore = await measurementsNow();
+  // Sample every frame: a pin, card, editor, line or label drawn while an operation is running would show up here.
   await page.evaluate(() => {
     window.__samples = [];
-    const tick = () => {
+    // After every callback of the frame has run: what is sampled is what the frame paints.
+    const tick = () => window.requestAnimationFrame(() => window.setTimeout(() => {
       window.__samples.push({
         busy: window.probe.OperationLifecycle.isBusy(),
-        drawn: document.querySelectorAll('.tp3d-annot-pin:not([hidden]), .tp3d-annot-card:not([hidden]), .tp3d-annot-editor:not([hidden])').length,
+        drawn: document.querySelectorAll('.tp3d-annot-pin:not([hidden]), .tp3d-annot-card:not([hidden]), .tp3d-annot-editor:not([hidden]), .tp3d-measure-label:not([hidden])').length
+          + [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(group => group.style.display !== 'none').length,
       });
-      window.requestAnimationFrame(tick);
-    };
+      tick();
+    }, 0));
     tick();
   });
   // An editor left open when AutoPack starts is closed, and what it held is not written.
@@ -1329,82 +1369,311 @@ test('real AutoPack: clean while it runs or previews, visible again on the appli
   assert.equal(await editorClosed(page), true, 'the editor cannot stay open over AutoPack');
   await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults') && !window.probe.OperationLifecycle.isBusy(), null, { timeout: 120000 });
   assert.equal(await records(), before, 'AutoPack never rewrote an annotation; the unsaved text was not saved');
+  assert.equal(await measurementsNow(), measurementsBefore, 'nor a measurement');
 
   const samples = await page.evaluate(() => window.__samples);
   assert.ok(samples.some(sample => sample.busy), 'the run was observed');
-  assert.equal(samples.filter(sample => sample.busy && sample.drawn > 0).length, 0, 'no marker, card or editor is ever drawn while AutoPack runs');
+  assert.equal(samples.filter(sample => sample.busy && sample.drawn > 0).length, 0, 'no marker, card, editor, line or label is ever drawn while AutoPack runs');
 
-  // Results open over the committed layout: the annotations are back, only editing waits for Results to close.
+  // Results open over the committed layout: the saved graphics are back and nothing waits for Results to close.
   const drawable = () => page.evaluate(() => window.probe.annotations().filter((r, i) => !r.hidden && window.probe.resolved()[i].status === 'valid').length);
   const pinsNow = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length);
-  const graphics = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not([hidden]), .tp3d-annot-card:not([hidden]), .tp3d-annot-editor:not([hidden])').length);
+  const graphics = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not([hidden]), .tp3d-annot-card:not([hidden]), .tp3d-annot-editor:not([hidden]), .tp3d-measure-label:not([hidden])').length
+    + [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(group => group.style.display !== 'none').length);
   const editingControls = () => page.evaluate(() => ({ tool: document.querySelector('.tp3d-annot-seg__btn[data-tool="callout"]').disabled, edit: document.querySelector('.tp3d-annot-row__edit').disabled }));
-  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
+  const resultsBox = () => boxOf(page, '[data-role="autopack-results-panel"]');
+  const toggle = page.locator('[data-focus-key="results-toggle"]');
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
   assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false, 'the committed layout is displayed');
-  const results = await resultsState();
-  const edited = await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  assert.equal(await page.evaluate(() => /Annotation editing paused/.test(document.body.textContent)), false, 'no "editing paused" message anywhere');
   assert.equal(await pinsNow(), await drawable(), 'every eligible annotation is drawn again, the individually hidden one is not');
   assert.ok(await pinsNow() >= 1);
-  assert.deepEqual(await editingControls(), { tool: true, edit: true }, 'nothing can be created or edited while Results is open');
+  assert.equal(await segments(), 1, 'and so is the saved measurement');
+  assert.deepEqual(await editingControls(), { tool: false, edit: false }, 'creating and editing are available with Results open');
   assert.equal(await page.evaluate(() => ![...document.querySelectorAll('.tp3d-annot-panel button')].some(b => /return|apply|preview|autopack/i.test(b.textContent))), true, 'no Annotations control touches AutoPack Results');
-  const toggle = page.locator('[data-focus-key="results-toggle"]');
   if (await page.evaluate(() => window.probe.StateStore.get('autoPackResults').minimized)) await toggle.click();
-  assert.deepEqual(await editingControls(), { tool: true, edit: true }, 'expanded Results: still no editing');
-  assert.equal(await pinsNow(), await drawable(), 'expanded Results: still drawn');
-  await showButton(page, 'Off').click();
-  assert.equal(await graphics(), 0, 'the owner\'s Off setting is respected');
-  await showButton(page, 'All').click();
-  assert.equal(await pinsNow(), await drawable(), 'and All brings them back');
-  assert.equal(JSON.parse(await resultsState()).closed, false, 'Annotations never close Results');
-  assert.equal(JSON.stringify({ ...JSON.parse(await resultsState()), minimized: 0 }), JSON.stringify({ ...JSON.parse(results), minimized: 0 }), 'Results state is only what the owner changed');
-  assert.equal(await records(), before);
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === false);
+  assert.ok(await resultsBox(), 'Results is expanded');
+  const results = await resultsState();
+  const cargo = await cargoNow();
+  const appliedPill = () => page.evaluate(() => Boolean(document.querySelector('.tp3d-autopack-results__current-pill')));
+  const stale = () => page.evaluate(() => Boolean(document.querySelector('.tp3d-autopack-results__stale-badge')));
+  const wasApplied = await appliedPill();
+  assert.equal(await stale(), false);
+  const untouched = async message => {
+    assert.equal(await resultsState(), results, `${message}: AutoPack Results state is unchanged`);
+    assert.equal(await cargoNow(), cargo, `${message}: cargo is unchanged`);
+    assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false, `${message}: still the committed layout`);
+    assert.equal(await appliedPill(), wasApplied, `${message}: the Applied marker is as it was`);
+    assert.equal(await stale(), false, `${message}: Results did not go stale`);
+    assert.equal(await measurementsNow(), measurementsBefore, `${message}: measurements are unchanged`);
+  };
 
-  // An unapplied option is a transient layout: hidden, and closing Results does not make it visible.
+  // 1. Editing with Results expanded: every control is reachable and the card keeps clear of Results.
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.waitForTimeout(250);
+  assert.deepEqual(await editorControls(page), REACHABLE, 'Save, Cancel and the title field are reachable with Results expanded');
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await resultsBox()), false, 'the editor does not sit under Results');
+  await page.fill('.tp3d-annot-editor__input', 'Edited beside Results');
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(() => window.probe.annotations()[1].title === 'Edited beside Results');
+  assert.equal(await editorClosed(page), true);
+  await untouched('after an edit with Results expanded');
+  assert.ok(await resultsBox(), 'Results is still showing');
+
+  // 2. Creating a callout with Results open: the Callout tool works and the new record is saved.
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await page.waitForFunction(() => /place a callout/i.test(window.probe.hint()));
+  const free = await freePoint(page, [GROUND_A, GROUND_B, [140, 0, 60], [200, 0, 75], [60, 0, 40]]);
+  const countBefore = await count(page);
+  await click(page, free);
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.waitForTimeout(250);
+  assert.deepEqual(await editorControls(page), REACHABLE, 'a new callout editor is reachable with Results expanded');
+  await page.fill('.tp3d-annot-editor__input', 'New beside Results');
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(n => window.probe.annotations().length === n + 1, countBefore);
+  await untouched('after creating a callout with Results expanded');
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]'); // disarm
+
+  // 3. Results minimized over the committed layout: still editable.
+  await toggle.click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === true);
+  const minimizedResults = await resultsState();
+  assert.deepEqual(await editingControls(), { tool: false, edit: false }, 'editing is available with Results minimized');
+  assert.equal(await pinsNow(), await drawable());
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.waitForTimeout(250);
+  assert.deepEqual(await editorControls(page), REACHABLE, 'reachable with Results minimized');
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await resultsBox()), false);
+  await page.fill('.tp3d-annot-editor__input', 'Edited while minimized');
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(() => window.probe.annotations()[0].title === 'Edited while minimized');
+  assert.equal(await resultsState(), minimizedResults, 'Results stayed minimized and unchanged');
+  assert.equal(await cargoNow(), cargo);
+  await toggle.click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === false);
+  assert.equal(await resultsState(), results, 'back to the exact expanded state');
+
+  // 4. Results dragged onto the open editor, then elsewhere, then the viewport resized: the editor keeps clear.
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  const dragResultsTo = async (cx, cy) => {
+    const head = await boxOf(page, '[data-role="autopack-results-drag"]');
+    const startX = head.x + 40;
+    const startY = head.y + head.h / 2;
+    await page.mouse.move(startX, startY);
+    await page.mouse.down();
+    await page.mouse.move(cx, cy, { steps: 12 });
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+  };
+  let editorBox = await boxOf(page, '.tp3d-annot-editor');
+  await dragResultsTo(editorBox.x + editorBox.w / 2, editorBox.y + 40);
+  const dragged = JSON.parse(await resultsState());
+  assert.ok(dragged.position, 'Results was moved by its owner');
+  for (let step = 0; step < 3; step++) {
+    editorBox = await boxOf(page, '.tp3d-annot-editor');
+    const card = await resultsBox();
+    assert.equal(overlaps(editorBox, card), false, `step ${step}: the editor is not under the dragged Results card`);
+    assert.deepEqual(await editorControls(page), REACHABLE, `step ${step}: Save, Cancel and the title field stay reachable`);
+    if (step === 0) await dragResultsTo(editorBox.x + 20, editorBox.y + editorBox.h - 40);
+    if (step === 1) await dragResultsTo(120, 180);
+  }
+  await page.setViewportSize({ width: 960, height: 680 });
+  await page.waitForTimeout(400);
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await resultsBox()), false, 'still clear after the viewport shrinks');
+  assert.deepEqual(await editorControls(page), REACHABLE, 'and reachable');
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.waitForTimeout(400);
+  assert.deepEqual(await editorControls(page), REACHABLE, 'and reachable after it grows back');
+  // The keyboard reaches Save from the title field and Enter on the title saves.
+  await page.focus('.tp3d-annot-editor__input');
+  let reachedSave = false;
+  for (let i = 0; i < 16 && !reachedSave; i++) {
+    await page.keyboard.press('Tab');
+    reachedSave = await page.evaluate(() => document.activeElement && document.activeElement.classList.contains('tp3d-annot-btn--primary'));
+  }
+  assert.equal(reachedSave, true, 'Tab reaches Save inside the editor');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-editor').hidden);
+  const afterDrag = JSON.parse(await resultsState());
+  assert.deepEqual({ ...afterDrag, position: null }, { ...JSON.parse(results), position: null }, 'moving Results changed only its position');
+  assert.equal(await cargoNow(), cargo);
+  assert.equal(await measurementsNow(), measurementsBefore);
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false);
+  const savedSoFar = await records();
+  assert.notEqual(savedSoFar, before, 'the owner edits were written');
+  // Put Results back where it was for the preview checks below.
+  await dragResultsTo(700, 700);
+
+  // 5. An unapplied option is a transient layout: everything is hidden, editing is refused, and closing Results does not reveal it.
   await page.click('[aria-label="Next AutoPack option"]');
   await page.waitForFunction(() => window.probe.CaseScene.isTransientPreview());
   await page.waitForFunction(() => /paused during AutoPack preview/.test(window.probe.hint()));
-  assert.equal(await graphics(), 0, 'unapplied preview: no annotation graphics');
+  await frames(page);
+  assert.equal(await graphics(), 0, 'unapplied preview: no annotation or measurement graphics');
+  assert.deepEqual(await editingControls(), { tool: true, edit: true }, 'and no editing');
   await page.click('[aria-label="Close AutoPack results"]');
   await page.waitForTimeout(500);
   assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), true, 'the preview is not ended by closing Results (existing behavior)');
-  assert.equal(await graphics(), 0, 'closing Results during an unapplied preview must not reveal annotations on transient poses');
+  assert.equal(await graphics(), 0, 'closing Results during an unapplied preview must not reveal graphics on transient poses');
   assert.deepEqual(await editingControls(), { tool: true, edit: true });
-  // Back to the applied option: committed again.
+  // Back to the applied option: committed again, and editing needs nothing else.
   await page.click('#btn-autopack-results-reopen');
   await page.click('[aria-label="Previous AutoPack option"]');
   await page.waitForFunction(() => !window.probe.CaseScene.isTransientPreview());
-  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
-  assert.equal(await pinsNow(), await drawable(), 'committed layout again: drawn, editing still waiting for Results');
-
-  // Closing Results resumes ordinary editing.
-  await page.click('[aria-label="Close AutoPack results"]');
   await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
-  assert.deepEqual(await editingControls(), { tool: false, edit: false });
-  assert.equal(await records(), before, 'records unchanged through the whole sequence');
-  assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), edited, 'and the Load Plan was not touched by the rendering rules');
+  await frames(page);
+  assert.equal(await pinsNow(), await drawable(), 'committed layout again: drawn');
+  assert.equal(await segments(), 1);
+  assert.deepEqual(await editingControls(), { tool: false, edit: false }, 'and editable straight away, with Results still open');
+
+  // 6. Reopening Results with an editor open keeps the editor open, clear of the card.
+  await page.click('[aria-label="Close AutoPack results"]');
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').closed === true);
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__edit');
   await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
-  await page.click('.tp3d-annot-btn--primary', { trial: true }); // the Save button is reachable by an ordinary click
-
-  // The original obstruction: reopening Results with an editor open closes the editor instead of competing with it.
   await page.click('#btn-autopack-results-reopen');
-  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
-  assert.equal(await editorClosed(page), true);
-  assert.equal(await records(), before, 'and nothing was saved');
-  assert.equal(await pinsNow(), await drawable(), 'the annotations stay visible');
+  await page.waitForSelector('[data-role="autopack-results-panel"]');
+  await page.waitForTimeout(300);
+  assert.equal(await editorClosed(page), false, 'reopening Results does not close the editor');
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await resultsBox()), false);
+  assert.deepEqual(await editorControls(page), REACHABLE);
+  await page.click('.tp3d-annot-editor__foot .tp3d-annot-btn:not(.tp3d-annot-btn--primary):not(.tp3d-annot-btn--danger)'); // Cancel
 
-  // Applying an option (the owner's own action): the committed layout shows, annotations return, editing waits for Results.
+  // 7. Applying an option (the owner's own action): the committed layout shows, annotations return, editing is available.
   await page.click('[aria-label="Next AutoPack option"]');
   await page.waitForFunction(() => window.probe.CaseScene.isTransientPreview());
+  await frames(page);
   assert.equal(await graphics(), 0);
   await page.getByRole('button', { name: 'Apply this option' }).click();
   await page.waitForFunction(() => !window.probe.CaseScene.isTransientPreview() && !window.probe.OperationLifecycle.isBusy());
-  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
-  assert.equal(await pinsNow(), await drawable(), 'after Apply the committed layout shows its annotations again');
-  assert.deepEqual(await editingControls(), { tool: true, edit: true });
-  await page.click('[aria-label="Close AutoPack results"]');
   await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
-  assert.deepEqual(await editingControls(), { tool: false, edit: false }, 'editing resumes once Results closes');
+  await frames(page);
+  assert.equal(await pinsNow(), await drawable(), 'after Apply the committed layout shows its annotations again');
+  assert.equal(await segments(), 1, 'and its measurement');
+  assert.deepEqual(await editingControls(), { tool: false, edit: false });
+  const lastEditedAfterApply = await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Edited after Apply');
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(() => window.probe.annotations()[1].title === 'Edited after Apply');
+  assert.ok(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited) >= lastEditedAfterApply);
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false);
+  assert.equal(await page.evaluate(() => Boolean(document.querySelector('.tp3d-autopack-results__current-pill'))), true, 'the applied option is still marked Applied after an annotation edit');
+  assert.equal(await stale(), false, 'and an informational edit does not make Results stale');
+  await page.click('[aria-label="Close AutoPack results"]');
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').closed === true);
+  assert.deepEqual(await editingControls(), { tool: false, edit: false }, 'editing is unchanged once Results closes');
+  assert.deepEqual(errors, []);
+});
+
+test('an editor whose marker is out of view still keeps clear of AutoPack Results, and returns to its corner when Results moves away', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // The cargo a callout sits on can be out of view (AutoPack moved it, the camera left it): no marker to place the card by.
+  await seed(page, [{ title: 'Out of view', ground: [100000, 100000] }]);
+  await page.click('.tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await frames(page, 4);
+  const corner = await boxOf(page, '.tp3d-annot-editor');
+  // A stand-in for the Results card (the editor reads the card's rectangle from the DOM, wherever it is).
+  const placeCard = (left, top) => page.evaluate(([x, y]) => {
+    let card = document.querySelector('[data-role="autopack-results-panel"]');
+    if (!card) {
+      card = document.createElement('section');
+      card.setAttribute('data-role', 'autopack-results-panel');
+      card.style.cssText = 'position:absolute;width:420px;height:236px;z-index:12;background:#fff;border:1px solid #888';
+      document.querySelector('.canvas-wrap').appendChild(card);
+    }
+    card.style.left = `${x}px`;
+    card.style.top = `${y}px`;
+  }, [left, top]);
+  const card = () => boxOf(page, '[data-role="autopack-results-panel"]');
+  await placeCard(corner.x - 300 + 20, 20); // over the editor's corner (card position is relative to .canvas-wrap)
+  await frames(page, 6);
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await card()), false, 'the editor leaves the corner Results covers');
+  assert.deepEqual(await editorControls(page), REACHABLE, 'and Save, Cancel and the title field are reachable');
+  await placeCard(160, 300);
+  await frames(page, 6);
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await card()), false, 'it follows Results to a new spot');
+  assert.deepEqual(await editorControls(page), REACHABLE);
+  await page.evaluate(() => document.querySelector('[data-role="autopack-results-panel"]').remove());
+  await frames(page, 6);
+  const back = await boxOf(page, '.tp3d-annot-editor');
+  assert.deepEqual([back.x, back.y], [corner.x, corner.y], 'with Results gone the editor is back in its corner (the display-only shift left no trace)');
+  assert.equal(await page.evaluate(() => window.probe.annotations()[0].title), 'Out of view', 'nothing was written');
+  assert.deepEqual(errors, []);
+});
+
+test('the desktop panel stays clear of AutoPack Results below it: its list scrolls above the card, every control is reachable, and it returns to full height when Results moves away', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, Array.from({ length: 6 }, (_, index) => ({ title: `Callout ${index + 1}`, ground: [100 + index * 30, 10] })));
+  await frames(page, 4);
+  const panel = () => boxOf(page, '#editor-annotation-panel');
+  const card = () => boxOf(page, '[data-role="autopack-results-panel"]');
+  const limit = () => page.evaluate(() => document.getElementById('editor-annotation-panel').style.getPropertyValue('--tp3d-annot-panel-limit'));
+  // Buttons the panel shows (inside its box and, for rows, inside the scrolled list) that something else is drawn over.
+  const covered = () => page.evaluate(() => {
+    const root = document.getElementById('editor-annotation-panel');
+    const panelRect = root.getBoundingClientRect();
+    const listRect = root.querySelector('.tp3d-annot-panel__list').getBoundingClientRect();
+    return [...root.querySelectorAll('button')].filter(button => {
+      const r = button.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      const inPanel = x >= panelRect.left && x <= panelRect.right && y >= panelRect.top && y <= panelRect.bottom;
+      const inList = !button.closest('.tp3d-annot-panel__list') || (y >= listRect.top && y <= listRect.bottom);
+      return r.width > 0 && r.height > 0 && inPanel && inList;
+    }).filter(button => {
+      const r = button.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return !(top && (top === button || button.contains(top)));
+    }).length;
+  });
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').classList.contains('is-compact')), false, 'a desktop-width viewport');
+  const full = await panel();
+  assert.equal(await covered(), 0);
+  assert.equal(await limit(), '', 'no Results, no limit');
+
+  // A stand-in for the Results card (the panel reads its rectangle from the DOM), over the lower rows of the panel.
+  await page.evaluate(([left, top]) => {
+    const wrap = document.querySelector('.canvas-wrap').getBoundingClientRect();
+    const stand = document.createElement('section');
+    stand.setAttribute('data-role', 'autopack-results-panel');
+    stand.style.cssText = `position:absolute;width:420px;height:236px;z-index:12;background:#fff;border:1px solid #888;left:${left - wrap.left}px;top:${top - wrap.top}px`;
+    document.querySelector('.canvas-wrap').appendChild(stand);
+  }, [full.x - 120, full.y + 260]);
+  await frames(page, 6);
+  const limited = await panel();
+  assert.ok(limited.h < full.h, 'the panel gives up height instead of running under Results');
+  assert.ok(limited.b <= (await card()).y - 4, 'and ends above the card');
+  assert.equal(limited.y, full.y, 'it stays where it was');
+  assert.equal(await covered(), 0, 'every button it shows is reachable');
+  const listScrolls = await page.evaluate(() => { const list = document.querySelector('#editor-annotation-panel .tp3d-annot-panel__list'); return list.scrollHeight > list.clientHeight; });
+  assert.equal(listScrolls, true, 'the rows that no longer fit scroll');
+  await page.evaluate(() => {
+    const rows = document.querySelectorAll('#editor-annotation-panel .tp3d-annot-row');
+    rows[rows.length - 1].scrollIntoView({ block: 'nearest' });
+  });
+  await frames(page, 2);
+  assert.equal(await covered(), 0, 'the last row is reachable once scrolled to');
+
+  // Results moves away (here, removed): the stylesheet's own height is back and nothing was left behind.
+  await page.evaluate(() => document.querySelector('[data-role="autopack-results-panel"]').remove());
+  await frames(page, 6);
+  const back = await panel();
+  assert.deepEqual([back.x, back.y, back.h], [full.x, full.y, full.h], 'with Results gone the panel is exactly as it was');
+  assert.equal(await limit(), '');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').style.maxHeight), '', 'no height override is left behind');
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 6, 'nothing was written');
   assert.deepEqual(errors, []);
 });
 
@@ -1587,6 +1856,107 @@ test('Annotations and Measurement never own the scene together, and saved callou
   await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'false');
   assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'true', 'opening Annotations leaves Measurement Mode');
   assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false);
+  assert.deepEqual(errors, []);
+});
+
+// A drawn measurement line's centre in client px (the overlay is passive, so this is where the canvas is hit).
+const lineCentre = page => page.evaluate(() => {
+  const group = [...document.querySelectorAll('.tp3d-measure-svg__segment')].find(g => g.style.display !== 'none');
+  if (!group) return null;
+  const n = group.querySelector('.tp3d-measure-svg__line').getAttribute('d').match(/-?\d+(\.\d+)?/g).map(Number);
+  const origin = document.getElementById('editor-measure-labels').getBoundingClientRect();
+  return { x: origin.left + (n[0] + n[2]) / 2, y: origin.top + (n[1] + n[3]) / 2 };
+});
+
+test('Annotations and a saved measurement are on screen together, and only the tool that owns the scene receives input', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'On cargo', ...TOP_OF_A }, { title: 'On ground', ground: [520, 10] }]);
+  await page.evaluate(() => {
+    const { M, PackLibrary } = window.probe;
+    const at = (x, z) => M.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z } });
+    if (!PackLibrary.addMeasurement('fixture-pack', { start: at(100, 70), end: at(260, 80) }).ok) throw new Error('measurement seed failed');
+  });
+  const drawnPins = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length);
+  const drawnLines = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(g => g.style.display !== 'none').length);
+  const ruler = () => page.evaluate(() => window.probe.MeasurementTool.isActive());
+  const layerState = () => page.evaluate(() => {
+    const layer = document.querySelector('.tp3d-annot-layer');
+    return { viewOnly: layer.classList.contains('is-view-only'), inert: layer.inert };
+  });
+  const savedRecords = () => page.evaluate(() => JSON.stringify([window.probe.annotations(), window.probe.PackLibrary.getMeasurements('fixture-pack'), window.probe.casesJson()]));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 2 && [...document.querySelectorAll('.tp3d-measure-svg__segment')].some(g => g.style.display !== 'none'));
+  const before = await savedRecords();
+
+  // 1. Annotations open, ruler off: both are drawn, and the passive line does not get in the callouts' way.
+  assert.equal(await ruler(), false);
+  assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1], 'callouts and the saved line are drawn together');
+  assert.deepEqual(await layerState(), { viewOnly: false, inert: false }, 'callouts are interactive while Annotations owns the scene');
+  const centre = await lineCentre(page);
+  assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), centre), true, 'the line never catches the pointer');
+  await click(page, await pinCentreOf(page));
+  await page.waitForSelector('.tp3d-annot-card.is-selected, .tp3d-annot-pin.is-selected');
+
+  // 2. The ruler takes the scene: callouts stay drawn but cannot be touched; the ruler gets the click, Delete and Escape.
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+  await frames(page);
+  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'false', 'the Annotations panel closes');
+  assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1], 'both stay drawn while the ruler is on');
+  assert.deepEqual(await layerState(), { viewOnly: true, inert: true }, 'callouts are view only while the ruler owns the scene');
+  const pin = await pinCentreOf(page);
+  assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), pin), true, 'a marker does not intercept the ruler\'s click');
+  await click(page, pin);
+  await page.waitForFunction(() => /second point/i.test(document.querySelector('.tp3d-measure-panel__hint').textContent));
+  assert.equal(await editorClosed(page), true, 'the click started a measurement, not a callout editor');
+  await page.keyboard.press('Delete');
+  await frames(page, 4);
+  assert.equal(await count(page), 2, 'Delete never removes a callout while the ruler owns the scene');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
+  assert.equal(await count(page), 2, 'Escape ended the ruler and nothing else');
+  assert.equal(await savedRecords(), before, 'neither tool wrote anything');
+
+  // 3. Ruler off again: the line stays as a view, callouts are interactive again (no stale selection or focus trap).
+  await frames(page);
+  assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1]);
+  assert.deepEqual(await layerState(), { viewOnly: false, inert: false });
+  const selectedPinIndex = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])')].findIndex(pin => pin.classList.contains('is-selected')));
+  assert.equal(await selectedPinIndex(), 0, 'the callout selected before the ruler is still selected (the ruler never changed it)');
+  await click(page, await pinCentreOf(page, '.tp3d-annot-pin:not(.is-draft):not([hidden]):not(.is-selected)'));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin.is-selected').length === 1 && !document.querySelector('.tp3d-annot-pin:not(.is-draft):not([hidden])').classList.contains('is-selected'));
+  assert.equal(await selectedPinIndex(), 1, 'a click on another marker selects that callout');
+  assert.equal(await ruler(), false, 'selecting a callout never starts the ruler');
+
+  // 4. Opening Annotations from the ruler leaves the ruler: both remain on screen and the Callout tool owns clicks.
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
+  await frames(page);
+  assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1]);
+  assert.deepEqual(await layerState(), { viewOnly: false, inert: false });
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await page.waitForFunction(() => /place a callout/i.test(window.probe.hint()));
+  const onLine = await lineCentre(page);
+  await click(page, onLine);
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  assert.equal(await ruler(), false);
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__marker')].filter(marker => marker.style.display !== 'none').length), 0, 'the line shows no ruler marker');
+  // The line is inert but painted: while the editor is open it steps beneath the callout layer (which holds the editor)
+  // so it cannot cross the fields, and it goes back above the callouts when the editor closes.
+  const stacking = () => page.evaluate(() => ({
+    lines: Number(getComputedStyle(document.getElementById('editor-measure-labels')).zIndex),
+    callouts: Number(getComputedStyle(document.querySelector('.tp3d-annot-layer')).zIndex),
+  }));
+  const writing = await stacking();
+  assert.ok(writing.lines < writing.callouts, 'while a callout is being written the saved line is drawn beneath its editor');
+  await page.keyboard.press('Escape'); // closes the editor (one owner per Escape)
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-editor').hidden);
+  const idle = await stacking();
+  assert.ok(idle.lines > idle.callouts, 'with no editor open the saved line is drawn above the callouts again');
+  assert.equal(await savedRecords(), before, 'a cancelled draft on top of the line wrote nothing');
   assert.deepEqual(errors, []);
 });
 
@@ -1776,6 +2146,93 @@ test('leaving the Load Plan or swapping the workspace closes the panel and drops
   // Reopening shows it again.
   await page.click('#btn-editor-annotations');
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 1);
+  assert.deepEqual(errors, []);
+});
+
+test('on a narrow viewport with AutoPack Results open the editor sheet stays clear of Results, opens on its title and keeps Save and Cancel reachable', { timeout: 480000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'UNLOAD FIRST', ground: [520, 10] }]);
+  await page.click('#btn-autopack');
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults') && !window.probe.OperationLifecycle.isBusy(), null, { timeout: 120000 });
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  await page.waitForFunction(() => !document.querySelector('.toast'), null, { timeout: 30000 }); // the "Packed N cases" toast is transient and not part of this layout
+  if (await page.evaluate(() => window.probe.StateStore.get('autoPackResults').minimized)) await page.locator('[data-focus-key="results-toggle"]').click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === false);
+  // A laptop-sized window with both side panels open leaves a canvas narrower than 500px: the editor becomes a sheet.
+  await page.setViewportSize({ width: 960, height: 680 });
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-layer').classList.contains('is-compact'));
+  const resultsState = () => page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults')));
+  const resultsBox = () => boxOf(page, '[data-role="autopack-results-panel"]');
+  const cargo = await page.evaluate(() => window.probe.casesJson());
+  const results = await resultsState();
+  assert.equal(overlaps(await boxOf(page, '#editor-annotation-panel'), await resultsBox()), false, 'the compact panel rides clear of Results, so its rows and tools stay clickable');
+  // The first thing the owner sees is the title field: not scrolled out of a short card.
+  const titleInView = () => page.evaluate(() => {
+    const input = document.querySelector('.tp3d-annot-editor__input').getBoundingClientRect();
+    const body = document.querySelector('.tp3d-annot-editor__body').getBoundingClientRect();
+    return input.top >= body.top - 0.5 && input.bottom <= body.bottom + 0.5;
+  });
+  const openEditorFromRow = async () => {
+    await page.click('.tp3d-annot-row__edit'); // an ordinary click: it fails if Results covers the row
+    await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+    await frames(page, 4);
+  };
+  const checkSheet = async label => {
+    const editor = await boxOf(page, '.tp3d-annot-editor');
+    assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-editor').classList.contains('is-sheet')), true, `${label}: the sheet`);
+    assert.equal(overlaps(editor, await resultsBox()), false, `${label}: the sheet does not sit under Results`);
+    assert.deepEqual(await editorControls(page), REACHABLE, `${label}: Save, Cancel and the title field are reachable`);
+    assert.equal(await titleInView(), true, `${label}: the title field is in view when the sheet opens`);
+    assert.equal(await resultsState(), results, `${label}: Results is exactly as it was`);
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), cargo, `${label}: cargo is unchanged`);
+  };
+  const dismiss = async () => {
+    await page.click('.tp3d-annot-editor__foot .tp3d-annot-btn:not(.tp3d-annot-btn--primary):not(.tp3d-annot-btn--danger)');
+    await page.waitForFunction(() => document.querySelector('.tp3d-annot-editor').hidden);
+  };
+
+  // Results expanded, wherever it sits: bottom (default), then dragged to the top.
+  await openEditorFromRow();
+  await checkSheet('Results at the bottom');
+  await dismiss();
+  const head = await boxOf(page, '[data-role="autopack-results-drag"]');
+  await page.mouse.move(head.x + 40, head.y + head.h / 2);
+  await page.mouse.down();
+  await page.mouse.move(head.x + 40, 150, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const afterDrag = JSON.parse(await resultsState());
+  assert.ok(afterDrag.position, 'Results was moved by its owner');
+  const movedResults = await resultsState();
+  await openEditorFromRow();
+  const editor = await boxOf(page, '.tp3d-annot-editor');
+  assert.equal(overlaps(editor, await resultsBox()), false, 'Results at the top: the sheet is clear');
+  assert.deepEqual(await editorControls(page), REACHABLE);
+  assert.equal(await titleInView(), true);
+  assert.equal(await resultsState(), movedResults);
+
+  // Moving Results while the editor is open: the sheet follows it out of the way.
+  const head2 = await boxOf(page, '[data-role="autopack-results-drag"]');
+  await page.mouse.move(head2.x + 40, head2.y + head2.h / 2);
+  await page.mouse.down();
+  await page.mouse.move(head2.x + 40, 430, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await resultsBox()), false, 'the open sheet keeps clear of Results moved over it');
+  assert.deepEqual(await editorControls(page), REACHABLE);
+  await dismiss();
+
+  // Minimized: the chip is the obstacle.
+  await page.locator('[data-focus-key="results-toggle"]').click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === true);
+  await openEditorFromRow();
+  assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await resultsBox()), false, 'minimized Results: the sheet is clear');
+  assert.deepEqual(await editorControls(page), REACHABLE);
+  assert.equal(await titleInView(), true);
+  await dismiss();
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargo, 'cargo never changed');
   assert.deepEqual(errors, []);
 });
 

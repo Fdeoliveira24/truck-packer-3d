@@ -120,6 +120,142 @@ export function autoPlace({ marker, size, viewport, occupied = [], previousSlot 
   return placed;
 }
 
+/** Smallest card height worth showing: the title bar, one field and the buttons. Below this a card is not usable. */
+export const MIN_EDITOR_HEIGHT = 220;
+/** Breathing room kept between the editor and an obstacle it must not cover. */
+export const OBSTACLE_GAP = 6;
+/** Where the narrow-viewport sheet sits by default (px from the viewport's left, right and bottom edges). */
+export const SHEET_INSETS = Object.freeze({ left: 8, right: 58, bottom: 54 });
+const SHEET_MAX_FRACTION = 0.84;
+
+const isRect = value => Boolean(value) && finite(value.x) && finite(value.y) && finite(value.w) && finite(value.h) && value.w > 0 && value.h > 0;
+const inflate = (rect, gap) => ({ x: rect.x - gap, y: rect.y - gap, w: rect.w + gap * 2, h: rect.h + gap * 2 });
+
+/**
+ * Keep the editor card off the rectangles it must never cover (the AutoPack Results panel and its restore
+ * button, wherever the owner left them). The card stays where it was when nothing is in the way; otherwise it
+ * moves to the nearest spot that is clear, and when no full-size spot exists it keeps its width and gives up
+ * height (its body scrolls, its buttons never move off the card). The stored position is never touched:
+ * this is display only, so the card returns when the obstacle moves away.
+ * @param {{x:number,y:number,w:number,h:number}} rect where the card would sit
+ * @param {Array<{x:number,y:number,w:number,h:number}>} blockers
+ * @param {{width:number,height:number}} viewport
+ * @returns {{x:number,y:number,w:number,h:number,shrunk:boolean,clear:boolean}} `clear` is false only when
+ *   even a minimum-height card has nowhere to go (the caller then falls back to a sheet).
+ */
+export function clearOfBlockers(rect, blockers, viewport, { margin = VIEWPORT_MARGIN, gap = OBSTACLE_GAP, minHeight = MIN_EDITOR_HEIGHT } = {}) {
+  const solid = (Array.isArray(blockers) ? blockers : []).filter(isRect).map(blocker => inflate(blocker, gap));
+  const hits = candidate => solid.some(blocker => overlapArea(candidate, blocker) > 0);
+  if (!solid.length || !hits(rect)) return { ...rect, shrunk: false, clear: true };
+
+  const xs = [...new Set([rect.x, margin, viewport.width - margin - rect.w, ...solid.flatMap(b => [b.x - rect.w, b.x + b.w])])];
+  const ys = [...new Set([rect.y, margin, viewport.height - margin - rect.h, ...solid.flatMap(b => [b.y - rect.h, b.y + b.h])])];
+  let best = null;
+  for (const cx of xs) {
+    for (const cy of ys) {
+      const placed = clampRect({ x: cx, y: cy, w: rect.w, h: rect.h }, viewport, margin);
+      if (hits(placed)) continue;
+      const cost = (placed.x - rect.x) ** 2 + (placed.y - rect.y) ** 2;
+      if (!best || cost < best.cost) best = { ...placed, cost };
+    }
+  }
+  if (best) return { x: best.x, y: best.y, w: best.w, h: best.h, shrunk: false, clear: true };
+
+  // No full-size spot: the card keeps its width and gives up height. Prefer a taller card over a short move.
+  const floor = Math.min(minHeight, rect.h);
+  const clampX = x => Math.min(Math.max(x, margin), Math.max(margin, viewport.width - rect.w - margin));
+  const shortXs = [...new Set(xs.map(clampX))];
+  const shortYs = [...new Set([margin, ...solid.map(b => b.y + b.h)])].filter(y => y >= margin && y <= viewport.height - margin - floor);
+  for (const cx of shortXs) {
+    for (const cy of shortYs) {
+      const span = { x: cx, y: cy, w: rect.w, h: floor };
+      if (hits(span)) continue;
+      // Grow downward until the next obstacle over this column (or the viewport edge).
+      const limit = solid
+        .filter(b => b.y >= cy && overlapArea({ x: cx, y: 0, w: rect.w, h: viewport.height }, b) > 0)
+        .reduce((lowest, b) => Math.min(lowest, b.y), viewport.height - margin);
+      const h = Math.min(rect.h, limit - cy);
+      if (h < floor) continue;
+      const cost = (cx - rect.x) ** 2 + (cy - rect.y) ** 2 + (rect.h - h) ** 2 * 4;
+      if (!best || cost < best.cost) best = { x: cx, y: cy, w: rect.w, h, cost };
+    }
+  }
+  if (best) return { x: best.x, y: best.y, w: best.w, h: best.h, shrunk: best.h < rect.h, clear: true };
+  return { ...clampRect(rect, viewport, margin), shrunk: false, clear: false };
+}
+
+/**
+ * The narrow-viewport editor is a sheet along the bottom of the view. Where `blockers` cover part of the band
+ * it occupies, the sheet moves to the largest clear stretch of that band (usually straight above the AutoPack
+ * Results panel) and gives up height before any of its buttons would be hidden.
+ * @param {{ viewport: {width:number,height:number}, blockers?: Array<{x:number,y:number,w:number,h:number}>,
+ *   height: number, insets?: {left:number,right:number,bottom:number}, margin?: number, gap?: number,
+ *   minHeight?: number }} input `height` is the sheet's natural height.
+ * @returns {{ moved: boolean, bottom: number, maxHeight: number }} `moved` false means the stylesheet's own
+ *   placement is already clear and needs no override.
+ */
+export function fitSheet({ viewport, blockers = [], height, insets = SHEET_INSETS, margin = VIEWPORT_MARGIN, gap = OBSTACLE_GAP, minHeight = MIN_EDITOR_HEIGHT }) {
+  const cap = Math.floor(viewport.height * SHEET_MAX_FRACTION);
+  const fallback = { moved: false, bottom: insets.bottom, maxHeight: cap };
+  const band = { x: insets.left, w: Math.max(1, viewport.width - insets.left - insets.right) };
+  const solid = (Array.isArray(blockers) ? blockers : []).filter(isRect).map(blocker => inflate(blocker, gap))
+    .filter(blocker => overlapArea({ x: band.x, y: 0, w: band.w, h: viewport.height }, blocker) > 0);
+  const natural = Math.min(Math.max(height, 0) || minHeight, cap);
+  const defaultTop = viewport.height - insets.bottom - natural;
+  const defaultRect = { x: band.x, y: defaultTop, w: band.w, h: natural };
+  if (!solid.length || !solid.some(blocker => overlapArea(defaultRect, blocker) > 0)) return fallback;
+
+  // Free stretches of the band, from the top margin to the sheet's lowest allowed edge.
+  const floorY = viewport.height - insets.bottom;
+  const within = y => Math.min(Math.max(y, margin), floorY);
+  const cuts = solid.map(b => [within(b.y), within(b.y + b.h)]).sort((a, b) => a[0] - b[0]);
+  const free = [];
+  let cursor = margin;
+  for (const [start, end] of cuts) {
+    if (start > cursor) free.push([cursor, start]);
+    cursor = Math.max(cursor, end);
+  }
+  if (cursor < floorY) free.push([cursor, floorY]);
+  let best = null;
+  for (const [start, end] of free) {
+    const room = end - start;
+    if (room < Math.min(minHeight, natural)) continue;
+    const usable = Math.min(natural, room);
+    // Taller first, then the stretch lowest on the screen (closest to where the sheet normally sits).
+    if (!best || usable > best.usable + 0.5 || (Math.abs(usable - best.usable) <= 0.5 && end > best.end)) best = { start, end, usable };
+  }
+  if (!best) {
+    // Nowhere with room: the tallest stretch there is, never overlapping a blocker.
+    const widest = free.reduce((top, stretch) => (!top || stretch[1] - stretch[0] > top[1] - top[0] ? stretch : top), null);
+    if (!widest) return fallback;
+    return { moved: true, bottom: Math.round(viewport.height - widest[1]), maxHeight: Math.max(1, Math.floor(widest[1] - widest[0])) };
+  }
+  return { moved: true, bottom: Math.round(viewport.height - best.end), maxHeight: Math.max(1, Math.floor(Math.min(cap, best.end - best.start))) };
+}
+
+/** Smallest height worth giving the desktop panel: its header, tool and view rows and part of one callout row. */
+export const MIN_PANEL_HEIGHT = 200;
+
+/**
+ * The desktop Annotations panel hangs from its top edge. Where a blocker (the AutoPack Results card) sits below that
+ * edge over the panel's columns, the panel is limited to the stretch above it, so its list scrolls instead of running
+ * under the card. A blocker that starts at or above the panel's top, or that leaves less than `minHeight`, is not
+ * something a height limit can fix: the panel is left alone.
+ * @param {{ panel: {x:number,y:number,w:number,h:number}, blockers?: Array<{x:number,y:number,w:number,h:number}>,
+ *   natural: number, gap?: number, minHeight?: number }} input `natural` is the height the panel would take unlimited.
+ * @returns {number|null} The height limit in px, or null when the panel needs none.
+ */
+export function fitHangingPanel({ panel, blockers = [], natural, gap = OBSTACLE_GAP, minHeight = MIN_PANEL_HEIGHT }) {
+  let limit = Infinity;
+  for (const blocker of Array.isArray(blockers) ? blockers : []) {
+    if (!isRect(blocker) || blocker.y <= panel.y) continue;
+    if (blocker.x >= panel.x + panel.w || blocker.x + blocker.w <= panel.x) continue;
+    limit = Math.min(limit, blocker.y - gap - panel.y);
+  }
+  if (!(limit < natural) || limit < minHeight) return null;
+  return Math.floor(limit);
+}
+
 const LABEL_HEIGHT = 20;
 const LABEL_MAX_WIDTH = 150;
 const LABEL_GAP = 15;

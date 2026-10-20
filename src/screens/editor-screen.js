@@ -5282,13 +5282,9 @@ export function createEditorScreen({
           hasProvisionalPose: () => Boolean(InteractionManager && InteractionManager.hasProvisionalPose && InteractionManager.hasProvisionalPose()),
           // Selecting an annotation clears the cargo selection (so Delete never touches cargo).
           clearCargoSelection: () => { if (InteractionManager && typeof InteractionManager.setSelection === 'function') InteractionManager.setSelection([]); },
-          // A read-only question: is an AutoPack Results card (expanded or minimized) showing for this Load Plan?
-          // Annotations pause while it is; they never open, close, apply or change Results.
-          isResultsActive: () => {
-            const results = StateStore.get('autoPackResults');
-            return Boolean(results && results.closed !== true && results.packId === StateStore.get('currentPackId') &&
-              Array.isArray(results.options) && results.options.length);
-          },
+          // A read-only question: does Measurement Mode own the scene's gestures right now? Saved callouts stay
+          // drawn but take no input while it does.
+          isSceneToolOwnedElsewhere: () => Boolean(MeasurementTool && MeasurementTool.isActive()),
         });
         btnAnnotations.addEventListener('click', ev => {
           ev.stopPropagation();

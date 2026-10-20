@@ -24,6 +24,12 @@
  *     they always do; a gesture that loses its cargo is cancelled by sync() and writes nothing.
  *   - Lines, ticks and labels are drawn as an SVG/DOM layer above the canvas, so they can never
  *     appear in a canvas capture (Screenshot, PDF views, thumbnails, previews).
+ *   - Saved measurements and the editing mode are separate. A saved Valid measurement stays drawn after the
+ *     mode ends ("view only"): just its line, ticks and distance label, with no grips, draft points or
+ *     hover marker, no pointer or keyboard ownership and no write of any kind. The view follows cargo,
+ *     camera, projection and viewport changes, and it is drawn only for the committed scene: nothing is
+ *     drawn while AutoPack, Unpack or a truck change runs or while an unapplied preview is shown. Hiding the
+ *     tool in Settings hides the lines with it. Saved callouts stay drawn while the mode is on.
  *   - The list panel can be dragged by its header grip (the same 2x3 dot grip as the AutoPack
  *     Results panel) so it never has to cover content. The position is a per-session view
  *     convenience: it is not saved with the Load Plan and never touches cargo or camera.
@@ -137,6 +143,8 @@ export function createMeasurementTool({
   let panelObserver = null;
   let suppressToggleClick = false;
   let svg = null;
+  let syncedPackId = null; // the Load Plan `records` and `results` were derived from (view-only drawing never trusts older ones)
+  let toolShown = true; // the Settings toggle, read when it changes (not per frame): hidden means no ruler and no saved lines
   const rows = new Map(); // measurement id -> { el, select, name, value, rename, remove, issue, input }
   const visuals = new Map(); // measurement id -> segment visual
   const overlayOrigin = { left: 0, top: 0 };
@@ -176,6 +184,19 @@ export function createMeasurementTool({
 
   function blockedMessage(reason) {
     return `Measurements are read-only while ${BLOCKED_CAUSE_TEXT[reason] || 'an operation is running'}.`;
+  }
+
+  /**
+   * True when saved Valid measurements should be on screen while the mode is off: in the Editor, for the Load
+   * Plan the records belong to, with the tool enabled in Settings. Needs Review and Unresolved ones never get
+   * geometry, so a Load Plan with only those draws nothing.
+   */
+  function viewOnlyWanted() {
+    if (!bound || active || !inEditor() || !els.labels) return false;
+    if (syncedPackId === null || syncedPackId !== StateStore.get('currentPackId') || !currentPack()) return false;
+    if (!toolShown) return false;
+    return results.some((result, index) => result.status === MEASUREMENT_STATUS.VALID &&
+      records[index] && records[index].type === MEASUREMENT_TYPE_POINT_TO_POINT);
   }
 
   function setStatus(message, { sticky = false, tone = '' } = {}) {
@@ -409,7 +430,14 @@ export function createMeasurementTool({
 
   function updateOverlay() {
     const camera = SceneManager.getCamera();
-    if (!camera || !active || !ensureSvg()) return;
+    if (!camera || !ensureSvg()) return;
+    // Only the committed scene is measured. While an operation runs or an unapplied preview is shown the
+    // scene displays poses the Load Plan does not hold, so nothing is drawn; the lines come back from the
+    // saved records when the committed scene returns.
+    if (blockedReason()) {
+      disposeAllVisuals();
+      return;
+    }
     const rect = els.labels.getBoundingClientRect();
     overlayOrigin.left = rect.left;
     overlayOrigin.top = rect.top;
@@ -418,7 +446,6 @@ export function createMeasurementTool({
 
     // Saved measurements: only Valid ones are drawn. Needs Review and Unresolved never get geometry.
     const live = new Set();
-    const readOnly = Boolean(blockedReason());
     let ghostDrawn = false;
     results.forEach((result, index) => {
       const record = records[index];
@@ -449,7 +476,7 @@ export function createMeasurementTool({
       }
       const inches = measureBetween(worldVectorToInches(a), worldVectorToInches(b)).distance;
       const selected = record.id === selectedId || dragging;
-      drawSegment(visual, a, b, labelText(record, inches, selected), camera, width, height, { selected, grips: selected && !readOnly });
+      drawSegment(visual, a, b, labelText(record, inches, selected), camera, width, height, { selected, grips: selected });
     });
     visuals.forEach((visual, id) => {
       if (live.has(id)) return;
@@ -487,7 +514,7 @@ export function createMeasurementTool({
     }
 
     // Where a click would land: a small neutral "+", only on something measurable.
-    const showHover = hover && hover.world && !drag && !hoverGrip && !hoverMeasurementId && !readOnly;
+    const showHover = hover && hover.world && !drag && !hoverGrip && !hoverMeasurementId;
     if (showHover) {
       if (!hoverMarker) hoverMarker = makeMarker('hover');
       setMarker(hoverMarker, projectPoint(hover.world, camera, width, height));
@@ -496,9 +523,8 @@ export function createMeasurementTool({
     }
   }
 
-  function disposeAllVisuals() {
-    visuals.forEach(disposeSegment);
-    visuals.clear();
+  /** Everything an editing session draws beyond the saved lines: the live preview, the move ghost and the markers. */
+  function disposeTransientVisuals() {
     if (previewVisual) disposeSegment(previewVisual);
     if (ghostVisual) disposeSegment(ghostVisual);
     previewVisual = null;
@@ -507,6 +533,12 @@ export function createMeasurementTool({
     disposeMarker(pendingMarker);
     hoverMarker = null;
     pendingMarker = null;
+  }
+
+  function disposeAllVisuals() {
+    visuals.forEach(disposeSegment);
+    visuals.clear();
+    disposeTransientVisuals();
   }
 
   // ==========================================================================
@@ -557,7 +589,7 @@ export function createMeasurementTool({
   }
 
   // ==========================================================================
-  // SECTION: FRAME LOOP (runs only while Measurement Mode is active)
+  // SECTION: FRAME LOOP (runs while Measurement Mode is active, or while saved lines are shown view-only)
   // ==========================================================================
   function updateCursor() {
     const canvas = getCanvas();
@@ -591,7 +623,11 @@ export function createMeasurementTool({
   }
 
   function frame(now) {
-    if (!active) return;
+    if (!active) {
+      // View only: redraw the saved lines for the camera and cargo as they are now. No hit testing, no cursor.
+      updateOverlay();
+      return;
+    }
     const reason = syncBlocked();
     if (drag) {
       if (drag.dirty && lastClient) {
@@ -611,13 +647,22 @@ export function createMeasurementTool({
 
   function loop(now) {
     rafId = null;
-    if (!active) return;
+    if (!active && !viewOnlyWanted()) {
+      // Nothing is left to show (other Load Plan, left the Editor, tool hidden, no Valid measurement).
+      disposeAllVisuals();
+      return;
+    }
     frame(now);
     rafId = window.requestAnimationFrame(loop);
   }
 
   function startLoop() {
     if (rafId === null) rafId = window.requestAnimationFrame(loop);
+  }
+
+  /** Start drawing when there is something to draw and nothing is drawing it yet. */
+  function ensureLoop() {
+    if (rafId === null && (active || viewOnlyWanted())) startLoop();
   }
 
   function stopLoop() {
@@ -706,7 +751,15 @@ export function createMeasurementTool({
     }
     rows.forEach(row => row.el.remove());
     rows.clear();
-    disposeAllVisuals();
+    // The editing session's own drawing goes; the saved lines stay on screen as a view when there are any.
+    disposeTransientVisuals();
+    if (viewOnlyWanted()) {
+      // Redraw now, not on the next frame, so no frame shows the finished session's selection or grips.
+      updateOverlay();
+      startLoop();
+    } else {
+      disposeAllVisuals();
+    }
     if (wasActive) updateCursor();
     return wasActive;
   }
@@ -1367,15 +1420,19 @@ export function createMeasurementTool({
   /** Re-derive validity from committed data. Cheap; called on render and on measurement writes. */
   function sync() {
     const pack = currentPack();
-    lengthUnit = (PreferencesManager.get().units || {}).length || 'in';
+    const preferences = PreferencesManager.get();
+    lengthUnit = (preferences.units || {}).length || 'in';
+    toolShown = preferences.showMeasurementTool !== false;
     if (!pack || !inEditor()) {
       records = [];
       results = [];
+      syncedPackId = null;
       if (active) exit();
       return;
     }
     records = PackLibrary.getMeasurements(pack);
     results = PackLibrary.resolveMeasurements(pack);
+    syncedPackId = pack.id;
     if (selectedId && !records.some(record => record.id === selectedId)) selectedId = null;
     if (renamingId && !records.some(record => record.id === renamingId)) renamingId = null;
     if (pending && !pendingStillValid(pack)) {
@@ -1391,6 +1448,7 @@ export function createMeasurementTool({
       }
     }
     if (active) renderPanel();
+    ensureLoop();
   }
 
   function pendingStillValid(pack) {
@@ -1411,8 +1469,10 @@ export function createMeasurementTool({
   /** Show or hide the ruler per Settings. Hiding it while active exits the mode and cancels any gesture. */
   function syncVisibility() {
     const show = PreferencesManager.get().showMeasurementTool !== false;
+    toolShown = show;
     if (!show && active) exit();
     if (els.button) els.button.hidden = !show;
+    ensureLoop(); // showing the tool again brings its saved lines back; hiding it ends the view-only loop by itself
     return show;
   }
 
@@ -1421,11 +1481,21 @@ export function createMeasurementTool({
     if (bound) return;
     bound = true;
     StateStore.subscribe(changes => {
-      if (!active) return;
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
-        exit();
+        if (active) {
+          exit();
+          return;
+        }
+        // Another Load Plan, a workspace swap or the Editor closing: the saved lines belong to the old one.
+        if (syncedPackId !== null) {
+          records = [];
+          results = [];
+          syncedPackId = null;
+          disposeAllVisuals();
+        }
         return;
       }
+      if (!active) return;
       if (changes._undo || changes._redo) {
         if (drag) cancelDrag('Undo or redo cancelled the move.');
         cancelPending('Undo or redo cancelled the unfinished measurement.');
@@ -1442,6 +1512,11 @@ export function createMeasurementTool({
   // to the application-lifetime singleton (it is created once in app.js and never torn down), so they stay.
   function destroy() {
     exit();
+    stopLoop();
+    records = [];
+    results = [];
+    syncedPackId = null;
+    disposeAllVisuals();
     if (svg && svg.parentNode) svg.parentNode.removeChild(svg);
     svg = null;
   }

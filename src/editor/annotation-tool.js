@@ -24,9 +24,15 @@
  *     (they keep it), an unfinished drag, the editor card, a pending re-attach, the armed tool, the
  *     annotation selection. Anything else is left to the existing handlers (cargo deselection, drawers).
  *   - Creating, editing, moving, hiding and deleting are disabled while AutoPack, Unpack, Truck Change, a
- *     Truck Change preview or a transient AutoPack preview is active, and the message names the cause.
+ *     Truck Change preview or a transient AutoPack preview is active, and the message names the cause; the
+ *     graphics are hidden for the same reasons. The committed scene is the authority, so an open, minimized or
+ *     closed AutoPack Results card over the committed layout never pauses anything: annotations stay visible
+ *     and editable. Results is only a placement obstacle: cards, labels and the editor keep clear of it, and
+ *     Annotations never open, close, minimize, apply or change it.
  *     Viewing and selecting stay available. A background thumbnail capture is a pixel readback, not an
  *     edit: it never blocks annotations or cancels an unfinished one.
+ *   - Annotations stay drawn while the Measurement Tool owns the scene, but only as a view: markers and cards
+ *     take no pointer or keyboard input until that mode ends (the Editor wires `isSceneToolOwnedElsewhere`).
  *   - Cargo anchors are only ever picked from, and resolved against, COMMITTED poses; while the Editor
  *     owns a provisional pose a pick on cargo is refused. Overlay positions follow the pose the scene
  *     displays so a marker never floats away from cargo that is being dragged or animated.
@@ -61,13 +67,17 @@ import {
   cardBudget,
   cardWidth,
   clampRect,
+  clearOfBlockers,
   estimateCardHeight,
+  fitHangingPanel,
   fitLabels,
+  fitSheet,
   isCompactViewport,
   LABEL_FLIP_MARGIN,
   leaderLine,
   offsetFromRect,
   rectFromOffset,
+  VIEWPORT_MARGIN,
 } from '../core/annotation-layout.js';
 import { createSurfacePicker } from './surface-picker.js';
 
@@ -92,6 +102,8 @@ const PANEL_MARGIN_PX = 10;
 const PANEL_DRAG_THRESHOLD_PX = 5;
 const EDITOR_WIDTH_PX = 336;
 const EDITOR_FALLBACK_HEIGHT_PX = 404;
+const PANEL_SHEET_MAX_FRACTION = 0.46; // the compact panel's own max-height (styles/main.css)
+const PANEL_LIMIT_PROPERTY = '--tp3d-annot-panel-limit'; // the desktop panel's extra max-height (styles/main.css)
 const MIN_RAY_LENGTH = 1e-6;
 const HELD_POSE_NOTICE = 'Place or cancel the held case before working with annotations on cargo.';
 const AMBIGUOUS_CARGO_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so a callout cannot be attached to it.';
@@ -102,7 +114,6 @@ const PASSIVE_OPERATION_KINDS = new Set(['capturingPreview']);
 // is on screen or being rebuilt. The wording is deliberately short: it is a status, not an instruction.
 const PAUSED_TEXT = Object.freeze({
   preview: 'Annotations paused during AutoPack preview.',
-  results: 'Annotation editing paused while AutoPack Results are open.',
   autopacking: 'Annotations paused during AutoPack.',
   unpacking: 'Annotations paused during Unpack.',
   changingTruck: 'Annotations paused during truck change.',
@@ -180,6 +191,8 @@ export function createAnnotationTool({
   let lastVisAt = 0;
   let lastSignature = NaN;
   let selfClearing = false;
+  let lastOwnedElsewhere = false; // another scene tool (Measurement Mode) owned gestures on the previous frame
+  let titleRevealPending = false; // the editor just opened: show its title field if the card is shorter than its content
   const views = new Map(); // annotation id -> { pin, chip, badge, card, ... } DOM + per-frame state
   const rows = new Map();
 
@@ -226,10 +239,12 @@ export function createAnnotationTool({
   const isCallout = record => Boolean(record) && record.type === ANNOTATION_TYPE_CALLOUT;
 
   /**
-   * Why annotations are paused right now, or null: a transient Results/Truck Change preview, a running
-   * operation, or an open AutoPack Results card. A passive thumbnail capture
+   * Why annotations are paused right now, or null: a transient Results/Truck Change preview or a running
+   * operation. Scene authority comes from those two signals only; whether an AutoPack Results card is open,
+   * minimized or closed says nothing about which layout the scene displays. A passive thumbnail capture
    * is neither: it only reads pixels. An annotation write replaces the Pack object, which aborts a capture
    * that is mid-flight; the app re-requests it (app.js, 'pack-annotations').
+   * The same reason hides the graphics and refuses editing.
    */
   function blockedReason() {
     if (CaseScene.isTransientPreview && CaseScene.isTransientPreview()) return 'preview';
@@ -238,20 +253,16 @@ export function createAnnotationTool({
       const kind = operation && operation.kind ? operation.kind : 'busy';
       if (!PASSIVE_OPERATION_KINDS.has(kind)) return kind;
     }
-    // An open AutoPack Results card (expanded or minimized) owns that part of the Editor. A read-only question
-    // asked of the Editor; Annotations never open, close or change Results.
-    if (typeof els.isResultsActive === 'function' && els.isResultsActive()) return 'results';
     return null;
   }
 
   /**
-   * Why the overlay must be empty right now, or null. Everything that blocks editing also hides the graphics
-   * (a running operation, a transient preview) except an open Results card over the committed layout: the
-   * committed scene is the truth, so its annotations stay visible while only editing waits for Results to close.
+   * True while another scene tool (Measurement Mode) owns scene-editing gestures. Annotations are then a
+   * view only: they stay drawn, but nothing here takes pointer or keyboard input. A read-only question asked
+   * of the Editor, never a state this tool changes.
    */
-  function graphicsPausedReason() {
-    const reason = blockedReason();
-    return reason === 'results' ? null : reason;
+  function sceneOwnedElsewhere() {
+    return typeof els.isSceneToolOwnedElsewhere === 'function' && Boolean(els.isSceneToolOwnedElsewhere());
   }
 
   function blockedMessage(reason) {
@@ -412,8 +423,9 @@ export function createAnnotationTool({
       notice(SHOW_OFF_HINT);
       return;
     }
-    if (target && graphicsPausedReason()) {
-      notice(blockedMessage(graphicsPausedReason()));
+    if (target && sceneOwnedElsewhere()) return;
+    if (target && blockedReason()) {
+      notice(blockedMessage(blockedReason()));
       return;
     }
     if (target && target !== selectedId) {
@@ -481,7 +493,8 @@ export function createAnnotationTool({
         if (panelOpen || selectedId || draft || records.length) resetSession();
         return;
       }
-      // An AutoPack Results card opening, closing or changing option can pause or resume the overlay.
+      // A Results card changing its viewed option can start or end a transient preview, which pauses or resumes
+      // the overlay. Opening, minimizing or closing the card changes nothing here.
       if (Object.prototype.hasOwnProperty.call(changes, 'autoPackResults') && (wantsLoop() || panelOpen)) {
         syncBlocked();
         ensureLoop();
@@ -982,7 +995,7 @@ export function createAnnotationTool({
     });
     head.addEventListener('pointerdown', ev => beginEditorDrag(ev, root));
     return {
-      root, head, heading: headline.querySelector('.tp3d-annot-editor__heading'),
+      root, head, body, heading: headline.querySelector('.tp3d-annot-editor__heading'),
       targetText: target.querySelector('.tp3d-annot-editor__target-text'),
       presetButtons, title, description, swatches, customSwatch, customInput, keep, del, cancel, save,
     };
@@ -1028,6 +1041,7 @@ export function createAnnotationTool({
     syncEditorFields();
     parts.root.dataset.measured = '';
     setHidden(parts.root, false);
+    titleRevealPending = true;
     parts.title.focus({ preventScroll: true });
     parts.title.select();
   }
@@ -1502,6 +1516,7 @@ export function createAnnotationTool({
   // ==========================================================================
   function attachLayerEvents(layer) {
     layer.addEventListener('pointerdown', ev => {
+      if (sceneOwnedElsewhere()) return;
       keyboardModality = false;
       const pin = ev.target.closest && ev.target.closest('.tp3d-annot-pin');
       if (pin && layer.contains(pin)) {
@@ -1515,7 +1530,7 @@ export function createAnnotationTool({
       }
     });
     layer.addEventListener('click', ev => {
-      if (suppressClick) return;
+      if (suppressClick || sceneOwnedElsewhere()) return;
       const act = ev.target.closest && ev.target.closest('[data-act]');
       if (act && layer.contains(act)) {
         const id = act.closest('.tp3d-annot-card')?.dataset.annotId;
@@ -1563,6 +1578,8 @@ export function createAnnotationTool({
   function onKeyDownCapture(ev) {
     if (!bound || !inEditor()) return;
     if (ev.defaultPrevented) return;
+    // Measurement Mode owns Escape, Delete and Undo while it is on; a selected callout never reacts to them.
+    if (sceneOwnedElsewhere()) return;
     if (panelOpen && ev.key !== 'Escape' && !['Shift', 'Control', 'Alt', 'Meta'].includes(ev.key)) keyboardModality = true;
     if (UIComponents.modalOwnership && UIComponents.modalOwnership.blocksKeyboardEvent(ev)) return;
     const key = String(ev.key || '').toLowerCase();
@@ -1983,7 +2000,7 @@ export function createAnnotationTool({
         row = createRow();
         rows.set(record.id, row);
       }
-      updateRow(row, record, results[index], Boolean(blockedNow), showMode === 'off' || Boolean(graphicsPausedReason()));
+      updateRow(row, record, results[index], Boolean(blockedNow), showMode === 'off' || Boolean(blockedNow));
       if (parts.list.children[index] !== row.el) parts.list.insertBefore(row.el, parts.list.children[index] || null);
       seen.add(record.id);
     });
@@ -2012,12 +2029,36 @@ export function createAnnotationTool({
         updateCursor();
       }
       clearDeleted();
-      if (reason !== 'results') selectedId = null; // hidden graphics leave nothing selected; an open Results card hides nothing
+      selectedId = null; // hidden graphics leave nothing selected
       visDirty = true;
     }
     renderPanel();
     refreshOverlay();
     return reason;
+  }
+
+  /**
+   * Keep the overlay a pure view while another scene tool owns gestures: the layer goes inert (no pointer
+   * input, no focus) and anything this tool had under way ends without writing. The Editor already closes the
+   * panel when Measurement starts; this covers every other way the mode can begin.
+   */
+  function syncInputOwnership() {
+    const owned = sceneOwnedElsewhere();
+    if (els.layer) {
+      toggleClass(els.layer, 'is-view-only', owned);
+      if ('inert' in els.layer && els.layer.inert !== owned) els.layer.inert = owned;
+    }
+    if (owned === lastOwnedElsewhere) return;
+    lastOwnedElsewhere = owned;
+    if (!owned) return;
+    cancelPinDrag();
+    cancelCardDrag();
+    if (draft) cancelDraft();
+    reattachId = null;
+    tool = null;
+    hover = null;
+    press = null;
+    renderPanel();
   }
 
   // ==========================================================================
@@ -2058,7 +2099,7 @@ export function createAnnotationTool({
 
   function updateCursor() {
     const canvas = getCanvas();
-    if (!canvas) return;
+    if (!canvas || sceneOwnedElsewhere()) return; // the tool that owns the scene owns the cursor
     let cursor = 'default';
     if (isActive()) cursor = pinDrag && pinDrag.moved ? 'grabbing' : (hover ? 'crosshair' : 'default');
     if (cursor === lastCursor) return;
@@ -2375,9 +2416,11 @@ export function createAnnotationTool({
     const camera = SceneManager.getCamera();
     const parts = ensureLayerParts();
     if (!camera || !parts || !doc || !inEditor()) return;
+    // Another scene tool owns gestures: the overlay stays visible but takes no input (markers and cards go inert).
+    syncInputOwnership();
     // Paused (an operation or a transient Results preview): nothing is drawn and nothing is projected,
     // raycast or laid out. The records are untouched; the overlay comes back from them when the pause ends.
-    if (graphicsPausedReason()) {
+    if (blockedReason()) {
       if (!graphicsHidden) {
         disposeOverlay();
         graphicsHidden = true;
@@ -2464,7 +2507,9 @@ export function createAnnotationTool({
 
     // 4. Pins first (cards avoid every marker), then cards in priority order.
     const pinRects = entries.map(entry => ({ id: entry.record.id, x: entry.view.screen.x - PIN_RECT_PX / 2, y: entry.view.screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }));
-    const panelBox = panelObstacle();
+    const resultsBox = resultsObstacles();
+    fitPanelSheet(resultsBox, viewport);
+    const panelBox = panelObstacle(resultsBox);
     const labelIds = display === 'markers' ? new Set() : fitLabels(
       entries.filter(entry => entry.view.front && !shownIds.has(entry.record.id))
         .sort((a, b) => a.number - b.number)
@@ -2528,12 +2573,12 @@ export function createAnnotationTool({
     if (overflow > 0) {
       setText(parts.overflowText, `${overflow} more ${overflow === 1 ? 'callout is' : 'callouts are'} shown without a card. Zoom in or hide some to see their cards.`);
     }
-    renderDraft(parts, camera, width, height, viewport, pinRects);
+    renderDraft(parts, camera, width, height, viewport, pinRects, panelBox, resultsBox);
     renderHover(parts, camera, width, height);
     renderGhost(parts, camera, width, height, entries);
   }
 
-  function renderDraft(parts, camera, width, height, viewport, pinRects) {
+  function renderDraft(parts, camera, width, height, viewport, pinRects, panelBox, resultsBox) {
     const pin = parts.draftPin;
     if (!draft) {
       if (!pin.pin.hidden) pin.pin.hidden = true;
@@ -2567,46 +2612,183 @@ export function createAnnotationTool({
     }
     const parts2 = ensureEditor();
     if (!parts2) return;
-    toggleClass(parts2.root, 'is-sheet', compact);
-    if (compact || !screen) {
-      parts2.root.style.transform = '';
+    const natural = editorNaturalHeight(parts2);
+    const hideLeader = () => {
       setPath(parts.draftLeader, '');
       setPath(parts.draftLeaderUnder, '');
+    };
+    if (compact) {
+      toggleClass(parts2.root, 'is-sheet', true);
+      parts2.root.style.transform = '';
+      keepTitleInView(parts2, fitEditorSheet(parts2, viewport, resultsBox, natural));
+      hideLeader();
       return;
     }
-    const size = { w: EDITOR_WIDTH_PX, h: parts2.root.offsetHeight || EDITOR_FALLBACK_HEIGHT_PX };
+    const size = { w: EDITOR_WIDTH_PX, h: Math.min(natural, Math.max(1, viewport.height - 2 * VIEWPORT_MARGIN)) };
+    // A card the owner positioned keeps that spot while its marker is on screen; without a marker on screen (the
+    // cargo it sits on is out of view) the card is at the stylesheet's own corner, as it always was.
+    const ownerPlaced = Boolean(draft.editorPos) && Boolean(screen);
     let rect;
-    if (draft.editorPos) {
+    if (ownerPlaced) {
       rect = clampRect({ x: draft.editorPos.x, y: draft.editorPos.y, w: size.w, h: size.h }, viewport);
-    } else {
-      const panelRect = panelObstacle();
-      const occupied = pinRects.filter(p => p.id !== draft.editId).concat(panelRect || []);
+    } else if (screen) {
+      const occupied = pinRects.filter(p => p.id !== draft.editId).concat(panelBox || []);
       const auto = autoPlace({ marker: { x: screen.x, y: screen.y }, size, viewport, occupied, previousSlot: draft.slot });
       draft.slot = auto.slot;
       rect = { x: auto.x, y: auto.y, w: auto.w, h: auto.h };
+    } else {
+      rect = { x: 0, y: 0, w: size.w, h: size.h };
     }
-    const transform = `translate(${rect.x.toFixed(1)}px, ${rect.y.toFixed(1)}px)`;
+    // The AutoPack Results card can sit anywhere the owner dragged it, and it is drawn above this layer: the
+    // card keeps clear of it (display only; the stored position is untouched) so Save, Cancel and the fields stay
+    // reachable. With no full-size spot it gives up height, and with no usable spot at all it becomes the sheet.
+    // Automatic placement also keeps off the Annotations panel and its own marker, relaxing those one at a time
+    // (as before Results was an obstacle) rather than covering Save; a card the owner positioned only yields to Results.
+    const markerBox = screen ? [{ x: screen.x - PIN_RECT_PX / 2, y: screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }] : [];
+    const tiers = ownerPlaced ? [resultsBox] : [(panelBox || []).concat(markerBox), panelBox || [], resultsBox];
+    let fit = null;
+    for (const blockers of tiers) {
+      fit = clearOfBlockers(rect, blockers, viewport);
+      if (fit.clear) break;
+    }
+    if (!fit.clear) {
+      toggleClass(parts2.root, 'is-sheet', true);
+      parts2.root.style.transform = '';
+      keepTitleInView(parts2, fitEditorSheet(parts2, viewport, resultsBox, natural));
+      hideLeader();
+      return;
+    }
+    toggleClass(parts2.root, 'is-sheet', false);
+    keepTitleInView(parts2, resetEditorFit(parts2, fit.shrunk ? fit.h : null));
+    rect = { x: fit.x, y: fit.y, w: fit.w, h: fit.h };
+    // The stylesheet's corner needs no transform; anything else is a translation from it.
+    const transform = !screen && rect.x === 0 && rect.y === 0 ? '' : `translate(${rect.x.toFixed(1)}px, ${rect.y.toFixed(1)}px)`;
     if (parts2.root.style.transform !== transform) parts2.root.style.transform = transform;
+    if (!screen) {
+      hideLeader();
+      return;
+    }
     const line = leaderLine({ x: screen.x, y: screen.y }, rect);
     const d = line ? `M${line.x1.toFixed(1)} ${line.y1.toFixed(1)}L${line.x2.toFixed(1)} ${line.y2.toFixed(1)}` : '';
     setPath(parts.draftLeader, d);
     setPath(parts.draftLeaderUnder, d);
   }
 
-  /**
-   * What automatic placement keeps cards, labels and the editor off: the open Annotations panel and the
-   * Editor's own "Load plan needs review" button, as rectangles in layer pixels. Null when neither shows.
-   */
-  function panelObstacle() {
-    if (!els.layer || !doc) return null;
+  /** Screen rectangles of `elements` in layer pixels; elements that are absent or not laid out are skipped. */
+  function layerRects(elements) {
     const layerRect = els.layer.getBoundingClientRect();
-    const rects = [];
-    if (panelOpen && els.panel && !els.panel.hidden) rects.push(els.panel.getBoundingClientRect());
-    const status = doc.getElementById('editor-validation-status-btn');
-    if (status && !(status.closest && status.closest('[hidden]'))) rects.push(status.getBoundingClientRect());
-    const found = rects.filter(rect => rect.width > 0 && rect.height > 0)
+    return elements.filter(Boolean).map(el => el.getBoundingClientRect())
+      .filter(rect => rect.width > 0 && rect.height > 0)
       .map(rect => ({ x: rect.left - layerRect.left, y: rect.top - layerRect.top, w: rect.width, h: rect.height }));
+  }
+
+  /**
+   * The AutoPack Results card (expanded, minimized or dragged anywhere) and its restore button: controls the
+   * editor must never cover and cards and labels avoid. Read from the DOM, so it follows the card when it is
+   * moved, minimized, closed or the viewport resizes; empty when neither shows. Annotations only look at it.
+   */
+  function resultsObstacles() {
+    if (!els.layer || !doc) return [];
+    const restore = doc.getElementById('btn-autopack-results-reopen');
+    return layerRects([doc.querySelector('[data-role="autopack-results-panel"]'), restore && !restore.hidden ? restore : null]);
+  }
+
+  /**
+   * What automatic placement keeps cards, labels and the editor off: the open Annotations panel, the Editor's
+   * own "Load plan needs review" button and the AutoPack Results controls, as rectangles in layer pixels.
+   * Null when none shows.
+   */
+  function panelObstacle(resultsBox = resultsObstacles()) {
+    if (!els.layer || !doc) return null;
+    const status = doc.getElementById('editor-validation-status-btn');
+    const found = layerRects([
+      panelOpen && els.panel && !els.panel.hidden ? els.panel : null,
+      status && !(status.closest && status.closest('[hidden]')) ? status : null,
+    ]).concat(resultsBox);
     return found.length ? found : null;
+  }
+
+  /**
+   * The editor card's height if nothing limited it: the card's own chrome plus the full height of its scrolling
+   * body. Measured without clearing any height limit, so a card that was shrunk can grow back.
+   */
+  function editorNaturalHeight(parts) {
+    if (!parts.root.offsetHeight) return EDITOR_FALLBACK_HEIGHT_PX;
+    return parts.root.offsetHeight - parts.body.clientHeight + parts.body.scrollHeight;
+  }
+
+  /**
+   * Keeps the open Annotations panel off the AutoPack Results card; its list scrolls before any control is hidden.
+   * The compact panel is a bottom sheet like the editor and rides in the largest clear stretch (usually straight
+   * above the card). The desktop panel hangs from its top edge and is limited to the stretch above a card below it.
+   * Nothing is overridden (and nothing measured) while Results is not in the way.
+   */
+  function fitPanelSheet(resultsBox, viewport) {
+    const parts = panelParts;
+    if (!parts || parts.root !== els.panel) return;
+    const style = parts.root.style;
+    // Each mode owns different overrides; a resize across the compact threshold must leave none of the other's behind.
+    const apply = (maxHeight, bottom, limit) => {
+      if (style.maxHeight !== maxHeight) style.maxHeight = maxHeight;
+      if (style.bottom !== bottom) style.bottom = bottom;
+      if (style.getPropertyValue(PANEL_LIMIT_PROPERTY) !== limit) {
+        if (limit) style.setProperty(PANEL_LIMIT_PROPERTY, limit);
+        else style.removeProperty(PANEL_LIMIT_PROPERTY);
+      }
+    };
+    const shown = panelOpen && !els.panel.hidden && !els.panel.classList.contains('is-covered');
+    if (!shown || !resultsBox.length) {
+      apply('', '', '');
+      return;
+    }
+    const rootHeight = parts.root.offsetHeight;
+    if (!rootHeight) return;
+    const unlimited = rootHeight - parts.list.clientHeight + parts.list.scrollHeight;
+    if (!compact) {
+      const [panelBox] = layerRects([parts.root]);
+      const limit = panelBox ? fitHangingPanel({ panel: panelBox, blockers: resultsBox, natural: unlimited }) : null;
+      apply('', '', limit == null ? '' : `${limit}px`);
+      return;
+    }
+    const cap = Math.floor(viewport.height * PANEL_SHEET_MAX_FRACTION);
+    const fit = fitSheet({ viewport, blockers: resultsBox, height: Math.min(unlimited, cap) });
+    apply(fit.moved ? `${Math.min(fit.maxHeight, cap)}px` : '', fit.moved ? `${fit.bottom}px` : '', '');
+  }
+
+  /** Back to the stylesheet's placement, or (with `height`) the same placement limited to `height` px. True when the limit changed. */
+  function resetEditorFit(parts, height = null) {
+    const maxHeight = height == null ? '' : `${Math.floor(height)}px`;
+    const changed = parts.root.style.maxHeight !== maxHeight || parts.root.style.bottom !== '';
+    if (parts.root.style.maxHeight !== maxHeight) parts.root.style.maxHeight = maxHeight;
+    if (parts.root.style.bottom !== '') parts.root.style.bottom = '';
+    return changed;
+  }
+
+  /** The narrow-viewport sheet, moved clear of the Results card and limited in height before any button is hidden. True when it changed. */
+  function fitEditorSheet(parts, viewport, resultsBox, natural) {
+    const fit = fitSheet({ viewport, blockers: resultsBox, height: natural });
+    const maxHeight = fit.moved ? `${fit.maxHeight}px` : '';
+    const bottom = fit.moved ? `${fit.bottom}px` : '';
+    const changed = parts.root.style.maxHeight !== maxHeight || parts.root.style.bottom !== bottom;
+    if (parts.root.style.maxHeight !== maxHeight) parts.root.style.maxHeight = maxHeight;
+    if (parts.root.style.bottom !== bottom) parts.root.style.bottom = bottom;
+    return changed;
+  }
+
+  /**
+   * A card shorter than its content scrolls its body. It opens with the title field in view (not scrolled out
+   * below the presets), and keeps it in view when it is squeezed while the title has focus.
+   */
+  function keepTitleInView(parts, fitChanged) {
+    const opened = titleRevealPending;
+    titleRevealPending = false;
+    if (!opened && !(fitChanged && doc && doc.activeElement === parts.title)) return;
+    const body = parts.body;
+    if (!body || body.scrollHeight <= body.clientHeight) return;
+    const field = (parts.title.closest && parts.title.closest('.tp3d-annot-editor__field')) || parts.title;
+    const bodyRect = body.getBoundingClientRect();
+    const fieldRect = field.getBoundingClientRect();
+    if (fieldRect.bottom > bodyRect.bottom || fieldRect.top < bodyRect.top) body.scrollTop += fieldRect.top - bodyRect.top - 4;
   }
 
   function renderHover(parts, camera, width, height) {

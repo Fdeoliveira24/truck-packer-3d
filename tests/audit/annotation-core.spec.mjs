@@ -426,6 +426,99 @@ test('automatic placement avoids other cards and markers, stays inside the viewp
   assert.equal(typeof worst.slot, 'number');
 });
 
+test('the editor card keeps clear of the AutoPack Results card wherever it is, never rewrites its position and gives up height before it hides a button', () => {
+  const view = { width: 1200, height: 800 };
+  const card = { x: 400, y: 380, w: 336, h: 404 };
+  const results = { x: 390, y: 520, w: 420, h: 270 }; // the expanded card, bottom centre
+  const gap = L.OBSTACLE_GAP;
+  const sits = (rect, other) => L.overlapArea(rect, { x: other.x - gap, y: other.y - gap, w: other.w + 2 * gap, h: other.h + 2 * gap });
+  // Nothing in the way: the same rect comes back untouched and nothing is limited.
+  const alone = L.clearOfBlockers(card, [], view);
+  assert.deepEqual([alone.x, alone.y, alone.w, alone.h, alone.shrunk, alone.clear], [400, 380, 336, 404, false, true]);
+  assert.deepEqual(L.clearOfBlockers(card, [{ x: 1000, y: 10, w: 100, h: 40 }], view).y, 380, 'a distant obstacle changes nothing');
+  // Covered by Results: the card moves the shortest way to a spot that overlaps nothing, full size.
+  const pushed = L.clearOfBlockers(card, [results], view);
+  assert.equal(pushed.clear, true);
+  assert.equal(pushed.shrunk, false);
+  assert.equal(sits(pushed, results), 0, 'no overlap with Results, with breathing room');
+  assert.deepEqual([pushed.w, pushed.h], [336, 404], 'full size');
+  assert.ok(pushed.x >= L.VIEWPORT_MARGIN && pushed.y >= L.VIEWPORT_MARGIN && pushed.x + pushed.w <= view.width - L.VIEWPORT_MARGIN && pushed.y + pushed.h <= view.height - L.VIEWPORT_MARGIN, 'and inside the viewport');
+  // The input is never mutated, so a stored position survives the obstacle moving away.
+  assert.deepEqual(card, { x: 400, y: 380, w: 336, h: 404 });
+  assert.deepEqual(L.clearOfBlockers(card, [{ ...results, y: 790 }], view).y, 380, 'moving Results away leaves the stored place as it was');
+  // A minimized chip and the restore button are obstacles too, wherever they are dragged.
+  for (const spot of [{ x: 420, y: 400, w: 190, h: 44 }, { x: 8, y: 700, w: 36, h: 36 }, { x: 600, y: 8, w: 420, h: 270 }]) {
+    const placed = L.clearOfBlockers({ x: spot.x - 20, y: spot.y - 20, w: 336, h: 404 }, [spot], view);
+    assert.equal(placed.clear && sits(placed, spot), 0);
+  }
+  // Results dragged onto the card from either side keeps pushing it clear.
+  for (const x of [0, 200, 500, 780]) {
+    const placed = L.clearOfBlockers(card, [{ ...results, x }], view);
+    assert.equal(sits(placed, { ...results, x }), 0, `Results at x=${x}`);
+  }
+  // No full-size spot: a viewport 560px wide cannot fit the card beside or below Results, so it keeps its width
+  // and gives up height above it. The buttons live outside the scrolling body, so a shorter card loses no button.
+  const short = { width: 560, height: 700 };
+  const wide = { x: 70, y: 380, w: 420, h: 300 };
+  const squeezed = L.clearOfBlockers({ x: 100, y: 250, w: 336, h: 404 }, [wide], short);
+  assert.equal(squeezed.clear, true);
+  assert.equal(squeezed.shrunk, true);
+  assert.ok(squeezed.h >= L.MIN_EDITOR_HEIGHT && squeezed.h < 404, 'shorter, not unusably short');
+  assert.equal(sits(squeezed, wide), 0);
+  assert.equal(squeezed.w, 336, 'the width is kept');
+  // Truly nowhere to go: reported as not clear so the caller can use the sheet instead of covering controls.
+  const nowhere = L.clearOfBlockers({ x: 100, y: 100, w: 336, h: 404 }, [{ x: 0, y: 0, w: 560, h: 700 }], short);
+  assert.equal(nowhere.clear, false);
+  // Garbage obstacles (zero size, NaN) are ignored rather than trusted.
+  assert.equal(L.clearOfBlockers(card, [{ x: 1, y: 1, w: 0, h: 0 }, { x: NaN, y: 0, w: 5, h: 5 }, null], view).y, 380);
+});
+
+test('the narrow-viewport sheet sits above the AutoPack Results card, however it is moved, and limits its height instead of hiding a button', () => {
+  const view = { width: 420, height: 800 };
+  const natural = 440;
+  const baseline = L.fitSheet({ viewport: view, blockers: [], height: natural });
+  assert.deepEqual(baseline, { moved: false, bottom: L.SHEET_INSETS.bottom, maxHeight: Math.floor(800 * 0.84) }, 'no obstacle: the stylesheet placement stands');
+  // Results across the bottom (its default): the sheet rides up above it.
+  const bottomResults = { x: 16, y: 520, w: 388, h: 264 };
+  const above = L.fitSheet({ viewport: view, blockers: [bottomResults], height: natural });
+  assert.equal(above.moved, true);
+  const aboveTop = view.height - above.bottom - Math.min(natural, above.maxHeight);
+  assert.ok(view.height - above.bottom <= bottomResults.y - L.OBSTACLE_GAP + 1, 'the sheet ends above Results');
+  assert.ok(aboveTop >= L.VIEWPORT_MARGIN, 'and starts inside the viewport');
+  assert.ok(above.maxHeight >= L.MIN_EDITOR_HEIGHT, 'with room for the fields and the buttons');
+  // Results dragged to the top: the default bottom placement is clear, so nothing moves.
+  assert.equal(L.fitSheet({ viewport: view, blockers: [{ x: 16, y: 20, w: 388, h: 240 }], height: natural }).moved, false);
+  // Results in the middle: the larger free stretch (below) wins when it is taller.
+  const middle = L.fitSheet({ viewport: view, blockers: [{ x: 16, y: 120, w: 388, h: 300 }], height: natural });
+  assert.equal(middle.moved, true);
+  assert.ok(view.height - middle.bottom - middle.maxHeight >= 120 + 300 + L.OBSTACLE_GAP - 1 || view.height - middle.bottom <= 120 - L.OBSTACLE_GAP + 1, 'never overlaps Results');
+  // Something that does not reach the sheet's band (the viewport controls column on the right) is ignored.
+  assert.equal(L.fitSheet({ viewport: view, blockers: [{ x: 380, y: 700, w: 30, h: 60 }], height: natural }).moved, false);
+  // Always the tallest stretch there is, even when it is shorter than a comfortable card.
+  const cramped = L.fitSheet({ viewport: { width: 420, height: 500 }, blockers: [{ x: 16, y: 150, w: 388, h: 330 }], height: natural });
+  assert.equal(cramped.moved, true);
+  assert.ok(500 - cramped.bottom <= 150 - L.OBSTACLE_GAP + 1 && cramped.maxHeight >= 1);
+});
+
+test('the desktop panel is limited to the stretch above an AutoPack Results card below it, and is left alone when a height limit cannot help', () => {
+  const panel = { x: 742, y: 64, w: 300, h: 260 };
+  const natural = 440;
+  const results = { x: 490, y: 380, w: 420, h: 237 };
+  assert.equal(L.fitHangingPanel({ panel, blockers: [], natural }), null, 'nothing in the way: no limit');
+  assert.equal(L.fitHangingPanel({ panel, blockers: [results], natural: 200 }), null, 'a panel that already ends above Results needs none');
+  const limit = L.fitHangingPanel({ panel, blockers: [results], natural });
+  assert.equal(limit, results.y - L.OBSTACLE_GAP - panel.y, 'the panel ends one gap above Results');
+  assert.ok(limit >= L.MIN_PANEL_HEIGHT, 'with its header and part of a row still showing');
+  // Results beside the panel (no shared columns) or above its top edge cannot be fixed by height.
+  assert.equal(L.fitHangingPanel({ panel, blockers: [{ x: 100, y: 380, w: 420, h: 237 }], natural }), null);
+  assert.equal(L.fitHangingPanel({ panel, blockers: [{ x: 700, y: 10, w: 420, h: 237 }], natural }), null, 'starting above the top edge: left to the owner');
+  // Results over the panel's own header leaves nothing worth showing: left alone rather than squashed.
+  assert.equal(L.fitHangingPanel({ panel, blockers: [{ x: 700, y: panel.y + 100, w: 420, h: 237 }], natural }), null);
+  // Several blockers: the nearest one below wins; unusable rectangles are ignored.
+  const nearest = L.fitHangingPanel({ panel, blockers: [{ x: 700, y: 500, w: 420, h: 100 }, results, { x: NaN, y: 0, w: 1, h: 1 }, null], natural });
+  assert.equal(nearest, results.y - L.OBSTACLE_GAP - panel.y);
+});
+
 test('in a crowded view a label is dropped rather than covering another label or marker; the marker itself is never dropped', () => {
   const pinAt = (id, x, y) => ({ id, x: x - 12, y: y - 12, w: 24, h: 24 });
   const label = (id, x, y, text = 'FRAGILE') => ({ id, marker: { x, y }, text });

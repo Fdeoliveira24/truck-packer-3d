@@ -109,6 +109,16 @@
   --radius-sm: 6px;
   --radius-md: 10px;
   --radius-lg: 14px;
+
+  /* Annotation colors: the user's own marks (callouts), saturated enough to read over cargo. Brand orange
+     stays reserved for selection and active gestures. */
+  --annot-ink: #1a1a1f;
+  --annot-blue: #2f6fed;
+  --annot-green: #0f8a5a;
+  --annot-red: #d92d36;
+  --annot-violet: #6d4aff;
+  --annot-on-ink: #ffffff;
+  --annot-on-color: #ffffff;
 }
 
 /* ================================
@@ -138,6 +148,14 @@
   --shadow-sm: 0 1px 2px rgb(0, 0, 0, 0.3);
   --shadow-md: 0 4px 6px rgb(0, 0, 0, 0.4);
   --shadow-lg: 0 10px 15px rgb(0, 0, 0, 0.5);
+
+  --annot-ink: #ffffff;
+  --annot-blue: #5b92ff;
+  --annot-green: #2fbf86;
+  --annot-red: #ff6b72;
+  --annot-violet: #9a82ff;
+  --annot-on-ink: #1a1a1f;
+  --annot-on-color: #111318;
 }
 
 /* ================================
@@ -4932,6 +4950,1212 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-editor-zoom-controls button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
+}
+
+/* Annotations V1A: callout markers and cards are a DOM/SVG layer above the canvas (never part of a canvas
+   capture), and one compact panel in the language of the Measurements panel. The layer is click-through; only
+   markers, cards and the editor card take pointer events. */
+.tp3d-annot-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 4;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tp3d-annot-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.tp3d-annot-svg path {
+  fill: none;
+}
+
+/* A soft underlay in the surface colour keeps a thin line legible over any cargo colour, in both themes. */
+.tp3d-annot-svg__under {
+  stroke: var(--bg-elevated);
+  stroke-opacity: 0.72;
+  stroke-width: 3.5px;
+  stroke-linecap: round;
+}
+
+.tp3d-annot-svg__leader {
+  stroke: var(--text-secondary);
+  stroke-width: 1px;
+  stroke-linecap: round;
+}
+
+.tp3d-annot-svg__leader.is-selected {
+  stroke: var(--accent-primary);
+  stroke-width: 1.5px;
+}
+
+.tp3d-annot-svg__mark {
+  stroke: var(--text-primary);
+  stroke-width: 1.25px;
+}
+
+/* Where a marker was before it was picked up. */
+.tp3d-annot-svg__ghost {
+  fill: none;
+  stroke: var(--text-secondary);
+  stroke-width: 1.5px;
+  stroke-dasharray: 3 3;
+  opacity: 0.7;
+}
+
+/* The user's colors, one place: pins, cards, list badges and swatches read --annot-color / --annot-fg. */
+.tp3d-annot-pin[data-color='ink'],
+.tp3d-annot-card[data-color='ink'],
+.tp3d-annot-row__badge[data-color='ink'],
+.tp3d-annot-swatch[data-color='ink'] {
+  --annot-color: var(--annot-ink);
+  --annot-fg: var(--annot-on-ink);
+}
+
+.tp3d-annot-pin[data-color='blue'],
+.tp3d-annot-card[data-color='blue'],
+.tp3d-annot-row__badge[data-color='blue'],
+.tp3d-annot-swatch[data-color='blue'] {
+  --annot-color: var(--annot-blue);
+  --annot-fg: var(--annot-on-color);
+}
+
+.tp3d-annot-pin[data-color='green'],
+.tp3d-annot-card[data-color='green'],
+.tp3d-annot-row__badge[data-color='green'],
+.tp3d-annot-swatch[data-color='green'] {
+  --annot-color: var(--annot-green);
+  --annot-fg: var(--annot-on-color);
+}
+
+.tp3d-annot-pin[data-color='red'],
+.tp3d-annot-card[data-color='red'],
+.tp3d-annot-row__badge[data-color='red'],
+.tp3d-annot-swatch[data-color='red'] {
+  --annot-color: var(--annot-red);
+  --annot-fg: var(--annot-on-color);
+}
+
+.tp3d-annot-pin[data-color='violet'],
+.tp3d-annot-card[data-color='violet'],
+.tp3d-annot-row__badge[data-color='violet'],
+.tp3d-annot-swatch[data-color='violet'] {
+  --annot-color: var(--annot-violet);
+  --annot-fg: var(--annot-on-color);
+}
+
+/* Marker: a numbered dot with a generous invisible hit area. */
+.tp3d-annot-pin {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+  touch-action: none;
+  will-change: transform;
+}
+
+.tp3d-annot-pin[hidden] {
+  display: none;
+}
+
+.tp3d-annot-pin:focus {
+  outline: none;
+}
+
+.tp3d-annot-pin:focus-visible .tp3d-annot-pin__badge {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.tp3d-annot-pin.is-selected,
+.tp3d-annot-pin.is-dragging {
+  z-index: 5;
+}
+
+.tp3d-annot-pin__badge {
+  box-sizing: border-box;
+  display: grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border: 2px solid var(--bg-elevated);
+  border-radius: 999px;
+  background: var(--annot-color, var(--annot-ink));
+  color: var(--annot-fg, var(--annot-on-ink));
+  box-shadow: var(--shadow-sm);
+  font-size: 11px;
+  font-weight: var(--font-bold);
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.tp3d-annot-pin.is-selected .tp3d-annot-pin__badge {
+  box-shadow: 0 0 0 2px var(--accent-primary), var(--shadow-sm);
+}
+
+/* Facing away from the camera, or behind other cargo: hollow and dashed, never a floating solid dot. */
+.tp3d-annot-pin.is-hollow .tp3d-annot-pin__badge {
+  border: 1.5px dashed var(--text-secondary);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+}
+
+.tp3d-annot-pin.is-draft .tp3d-annot-pin__badge {
+  border: 2px solid var(--accent-primary);
+  background: var(--bg-elevated);
+  color: var(--accent-readable);
+  cursor: grab;
+  font-size: 12px;
+}
+
+.tp3d-annot-pin.is-dragging .tp3d-annot-pin__badge {
+  cursor: grabbing;
+}
+
+.tp3d-annot-pin__chip {
+  position: absolute;
+  top: 50%;
+  left: calc(50% + 15px);
+  max-width: 150px;
+  height: 20px;
+  padding: 0 7px;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-sm);
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+  line-height: 18px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  transform: translateY(-50%);
+  pointer-events: none;
+}
+
+.tp3d-annot-pin__chip[hidden] {
+  display: none;
+}
+
+.tp3d-annot-pin.is-chip-left .tp3d-annot-pin__chip {
+  right: calc(50% + 15px);
+  left: auto;
+}
+
+/* Card: a 12px technical label, no bubble tail. Selected = expanded with the brand-orange border. */
+.tp3d-annot-card {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  pointer-events: auto;
+  will-change: transform;
+}
+
+.tp3d-annot-card[hidden] {
+  display: none;
+}
+
+.tp3d-annot-card.is-selected {
+  z-index: 4;
+  border-color: var(--accent-primary);
+  box-shadow: var(--shadow-lg);
+}
+
+.tp3d-annot-card.is-behind:not(.is-selected) {
+  opacity: 0.88;
+}
+
+.tp3d-annot-card__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 6px 6px 10px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.tp3d-annot-card__head:active {
+  cursor: grabbing;
+}
+
+.tp3d-annot-card__swatch {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--annot-color, var(--annot-ink));
+  color: var(--annot-fg, var(--annot-on-ink));
+  font-size: 10px;
+  font-weight: var(--font-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.tp3d-annot-card__title {
+  display: -webkit-box;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12px;
+  font-weight: var(--font-semibold);
+  letter-spacing: 0.01em;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+
+.tp3d-annot-card__btn {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.tp3d-annot-card__btn[hidden] {
+  display: none;
+}
+
+.tp3d-annot-card__btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-annot-card__btn:focus {
+  outline: none;
+}
+
+.tp3d-annot-card__btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+.tp3d-annot-card__desc {
+  padding: 0 10px 8px;
+  color: var(--text-secondary);
+  font-size: 11.5px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.tp3d-annot-card__desc[hidden] {
+  display: none;
+}
+
+.tp3d-annot-card__foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 6px;
+  border-top: 1px solid var(--border-subtle);
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.3;
+}
+
+.tp3d-annot-card__foot i {
+  font-size: 10px;
+}
+
+.tp3d-annot-card__target {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-annot-card__behind {
+  margin-left: auto;
+  white-space: nowrap;
+}
+
+.tp3d-annot-card__behind[hidden] {
+  display: none;
+}
+
+.tp3d-annot-tip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 7;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: var(--text-primary);
+  color: var(--text-inverse);
+  box-shadow: var(--shadow-md);
+  font-size: 11px;
+  font-weight: var(--font-medium);
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.tp3d-annot-tip[hidden] {
+  display: none;
+}
+
+.tp3d-annot-overflow {
+  position: absolute;
+  bottom: 14px;
+  left: 50%;
+  z-index: 7;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 32px);
+  padding: 6px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  font-size: 12px;
+  line-height: 1.35;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.tp3d-annot-overflow[hidden] {
+  display: none;
+}
+
+.tp3d-annot-overflow i {
+  color: var(--text-secondary);
+}
+
+/* Editor card: new callout / edit callout. A bottom sheet on a narrow viewport. */
+.tp3d-annot-editor {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  width: 304px;
+  max-height: calc(100% - 16px);
+  overflow: hidden;
+  border: 1px solid var(--accent-primary);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--text-xs);
+  pointer-events: auto;
+  will-change: transform;
+}
+
+.tp3d-annot-editor[hidden] {
+  display: none;
+}
+
+.tp3d-annot-editor.is-sheet {
+  top: auto;
+  right: 58px;
+  bottom: 54px;
+  left: 8px;
+  width: auto;
+  max-height: 84%;
+}
+
+.tp3d-annot-editor__head {
+  flex: none;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-subtle);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.tp3d-annot-editor__headline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-annot-editor__target {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.tp3d-annot-editor__target i {
+  font-size: 10px;
+}
+
+.tp3d-annot-editor__target-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-annot-editor__body {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px 14px;
+  overflow-y: auto;
+}
+
+.tp3d-annot-editor__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.tp3d-annot-editor__label {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.tp3d-annot-editor__presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.tp3d-annot-chip {
+  padding: 3px 9px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+}
+
+.tp3d-annot-chip:hover {
+  background: var(--bg-hover);
+}
+
+.tp3d-annot-chip[aria-pressed='true'] {
+  border-color: var(--accent-primary-25);
+  background: var(--accent-primary-12);
+  color: var(--accent-readable);
+}
+
+.tp3d-annot-editor__input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 7px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+}
+
+.tp3d-annot-editor__input:focus {
+  border-color: var(--accent-primary);
+}
+
+.tp3d-annot-editor__input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.tp3d-annot-editor__textarea {
+  resize: none;
+  line-height: 1.4;
+}
+
+.tp3d-annot-editor__options {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tp3d-annot-swatches {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.tp3d-annot-swatches .tp3d-annot-editor__label {
+  margin-right: 2px;
+}
+
+.tp3d-annot-swatch {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 2px solid var(--bg-elevated);
+  border-radius: 50%;
+  background: var(--annot-color, var(--annot-ink));
+  box-shadow: 0 0 0 1px var(--border-strong);
+  cursor: pointer;
+}
+
+.tp3d-annot-swatch[aria-pressed='true'] {
+  box-shadow: 0 0 0 2px var(--text-primary);
+}
+
+.tp3d-annot-swatch:focus {
+  outline: none;
+}
+
+.tp3d-annot-swatch:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.tp3d-annot-editor__keep {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tp3d-annot-editor__keep input {
+  margin: 0;
+  accent-color: var(--accent-primary);
+}
+
+.tp3d-annot-editor__foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-annot-editor__spacer {
+  flex: 1;
+}
+
+.tp3d-annot-btn {
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  font-weight: var(--font-medium);
+  cursor: pointer;
+}
+
+.tp3d-annot-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.tp3d-annot-btn[hidden] {
+  display: none;
+}
+
+.tp3d-annot-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.tp3d-annot-btn--primary {
+  border-color: var(--accent-primary);
+  background: var(--accent-primary);
+  color: var(--accent-foreground);
+}
+
+.tp3d-annot-btn--primary:hover:not(:disabled) {
+  background: var(--accent-hover, var(--accent-primary));
+}
+
+.tp3d-annot-btn--danger {
+  padding: 0 10px;
+  border-color: rgb(239, 68, 68, 0.4);
+  background: rgb(239, 68, 68, 0.12);
+  color: var(--danger-text);
+}
+
+.tp3d-annot-btn--small {
+  height: 24px;
+  padding: 0 9px;
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+}
+
+/* Compact, collapsible panel: below the Editor toolbar and left of the viewport controls, like Measurements. */
+.tp3d-annot-panel {
+  position: absolute;
+  top: 64px;
+  right: 58px;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  width: 300px;
+  max-width: calc(100% - 70px);
+  max-height: min(520px, calc(100% - 140px));
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-lg);
+  color: var(--text-primary);
+  font-size: var(--text-xs);
+}
+
+.tp3d-annot-panel[hidden],
+.tp3d-annot-panel.is-covered {
+  display: none;
+}
+
+.tp3d-annot-panel.is-collapsed {
+  width: auto;
+  min-width: 156px;
+}
+
+/* A narrow viewport: a bottom sheet that leaves the right-hand controls and the Load plan status button reachable. */
+.tp3d-annot-panel.is-compact {
+  top: auto;
+  right: 58px;
+  bottom: 54px;
+  left: 8px;
+  width: auto;
+  max-width: none;
+  max-height: 46%;
+}
+
+.tp3d-annot-panel.is-dragged {
+  right: auto;
+}
+
+.tp3d-annot-panel.is-dragging,
+.tp3d-annot-panel.is-dragging * {
+  cursor: grabbing;
+}
+
+.tp3d-annot-panel__head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+  padding-left: 14px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+
+.tp3d-annot-panel__head:active {
+  cursor: grabbing;
+}
+
+/* 2×3 dot-grid drag grip, identical in look to the Measurements and AutoPack Results grips. */
+.tp3d-annot-grip {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(2, 3px);
+  grid-auto-rows: 3px;
+  gap: 3px;
+}
+
+.tp3d-annot-grip__dot {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--text-secondary);
+  opacity: 0.5;
+}
+
+.tp3d-annot-panel__toggle {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 10px 10px 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  letter-spacing: -0.005em;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tp3d-annot-panel__toggle:focus {
+  outline: none;
+}
+
+.tp3d-annot-panel__toggle:focus-visible {
+  background: var(--bg-hover);
+}
+
+.tp3d-annot-panel__chevron {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  margin-left: auto;
+  border-radius: 8px;
+  color: var(--text-secondary);
+  font-size: 10px;
+}
+
+.tp3d-annot-panel__chevron:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-annot-panel__title {
+  flex: none;
+}
+
+.tp3d-annot-panel__count {
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 999px;
+  background: var(--text-primary);
+  color: var(--text-inverse);
+  font-size: 10px;
+  font-weight: var(--font-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+.tp3d-annot-panel__count:empty {
+  display: none;
+}
+
+.tp3d-annot-panel__body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.tp3d-annot-panel__body[hidden] {
+  display: none;
+}
+
+.tp3d-annot-panel__blocked {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 14px 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--warning-readable);
+  line-height: 1.4;
+}
+
+.tp3d-annot-panel__blocked i {
+  margin-top: 2px;
+}
+
+.tp3d-annot-panel__blocked[hidden] {
+  display: none;
+}
+
+/* Segmented controls: the tool picker (Callout | Arrow | Draw) and the callout display mode. */
+.tp3d-annot-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--bg-primary);
+}
+
+.tp3d-annot-seg--tools {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0 14px 10px;
+}
+
+.tp3d-annot-seg--small {
+  border-radius: 7px;
+}
+
+.tp3d-annot-seg__btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tp3d-annot-seg--tools .tp3d-annot-seg__btn {
+  height: 30px;
+}
+
+.tp3d-annot-seg--small .tp3d-annot-seg__btn {
+  height: 22px;
+  padding: 0 8px;
+  font-size: 11px;
+}
+
+.tp3d-annot-seg__btn:hover:not(:disabled, [aria-pressed='true']) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-annot-seg__btn[aria-pressed='true'] {
+  border-color: var(--accent-primary-25);
+  background: var(--accent-primary-14);
+  color: var(--accent-readable);
+}
+
+.tp3d-annot-seg__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tp3d-annot-seg__btn:focus {
+  outline: none;
+}
+
+.tp3d-annot-seg__btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* Guidance appears only when something is relevant; when empty it takes no space but stays a live region. */
+.tp3d-annot-panel__hint,
+.tp3d-annot-panel__undo,
+.tp3d-annot-panel__notice,
+.tp3d-annot-panel__empty {
+  padding: 0 14px 10px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.tp3d-annot-panel__hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.tp3d-annot-panel__hint::before {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-top: calc((1.4em - 6px) / 2);
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+
+.tp3d-annot-panel__hint[data-tone='active']::before {
+  background: var(--accent-primary);
+}
+
+.tp3d-annot-panel__hint[data-tone='success']::before {
+  background: var(--success);
+}
+
+.tp3d-annot-panel__hint:empty {
+  padding: 0;
+}
+
+.tp3d-annot-panel__hint:empty::before {
+  content: none;
+}
+
+.tp3d-annot-panel__undo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.tp3d-annot-panel__undo[hidden],
+.tp3d-annot-panel__notice[hidden],
+.tp3d-annot-panel__empty[hidden] {
+  display: none;
+}
+
+.tp3d-annot-panel__undo-btn {
+  padding: 2px 4px;
+  border: 0;
+  background: transparent;
+  color: var(--accent-readable);
+  font: inherit;
+  font-weight: var(--font-bold);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.tp3d-annot-panel__undo-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tp3d-annot-panel__notice {
+  color: var(--warning-readable);
+}
+
+.tp3d-annot-panel__empty {
+  padding-top: 10px;
+  padding-bottom: 16px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-annot-panel__view {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px 10px;
+}
+
+.tp3d-annot-panel__view-label {
+  width: 52px;
+  color: var(--text-secondary);
+}
+
+.tp3d-annot-panel__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.tp3d-annot-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-rows: minmax(44px, auto);
+  align-items: center;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-annot-row.is-selected {
+  background: var(--accent-primary-14);
+}
+
+.tp3d-annot-row.is-hidden {
+  opacity: 0.6;
+}
+
+.tp3d-annot-row__select {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 8px 0 14px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tp3d-annot-row__select:disabled {
+  cursor: default;
+}
+
+.tp3d-annot-row__select:focus {
+  outline: none;
+}
+
+.tp3d-annot-row__select:focus-visible {
+  background: var(--bg-hover);
+}
+
+.tp3d-annot-row__badge {
+  display: grid;
+  flex: none;
+  place-items: center;
+  box-sizing: border-box;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--annot-color, var(--annot-ink));
+  color: var(--annot-fg, var(--annot-on-ink));
+  font-size: 11px;
+  font-weight: var(--font-bold);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Needs Review / Unresolved / unreadable: a dashed ring instead of a colored dot, so it never looks placed. */
+.tp3d-annot-row__badge.is-flagged {
+  border: 1.5px dashed var(--text-secondary);
+  background: transparent;
+  color: var(--text-secondary);
+}
+
+.tp3d-annot-row[data-status='needs-review'] .tp3d-annot-row__badge.is-flagged {
+  border-color: var(--warning-readable);
+}
+
+.tp3d-annot-row[data-status='unresolved'] .tp3d-annot-row__badge.is-flagged,
+.tp3d-annot-row[data-status='unreadable'] .tp3d-annot-row__badge.is-flagged {
+  border-color: var(--error);
+}
+
+.tp3d-annot-row__badge i {
+  font-size: 10px;
+}
+
+.tp3d-annot-row__text {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.tp3d-annot-row__name,
+.tp3d-annot-row__sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tp3d-annot-row__name {
+  font-weight: var(--font-medium);
+}
+
+.tp3d-annot-row__sub {
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.tp3d-annot-row__sub[data-status='needs-review'] {
+  color: var(--warning-readable);
+}
+
+.tp3d-annot-row__sub[data-status='unresolved'],
+.tp3d-annot-row__sub[data-status='unreadable'] {
+  color: var(--error);
+}
+
+.tp3d-annot-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding-right: 8px;
+}
+
+.tp3d-annot-row__btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.tp3d-annot-row__btn[hidden] {
+  display: none;
+}
+
+.tp3d-annot-row.is-selected .tp3d-annot-row__btn {
+  color: var(--text-primary);
+}
+
+.tp3d-annot-row__btn:hover:not(:disabled) {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-annot-row__delete:hover:not(:disabled) {
+  color: var(--danger-text);
+}
+
+.tp3d-annot-row__btn:focus {
+  outline: none;
+}
+
+.tp3d-annot-row__btn:focus-visible {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.tp3d-annot-row__btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.tp3d-annot-row__issue {
+  grid-column: 1 / -1;
+  padding: 0 12px 10px 44px;
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.tp3d-annot-row__issue[hidden] {
+  display: none;
+}
+
+.tp3d-annot-row__issue .tp3d-annot-btn {
+  margin-top: 8px;
 }
 
 @media (min-width: 900px) {

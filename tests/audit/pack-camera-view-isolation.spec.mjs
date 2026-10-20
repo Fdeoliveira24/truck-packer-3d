@@ -127,6 +127,9 @@ test('Measurement, camera and zoom controls hide independently, dismiss an open 
     const MeasurementTool = { calls: 0, syncVisibility() { this.calls++; controls.btnMeasure.hidden = prefs.showMeasurementTool === false; } };
     const sandbox = {
       ...controls,
+      // The Annotations button is always present in the real Editor and keeps the group visible; this
+      // sandbox pins the independent Measurement / Camera / Zoom rules, so it models "no Annotations button".
+      btnAnnotations: null,
       MeasurementTool: options.withoutTool ? null : MeasurementTool,
       PreferencesManager: { get: () => prefs },
       UIComponents: { closeAllDropdowns: () => { state.closes++; state.menuOpen = false; } },

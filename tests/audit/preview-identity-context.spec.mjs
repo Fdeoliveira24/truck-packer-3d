@@ -73,6 +73,7 @@ import { TrailerPresets } from '/src/data/trailer-presets.js';
 import { createSceneRuntime } from '/src/editor/scene-runtime.js';
 import { createTrailerGeometry } from '/src/editor/trailer-geometry.js';
 import { createMeasurementTool } from '/src/editor/measurement-tool.js';
+import { createAnnotationTool } from '/src/editor/annotation-tool.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from '/src/screens/editor-screen.js';
 import { createTruckChangeController } from '/src/ui/truck-change-controller.js';
 import * as CoreUtils from '/src/core/utils/index.js';
@@ -157,7 +158,8 @@ const CaseScene = createCaseScene({ SceneManager, CaseLibrary, CategoryService, 
 const OperationLifecycle = createOperationLifecycle();
 // The real Measurement Tool (overlay, panel, pointer ownership) is part of this Editor, as in the app.
 const MeasurementTool = createMeasurementTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, PreferencesManager, UIComponents, OperationLifecycle });
-const InteractionManager = createInteractionManager({ SceneManager, CaseScene, StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, OperationLifecycle, MeasurementTool });
+const AnnotationTool = createAnnotationTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, UIComponents, OperationLifecycle });
+const InteractionManager = createInteractionManager({ SceneManager, CaseScene, StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, OperationLifecycle, MeasurementTool, AnnotationTool });
 
 ${previewVersionCode}
 ${captureCode}
@@ -229,7 +231,7 @@ const TruckChangeController = createTruckChangeController({ PackLibrary, CaseLib
 const EditorUI = createEditorScreen({
   StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, Utils, TrailerGeometry, CategoryService,
   AutoPackEngine, ExportService, SystemOverlay: { show() {}, hide() {} }, TrailerPresets, AppShell, SceneManager,
-  CaseScene, InteractionManager, TruckChangeController, OperationLifecycle, MeasurementTool,
+  CaseScene, InteractionManager, TruckChangeController, OperationLifecycle, MeasurementTool, AnnotationTool,
 });
 EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 const PacksUI = createPacksScreen({
@@ -364,6 +366,13 @@ window.probe = {
     const v = SceneManager.vecInchesToWorld({ x, y, z }).project(SceneManager.getCamera());
     return { x: rect.left + ((v.x + 1) / 2) * rect.width, y: rect.top + ((1 - v.y) / 2) * rect.height };
   },
+  // The Annotations overlay's drawn state (markers, expanded cards, list rows).
+  annotationOverlay: () => ({
+    open: document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true',
+    pins: [...document.querySelectorAll('.tp3d-annot-pin:not(.is-draft)')].filter(el => !el.hidden).length,
+    cards: [...document.querySelectorAll('.tp3d-annot-card')].filter(el => !el.hidden).length,
+    listed: document.querySelectorAll('.tp3d-annot-row').length,
+  }),
   overlay: () => ({
     mode: document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true',
     segments: document.querySelectorAll('.tp3d-measure-svg__segment').length,
@@ -3292,6 +3301,219 @@ test('EXPORT-M a measurement edit never lets a stale scene export after a Load P
     });
     expectAllowed(switched.result, 'other Load Plan after measurement edits');
     assert.deepEqual([switched.scenePack, switched.current], [A, A]);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+
+// ============================================================================
+// Annotations V1A: the whole callout lifecycle, driven through the REAL tool (panel, editor card, pointer
+// gestures) inside the real Editor with the production Screenshot/PDF/preview code, must leave export and
+// thumbnail authority intact and put no annotation graphics into any image. Markers and cards are a DOM/SVG
+// layer above the canvas, so exported pixels equal the display pipeline exactly as without annotations.
+// ============================================================================
+const annotationsOf = (page, id = B) => page.evaluate(id => window.probe.PackLibrary.getAnnotations(id), id);
+const addGroundCallout = (page, id, x, title = 'Note') => page.evaluate(([id, x, title]) => {
+  const q = window.probe;
+  const anchor = q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z: 0 } });
+  return q.PackLibrary.addCallout(id, { anchor, title }).ok;
+}, [id, x, title]);
+
+test('EXPORT-N Screenshot, PDF and thumbnail authority hold through create, card move, hide and delete with the real annotation overlay on', { timeout: 300000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page, B);
+    await settleExport(page);
+    await installAttempts(page);
+    await page.waitForFunction(() => window.probe.SceneManager.getCamera());
+    const control = await exportProof(page);
+    expectCleanExports(control, 'control, no annotations');
+    assert.equal(await page.evaluate(() => window.probe.ExportService.capturePackPreview(window.probe.otherPackId, { source: 'manual' })), true);
+    const baselineThumbnail = await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.otherPackId).thumbnail);
+
+    // CREATE through the real tool: the Annotations panel, the Callout tool, a click on the truck floor, Save.
+    const rect = await page.evaluate(() => { const r = document.querySelector('#viewport canvas').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; });
+    await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h - 30);
+    await page.click('#btn-editor-annotations');
+    await page.waitForFunction(() => window.probe.annotationOverlay().open);
+    await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+    await clickAt(page, await page.evaluate(p => window.probe.screenOf(...p), FLOOR_P));
+    await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+    await page.fill('.tp3d-annot-editor__input', 'UNLOAD FIRST');
+    await page.check('.tp3d-annot-editor__keep input');
+    await page.click('.tp3d-annot-btn--primary');
+    await page.waitForFunction(id => window.probe.PackLibrary.getAnnotations(id).length === 1, B);
+    await page.waitForFunction(() => window.probe.annotationOverlay().pins >= 1 && window.probe.annotationOverlay().cards >= 1);
+    const drawn = await page.evaluate(() => window.probe.annotationOverlay());
+    assert.ok(drawn.pins >= 1 && drawn.cards >= 1 && drawn.listed === 1, `fixture: the overlay is really drawn over the canvas (${JSON.stringify(drawn)})`);
+    await settleExport(page);
+    const afterCreate = await page.evaluate(() => {
+      const q = window.probe;
+      const scene = q.EditorUI.getPreviewScene();
+      return { bound: Boolean(scene) && scene.pack === q.PackLibrary.getById(q.otherPackId), exportable: Boolean(q.EditorUI.getExportScene()) };
+    });
+    assert.deepEqual(afterCreate, { bound: true, exportable: true }, 'creating a callout keeps preview and export authority bound to the new Pack object');
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'after create');
+    const created = await exportProof(page);
+    expectCleanExports(created, 'after create, markers and card drawn');
+    assert.deepEqual(created.pdfText, control.pdfText, 'the existing PDF content is unchanged by a callout');
+    assert.equal(await page.evaluate(() => window.probe.ExportService.capturePackPreview(window.probe.otherPackId, { source: 'manual' })), true,
+      'manual thumbnail capture works with a callout and the overlay');
+    assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById(window.probe.otherPackId).thumbnail), baselineThumbnail,
+      'the thumbnail carries no annotation graphics');
+
+    // MOVE the card: a real drag of its header stores an offset only (a saved callout is already selected).
+    await page.waitForSelector('.tp3d-annot-card.is-selected');
+    const head = await page.locator('.tp3d-annot-card.is-selected .tp3d-annot-card__head').boundingBox();
+    await page.mouse.move(head.x + 40, head.y + head.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(head.x + 110, head.y + 70, { steps: 6 });
+    await page.mouse.up();
+    await page.waitForFunction(id => window.probe.PackLibrary.getAnnotations(id)[0].offset !== null, B);
+    await settleExport(page);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'after card move');
+    const moved = await exportProof(page);
+    expectCleanExports(moved, 'after card move, overlay drawn');
+    assert.deepEqual(moved.pdfText, control.pdfText);
+
+    // HIDE and show through the real list.
+    await page.click('.tp3d-annot-row .tp3d-annot-row__eye');
+    await page.waitForFunction(id => window.probe.PackLibrary.getAnnotations(id)[0].hidden === true, B);
+    await settleExport(page);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'after hide');
+    expectCleanExports(await exportProof(page), 'after hide');
+    await page.click('.tp3d-annot-row .tp3d-annot-row__eye');
+    await page.waitForFunction(id => window.probe.PackLibrary.getAnnotations(id)[0].hidden === false, B);
+
+    // Billing gates are exactly what they were: a failed billing state still refuses the PDF, never the Screenshot.
+    const gated = await page.evaluate(() => {
+      const q = window.probe;
+      const billing = window.__TP3D_BILLING;
+      window.__TP3D_BILLING = { getBillingState: () => ({ ok: false }) };
+      try { return q.attemptExports(); } finally { window.__TP3D_BILLING = billing; }
+    });
+    assert.deepEqual([gated.views, gated.downloads, gated.saved], [1, 1, null], 'billing unavailable: Screenshot only, no PDF');
+
+    // DELETE through the real panel.
+    await page.click('.tp3d-annot-row .tp3d-annot-row__delete');
+    await page.waitForFunction(id => window.probe.PackLibrary.getAnnotations(id).length === 0, B);
+    await settleExport(page);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'after delete');
+    expectCleanExports(await exportProof(page), 'after delete');
+    await page.click('#btn-editor-annotations'); // close the panel
+    assert.equal(await page.evaluate(() => window.probe.annotationOverlay().open), false);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('EXPORT-N an annotation edit never lets a stale scene export after a Load Plan or workspace change', { timeout: 240000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page, B);
+    await settleExport(page);
+    await installAttempts(page);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'control');
+
+    // An edit of ANOTHER Load Plan's annotations while this one is open does not touch this scene's authority.
+    assert.equal(await addGroundCallout(page, A, 33), true);
+    expectAllowed(await page.evaluate(() => window.probe.attemptExports()), 'another plan edited');
+    assert.equal(await page.evaluate(() => window.probe.EditorUI.getPreviewScene().pack === window.probe.PackLibrary.getById(window.probe.otherPackId)), true);
+
+    // A workspace change followed by an annotation edit must not resurrect the old scene's authority.
+    const rescoped = await page.evaluate(([id, x]) => {
+      const q = window.probe;
+      const anchor = q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z: 0 } });
+      q.CoreStorage.setWorkspaceScope('fixture-b');
+      const away = q.attemptExports();
+      const wrote = q.PackLibrary.addCallout(id, { anchor, title: 'After the swap' }).ok;
+      const afterEdit = q.attemptExports();
+      q.CoreStorage.setWorkspaceScope('fixture-a');
+      const back = q.attemptExports();
+      q.EditorUI.render();
+      return { away, wrote, afterEdit, back, rerendered: q.attemptExports() };
+    }, [B, 48]);
+    expectRejected(rescoped.away, STILL_CHANGING, 'workspace replaced');
+    assert.equal(rescoped.wrote, true);
+    expectRejected(rescoped.afterEdit, STILL_CHANGING, 'an annotation edit in a replaced workspace does not rebind the old scene');
+    expectRejected(rescoped.back, STILL_CHANGING, 'A→B→A with an annotation edit in between: still the stale scene');
+    expectAllowed(rescoped.rerendered, 'freshly rendered current scope');
+
+    // A Load Plan change: navigating to the other plan exports only that plan's scene.
+    await openPack(page, A);
+    await settleExport(page);
+    const switched = await page.evaluate(() => {
+      const q = window.probe;
+      return { result: q.attemptExports(), scenePack: q.EditorUI.getExportScene()?.pack?.id ?? null, current: q.StateStore.get('currentPackId') };
+    });
+    expectAllowed(switched.result, 'other Load Plan after annotation edits');
+    assert.deepEqual([switched.scenePack, switched.current], [A, A]);
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+  }
+});
+
+test('EXPORT-N an automatic capture invalidated by an annotation edit is retried, and a current thumbnail is never recaptured', { timeout: 180000 }, async () => {
+  const browser = await launch();
+  try {
+    const { page, errors } = await openEditor(browser);
+    await page.evaluate(() => window.probe.reset());
+    await openPack(page);
+    await settlePreview(page);
+    assert.equal(await thumbnailIsCurrent(page), false, 'fixture: no image yet');
+
+    // Make the preview stale, then let the REAL scheduler start a capture and edit an annotation while its
+    // two-frame wait is open: the Pack object is replaced, so that attempt must abort and be retried.
+    await staleThumbnail(page);
+    await page.evaluate(() => {
+      const q = window.probe;
+      q.mark();
+      q.raceEdit = null;
+      const off = q.OperationLifecycle.subscribe(state => {
+        if (!state.busy || state.kind !== 'capturingPreview') return;
+        off();
+        requestAnimationFrame(() => {
+          const anchor = q.Measurements.buildSpaceAnchor({ surface: 'ground', point: { x: 5, y: 0, z: 0 } });
+          q.raceEdit = q.PackLibrary.addCallout(q.packId, { anchor, title: 'During capture' }).ok;
+        });
+      });
+      q.AutoPackPreviewScheduler.schedule();
+    });
+    await page.waitForFunction(() => window.probe.raceEdit === true, null, { timeout: 15000 });
+    await settlePreview(page);
+    await page.waitForFunction(() => {
+      const q = window.probe;
+      const pack = q.PackLibrary.getById(q.packId);
+      return Boolean(pack.thumbnail) && pack.thumbnailVisualSignature === q.CaseScene.getVisualSignature(pack);
+    }, null, { timeout: 20000 });
+    const log = await page.evaluate(() => ({
+      requests: window.probe.log.filter(e => e.type === 'request').length,
+      writes: window.probe.log.filter(e => e.type === 'write').length,
+      annotations: window.probe.PackLibrary.getAnnotations(window.probe.packId).length,
+    }));
+    assert.equal(log.annotations, 1, 'the annotation edit itself succeeded during the capture');
+    assert.ok(log.requests >= 2, `the invalidated attempt was followed by a retry (${log.requests} request(s))`);
+    assert.equal(log.writes, 1, 'exactly one thumbnail was written');
+
+    // A current thumbnail is left alone: further annotation edits request nothing.
+    await page.evaluate(() => window.probe.mark());
+    assert.equal(await addGroundCallout(page, A, 70, 'Later'), true);
+    await page.waitForTimeout(900);
+    await settlePreview(page);
+    const quiet = await page.evaluate(() => ({
+      requests: window.probe.log.filter(e => e.type === 'request').length,
+      writes: window.probe.log.filter(e => e.type === 'write').length,
+    }));
+    assert.deepEqual(quiet, { requests: 0, writes: 0 }, 'no recapture for a valid, current thumbnail');
+    assert.equal(await thumbnailIsCurrent(page), true);
     assert.deepEqual(errors, []);
   } finally {
     await browser.close();

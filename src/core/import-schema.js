@@ -20,6 +20,7 @@ import { stripForbiddenCaseQuantityFields, parseCaseMass, isCanonicalCaseMass, p
 import { parseCaseOrientationLock } from './orientation.js';
 import { normalizeEditorView, stripInternalTruckFields } from './normalizer.js';
 import { normalizeMeasurements, validateMeasurementCollection } from './measurements.js';
+import { normalizeAnnotations, validateAnnotationCollection } from './annotations.js';
 
 // ============================================================================
 // SECTION: ENVELOPE CONSTANTS
@@ -300,6 +301,11 @@ export function projectPortablePack(pack) {
   const measurements = normalizeMeasurements(p.measurements);
   if (measurements.length) portable.measurements = measurements;
   else delete portable.measurements;
+  // Annotations are authored Load Plan content too: the same explicit projection (canonical valid
+  // records, unreadable stored data kept verbatim, empty omitted so existing exports keep their shape).
+  const annotations = normalizeAnnotations(p.annotations);
+  if (annotations.length) portable.annotations = annotations;
+  else delete portable.annotations;
   return portable;
 }
 
@@ -428,6 +434,15 @@ export function validateWorkspaceGraph(data, { requirePreferences = false } = {}
       fail(
         IMPORT_SCHEMA_ERROR.MALFORMED_STRUCTURE,
         `Invalid packLibrary[${packIndex}].measurements: ${measurementCheck.error}`
+      );
+    }
+    // The same strict gate for annotations: a malformed collection, a duplicate ID or more than the
+    // per-plan maximum rejects the restore; an anchor on a missing instance is retained (Unresolved).
+    const annotationCheck = validateAnnotationCollection(pack.annotations);
+    if (annotationCheck.ok === false) {
+      fail(
+        IMPORT_SCHEMA_ERROR.MALFORMED_STRUCTURE,
+        `Invalid packLibrary[${packIndex}].annotations: ${annotationCheck.error}`
       );
     }
     const instances = Array.isArray(pack.cases) ? pack.cases : [];

@@ -17,6 +17,7 @@ export { assessCommittedPack } from './pack-assessment.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
 import * as CoreMeasurements from '../core/measurements.js';
+import * as CoreAnnotations from '../core/annotations.js';
 import { validatePortableCasePhysicalFields } from '../core/import-schema.js';
 import * as CaseLibrary from './case-library.js';
 import * as CategoryService from './category-service.js';
@@ -2528,6 +2529,7 @@ export function update(packId, patch, { skipHistory = false } = {}) {
     'cases',
     'groups',
     'measurements',
+    'annotations',
   ];
   const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
   next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
@@ -2620,24 +2622,33 @@ export function getMeasurementZones(pack) {
   return getTrailerUsableZones(pack && pack.truck);
 }
 
-/** Derived validity and geometry for every measurement, from COMMITTED cargo poses and Case definitions. */
-export function resolveMeasurements(packOrId) {
-  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
-  if (!pack) return [];
+/**
+ * What an anchor (a measurement endpoint or an annotation) resolves against: the Load Plan's cargo by
+ * identity key, its Case definitions, its floors and its truck geometry. One definition for every
+ * anchored feature, from COMMITTED cargo poses and Case definitions.
+ */
+function anchorResolutionContext(pack) {
   // Instances are found by identity key (trimmed ID), the one policy shared with normalization and import.
   const identityKey = CoreMeasurements.instanceIdentityKey;
   const instances = new Map((pack.cases || []).filter(inst => inst && identityKey(inst.id) !== null).map(inst => [identityKey(inst.id), inst]));
   // A stored plan can carry an ID twice (damaged data is kept, never repaired): anchors naming it are Unresolved.
   const ambiguous = new Set(CoreMeasurements.findAmbiguousInstanceIds(pack.cases));
   const zones = getTrailerUsableZones(pack.truck);
-  return CoreMeasurements.resolveMeasurementList(pack.measurements, {
+  return {
     getInstance: id => instances.get(identityKey(id)) || null,
     isInstanceAmbiguous: id => ambiguous.has(identityKey(id)),
     getCase: id => CaseLibrary.getById(id) || null,
     floors: CoreMeasurements.buildFloorSurfaces(pack.truck, zones),
     truck: pack.truck,
     zones,
-  });
+  };
+}
+
+/** Derived validity and geometry for every measurement, from COMMITTED cargo poses and Case definitions. */
+export function resolveMeasurements(packOrId) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  if (!pack) return [];
+  return CoreMeasurements.resolveMeasurementList(pack.measurements, anchorResolutionContext(pack));
 }
 
 function commitMeasurements(previousPack, measurements) {
@@ -2712,6 +2723,127 @@ export function deleteMeasurement(packId, measurementId) {
   return { ok: true, pack: commitMeasurements(previousPack, current.filter(record => record.id !== measurementId)) };
 }
 
+// ============================================================================
+// SECTION: ANNOTATIONS (Annotations V1)
+// ============================================================================
+// Annotations are authored Load Plan content, stored separately from cargo and measurements. Like
+// measurements they live outside cargo Undo/Redo: edits are written with skipHistory, bump lastEdited,
+// and are carried across Undo/Redo by the StateStore. They never touch cargo, stats, thumbnails, AutoPack
+// or any assessment, and every write is validated by the same strict collection gate import uses.
+
+/** Normalized, never-destructive annotation list (unreadable records are wrapped, not dropped). */
+export function getAnnotations(packOrId) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  return CoreAnnotations.normalizeAnnotations(pack && pack.annotations);
+}
+
+/** Derived validity and committed position for every annotation, against COMMITTED cargo poses. */
+export function resolveAnnotations(packOrId) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  if (!pack) return [];
+  return CoreAnnotations.resolveAnnotationList(pack.annotations, anchorResolutionContext(pack));
+}
+
+function commitAnnotations(previousPack, annotations) {
+  const now = Date.now();
+  const pack = { ...previousPack, annotations, lastEdited: now };
+  StateStore.markAnnotationEdit(previousPack.id, now);
+  StateStore.set({ packLibrary: getPacks().map(p => (p === previousPack ? pack : p)) }, {
+    skipHistory: true,
+    notification: { type: 'pack-annotations', previousPack, pack },
+  });
+  return pack;
+}
+
+const sameAnnotationContent = (a, b) => JSON.stringify({ ...a, updatedAt: 0 }) === JSON.stringify({ ...b, updatedAt: 0 });
+
+/**
+ * Apply a pure record edit to one callout and commit it. An edit that changes nothing writes nothing.
+ * @returns {{ ok: true, pack: any, annotation: any, unchanged?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' }}
+ */
+function editStoredCallout(packId, annotationId, edit) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
+  const index = current.findIndex(record => record.id === annotationId);
+  if (index === -1 || current[index].type !== CoreAnnotations.ANNOTATION_TYPE_CALLOUT) return { ok: false, reason: 'not-found' };
+  const edited = edit(current[index], Date.now());
+  if (!edited) return { ok: false, reason: 'invalid' };
+  if (sameAnnotationContent(edited, current[index])) return { ok: true, pack: previousPack, annotation: current[index], unchanged: true };
+  const next = current.map((record, i) => (i === index ? edited : record));
+  return { ok: true, pack: commitAnnotations(previousPack, next), annotation: edited };
+}
+
+/**
+ * Create one callout. Exactly one record is written, or nothing.
+ * @param {string} packId
+ * @param {{ anchor?: any, title?: string, description?: string | null, color?: string, keepExpanded?: boolean, offset?: any }} [input]
+ * @returns {{ ok: true, annotation: any, pack: any } | { ok: false, reason: 'pack-not-found' | 'limit' | 'invalid' }}
+ */
+export function addCallout(packId, { anchor, title, description = null, color, keepExpanded = false, offset = null } = {}) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
+  if (current.length >= CoreAnnotations.MAX_ANNOTATIONS_PER_PACK) return { ok: false, reason: 'limit' };
+  const record = CoreAnnotations.createCalloutRecord({
+    id: Utils.uuid(), anchor, title, description, color, keepExpanded, offset, now: Date.now(),
+  });
+  const checked = CoreAnnotations.validateAnnotationCollection([record]);
+  if (!checked.ok) return { ok: false, reason: 'invalid' };
+  const annotation = checked.annotations[0];
+  return { ok: true, annotation, pack: commitAnnotations(previousPack, [...current, annotation]) };
+}
+
+/** Edit a callout's text, color, kept-expanded flag or visibility. */
+export function updateCallout(packId, annotationId, patch) {
+  return editStoredCallout(packId, annotationId, (record, now) => CoreAnnotations.editCalloutRecord(record, patch, now));
+}
+
+/**
+ * Move a callout's marker onto a new anchor the owner chose (a marker drag or Re-attach). An annotation-only
+ * edit: the card offset is kept, the anchor is validated, and cargo is never moved, rotated or selected.
+ */
+export function reattachCallout(packId, annotationId, anchor) {
+  return editStoredCallout(packId, annotationId, (record, now) => CoreAnnotations.reattachCalloutRecord(record, anchor, now));
+}
+
+/** Store (or with null, clear) where a callout's card sits relative to its marker. */
+export function setCalloutOffset(packId, annotationId, offset) {
+  return editStoredCallout(packId, annotationId, (record, now) => CoreAnnotations.offsetCalloutRecord(record, offset, now));
+}
+
+/** Deliberate, individual deletion (also removes an unreadable recovery record). Cargo is never touched. */
+export function deleteAnnotation(packId, annotationId) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
+  const index = current.findIndex(record => record.id === annotationId);
+  if (index === -1) return { ok: false, reason: 'not-found' };
+  return {
+    ok: true, removed: current[index], index,
+    pack: commitAnnotations(previousPack, current.filter((_, i) => i !== index)),
+  };
+}
+
+/**
+ * Put back a record that deleteAnnotation returned (the panel's one-level Undo). The record goes through
+ * the same strict gate as import, keeps its ID and returns to its position, and is refused if the plan
+ * changed in a way that makes that wrong (the ID is taken again, or the cap is reached).
+ * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'exists' | 'limit' | 'invalid' }}
+ */
+export function restoreAnnotation(packId, record, index) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
+  if (current.length >= CoreAnnotations.MAX_ANNOTATIONS_PER_PACK) return { ok: false, reason: 'limit' };
+  const checked = CoreAnnotations.validateAnnotationCollection([record]);
+  if (!checked.ok) return { ok: false, reason: 'invalid' };
+  if (current.some(existing => existing.id === checked.annotations[0].id)) return { ok: false, reason: 'exists' };
+  const at = Math.max(0, Math.min(Number.isInteger(index) ? index : current.length, current.length));
+  const next = [...current.slice(0, at), checked.annotations[0], ...current.slice(at)];
+  return { ok: true, pack: commitAnnotations(previousPack, next) };
+}
+
 export function remove(packId) {
   const packs = getPacks().filter(p => p.id !== packId);
   const current = StateStore.get('currentPackId');
@@ -2773,6 +2905,10 @@ export function duplicate(packId) {
   copy.cases = (copy.cases || []).map((i, index) => ({ ...i, id: ids[index] }));
   if (copy.measurements !== undefined) {
     copy.measurements = CoreMeasurements.remapMeasurementInstanceIds(copy.measurements, instanceIdMap);
+  }
+  // Annotations follow their cargo through the same exact map; an unmapped anchor stays Unresolved.
+  if (copy.annotations !== undefined) {
+    copy.annotations = CoreAnnotations.remapAnnotationInstanceIds(copy.annotations, instanceIdMap);
   }
   StateStore.set({ packLibrary: [...getPacks(), copy] });
   return copy;
@@ -3481,7 +3617,13 @@ export function validatePackImportPayload(payload, localCaseIds = new Set()) {
   if (measurementCheck.ok === false) {
     throw new Error(`Pack import blocked: the measurements are not valid (${measurementCheck.error}).`);
   }
-  return { incomingPack, bundled, measurements: measurementCheck.measurements };
+  // Annotations are validated by the same gate, before anything is applied. The export self-preflight
+  // runs it too, so an exported file is never one the importer would refuse.
+  const annotationCheck = CoreAnnotations.validateAnnotationCollection(incomingPack.annotations);
+  if (annotationCheck.ok === false) {
+    throw new Error(`Pack import blocked: the annotations are not valid (${annotationCheck.error}).`);
+  }
+  return { incomingPack, bundled, measurements: measurementCheck.measurements, annotations: annotationCheck.annotations };
 }
 
 // PURE preflight: parse, validate, canonicalize and plan a pack import WITHOUT
@@ -3494,7 +3636,7 @@ export function planPackImport(payload) {
   const currentCases = CaseLibrary.getCases();
   const currentPacks = getPacks();
   const caseById = new Map(currentCases.map(c => [c.id, c]));
-  const { incomingPack, bundled, measurements: validatedMeasurements } =
+  const { incomingPack, bundled, measurements: validatedMeasurements, annotations: validatedAnnotations } =
     validatePackImportPayload(payload, new Set(caseById.keys()));
   const caseByName = new Map(
     currentCases.map(c => [
@@ -3633,6 +3775,7 @@ export function planPackImport(payload) {
   });
 
   pack.measurements = CoreMeasurements.remapMeasurementInstanceIds(validatedMeasurements, importedInstanceIdMap);
+  pack.annotations = CoreAnnotations.remapAnnotationInstanceIds(validatedAnnotations, importedInstanceIdMap);
 
   // Final reference validation against the planned final case set.
   const finalCases = [...currentCases, ...newCases];

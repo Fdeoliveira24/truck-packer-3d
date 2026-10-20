@@ -98,12 +98,15 @@ const AMBIGUOUS_CARGO_NOTICE = 'This cargo shares its ID with another item in th
 const PICK_REFUSAL_NOTICE = { provisional: HELD_POSE_NOTICE, ambiguous: AMBIGUOUS_CARGO_NOTICE };
 // Operations that only read pixels back never block or cancel annotation editing.
 const PASSIVE_OPERATION_KINDS = new Set(['capturingPreview']);
-const BLOCKED_CAUSE_TEXT = Object.freeze({
-  preview: 'an unapplied AutoPack option is being previewed',
-  autopacking: 'AutoPack is running',
-  unpacking: 'Unpack is running',
-  changingTruck: 'the truck is being changed',
-  previewingTruckChange: 'a truck change preview is open',
+// Annotations are paused (graphics hidden, editing refused) whenever something other than the committed scene
+// is on screen or being rebuilt. The wording is deliberately short: it is a status, not an instruction.
+const PAUSED_TEXT = Object.freeze({
+  preview: 'Annotations paused during AutoPack preview.',
+  results: 'Annotations paused during AutoPack Results.',
+  autopacking: 'Annotations paused during AutoPack.',
+  unpacking: 'Annotations paused during Unpack.',
+  changingTruck: 'Annotations paused during truck change.',
+  previewingTruckChange: 'Annotations paused during truck change preview.',
 });
 const COLOR_LABELS = Object.freeze({ ink: 'Ink', blue: 'Blue', green: 'Green', red: 'Red', violet: 'Violet' });
 const DISPLAY_MODES = Object.freeze([['markers', 'Markers'], ['labels', 'Labels'], ['cards', 'Cards']]);
@@ -158,6 +161,8 @@ export function createAnnotationTool({
   let statusTone = '';
   let statusTimer = null;
   let lastBlockedReason = null;
+  let sessionEpoch = 0; // bumped whenever the Load Plan session ends: a pending dialog answer from an older one is ignored
+  let graphicsHidden = true; // the overlay is empty while annotations are paused
   let lastDeleted = null; // { packId, record, index } for the panel's one-level Undo
   let deletedTimer = null;
   let keyboardModality = false;
@@ -221,21 +226,26 @@ export function createAnnotationTool({
   const isCallout = record => Boolean(record) && record.type === ANNOTATION_TYPE_CALLOUT;
 
   /**
-   * Why annotations cannot be created, edited, moved, hidden or deleted right now, or null. A transient
-   * Results/Truck Change preview is named first; then the running operation. A passive thumbnail capture
+   * Why annotations are paused right now, or null: a transient Results/Truck Change preview, a running
+   * operation, or an open AutoPack Results card. A passive thumbnail capture
    * is neither: it only reads pixels. An annotation write replaces the Pack object, which aborts a capture
    * that is mid-flight; the app re-requests it (app.js, 'pack-annotations').
    */
   function blockedReason() {
     if (CaseScene.isTransientPreview && CaseScene.isTransientPreview()) return 'preview';
-    if (!OperationLifecycle || !OperationLifecycle.isBusy()) return null;
-    const operation = typeof OperationLifecycle.currentOperation === 'function' ? OperationLifecycle.currentOperation() : null;
-    const kind = operation && operation.kind ? operation.kind : 'busy';
-    return PASSIVE_OPERATION_KINDS.has(kind) ? null : kind;
+    if (OperationLifecycle && OperationLifecycle.isBusy()) {
+      const operation = typeof OperationLifecycle.currentOperation === 'function' ? OperationLifecycle.currentOperation() : null;
+      const kind = operation && operation.kind ? operation.kind : 'busy';
+      if (!PASSIVE_OPERATION_KINDS.has(kind)) return kind;
+    }
+    // An open AutoPack Results card (expanded or minimized) owns that part of the Editor. A read-only question
+    // asked of the Editor; Annotations never open, close or change Results.
+    if (typeof els.isResultsActive === 'function' && els.isResultsActive()) return 'results';
+    return null;
   }
 
   function blockedMessage(reason) {
-    return `Annotations are read-only while ${BLOCKED_CAUSE_TEXT[reason] || 'an operation is running'}.`;
+    return PAUSED_TEXT[reason] || 'Annotations paused during an operation.';
   }
 
   function setStatus(message, { sticky = false, tone = '' } = {}) {
@@ -365,6 +375,8 @@ export function createAnnotationTool({
   }
 
   function resetSession() {
+    sessionEpoch += 1;
+    showMode = 'all';
     closePanel();
     selectedId = null;
     clearDeleted();
@@ -450,8 +462,15 @@ export function createAnnotationTool({
     bound = true;
     StateStore.subscribe(changes => {
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
+        sessionEpoch += 1;
+        showMode = 'all'; // the view mode ends with the Load Plan session it belonged to
         if (panelOpen || selectedId || draft || records.length) resetSession();
         return;
+      }
+      // An AutoPack Results card opening, closing or changing option can pause or resume the overlay.
+      if (Object.prototype.hasOwnProperty.call(changes, 'autoPackResults') && (wantsLoop() || panelOpen)) {
+        syncBlocked();
+        ensureLoop();
       }
       if (changes._undo || changes._redo) {
         if (pinDrag) cancelPinDrag('Undo or redo cancelled the move.');
@@ -537,7 +556,6 @@ export function createAnnotationTool({
     hover = null;
     press = null;
     panelOpen = false;
-    showMode = 'all'; // a view-only mode never outlives the panel that controls it
     clearDeleted();
     if (statusTimer) window.clearTimeout(statusTimer);
     statusTimer = null;
@@ -794,7 +812,7 @@ export function createAnnotationTool({
     draft = null;
     editorDrag = null;
     if (editorParts) setHidden(editorParts.root, true);
-    selectedId = id;
+    adoptSelection(id);
     visDirty = true;
     setStatus(wasEdit ? 'Callout updated.' : `Callout saved to ${target}.`, { tone: 'success' });
     refreshOverlay();
@@ -1049,12 +1067,13 @@ export function createAnnotationTool({
         writeHidden(id);
         return;
       }
+      const epoch = sessionEpoch;
       confirmDiscard({
         title: 'Discard changes?',
         message: `Hiding "${record.title}" closes its editor and discards your unsaved changes.`,
         okLabel: 'Discard and hide',
       }).then(confirmed => {
-        if (!confirmed || !draft || draft.editId !== id) return;
+        if (!confirmed || epoch !== sessionEpoch || !draft || draft.editId !== id) return;
         closeEditingFor(id);
         writeHidden(id);
       });
@@ -1094,8 +1113,14 @@ export function createAnnotationTool({
     return Boolean(title || description || draft.color !== 'ink' || draft.keepExpanded);
   }
 
-  function confirmDiscard(options) {
-    return UIComponents.confirm({ cancelLabel: 'Keep editing', danger: true, ...options }).catch(() => false);
+  /**
+   * The discard dialog. Its message is built as an element with textContent: the modal API treats a string as
+   * trusted HTML, and the message names user-authored text.
+   */
+  function confirmDiscard({ message, ...options }) {
+    const content = htmlEl('div');
+    content.textContent = message;
+    return UIComponents.confirm({ cancelLabel: 'Keep editing', danger: true, ...options, message: content }).catch(() => false);
   }
 
   // ==========================================================================
@@ -1114,12 +1139,17 @@ export function createAnnotationTool({
   function requestShowMode(mode) {
     if (!SHOW_MODES.some(([key]) => key === mode) || mode === showMode) return;
     if (mode === 'off' && draft && draftIsDirty()) {
+      const epoch = sessionEpoch;
+      const openDraft = draft;
       confirmDiscard({
         title: 'Discard changes?',
         message: 'Turning annotations off closes the open callout editor and discards its unsaved changes.',
         okLabel: 'Discard and turn off',
       }).then(confirmed => {
-        if (confirmed && showMode !== 'off') applyShowMode('off');
+        // The answer belongs to the session and editor that asked: a Load Plan change, workspace replacement or
+        // a different editor in the meantime makes it void.
+        if (!confirmed || epoch !== sessionEpoch || draft !== openDraft || showMode === 'off') return;
+        applyShowMode('off');
       });
       return;
     }
@@ -1201,8 +1231,19 @@ export function createAnnotationTool({
       setStatus(outcome.reason === 'limit' ? 'The annotation limit is reached, so it could not be restored.' : 'It could not be restored.');
       return;
     }
-    if (pending.record.type === ANNOTATION_TYPE_CALLOUT) selectedId = pending.record.id;
+    if (pending.record.type === ANNOTATION_TYPE_CALLOUT) adoptSelection(pending.record.id);
     setStatus('Restored.', { tone: 'success' });
+  }
+
+  /**
+   * After a successful annotation write, make that callout the selection the same way select() does: the cargo
+   * selection is cleared (so Delete and the arrow keys can never act on cargo while a callout is selected),
+   * unless the Editor holds a provisional pose, which must not be abandoned.
+   */
+  function adoptSelection(id) {
+    if (!id || id === selectedId || provisionalPoseActive()) return;
+    clearCargoSelection();
+    selectedId = id;
   }
 
   function startReattach(id) {
@@ -1253,7 +1294,7 @@ export function createAnnotationTool({
     }
     reattachId = null;
     hover = null;
-    selectedId = id;
+    adoptSelection(id);
     updateCursor();
     setStatus('Callout re-attached.', { tone: 'success' });
     return true;
@@ -1688,20 +1729,6 @@ export function createAnnotationTool({
 
     const body = htmlEl('div', 'tp3d-annot-panel__body');
     body.id = 'editor-annotation-panel-body';
-    const blocked = htmlEl('div', 'tp3d-annot-panel__blocked');
-    blocked.hidden = true;
-    const blockedContent = htmlEl('div', 'tp3d-annot-panel__blocked-content');
-    const blockedAction = htmlEl('button', 'tp3d-annot-btn tp3d-annot-btn--small', 'Return to saved plan');
-    blockedAction.type = 'button';
-    blockedAction.hidden = true;
-    blockedAction.addEventListener('click', () => {
-      // Ends only the transient Results preview (the Editor's own landing); nothing is applied or written.
-      if (typeof els.endResultsPreview === 'function') els.endResultsPreview();
-      renderPanel();
-      refreshOverlay();
-    });
-    blockedContent.append(htmlEl('span'), blockedAction);
-    blocked.append(iconEl('fa-solid fa-lock'), blockedContent);
 
     const toolGroup = segmented('Annotation tool', 'tp3d-annot-seg--tools');
     const toolButtons = TOOL_DEFS.map(def => {
@@ -1762,12 +1789,12 @@ export function createAnnotationTool({
     const warning = htmlEl('div', 'tp3d-annot-panel__notice', "Some saved annotations couldn't be read. The original data is kept until you delete it.");
     warning.hidden = true;
     const list = htmlEl('ul', 'tp3d-annot-panel__list');
-    body.append(blocked, toolGroup, hint, undoBar, show, view, warning, empty, list);
+    body.append(toolGroup, hint, undoBar, show, view, warning, empty, list);
 
     els.panel.replaceChildren(head, body);
     rows.clear();
     panelParts = {
-      root: els.panel, head, toggle: toggleButton, chevron, count, body, blocked, blockedText: blocked.querySelector('span'), blockedAction,
+      root: els.panel, head, toggle: toggleButton, chevron, count, body,
       toolButtons, hint, undoBar, undoText, showButtons, displayButtons, empty, warning, list,
     };
     return panelParts;
@@ -1871,7 +1898,7 @@ export function createAnnotationTool({
 
   /** Context-sensitive guidance: empty unless something is relevant right now. */
   function guidanceText(blockedNow) {
-    if (blockedNow) return ''; // the banner above already names the cause
+    if (blockedNow) return blockedMessage(blockedNow);
     if (statusMessage) return statusMessage;
     if (showMode === 'off') return SHOW_OFF_HINT;
     if (pinDrag && pinDrag.moved) return 'Drag the marker onto a surface. Esc cancels.';
@@ -1912,12 +1939,6 @@ export function createAnnotationTool({
     toggleClass(parts.root, 'is-covered', compact && Boolean(draft));
     setHidden(parts.body, panelCollapsed);
 
-    setHidden(parts.blocked, !blockedNow);
-    if (blockedNow) {
-      const how = blockedNow === 'preview' ? ' Apply it in AutoPack Results, or return to your saved plan.' : '';
-      setText(parts.blockedText, `${blockedMessage(blockedNow)}${how} You can still select and view annotations.`);
-    }
-    setHidden(parts.blockedAction, !(blockedNow === 'preview' && typeof els.endResultsPreview === 'function'));
     parts.toolButtons.forEach(({ key, button, available }) => {
       if (!available) return;
       setAttr(button, 'aria-pressed', tool === key ? 'true' : 'false');
@@ -1948,7 +1969,7 @@ export function createAnnotationTool({
         row = createRow();
         rows.set(record.id, row);
       }
-      updateRow(row, record, results[index], Boolean(blockedNow), showMode === 'off');
+      updateRow(row, record, results[index], Boolean(blockedNow), showMode === 'off' || Boolean(blockedNow));
       if (parts.list.children[index] !== row.el) parts.list.insertBefore(row.el, parts.list.children[index] || null);
       seen.add(record.id);
     });
@@ -1977,8 +1998,11 @@ export function createAnnotationTool({
         updateCursor();
       }
       clearDeleted();
+      selectedId = null;
+      visDirty = true;
     }
     renderPanel();
+    refreshOverlay();
     return reason;
   }
 
@@ -2086,6 +2110,7 @@ export function createAnnotationTool({
   function makePin(id) {
     const pin = htmlEl('button', 'tp3d-annot-pin');
     pin.type = 'button';
+    pin.hidden = true; // drawn only once it has a valid projected position
     pin.dataset.annotId = id;
     const badge = htmlEl('span', 'tp3d-annot-pin__badge');
     const chip = htmlEl('span', 'tp3d-annot-pin__chip');
@@ -2141,16 +2166,14 @@ export function createAnnotationTool({
   }
 
   function hideView(view) {
-    if (view.shown) {
-      view.pin.hidden = true;
-      if (view.cardParts) {
-        view.cardParts.card.hidden = true;
-        view.cardParts.card.classList.remove('is-selected');
-      }
-      view.shown = false;
-      view.screen = null;
-      view.cardRect = null;
+    view.pin.hidden = true;
+    if (view.cardParts) {
+      view.cardParts.card.hidden = true;
+      view.cardParts.card.classList.remove('is-selected');
     }
+    view.shown = false;
+    view.screen = null;
+    view.cardRect = null;
   }
 
   function removeView(id) {
@@ -2338,6 +2361,16 @@ export function createAnnotationTool({
     const camera = SceneManager.getCamera();
     const parts = ensureLayerParts();
     if (!camera || !parts || !doc || !inEditor()) return;
+    // Paused (an operation, a Results preview or an open Results card): nothing is drawn and nothing is projected,
+    // raycast or laid out. The records are untouched; the overlay comes back from them when the pause ends.
+    if (blockedReason()) {
+      if (!graphicsHidden) {
+        disposeOverlay();
+        graphicsHidden = true;
+      }
+      return;
+    }
+    graphicsHidden = false;
     const layerRect = els.layer.getBoundingClientRect();
     const width = layerRect.width > 0 ? layerRect.width : 1;
     const height = layerRect.height > 0 ? layerRect.height : 1;

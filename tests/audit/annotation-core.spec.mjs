@@ -112,6 +112,38 @@ test('colors: the five built-in names stay valid and a custom color is exactly #
   }
 });
 
+const luminanceOf = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+const contrastOf = (a, b) => { const [hi, lo] = [luminanceOf(a), luminanceOf(b)].sort((x, y) => y - x); return (hi + 0.05) / (lo + 0.05); };
+
+test('every accepted marker number reaches 4.5:1: custom colors around the foreground switch and every built-in color in both themes', async () => {
+  // Threshold cases: mid-tones neither white nor the near-black text can serve get pure black.
+  for (const color of ['#7a7a7a', '#767676', '#777777', '#808080', '#757575', '#6e6e6e', '#8a8a8a', '#959595', '#8b8b8b', '#ff0000', '#00ff00', '#0000ff', '#ffa500', '#808000', '#008080', '#800080']) {
+    assert.ok(contrastOf(color, A.annotationForegroundFor(color)) >= 4.5, `${color} -> ${A.annotationForegroundFor(color)} ${contrastOf(color, A.annotationForegroundFor(color)).toFixed(2)}`);
+  }
+  // A sweep of the whole gray ramp and of saturated hues.
+  for (let v = 0; v < 256; v += 3) {
+    const hex = `#${v.toString(16).padStart(2, '0').repeat(3)}`;
+    assert.ok(contrastOf(hex, A.annotationForegroundFor(hex)) >= 4.5, hex);
+  }
+  for (let r = 0; r < 256; r += 51) for (let g = 0; g < 256; g += 51) for (let b = 0; b < 256; b += 51) {
+    const hex = `#${[r, g, b].map(v => v.toString(16).padStart(2, '0')).join('')}`;
+    assert.ok(contrastOf(hex, A.annotationForegroundFor(hex)) >= 4.5, hex);
+  }
+  // The built-in colors are stylesheet tokens: check what is actually shipped, in both themes.
+  const { readFile } = await import('node:fs/promises');
+  const css = await readFile(new URL('../../styles/main.css', import.meta.url), 'utf8');
+  const block = (start, end) => css.slice(css.indexOf(start), css.indexOf(end, css.indexOf(start)));
+  const themes = { light: block(':root {', '/* ================================\n  Dark Theme Tokens'), dark: block("[data-theme='dark'] {", '/* ================================\n  Base Reset') };
+  for (const [name, text] of Object.entries(themes)) {
+    const token = key => (text.match(new RegExp(`--annot-${key}:\\s*(#[0-9a-fA-F]{6});`)) || [])[1];
+    for (const color of ['ink', 'blue', 'green', 'red', 'violet']) {
+      const foreground = color === 'ink' ? token('on-ink') : token('on-color');
+      assert.ok(token(color) && foreground, `${name} ${color} tokens exist`);
+      assert.ok(contrastOf(token(color), foreground) >= 4.5, `${name} ${color}: ${contrastOf(token(color), foreground).toFixed(2)}`);
+    }
+  }
+});
+
 test('validation names the first problem in a stored callout', () => {
   const ok = callout('v');
   assert.equal(A.validateCalloutRecord(ok), null);

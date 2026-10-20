@@ -492,6 +492,37 @@ test('custom colors survive save, duplicate, Load Plan import/export, Workspace 
   assert.deepEqual(kept[0].original, stored);
 });
 
+test('the generic Pack update cannot write annotations: invalid, over-cap or any other patch leaves state, lastEdited, notifications and history alone', () => {
+  seed();
+  PackLibrary.addCallout('A', note('Keep', ground(10, 10)));
+  const notifications = [];
+  const unsubscribe = StateStore.subscribe((_changes, _state, notification) => { if (notification) notifications.push(notification.type); });
+  try {
+    const before = JSON.stringify(stored('A'));
+    const edited = stored('A').lastEdited;
+    const stateBefore = JSON.stringify(StateStore.snapshot().packLibrary);
+    const valid = n => Array.from({ length: n }, (_, i) => callout(`g${i}`, ground(i, 1)));
+    assert.equal(PackLibrary.update('A', { annotations: valid(201) }), null, 'over the cap');
+    assert.equal(PackLibrary.update('A', { annotations: [callout('bad', ground(1, 1), { color: 'url(x)' })] }), null, 'an invalid color');
+    assert.equal(PackLibrary.update('A', { annotations: [] }), null, 'even an empty list: the dedicated writers own deletion');
+    assert.equal(PackLibrary.update('A', { annotations: valid(2), title: 'Sneaky' }), null, 'a mixed patch is refused as a whole');
+    assert.equal(JSON.stringify(stored('A')), before, 'the Pack is untouched');
+    assert.equal(stored('A').lastEdited, edited);
+    assert.equal(JSON.stringify(StateStore.snapshot().packLibrary), stateBefore);
+    assert.deepEqual(notifications, [], 'no notification');
+    assert.equal(StateStore.undo(), false, 'and no history step');
+    // Legacy updates and whole-Pack patches that merely repeat the stored annotations still work.
+    assert.ok(PackLibrary.update('A', { title: 'Renamed' }), 'an ordinary update');
+    assert.equal(stored('A').title, 'Renamed');
+    assert.deepEqual(PackLibrary.getAnnotations('A').map(r => r.title), ['Keep'], 'annotations survive');
+    assert.ok(PackLibrary.update('A', { ...stored('A'), title: 'Whole-Pack patch' }), 'a whole-Pack patch repeating the same annotations');
+    assert.equal(stored('A').title, 'Whole-Pack patch');
+    assert.equal(PackLibrary.getAnnotations('A').length, 1);
+  } finally {
+    unsubscribe();
+  }
+});
+
 // ============================================================================
 // SECTION: CARGO IDENTITY SURVIVES NORMALIZATION
 // ============================================================================

@@ -108,6 +108,9 @@ export function normalizeCalloutDescription(value) {
   return text || null;
 }
 
+// #111318 as a relative luminance (sRGB), and the contrast every number on a marker must reach.
+const NEAR_BLACK_LUMINANCE = 0.0066;
+const MIN_NUMBER_CONTRAST = 4.5;
 const CUSTOM_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 
 /** True for a custom annotation color: exactly `#RRGGBB` (six hex digits, any case). */
@@ -135,7 +138,10 @@ export function normalizeAnnotationColor(value) {
   return canonicalAnnotationColor(value) || DEFAULT_ANNOTATION_COLOR;
 }
 
-/** Foreground (number text) that stays readable on a custom color: near-black or white, whichever contrasts more. */
+/**
+ * Foreground (number text) for a custom color. White or the app's near-black when either reaches 4.5:1;
+ * otherwise pure black, which does for every background that neither of those serves (mid-tones).
+ */
 export function annotationForegroundFor(color) {
   if (!isCustomAnnotationColor(color)) return null;
   const channel = index => {
@@ -143,9 +149,11 @@ export function annotationForegroundFor(color) {
     return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
   };
   const luminance = 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
-  const onDark = 1.05 / (luminance + 0.05); // white text
-  const onLight = (luminance + 0.05) / 0.0575; // #111318 text (luminance about 0.0075)
-  return onDark >= onLight ? '#ffffff' : '#111318';
+  const contrastWith = foregroundLuminance => (Math.max(luminance, foregroundLuminance) + 0.05) / (Math.min(luminance, foregroundLuminance) + 0.05);
+  for (const [foreground, foregroundLuminance] of [['#ffffff', 1], ['#111318', NEAR_BLACK_LUMINANCE]]) {
+    if (contrastWith(foregroundLuminance) >= MIN_NUMBER_CONTRAST) return foreground;
+  }
+  return '#000000';
 }
 
 /** A stored or requested card offset, validated and rounded; null means "placed automatically". */

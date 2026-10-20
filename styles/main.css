@@ -114,7 +114,7 @@
      stays reserved for selection and active gestures. */
   --annot-ink: #1a1a1f;
   --annot-blue: #2f6fed;
-  --annot-green: #0f8a5a;
+  --annot-green: #0e8456;
   --annot-red: #d92d36;
   --annot-violet: #6d4aff;
   --annot-on-ink: #ffffff;
@@ -5814,34 +5814,6 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-panel__body[hidden] {
-  display: none;
-}
-
-.tp3d-annot-panel__blocked {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 0 14px 10px;
-  padding: 8px 10px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--bg-hover);
-  color: var(--warning-readable);
-  line-height: 1.4;
-}
-
-.tp3d-annot-panel__blocked i {
-  margin-top: 2px;
-}
-
-.tp3d-annot-panel__blocked-content {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 6px;
-}
-
-.tp3d-annot-panel__blocked[hidden] {
   display: none;
 }
 

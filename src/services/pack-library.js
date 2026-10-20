@@ -2501,6 +2501,13 @@ export function update(packId, patch, { skipHistory = false } = {}) {
   const now = Date.now();
   const cloned = Utils.deepClone(patch);
   const prev = packs[idx];
+  // Annotations have their own validated writers (addCallout, updateCallout, ... and the import gate): the
+  // generic writer neither validates nor caps them, so it refuses to change them. A patch that merely repeats
+  // the stored value (a whole-Pack patch) is tolerated and writes nothing for that field.
+  if (Object.prototype.hasOwnProperty.call(cloned || {}, 'annotations')) {
+    if (JSON.stringify(cloned.annotations) !== JSON.stringify(prev.annotations)) return null;
+    delete cloned.annotations;
+  }
   if (Object.prototype.hasOwnProperty.call(cloned || {}, 'loadPlanNumber')) {
     cloned.loadPlanNumber = assertLoadPlanNumberAvailable(cloned.loadPlanNumber, packs, {
       excludeId: packId,
@@ -2529,7 +2536,6 @@ export function update(packId, patch, { skipHistory = false } = {}) {
     'cases',
     'groups',
     'measurements',
-    'annotations',
   ];
   const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
   next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;

@@ -102,7 +102,7 @@ const PASSIVE_OPERATION_KINDS = new Set(['capturingPreview']);
 // is on screen or being rebuilt. The wording is deliberately short: it is a status, not an instruction.
 const PAUSED_TEXT = Object.freeze({
   preview: 'Annotations paused during AutoPack preview.',
-  results: 'Annotations paused during AutoPack Results.',
+  results: 'Annotation editing paused while AutoPack Results are open.',
   autopacking: 'Annotations paused during AutoPack.',
   unpacking: 'Annotations paused during Unpack.',
   changingTruck: 'Annotations paused during truck change.',
@@ -242,6 +242,16 @@ export function createAnnotationTool({
     // asked of the Editor; Annotations never open, close or change Results.
     if (typeof els.isResultsActive === 'function' && els.isResultsActive()) return 'results';
     return null;
+  }
+
+  /**
+   * Why the overlay must be empty right now, or null. Everything that blocks editing also hides the graphics
+   * (a running operation, a transient preview) except an open Results card over the committed layout: the
+   * committed scene is the truth, so its annotations stay visible while only editing waits for Results to close.
+   */
+  function graphicsPausedReason() {
+    const reason = blockedReason();
+    return reason === 'results' ? null : reason;
   }
 
   function blockedMessage(reason) {
@@ -400,6 +410,10 @@ export function createAnnotationTool({
     if (toggle && target && selectedId === target) target = null;
     if (target && showMode === 'off') {
       notice(SHOW_OFF_HINT);
+      return;
+    }
+    if (target && graphicsPausedReason()) {
+      notice(blockedMessage(graphicsPausedReason()));
       return;
     }
     if (target && target !== selectedId) {
@@ -1969,7 +1983,7 @@ export function createAnnotationTool({
         row = createRow();
         rows.set(record.id, row);
       }
-      updateRow(row, record, results[index], Boolean(blockedNow), showMode === 'off' || Boolean(blockedNow));
+      updateRow(row, record, results[index], Boolean(blockedNow), showMode === 'off' || Boolean(graphicsPausedReason()));
       if (parts.list.children[index] !== row.el) parts.list.insertBefore(row.el, parts.list.children[index] || null);
       seen.add(record.id);
     });
@@ -1998,7 +2012,7 @@ export function createAnnotationTool({
         updateCursor();
       }
       clearDeleted();
-      selectedId = null;
+      if (reason !== 'results') selectedId = null; // hidden graphics leave nothing selected; an open Results card hides nothing
       visDirty = true;
     }
     renderPanel();
@@ -2361,9 +2375,9 @@ export function createAnnotationTool({
     const camera = SceneManager.getCamera();
     const parts = ensureLayerParts();
     if (!camera || !parts || !doc || !inEditor()) return;
-    // Paused (an operation, a Results preview or an open Results card): nothing is drawn and nothing is projected,
+    // Paused (an operation or a transient Results preview): nothing is drawn and nothing is projected,
     // raycast or laid out. The records are untouched; the overlay comes back from them when the pause ends.
-    if (blockedReason()) {
+    if (graphicsPausedReason()) {
       if (!graphicsHidden) {
         disposeOverlay();
         graphicsHidden = true;

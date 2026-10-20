@@ -1296,11 +1296,13 @@ test('selecting an annotation by marker drag or by deletion Undo always clears t
   assert.deepEqual(errors, []);
 });
 
-test('real AutoPack: the cargo scene is clean while it runs and while its Results are open, nothing is written, and the overlay returns from the same records', { timeout: 300000 }, async t => {
+test('real AutoPack: clean while it runs or previews, visible again on the applied committed layout, editing waits for Results to close, nothing is written', { timeout: 300000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);
-  await seed(page, [{ title: 'On cargo', ...TOP_OF_A, keepExpanded: true }, { title: 'On ground', ground: [520, 10] }]);
+  await seed(page, [{ title: 'On cargo', ...TOP_OF_A, keepExpanded: true }, { title: 'On ground', ground: [520, 10] }, { title: 'Hidden one', ground: [300, 30] }]);
+  await page.click('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__eye');
+  await page.waitForFunction(() => window.probe.annotations()[2].hidden === true);
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 2);
   const records = () => page.evaluate(() => JSON.stringify(window.probe.annotations()));
   const resultsState = () => page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults')));
@@ -1326,47 +1328,83 @@ test('real AutoPack: the cargo scene is clean while it runs and while its Result
   await page.waitForFunction(() => /paused during AutoPack/.test(window.probe.hint()));
   assert.equal(await editorClosed(page), true, 'the editor cannot stay open over AutoPack');
   await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults') && !window.probe.OperationLifecycle.isBusy(), null, { timeout: 120000 });
-  await page.waitForFunction(() => /paused during AutoPack Results/.test(window.probe.hint()));
   assert.equal(await records(), before, 'AutoPack never rewrote an annotation; the unsaved text was not saved');
 
   const samples = await page.evaluate(() => window.__samples);
   assert.ok(samples.some(sample => sample.busy), 'the run was observed');
   assert.equal(samples.filter(sample => sample.busy && sample.drawn > 0).length, 0, 'no marker, card or editor is ever drawn while AutoPack runs');
 
-  // Results open (minimized or expanded): still paused, still clean, Results untouched by any annotation control.
+  // Results open over the committed layout: the annotations are back, only editing waits for Results to close.
+  const drawable = () => page.evaluate(() => window.probe.annotations().filter((r, i) => !r.hidden && window.probe.resolved()[i].status === 'valid').length);
+  const pinsNow = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length);
   const graphics = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not([hidden]), .tp3d-annot-card:not([hidden]), .tp3d-annot-editor:not([hidden])').length);
-  assert.equal(await graphics(), 0);
+  const editingControls = () => page.evaluate(() => ({ tool: document.querySelector('.tp3d-annot-seg__btn[data-tool="callout"]').disabled, edit: document.querySelector('.tp3d-annot-row__edit').disabled }));
+  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false, 'the committed layout is displayed');
   const results = await resultsState();
   const edited = await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
-  const controlState = await page.evaluate(() => ({ tool: document.querySelector('.tp3d-annot-seg__btn[data-tool="callout"]').disabled, edit: document.querySelector('.tp3d-annot-row__edit').disabled }));
-  assert.deepEqual(controlState, { tool: true, edit: true }, 'nothing can be created or edited over Results');
-  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-panel button').length > 0 && ![...document.querySelectorAll('.tp3d-annot-panel button')].some(b => /return|apply|preview|autopack/i.test(b.textContent))), true, 'no Annotations control touches AutoPack Results');
+  assert.equal(await pinsNow(), await drawable(), 'every eligible annotation is drawn again, the individually hidden one is not');
+  assert.ok(await pinsNow() >= 1);
+  assert.deepEqual(await editingControls(), { tool: true, edit: true }, 'nothing can be created or edited while Results is open');
+  assert.equal(await page.evaluate(() => ![...document.querySelectorAll('.tp3d-annot-panel button')].some(b => /return|apply|preview|autopack/i.test(b.textContent))), true, 'no Annotations control touches AutoPack Results');
   const toggle = page.locator('[data-focus-key="results-toggle"]');
   if (await page.evaluate(() => window.probe.StateStore.get('autoPackResults').minimized)) await toggle.click();
-  await showButton(page, 'Selected').click();
+  assert.deepEqual(await editingControls(), { tool: true, edit: true }, 'expanded Results: still no editing');
+  assert.equal(await pinsNow(), await drawable(), 'expanded Results: still drawn');
   await showButton(page, 'Off').click();
+  assert.equal(await graphics(), 0, 'the owner\'s Off setting is respected');
   await showButton(page, 'All').click();
-  assert.equal(await graphics(), 0, 'view modes cannot bring graphics back over Results');
-  const expanded = await resultsState();
-  assert.equal(JSON.parse(expanded).closed, false, 'Annotations never close Results');
-  assert.equal(JSON.stringify({ ...JSON.parse(expanded), minimized: 0 }), JSON.stringify({ ...JSON.parse(results), minimized: 0 }), 'Results state is only what the owner changed');
+  assert.equal(await pinsNow(), await drawable(), 'and All brings them back');
+  assert.equal(JSON.parse(await resultsState()).closed, false, 'Annotations never close Results');
+  assert.equal(JSON.stringify({ ...JSON.parse(await resultsState()), minimized: 0 }), JSON.stringify({ ...JSON.parse(results), minimized: 0 }), 'Results state is only what the owner changed');
+  assert.equal(await records(), before);
 
-  // Closing Results (the owner's own action) returns the committed scene with the same records.
+  // An unapplied option is a transient layout: hidden, and closing Results does not make it visible.
+  await page.click('[aria-label="Next AutoPack option"]');
+  await page.waitForFunction(() => window.probe.CaseScene.isTransientPreview());
+  await page.waitForFunction(() => /paused during AutoPack preview/.test(window.probe.hint()));
+  assert.equal(await graphics(), 0, 'unapplied preview: no annotation graphics');
+  await page.click('[aria-label="Close AutoPack results"]');
+  await page.waitForTimeout(500);
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), true, 'the preview is not ended by closing Results (existing behavior)');
+  assert.equal(await graphics(), 0, 'closing Results during an unapplied preview must not reveal annotations on transient poses');
+  assert.deepEqual(await editingControls(), { tool: true, edit: true });
+  // Back to the applied option: committed again.
+  await page.click('#btn-autopack-results-reopen');
+  await page.click('[aria-label="Previous AutoPack option"]');
+  await page.waitForFunction(() => !window.probe.CaseScene.isTransientPreview());
+  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
+  assert.equal(await pinsNow(), await drawable(), 'committed layout again: drawn, editing still waiting for Results');
+
+  // Closing Results resumes ordinary editing.
   await page.click('[aria-label="Close AutoPack results"]');
   await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
-  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length >= 1);
-  assert.equal(await records(), before, 'the overlay returns from the unchanged records');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.get('autoPackResults').closed), true);
-  assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), edited, 'pausing and resuming wrote nothing to the Load Plan');
-
-  // The original obstruction: an editor open when the owner reopens Results cannot stay under (or over) it.
+  assert.deepEqual(await editingControls(), { tool: false, edit: false });
+  assert.equal(await records(), before, 'records unchanged through the whole sequence');
+  assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), edited, 'and the Load Plan was not touched by the rendering rules');
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__edit');
   await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
   await page.click('.tp3d-annot-btn--primary', { trial: true }); // the Save button is reachable by an ordinary click
+
+  // The original obstruction: reopening Results with an editor open closes the editor instead of competing with it.
   await page.click('#btn-autopack-results-reopen');
-  await page.waitForFunction(() => /paused during AutoPack Results/.test(window.probe.hint()));
-  assert.equal(await editorClosed(page), true, 'reopening Results closes the editor instead of competing with it');
+  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
+  assert.equal(await editorClosed(page), true);
   assert.equal(await records(), before, 'and nothing was saved');
+  assert.equal(await pinsNow(), await drawable(), 'the annotations stay visible');
+
+  // Applying an option (the owner's own action): the committed layout shows, annotations return, editing waits for Results.
+  await page.click('[aria-label="Next AutoPack option"]');
+  await page.waitForFunction(() => window.probe.CaseScene.isTransientPreview());
+  assert.equal(await graphics(), 0);
+  await page.getByRole('button', { name: 'Apply this option' }).click();
+  await page.waitForFunction(() => !window.probe.CaseScene.isTransientPreview() && !window.probe.OperationLifecycle.isBusy());
+  await page.waitForFunction(() => /editing paused while AutoPack Results are open/.test(window.probe.hint()));
+  assert.equal(await pinsNow(), await drawable(), 'after Apply the committed layout shows its annotations again');
+  assert.deepEqual(await editingControls(), { tool: true, edit: true });
+  await page.click('[aria-label="Close AutoPack results"]');
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  assert.deepEqual(await editingControls(), { tool: false, edit: false }, 'editing resumes once Results closes');
   assert.deepEqual(errors, []);
 });
 

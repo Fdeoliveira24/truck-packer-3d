@@ -1,5 +1,17 @@
 name: Quality Gate
 
+# Fast PR gate, about 4-5 minutes on a hosted runner: ESLint, Stylelint and HTML validation, typecheck, the full
+# Node regression lane, a small set of critical real-Chromium smoke tests, the production build, the production
+# dependency audit and a patch whitespace check. One job, no matrix: compute is billed per minute.
+#
+# The complete Chromium regression suite is deliberately NOT run here (about 25 minutes on a hosted runner). Run it
+# locally before a major release or after a substantial high-risk change:
+#
+#   npm run test:regression
+#
+# Which tests are in the smoke set is the `--test-name-pattern` of `test:ci:browser` in package.json; a Node test
+# (three-r160-npm-vite.spec.mjs) fails if a selected test is renamed or if any spec belongs to neither lane.
+
 on:
   pull_request:
     branches:
@@ -16,7 +28,8 @@ concurrency:
 jobs:
   quality-gate:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Fail-safe only: the measured run is about 4-5 minutes, so a run past 10 means something is stuck.
+    timeout-minutes: 10
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -44,10 +57,11 @@ jobs:
       - name: Tests — Node
         run: npm run test:ci:node
 
-      - name: Install Playwright Chromium
-        run: npx playwright install --with-deps chromium
+      # Every spec launches headless Chromium only, so the headless shell is all that is needed (no full Chromium).
+      - name: Install Playwright Chromium (headless shell)
+        run: npx playwright install --with-deps --only-shell chromium
 
-      - name: Tests — Browser
+      - name: Tests — Browser smoke
         run: npm run test:ci:browser
 
       - name: Build

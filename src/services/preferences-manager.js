@@ -30,7 +30,7 @@ function get() {
 
 // Floating Editor control visibility. A save that changes only these keys needs
 // no Editor render, so it is tagged and routed to a lightweight visibility sync.
-const VIEWPORT_CONTROL_KEYS = ['showCameraControls', 'showZoomControls'];
+const VIEWPORT_CONTROL_KEYS = ['showCameraControls', 'showZoomControls', 'showMeasurementTool'];
 
 function set(nextPrefs) {
   const normalized = normalizePreferences(nextPrefs);

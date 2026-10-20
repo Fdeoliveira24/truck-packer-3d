@@ -913,9 +913,12 @@
                     PDF
                   </button>
                 </div>
-                <!-- Floating viewport controls, top to bottom: Camera Views, Zoom In, Zoom Out.
+                <!-- Floating viewport controls, top to bottom: Measurement Tool, Camera Views, Zoom In, Zoom Out.
                      Each button is hidden independently by its Settings preference. -->
-                <div class="tp3d-editor-zoom-controls" id="editor-zoom-controls" role="group" aria-label="Camera and zoom controls">
+                <div class="tp3d-editor-zoom-controls" id="editor-zoom-controls" role="group" aria-label="Measurement, camera and zoom controls">
+                  <button id="btn-editor-measure" type="button" aria-label="Measurement Tool" aria-pressed="false" title="Measurement Tool">
+                    <i class="fa-solid fa-ruler-combined" aria-hidden="true"></i>
+                  </button>
                   <button id="btn-editor-view" type="button" aria-label="Camera Views" title="Camera Views">
                     <i class="fa-solid fa-video" aria-hidden="true"></i>
                   </button>
@@ -926,6 +929,10 @@
                     <i class="fa-solid fa-minus" aria-hidden="true"></i>
                   </button>
                 </div>
+                <!-- Measurement Tool: distance labels (decorative, never captured by exports) and the
+                     compact measurement list. Both stay hidden until Measurement Mode is active. -->
+                <div class="tp3d-measure-labels" id="editor-measure-labels" aria-hidden="true"></div>
+                <section class="tp3d-measure-panel" id="editor-measure-panel" aria-label="Measurements" hidden></section>
                 <!-- Bottom-left utility stack: AutoPack Results restore (top) above the
                      Load Plan Needs Review warning (bottom). Each control is hidden when unused. -->
                 <div class="tp3d-editor-utility-stack" id="editor-utility-stack">

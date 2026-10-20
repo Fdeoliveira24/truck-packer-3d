@@ -2166,6 +2166,7 @@ export function createInteractionManager({
   PreferencesManager,
   UIComponents,
   OperationLifecycle = null,
+  MeasurementTool = null,
 }) {
   const InteractionManager = (() => {
     // True while a mutating editor operation (AutoPack / Unpack / Truck Change /
@@ -2890,6 +2891,8 @@ export function createInteractionManager({
 
     function onMove(ev) {
       if (!isEditorActive()) return;
+      // Measurement Mode owns the pointer: no hover, drag or gizmo handling. OrbitControls is separate.
+      if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerMove(ev); return; }
       updatePointer(ev);
 
       if (gizmoDragging && draggingId) {
@@ -2929,6 +2932,8 @@ export function createInteractionManager({
       domEl.parentElement?.classList.add('tp3d-pointer-focus');
       if (ev.button !== 0) return;
       domEl.parentElement?.focus({ preventScroll: true });
+      // Measurement Mode owns primary presses: they never select, drag or grab a gizmo handle.
+      if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerDown(ev); return; }
       updatePointer(ev);
 
       // V3A: gizmo handles take grab priority over case picking.
@@ -2973,6 +2978,7 @@ export function createInteractionManager({
         }
         return;
       }
+      if (MeasurementTool && MeasurementTool.isActive()) { if (ev) MeasurementTool.onPointerUp(ev); return; }
       if (!pressed && !draggingId) return;
 
       if (draggingId) {
@@ -3008,6 +3014,7 @@ export function createInteractionManager({
     }
 
     function onCancel() {
+      if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerCancel(); return; }
       if (!pressed && !draggingId && !gizmoDragging) return;
       if (gizmoDragging) {
         cancelGizmoDrag();
@@ -3298,6 +3305,8 @@ export function createInteractionManager({
     }
 
     function onDblClick(ev) {
+      // A double-click in Measurement Mode neither places a zero-length measurement nor focuses the camera.
+      if (MeasurementTool && MeasurementTool.onDoubleClick(ev)) return;
       // Both clicks must originate in this Pack's viewport. The second click
       // used to open a Load Plan must not focus cargo exposed beneath the card.
       if (!isEditorActive() || focusClickPackId !== StateStore.get('currentPackId')) return;
@@ -3924,8 +3933,16 @@ export function createInteractionManager({
       UIComponents.showToast(formatDeleteResultMessage(result, ids), 'info');
     }
 
+    // Measurement Mode takes over (and later returns) the pointer: drop stale hover emphasis.
+    function resetHover() {
+      hoveredId = null;
+      CaseScene.setHover(null);
+      if (domEl) domEl.style.cursor = 'default';
+    }
+
     return {
       init: initInteraction, setSelection, selectAllInPack, deleteSelection, rotateSelection, moveSelectionVertical,
+      resetHover,
       setSelectionOrientationConstraint,
       hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending || revertHolds > 0),
     };
@@ -3953,6 +3970,7 @@ export function createEditorScreen({
   InteractionManager,
   TruckChangeController,
   OperationLifecycle = null,
+  MeasurementTool = null,
 }) {
   const EditorUI = (() => {
     // Runtime authority only: navigation IDs cannot prove what the scene contains.
@@ -4134,7 +4152,10 @@ export function createEditorScreen({
       }
       // Only the whitelisted derived-metadata boundary can rebind authority.
       // An ordinary Pack replacement still requires a full committed render.
-      if ((notification?.type === 'pack-preview' || notification?.type === 'pack-view') && previewScene &&
+      // A measurement-only edit is such a boundary: it replaces the Pack object but keeps the same
+      // cargo, truck and visual signature (the guards below and rebindPreviewPack re-check all three).
+      if ((notification?.type === 'pack-preview' || notification?.type === 'pack-view' ||
+          notification?.type === 'pack-measurements') && previewScene &&
           previewScene.pack === notification.previousPack &&
           PackLibrary.getById(notification.pack.id) === notification.pack &&
           CoreStorage.isScopeContextCurrent(previewScene.scope) &&
@@ -4220,6 +4241,7 @@ export function createEditorScreen({
     const caseListEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-case-list'));
     const btnAutopack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-autopack'));
     const btnUnpack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-unpack'));
+    const btnMeasure = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-measure'));
     const btnView = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-view'));
     const zoomControlsEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-zoom-controls'));
     const btnZoomIn = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-zoom-in'));
@@ -5208,6 +5230,34 @@ export function createEditorScreen({
           );
         });
       }
+      if (MeasurementTool && btnMeasure) {
+        MeasurementTool.bind({
+          button: btnMeasure,
+          panel: document.getElementById('editor-measure-panel'),
+          labels: document.getElementById('editor-measure-labels'),
+          viewport: viewportEl,
+          // The load-status popover closes on Escape first; Measurement Mode exits on the next one.
+          escapeOwnedElsewhere: () => validationPopoverOpen,
+          // A live drag, gizmo stroke or held case displays cargo away from its committed pose.
+          hasProvisionalPose: () => Boolean(InteractionManager && InteractionManager.hasProvisionalPose && InteractionManager.hasProvisionalPose()),
+        });
+        btnMeasure.addEventListener('click', ev => {
+          ev.stopPropagation();
+          UIComponents.closeAllDropdowns();
+          const wasActive = MeasurementTool.isActive();
+          if (!wasActive && !PackLibrary.getById(StateStore.get('currentPackId'))) {
+            UIComponents.showToast(NO_LOAD_PLAN_MESSAGE, 'warning', { title: 'Measurements' });
+            return;
+          }
+          MeasurementTool.toggle();
+          if (!wasActive && !MeasurementTool.isActive()) {
+            UIComponents.showToast('The 3D view is not ready yet.', 'info', { title: 'Measurements' });
+          }
+          // Measurement Mode takes over the pointer, and returns it on exit: drop stale hover emphasis.
+          if (InteractionManager && typeof InteractionManager.resetHover === 'function') InteractionManager.resetHover();
+        });
+        MeasurementTool.syncVisibility();
+      }
       if (btnView) {
         btnView.addEventListener('click', ev => {
           ev.stopPropagation();
@@ -5344,6 +5394,8 @@ export function createEditorScreen({
       renderInspector(pack);
       renderAutoPackResultsPanel(pack);
       renderHandlingRulesStatus(pack);
+      // Re-derive measurement validity from the freshly committed Pack (cargo, Case or truck changed).
+      if (MeasurementTool) MeasurementTool.sync();
       SceneManager.resize();
       if (!isViewOwnerCurrent()) {
         invalidateViewOwner();
@@ -5374,14 +5426,22 @@ export function createEditorScreen({
       if (pendingViewSave) queueMicrotask(() => persistSettledView());
     }
 
-    // Camera Views, Zoom In and Zoom Out are shown or hidden independently by their
-    // Settings preferences; the floating group hides only when none remain. This is
-    // visibility only: it never renders the Editor or touches the scene, camera or Pack.
+    // Measurement Tool, Camera Views, Zoom In and Zoom Out are shown or hidden independently by
+    // their Settings preferences; the floating group hides only when none remain. This is
+    // visibility only: it never renders the Editor or touches the scene, camera or Pack. Hiding
+    // the ruler while Measurement Mode is active exits the mode and cancels an unfinished point;
+    // saved measurements are untouched.
     function syncViewportControls() {
       if (!zoomControlsEl) return;
       const prefs = PreferencesManager.get();
       const showCamera = prefs.showCameraControls !== false;
       const showZoom = prefs.showZoomControls !== false;
+      const showMeasure = prefs.showMeasurementTool !== false;
+      if (!showMeasure && btnMeasure && btnMeasure.contains(document.activeElement)) {
+        viewportEl?.focus({ preventScroll: true });
+      }
+      if (MeasurementTool) MeasurementTool.syncVisibility();
+      else if (btnMeasure) btnMeasure.hidden = !showMeasure;
       // Hiding the Camera Views button must also dismiss its open menu.
       const openMenu = showCamera ? null : document.querySelector('[data-dropdown="1"][data-role="editor-view"]');
       const hiding = [];
@@ -5395,7 +5455,7 @@ export function createEditorScreen({
       if (btnView) btnView.hidden = !showCamera;
       if (btnZoomIn) btnZoomIn.hidden = !showZoom;
       if (btnZoomOut) btnZoomOut.hidden = !showZoom;
-      zoomControlsEl.hidden = !(showCamera || showZoom);
+      zoomControlsEl.hidden = !(showMeasure || showCamera || showZoom);
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene
@@ -8275,8 +8335,13 @@ export function createEditorScreen({
       return ok ? out : null;
     }
 
+    // Measurement-only change: re-derive validity and refresh the overlay/list. No scene or Inspector render.
+    function syncMeasurements() {
+      if (MeasurementTool && StateStore.get('currentScreen') === 'editor') MeasurementTool.sync();
+    }
+
     return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, syncViewportControls,
-      getCurrentCameraPack, applyCameraProjection,
+      syncMeasurements, getCurrentCameraPack, applyCameraProjection,
       getPreviewScene, getExportScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
   })();
 

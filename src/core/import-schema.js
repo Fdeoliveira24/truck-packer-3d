@@ -19,6 +19,7 @@
 import { stripForbiddenCaseQuantityFields, parseCaseMass, isCanonicalCaseMass, pickSafeExtensions, CANONICAL_CASE_KEYS } from './cargo-canonical.js';
 import { parseCaseOrientationLock } from './orientation.js';
 import { normalizeEditorView, stripInternalTruckFields } from './normalizer.js';
+import { normalizeMeasurements, validateMeasurementCollection } from './measurements.js';
 
 // ============================================================================
 // SECTION: ENVELOPE CONSTANTS
@@ -292,6 +293,13 @@ export function projectPortablePack(pack) {
     });
   }
   if (Object.prototype.hasOwnProperty.call(portable, 'truck')) portable.truck = stripInternalTruckFields(portable.truck);
+  // Measurements are authored Load Plan content and travel with every export. They are projected
+  // explicitly (never passed through a generic spread): valid records in canonical form, any
+  // unreadable stored data as a verbatim recovery record. An empty collection is omitted so
+  // exports of plans without measurements keep their existing shape.
+  const measurements = normalizeMeasurements(p.measurements);
+  if (measurements.length) portable.measurements = measurements;
+  else delete portable.measurements;
   return portable;
 }
 
@@ -410,6 +418,17 @@ export function validateWorkspaceGraph(data, { requirePreferences = false } = {}
     }
     if (pack.cases != null && !Array.isArray(pack.cases)) {
       fail(IMPORT_SCHEMA_ERROR.MALFORMED_STRUCTURE, `Invalid packLibrary[${packIndex}].cases: expected an array`);
+    }
+    // Strict structure check shared by Workspace Backup and Active Workspace Backup restore. A
+    // malformed collection rejects the restore before anything is applied. An anchor that points
+    // at a missing instance is structurally valid and is deliberately NOT rejected here: it is
+    // retained and resolves as Unresolved (unlike the dangling caseId rule below).
+    const measurementCheck = validateMeasurementCollection(pack.measurements);
+    if (measurementCheck.ok === false) {
+      fail(
+        IMPORT_SCHEMA_ERROR.MALFORMED_STRUCTURE,
+        `Invalid packLibrary[${packIndex}].measurements: ${measurementCheck.error}`
+      );
     }
     const instances = Array.isArray(pack.cases) ? pack.cases : [];
     instances.forEach((instance, instanceIndex) => {

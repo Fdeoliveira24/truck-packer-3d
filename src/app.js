@@ -62,6 +62,7 @@ import { createTableFooter } from './ui/table-footer.js';
 import { TrailerPresets } from './data/trailer-presets.js';
 import { createSceneRuntime } from './editor/scene-runtime.js';
 import { createTrailerGeometry } from './editor/trailer-geometry.js';
+import { createMeasurementTool } from './editor/measurement-tool.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from './screens/editor-screen.js';
 import { createPacksScreen } from './screens/packs-screen.js';
 import { createCasesScreen } from './screens/cases-screen.js';
@@ -1564,6 +1565,20 @@ const TP3D_BUILD_STAMP = Object.freeze({
     // injected at construction (no late-binding race).
     const OperationLifecycle = createOperationLifecycle();
 
+    // Measurement Tool V1: an informational ruler. It shares the Editor's pointer and keyboard
+    // ownership but never mutates cargo. Its lines, handles and labels are an SVG/DOM layer above
+    // the canvas, so no canvas capture (Screenshot, PDF views, thumbnails, previews) can include them.
+    const MeasurementTool = createMeasurementTool({
+      SceneManager,
+      CaseScene,
+      CaseLibrary,
+      PackLibrary,
+      StateStore,
+      PreferencesManager,
+      UIComponents,
+      OperationLifecycle,
+    });
+
     const InteractionManager = createInteractionManager({
       SceneManager,
       CaseScene,
@@ -1573,6 +1588,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       PreferencesManager,
       UIComponents,
       OperationLifecycle,
+      MeasurementTool,
     });
 
     // ============================================================================
@@ -2528,6 +2544,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       InteractionManager,
       TruckChangeController,
       OperationLifecycle,
+      MeasurementTool,
     });
     EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 
@@ -7264,6 +7281,17 @@ const TP3D_BUILD_STAMP = Object.freeze({
           return;
         }
         if (notification?.type === 'pack-view') {
+          AutoPackPreviewScheduler.schedule();
+          return;
+        }
+        // Measurement-only write: already autosaved above. Refresh the overlay/list and the Load Plan
+        // card (lastEdited); no cargo, scene or Inspector work is needed. The edit replaced the Pack
+        // object, which aborts an automatic preview capture that was waiting for its frames, so the
+        // freshness check is requested again: it retries only when the preview is still missing or
+        // stale, and a current thumbnail finds no candidate (no needless recapture).
+        if (notification?.type === 'pack-measurements') {
+          PacksUI.render();
+          EditorUI.syncMeasurements();
           AutoPackPreviewScheduler.schedule();
           return;
         }

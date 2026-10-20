@@ -535,13 +535,21 @@ test('EXPORT-C-LP-3 the exact artifact must pass the importer structural gates',
     expectExportError(() => ImportExport.assertRestorablePackExportJSON(text), pattern);
     expectExportError(() => ImportExport.assertRestorablePackExportJSON(text), /^Load Plan JSON would not pass import in this version: /);
   }
-  // Load Plan import regenerates instance ids, so duplicate cargo ids are not an
-  // importer requirement there (Workspace/App Backups do refuse them — see above).
+  // INTENTIONAL CONTRACT CHANGE (owner decision, Measurement Tool V1 second audit). This used to read
+  // "Load Plan import regenerates instance ids, so duplicate cargo ids are not an importer requirement".
+  // Cargo instance IDs are now unique within a Load Plan, and a file that repeats one is refused whether
+  // or not any measurement references it: an import re-targets measurement anchors through an exact
+  // old->new instance-ID map, and an ID shared by several items cannot be attributed to one of them.
+  // The importer refuses it exactly as Workspace/Active Workspace Backups always did, and this
+  // self-preflight applies the same rule, so no export is a file the importer rejects. Valid unique-ID
+  // files (the control below) are unaffected; measurement-tool-lifecycle.spec.mjs "ID-1" covers the
+  // matrix (no / referencing / unrelated measurements, single, batch, backups, duplication, creation).
   const dupIds = tamper(d => { d.pack.cases[1].id = d.pack.cases[0].id; });
-  assert.doesNotThrow(() => ImportExport.assertRestorablePackExportJSON(dupIds));
+  expectExportError(() => ImportExport.assertRestorablePackExportJSON(dupIds), /used by more than one item/);
   StateStore.init({ caseLibrary: [], packLibrary: [], folderLibrary: [], preferences: {} });
-  const ids = PackLibrary.planPackImport(ImportExport.parsePackImportJSON(dupIds)).pack.cases.map(i => i.id);
-  assert.equal(new Set(ids).size, ids.length, 'importer assigns fresh unique ids');
+  assert.throws(() => PackLibrary.planPackImport(ImportExport.parsePackImportJSON(dupIds)), /used by more than one item/);
+  const ids = PackLibrary.planPackImport(ImportExport.parsePackImportJSON(json)).pack.cases.map(i => i.id);
+  assert.equal(new Set(ids).size, ids.length, 'importer assigns fresh unique ids to a file with unique ids');
 });
 
 // ===========================================================================

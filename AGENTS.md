@@ -1,6 +1,6 @@
 # AGENTS.md — Truck Packer 3D
 
-**Last updated:** 2026-08-08
+**Last updated:** 2026-10-17
 **Project:** Truck Packer 3D / Cargo Planner 3D — 3D cargo logistics planning application.
 
 ---
@@ -101,6 +101,29 @@ See [docs/engineering/autopack-engine-contract.md — Editor Authority and Autom
 
 ---
 
+## Measurement Tool V1 Invariants (approved contract, revised 2026-10-17; implementation visually approved 2026-10-18)
+
+Full contract, acceptance gates and stages: [docs/product/TP3D-MASTER-TODO-V6.md — Section 4.1](./docs/product/TP3D-MASTER-TODO-V6.md#41-measurement-tool-v1--approved-contract). The implementation is on the branch and locally validated, with specs pinning G1–G6 (`tests/audit/measurement-tool-*.spec.mjs`). Status: implementation visually approved and locally validated; GitHub Quality Gate and final merge approval pending.
+
+- The Measurement Tool is an illustrative, informational ruler. It never moves cargo and never influences placement, collision, handling rules, assessment, Space Utilization, AutoPack or the existing PDF. Not a clearance or safety/compliance feature.
+- Measurements belong to one Load Plan (`pack.measurements`, max 100, canonical inches). The distance is derived, never stored.
+- A point can be placed on anything visible: any cargo surface (any shape; stored as a local point + **instance ID** + geometry signature), the truck floor/walls/ceiling, and the ground anywhere. Floor points are revalidated by geometry; truck-shell points flag Needs Review if the truck changes; nothing is ever relocated.
+- Never silently delete, relocate or substitute an anchor: an unresolvable measurement stays stored and visibly flagged. The only way an anchor changes is the owner's deliberate endpoint drag onto a supported surface (`PackLibrary.moveMeasurementEndpoint`): it is a measurement-only edit (`lastEdited`, no cargo Undo entry), it never moves, rotates, stages or selects cargo, and Escape, pointer cancel, a drop on nothing, a blocking operation or leaving the plan restores the original and writes nothing.
+- One Escape press exits Measurement Mode completely through the regular `exit()` routine (dropping an unfinished point or endpoint drag without writing; saved measurements stay) and is consumed in the capture phase. A modal, dropdown, text field or the load-status popover that owns Escape keeps it; with the mode off Escape is unchanged. Focus never goes to the ruler (it returns to the viewport, with no focus frame after mouse use). Cargo keys, including Delete, still act on the cargo selection; a gesture that loses its cargo is cancelled by `sync()` and writes nothing.
+- Measurements are read-only only while AutoPack, Unpack, Truck Change, a Truck Change preview or a transient AutoPack preview is active, and the message names that cause. A background thumbnail capture is a pixel readback, not an edit: it must never block measurements or cancel an unfinished one. Only a single distance is shown (no L/W/H).
+- A malformed stored measurement record is never silently dropped and then overwritten by autosave: preserve it, surface a recovery condition, block destructive persistence until resolved.
+- Cargo Undo/Redo preserves the current measurements and must not roll back `lastEdited` solely because measurement edits are excluded from cargo history.
+- Anchor integrity (independent-audit remediation): a cargo anchor's local point must lie on its saved physical surface within the documented tolerance — the box faces, or for a cylinder/drum the **faceted 24-sided prism** the Editor renders (`CARGO_CYLINDER_SEGMENTS`, shared with `editor/geometry-factory.js`; exact distance to that surface, never a circle or radial band). Stored anchors are bounded to ±1,000,000 in; Valid always carries a finite distance. Violations are rejected on import and kept as unreadable recovery records when stored, never clamped, dropped or relocated.
+- Truck surfaces (third audit): the measurable walls, end planes and ceiling are the **exposed outer faces of the shell volumes the Editor draws** (`buildTruckShellVolumes` → `buildTruckShellFaces`; `PackLibrary.getMeasurementShellFaces`), never the bounding box of the usable zones. A standard truck is one box; a Front Overhang is the main box plus the raised deck (the cab void below it and the open seam between them have no face); Wheel Wells draw the full outer box (the wells are guides). Internal and coincident boundaries are not surfaces. One model serves picking (farthest face the ray leaves through; a ray that crosses none falls through to floor/ground and the anchor names that real surface), `buildSpaceAnchor`, strict validation and resolution; `P1-3 parity` pins it against the planes the real scene draws. A record on a surface that does not exist is rejected on import and kept verbatim as an unreadable recovery record, never relocated or reconstructed.
+- Truck geometry provenance: truck-shell points remember the truck's **effective usable zones** and are Valid only while the current zones are the same set of boxes and the point is still on a face that exists (reordering, unused config keys and a Front Overhang of length 0 are the same truck; a Front Overhang length or deck height, or a Wheel Well change, is not). A record saved without zones is retained as is, never given invented geometry, and is Valid only for a standard rectangular truck that its dimensions prove; older Front Overhang/Wheel Well records and any record when current zones are unavailable are Needs Review (`truck-unverified`). New truck points cannot be built without zones.
+- Cargo instance identity (owner-approved strengthening, supersedes the earlier `EXPORT-C-LP-3` expectation): instance IDs are unique within a Load Plan. Creation mints through one minter that never reissues an ID used anywhere in the workspace; Load Plan import (single, per-Load-Plan batch, export self-preflight `validatePackImportPayload`) rejects a plan with any repeated ID **whether or not a measurement references it** (IDs compared trimmed) before any ID is generated; Workspace and Active Workspace Backup restore reject it through `validateWorkspaceGraph`; duplication maps only unambiguous IDs (`assignFreshInstanceIds`); a stored plan that already holds a repeated ID is kept untouched, its anchors resolve Unresolved (`cargo-ambiguous`) and cargo picks on it are refused. An anchor is never attached to an arbitrary one of several items. **One identity policy, `instanceIdentityKey` (the trimmed ID):** every lookup (resolution, duplicate/import maps, the overlay) uses it; `normalizePack` stores an unambiguous cargo ID canonically and maps the anchors through the same explicit map (`canonicalizeInstanceIds` + `remapMeasurementInstanceIds`), idempotently, so a restore never orphans a measurement; ambiguity is judged on the **complete source list before any instance is discarded**: an ID several survivors share keeps every holder's source string (distinct strings never collapse); an ID the source gave to several items of which only one survives is *contested* — the survivor never inherits it, and each measurement anchored on it is withheld whole and verbatim into the existing unreadable recovery record (`carryMeasurementsThroughIdentity`), so filtering an instance can never make an ambiguous reference Valid on another cargo; a dangling anchor is left as it is.
+- Import/export: the Load Plan export self-preflight applies the importer's measurement rule to the exact artifact, so an over-cap or malformed collection or a repeated cargo ID fails the export and the saved plan is never rewritten.
+- Gestures: an unfinished Point A or endpoint drag is dropped when the committed pose of cargo it refers to changes (nudge/rotate, never a camera move), and cargo picks are refused while the Editor owns a provisional pose (`InteractionManager.hasProvisionalPose`, pinned with a real gizmo-stroke hold). A measurement write is a preview-authority rebind boundary (`pack-measurements`) and re-requests the preview freshness check; it never recaptures a current thumbnail, and no measurement graphic reaches Screenshot, PDF or thumbnail (`EXPORT-M`).
+- Remaining limitations are listed in V6 §4.1 (Known limitations). The Quality Gate and independent re-verification of this correctness pass have not run; do not describe the feature as release-approved.
+- A generic object spread is not persistence. `normalizePack` is a field whitelist; history, duplicate/import ID remap, export/backup projection and validation, and capture exclusion each need explicit handling (V6 §4.1 gates G1–G6).
+
+---
+
 ## Workflow Continuity Invariants
 
 - Form state changes update pending state only — do not update the 3D scene until confirmed.
@@ -144,6 +167,11 @@ Prefer the owner layer for bugs. Do not broaden scope beyond the owning file(s) 
 
 ## Testing
 
+**Two test levels (the GitHub gate is deliberately fast):**
+- **Fast PR Quality Gate** — runs automatically on pull requests into `main`, about 4–5 minutes on a hosted runner (one job, no matrix, 10-minute fail-safe): lint, typecheck, the full Node lane (`npm run test:ci:node`), a small Chromium smoke set (`npm run test:ci:browser`), the production build, the production dependency audit and a patch whitespace check. `npm run quality:ci` is its local mirror.
+- **Full regression** — `npm run test:regression` (the Node lane plus the complete Chromium suite, `npm run test:regression:browser`). It takes about 25 minutes on a hosted runner, so GitHub does not run it and there is no scheduled workflow. Run it locally before a major release or after a substantial high-risk change (editor, persistence, import/export, billing, auth, rendering).
+- The smoke set is the `--test-name-pattern` of `test:ci:browser` plus four small whole specs. A test belongs in it only if it guards a critical browser-only invariant at low cost; every browser test stays in the full regression. `three-r160-npm-vite.spec.mjs` fails if a selected test is renamed, if a spec belongs to no lane, or if the workflow stops being one fast job.
+
 **During implementation:**
 - Run directly affected focused tests only (normally 1–3 focused files or tight patterns)
 - Do NOT run the complete local Node suite
@@ -160,7 +188,7 @@ Prefer the owner layer for bugs. Do not broaden scope beyond the owning file(s) 
 - Lint/build only when the production change warrants them
 
 **GitHub:**
-- The full Quality Gate owns broad regression coverage
+- The fast Quality Gate owns routine PR regression coverage; the complete Chromium suite is the deliberate local `npm run test:regression`
 - Run it once per finished reviewable PR/checkpoint
 - If CI fails, diagnose reported failures with focused local reproduction
 - Do not respond to CI failure by blindly running every suite locally

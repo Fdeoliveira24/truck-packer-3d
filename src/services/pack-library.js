@@ -16,6 +16,7 @@ import { assessCommittedPack } from './pack-assessment.js';
 export { assessCommittedPack } from './pack-assessment.js';
 import * as Utils from '../core/utils/index.js';
 import * as CoreNormalizer from '../core/normalizer.js';
+import * as CoreMeasurements from '../core/measurements.js';
 import { validatePortableCasePhysicalFields } from '../core/import-schema.js';
 import * as CaseLibrary from './case-library.js';
 import * as CategoryService from './category-service.js';
@@ -870,9 +871,10 @@ export function buildSafeDuplicateInstances(pack, sourceInstances, caseLibrary =
   }
 
   const placementState = placement.staged ? 'staged' : 'packed';
+  const mintInstanceId = createInstanceIdMinter(pack);
   const newInstances = payload.map(item => {
     const next = Utils.deepClone(item.inst);
-    next.id = Utils.uuid();
+    next.id = mintInstanceId();
     next.transform = {
       ...Utils.deepClone(item.inst.transform || {}),
       position: {
@@ -2525,6 +2527,7 @@ export function update(packId, patch, { skipHistory = false } = {}) {
     'truck',
     'cases',
     'groups',
+    'measurements',
   ];
   const hasLastEditedKey = Object.keys(cloned || {}).some(k => lastEditedKeys.includes(k));
   next.lastEdited = hasLastEditedKey ? now : prev.lastEdited || now;
@@ -2580,6 +2583,135 @@ export function updateEditorView(packId, view) {
   return pack;
 }
 
+// ============================================================================
+// SECTION: MEASUREMENTS (Measurement Tool V1)
+// ============================================================================
+// Measurements are authored Load Plan content, but they live outside cargo Undo/Redo: edits are
+// written with skipHistory, bump lastEdited, and are carried across Undo/Redo by the StateStore.
+// They never touch cargo, stats, thumbnails, AutoPack or any assessment.
+
+/** Normalized, never-destructive measurement list (unreadable records are wrapped, not dropped). */
+export function getMeasurements(packOrId) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  return CoreMeasurements.normalizeMeasurements(pack && pack.measurements);
+}
+
+/** Supported floor surfaces (main floor, Wheel Well tops, raised deck) from the authoritative usable zones. */
+export function getMeasurementFloors(pack) {
+  const truck = pack && pack.truck;
+  return CoreMeasurements.buildFloorSurfaces(truck, getTrailerUsableZones(truck));
+}
+
+/**
+ * The walls, end planes and ceiling that physically exist on the truck, exactly as the Editor draws
+ * them (core/measurements.js buildTruckShellFaces): never the bounding box of the usable zones, so the
+ * Front Overhang cab void and the open seam where the deck joins the main box have no face.
+ */
+export function getMeasurementShellFaces(pack) {
+  const truck = pack && pack.truck;
+  return CoreMeasurements.getTruckShellFaces(truck, getTrailerUsableZones(truck));
+}
+
+/**
+ * The truck's effective usable zones: the authoritative geometry (it already reflects shapeConfig,
+ * such as a Front Overhang length or a Wheel Well size). Truck-bound measurement anchors remember it.
+ */
+export function getMeasurementZones(pack) {
+  return getTrailerUsableZones(pack && pack.truck);
+}
+
+/** Derived validity and geometry for every measurement, from COMMITTED cargo poses and Case definitions. */
+export function resolveMeasurements(packOrId) {
+  const pack = typeof packOrId === 'string' ? getById(packOrId) : packOrId;
+  if (!pack) return [];
+  // Instances are found by identity key (trimmed ID), the one policy shared with normalization and import.
+  const identityKey = CoreMeasurements.instanceIdentityKey;
+  const instances = new Map((pack.cases || []).filter(inst => inst && identityKey(inst.id) !== null).map(inst => [identityKey(inst.id), inst]));
+  // A stored plan can carry an ID twice (damaged data is kept, never repaired): anchors naming it are Unresolved.
+  const ambiguous = new Set(CoreMeasurements.findAmbiguousInstanceIds(pack.cases));
+  const zones = getTrailerUsableZones(pack.truck);
+  return CoreMeasurements.resolveMeasurementList(pack.measurements, {
+    getInstance: id => instances.get(identityKey(id)) || null,
+    isInstanceAmbiguous: id => ambiguous.has(identityKey(id)),
+    getCase: id => CaseLibrary.getById(id) || null,
+    floors: CoreMeasurements.buildFloorSurfaces(pack.truck, zones),
+    truck: pack.truck,
+    zones,
+  });
+}
+
+function commitMeasurements(previousPack, measurements) {
+  const now = Date.now();
+  const pack = { ...previousPack, measurements, lastEdited: now };
+  StateStore.markMeasurementEdit(previousPack.id, now);
+  StateStore.set({ packLibrary: getPacks().map(p => (p === previousPack ? pack : p)) }, {
+    skipHistory: true,
+    notification: { type: 'pack-measurements', previousPack, pack },
+  });
+  return pack;
+}
+
+/**
+ * @param {string} packId
+ * @param {{ start?: any, end?: any, label?: string | null }} [input]
+ * @returns {{ ok: true, measurement: any, pack: any } | { ok: false, reason: 'pack-not-found' | 'limit' | 'invalid' }}
+ */
+export function addMeasurement(packId, { start, end, label = null } = {}) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  if (current.length >= CoreMeasurements.MAX_MEASUREMENTS_PER_PACK) return { ok: false, reason: 'limit' };
+  const record = CoreMeasurements.createMeasurementRecord({ id: Utils.uuid(), start, end, label, now: Date.now() });
+  const checked = CoreMeasurements.validateMeasurementCollection([record]);
+  if (!checked.ok) return { ok: false, reason: 'invalid' };
+  const measurement = checked.measurements[0];
+  const pack = commitMeasurements(previousPack, [...current, measurement]);
+  return { ok: true, measurement, pack };
+}
+
+export function renameMeasurement(packId, measurementId, label) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  const index = current.findIndex(record => record.id === measurementId);
+  if (index === -1 || current[index].type !== CoreMeasurements.MEASUREMENT_TYPE_POINT_TO_POINT) {
+    return { ok: false, reason: 'not-found' };
+  }
+  const nextLabel = CoreMeasurements.normalizeMeasurementLabel(label);
+  if (nextLabel === current[index].label) return { ok: true, pack: previousPack, unchanged: true };
+  const next = current.map((record, i) => (i === index ? { ...record, label: nextLabel, updatedAt: Date.now() } : record));
+  return { ok: true, pack: commitMeasurements(previousPack, next) };
+}
+
+/**
+ * Reposition one endpoint of a completed measurement onto a new anchor. A measurement-only edit:
+ * it bumps lastEdited, stays out of cargo Undo/Redo, and never touches cargo. The new anchor is
+ * validated and an invalid one writes nothing.
+ * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' }}
+ */
+export function moveMeasurementEndpoint(packId, measurementId, which, anchor) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  const index = current.findIndex(record => record.id === measurementId);
+  if (index === -1 || current[index].type !== CoreMeasurements.MEASUREMENT_TYPE_POINT_TO_POINT) {
+    return { ok: false, reason: 'not-found' };
+  }
+  const moved = CoreMeasurements.replaceMeasurementEndpoint(current[index], which, anchor, Date.now());
+  if (!moved) return { ok: false, reason: 'invalid' };
+  const next = current.map((record, i) => (i === index ? moved : record));
+  return { ok: true, pack: commitMeasurements(previousPack, next) };
+}
+
+/** Deliberate, individual deletion. Editing or deleting cargo never calls this. */
+export function deleteMeasurement(packId, measurementId) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreMeasurements.normalizeMeasurements(previousPack.measurements);
+  if (!current.some(record => record.id === measurementId)) return { ok: false, reason: 'not-found' };
+  return { ok: true, pack: commitMeasurements(previousPack, current.filter(record => record.id !== measurementId)) };
+}
+
 export function remove(packId) {
   const packs = getPacks().filter(p => p.id !== packId);
   const current = StateStore.get('currentPackId');
@@ -2587,6 +2719,33 @@ export function remove(packId) {
     { packLibrary: packs, currentPackId: current === packId ? null : current, selectedInstanceIds: [] },
     { skipHistory: true }
   );
+}
+
+/**
+ * Mints cargo instance IDs for a Load Plan. An ID is never one that any Load Plan in the workspace (or
+ * `pack`, which may not be stored yet) already uses, nor one this minter issued before, so the
+ * "unique within a Load Plan" invariant holds at creation by construction rather than by the
+ * improbability of a collision. Every place that creates cargo instances mints through here.
+ * @param {any} [pack]
+ */
+function createInstanceIdMinter(pack = null) {
+  const used = new Set();
+  const take = instances => (Array.isArray(instances) ? instances : []).forEach(instance => {
+    const key = CoreMeasurements.instanceIdentityKey(instance && instance.id);
+    if (key !== null) used.add(key);
+  });
+  getPacks().forEach(stored => take(stored && stored.cases));
+  if (pack) take(pack.cases);
+  return () => {
+    for (let attempt = 0; attempt < 1000; attempt++) {
+      const id = Utils.uuid();
+      if (!used.has(id)) {
+        used.add(id);
+        return id;
+      }
+    }
+    throw new Error('Could not generate a unique cargo instance ID.');
+  };
 }
 
 export function duplicate(packId) {
@@ -2606,7 +2765,15 @@ export function duplicate(packId) {
   copy.thumbnailVisualSignature = null;
   copy.thumbnailViewSignature = null;
   copy.thumbnailRenderVersion = null;
-  copy.cases = (copy.cases || []).map(i => ({ ...i, id: Utils.uuid() }));
+  // Instance IDs are regenerated, so keep the exact old->new map and carry measurements across
+  // through it. A cargo anchor whose instance is not in the map is left as-is (stays Unresolved).
+  // An ID that a damaged plan gives to several instances is ambiguous: it is never mapped, so no
+  // anchor is guessed onto one of them.
+  const { ids, idMap: instanceIdMap } = CoreMeasurements.assignFreshInstanceIds(copy.cases, createInstanceIdMinter());
+  copy.cases = (copy.cases || []).map((i, index) => ({ ...i, id: ids[index] }));
+  if (copy.measurements !== undefined) {
+    copy.measurements = CoreMeasurements.remapMeasurementInstanceIds(copy.measurements, instanceIdMap);
+  }
   StateStore.set({ packLibrary: [...getPacks(), copy] });
   return copy;
 }
@@ -2636,7 +2803,7 @@ export function addInstance(packId, caseId, position) {
   const truckDrop = explicitAabb && (
     blockedBody || overlapsAny(explicitAabb, getTrailerUsableZones(pack.truck))
   );
-  const id = Utils.uuid();
+  const id = createInstanceIdMinter(pack)();
   // Existing blocked-body drops deliberately fall back to canonical staging.
   // Other truck attempts must pass the exact manual placement rules.
   if (truckDrop && !blockedBody) {
@@ -2742,6 +2909,7 @@ export function addInstancesToStaging(packId, caseId, count) {
   const startZ = layout.originZ + dims.width / 2;
 
   const newInstances = [];
+  const mintInstanceId = createInstanceIdMinter(pack);
   let row = 0;
   let col = 0;
   // Generous but finite safety valve: any single pre-existing AABB can only
@@ -2767,7 +2935,7 @@ export function addInstancesToStaging(packId, caseId, count) {
     const aabb = makeAabb(position, dims);
     if (overlapsAny(aabb, existingAccepted)) continue;
     newInstances.push({
-      id: Utils.uuid(),
+      id: mintInstanceId(),
       caseId,
       transform: {
         position,
@@ -3244,6 +3412,21 @@ export function validatePackImportPayload(payload, localCaseIds = new Set()) {
     );
   }
 
+  // The destination regenerates every instance ID, so a measurement anchor is re-targeted through an
+  // exact old-to-new map. A source ID shared by several instances is ambiguous: which one an anchor
+  // meant cannot be known, and guessing would silently attach it to the wrong cargo. Reject up front,
+  // before any ID is generated or any state is touched (single import, batch import and export
+  // self-preflight all run this).
+  const ambiguousIds = CoreMeasurements.findAmbiguousInstanceIds(incomingPack.cases);
+  if (ambiguousIds.length) {
+    const shown = ambiguousIds.slice(0, 3).map(id => `"${String(id).slice(0, 40)}"`).join(', ') +
+      (ambiguousIds.length > 3 ? ', …' : '');
+    throw new Error(
+      `Pack import blocked: ${ambiguousIds.length} cargo instance ID(s) are used by more than one item (${shown}), ` +
+      'so measurement references cannot be attributed to a single item.'
+    );
+  }
+
   // Structural preflight precedes all planning/publication. Finite overlap,
   // containment and Case-permission failures remain representable source;
   // missing/nonfinite coordinates cannot be repaired into an imported pose.
@@ -3289,7 +3472,16 @@ export function validatePackImportPayload(payload, localCaseIds = new Set()) {
       'The pack file must bundle every case its instances use.'
     );
   }
-  return { incomingPack, bundled };
+
+  // Measurements are validated strictly BEFORE anything is applied: a malformed collection, a
+  // duplicate measurement ID or more than the per-plan maximum rejects this Load Plan. A structurally
+  // valid anchor to a missing instance is kept (it resolves as Unresolved). The same rule gates the
+  // export self-preflight, so an exported file is never one the importer would refuse.
+  const measurementCheck = CoreMeasurements.validateMeasurementCollection(incomingPack.measurements);
+  if (measurementCheck.ok === false) {
+    throw new Error(`Pack import blocked: the measurements are not valid (${measurementCheck.error}).`);
+  }
+  return { incomingPack, bundled, measurements: measurementCheck.measurements };
 }
 
 // PURE preflight: parse, validate, canonicalize and plan a pack import WITHOUT
@@ -3302,7 +3494,8 @@ export function planPackImport(payload) {
   const currentCases = CaseLibrary.getCases();
   const currentPacks = getPacks();
   const caseById = new Map(currentCases.map(c => [c.id, c]));
-  const { incomingPack, bundled } = validatePackImportPayload(payload, new Set(caseById.keys()));
+  const { incomingPack, bundled, measurements: validatedMeasurements } =
+    validatePackImportPayload(payload, new Set(caseById.keys()));
   const caseByName = new Map(
     currentCases.map(c => [
       String(c.name || '')
@@ -3421,9 +3614,12 @@ export function planPackImport(payload) {
   pack.createdAt = pack.createdAt || now;
   pack.lastEdited = now;
 
-  pack.cases = (pack.cases || []).map(inst => {
+  // Validation above already refused any source ID shared by several items, so every anchor target is exact.
+  const { ids: importedIds, idMap: importedInstanceIdMap } =
+    CoreMeasurements.assignFreshInstanceIds(pack.cases, createInstanceIdMinter());
+  pack.cases = (pack.cases || []).map((inst, index) => {
     const next = Utils.deepClone(inst);
-    next.id = Utils.uuid();
+    next.id = importedIds[index];
     next.caseId = caseIdMap.get(next.caseId) || next.caseId;
     next.transform.rotation ??= { x: 0, y: 0, z: 0 };
     next.transform.scale ??= { x: 1, y: 1, z: 1 };
@@ -3435,6 +3631,8 @@ export function planPackImport(payload) {
     }
     return next;
   });
+
+  pack.measurements = CoreMeasurements.remapMeasurementInstanceIds(validatedMeasurements, importedInstanceIdMap);
 
   // Final reference validation against the planned final case set.
   const finalCases = [...currentCases, ...newCases];

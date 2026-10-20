@@ -38,6 +38,7 @@ import {
   projectPortableWorkspacePack,
   projectPortableFolder,
 } from './import-schema.js';
+import { normalizeMeasurements } from './measurements.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
 export const IMPORT_SCOPE_CHANGED_MESSAGE =
@@ -860,7 +861,13 @@ export function exportAppJSON() {
       const { canFlip: _canFlip, orientationLock: _orientationLock, ...physicalInstance } = instance;
       return physicalInstance;
     }) : pack.cases;
-    return { ...pack, truck, cases };
+    // Measurements are projected explicitly (canonical records; unreadable stored data kept as a
+    // verbatim recovery record), never passed through a generic spread.
+    const measurements = normalizeMeasurements(pack.measurements);
+    const portable = { ...pack, truck, cases };
+    if (measurements.length) portable.measurements = measurements;
+    else delete portable.measurements;
+    return portable;
   });
   const payload = {
     app: 'Truck Packer 3D',

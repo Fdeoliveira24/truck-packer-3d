@@ -239,6 +239,7 @@ A duplicated Load Plan must:
 - preserve the existing title-copy behavior;
 - preserve referenced Case UUIDs and their Item Codes;
 - preserve the existing packed-instance UUID regeneration behavior;
+- when the Load Plan carries Measurement Tool V1 `measurements`, copy them and remap every cargo anchor from the source instance UUID to its regenerated counterpart (the regeneration itself is unchanged; see [V6 Section 4.1](../product/TP3D-MASTER-TODO-V6.md#41-measurement-tool-v1--approved-contract));
 - preserve all other existing whole-Load-Plan duplication semantics unless separately approved.
 
 ### Duplicate packed instance

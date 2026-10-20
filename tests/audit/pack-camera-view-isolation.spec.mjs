@@ -112,19 +112,22 @@ test('Editor zoom steps preserve target and direction in both projections and st
   assert.ok(changes > 2 && cancellations > 2);
 });
 
-test('Camera and zoom controls hide independently, dismiss an open menu and hand focus to the viewport', async () => {
+test('Measurement, camera and zoom controls hide independently, dismiss an open menu and hand focus to the viewport', async () => {
   const source = await readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
   const start = source.indexOf('    function syncViewportControls() {');
   const end = source.indexOf('    // Selection-only change.', start);
   assert.ok(start >= 0 && end > start);
-  const build = (prefs, { active = null, menuOpen = false } = {}) => {
+  const build = (prefs, { active = null, menuOpen = false, ...options } = {}) => {
     const control = () => { const el = { hidden: false }; el.contains = node => node === el; return el; };
     const state = { closes: 0, viewportFocuses: 0, menuOpen };
     const menuItem = {};
     const menu = { contains: node => node === menuItem };
-    const controls = { zoomControlsEl: control(), btnView: control(), btnZoomIn: control(), btnZoomOut: control() };
+    const controls = { zoomControlsEl: control(), btnView: control(), btnZoomIn: control(), btnZoomOut: control(), btnMeasure: control() };
+    // The real tool owns the ruler button's visibility (Settings may also hide it while the mode is on).
+    const MeasurementTool = { calls: 0, syncVisibility() { this.calls++; controls.btnMeasure.hidden = prefs.showMeasurementTool === false; } };
     const sandbox = {
       ...controls,
+      MeasurementTool: options.withoutTool ? null : MeasurementTool,
       PreferencesManager: { get: () => prefs },
       UIComponents: { closeAllDropdowns: () => { state.closes++; state.menuOpen = false; } },
       document: {
@@ -138,20 +141,35 @@ test('Camera and zoom controls hide independently, dismiss an open menu and hand
     return { sandbox, state, controls };
   };
 
-  for (const [showCameraControls, showZoomControls] of [[true, true], [true, false], [false, true], [false, false]]) {
-    const { sandbox, controls } = build({ showCameraControls, showZoomControls });
-    sandbox.syncViewportControls();
-    assert.equal(controls.btnView.hidden, !showCameraControls, `camera ${showCameraControls} / zoom ${showZoomControls}`);
-    assert.equal(controls.btnZoomIn.hidden, !showZoomControls);
-    assert.equal(controls.btnZoomOut.hidden, !showZoomControls);
-    assert.equal(controls.zoomControlsEl.hidden, !showCameraControls && !showZoomControls,
-      'the floating group disappears only when no control remains, so no empty frame is left');
+  for (const showMeasurementTool of [true, false]) {
+    for (const [showCameraControls, showZoomControls] of [[true, true], [true, false], [false, true], [false, false]]) {
+      const { sandbox, controls } = build({ showCameraControls, showZoomControls, showMeasurementTool });
+      sandbox.syncViewportControls();
+      assert.equal(controls.btnView.hidden, !showCameraControls, `camera ${showCameraControls} / zoom ${showZoomControls} / measure ${showMeasurementTool}`);
+      assert.equal(controls.btnZoomIn.hidden, !showZoomControls);
+      assert.equal(controls.btnZoomOut.hidden, !showZoomControls);
+      assert.equal(controls.btnMeasure.hidden, !showMeasurementTool);
+      assert.equal(controls.zoomControlsEl.hidden, !showMeasurementTool && !showCameraControls && !showZoomControls,
+        'the floating group disappears only when no control remains, so no empty frame is left');
+    }
   }
+
+  // Without the tool object the ruler button still follows the preference.
+  const noTool = build({ showMeasurementTool: false }, { withoutTool: true });
+  noTool.sandbox.syncViewportControls();
+  assert.equal(noTool.controls.btnMeasure.hidden, true);
 
   const legacy = build({});
   legacy.sandbox.syncViewportControls();
-  assert.deepEqual([legacy.controls.btnView.hidden, legacy.controls.btnZoomIn.hidden, legacy.controls.zoomControlsEl.hidden],
-    [false, false, false], 'records without either field show every control');
+  assert.deepEqual([legacy.controls.btnView.hidden, legacy.controls.btnZoomIn.hidden, legacy.controls.btnMeasure.hidden, legacy.controls.zoomControlsEl.hidden],
+    [false, false, false, false], 'records without any of the fields show every control');
+  assert.equal(legacy.sandbox.MeasurementTool.calls, 1, 'the tool is told to reconcile its own visibility on every sync');
+
+  // Hiding the ruler while it has focus hands focus to the viewport instead of dropping it.
+  const focusedRuler = build({ showMeasurementTool: false }, { active: 'btnMeasure' });
+  focusedRuler.sandbox.syncViewportControls();
+  assert.equal(focusedRuler.state.viewportFocuses, 1, 'a hidden focused ruler hands focus to the viewport');
+  assert.equal(focusedRuler.state.closes, 0, 'no Camera Views menu was open, so nothing is dismissed');
 
   const menuOpen = build({ showCameraControls: false, showZoomControls: true }, { active: 'menu', menuOpen: true });
   menuOpen.sandbox.syncViewportControls();

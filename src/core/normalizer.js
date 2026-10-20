@@ -29,6 +29,7 @@ import {
   assertItemCodeAvailable,
   migrateLoadPlanNumbers,
 } from './business-identity.js';
+import { canonicalizeInstanceIds, carryMeasurementsThroughIdentity } from './measurements.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
 const EDITOR_VIEW_PRECISION = 1000;
@@ -247,6 +248,7 @@ export function normalizePreferences(prefs) {
   next.showBevels = next.showBevels !== false;
   next.showCameraControls = next.showCameraControls !== false;
   next.showZoomControls = next.showZoomControls !== false;
+  next.showMeasurementTool = next.showMeasurementTool !== false;
   next.labelFontSize = CoreUtils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
   next.hiddenCaseOpacity = CoreUtils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);
   next.showAutoPackLoadingOverlay = next.showAutoPackLoadingOverlay !== false;
@@ -450,7 +452,15 @@ export function normalizeFolder(folder, now) {
 export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
   const truck = normalizeTruck(p && p.truck);
   const rawCases = Array.isArray(p && p.cases) ? p.cases : [];
-  const instances = rawCases.map(i => normalizeInstance(i, caseMap)).filter(i => Boolean(i.caseId));
+  const normalizedCases = rawCases.map(raw => normalizeInstance(raw, caseMap));
+  const survives = normalizedCases.map(normalized => Boolean(normalized.caseId));
+  // One identity policy for cargo instance IDs (core/measurements.js canonicalizeInstanceIds). It judges
+  // ambiguity on EVERY source instance, including the ones the filter below discards, so removing a
+  // conflicting instance can never make an ambiguous measurement reference resolve on the survivor.
+  const identity = canonicalizeInstanceIds(rawCases.map(raw => raw && raw.id), uuid, survives);
+  const instances = normalizedCases
+    .map((normalized, index) => ({ ...normalized, id: identity.ids[index] }))
+    .filter((_, index) => survives[index]);
   const folderId = safeString(p && p.folderId, '') || null;
   const thumbnail = typeof (p && p.thumbnail) === 'string' ? p.thumbnail : null;
   const thumbnailUpdatedAt = Number.isFinite(p && p.thumbnailUpdatedAt) ? p.thumbnailUpdatedAt : null;
@@ -501,6 +511,10 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     thumbnailViewSignature: typeof p?.thumbnailViewSignature === 'string' && p.thumbnailViewSignature
       ? p.thumbnailViewSignature : null,
     editorView: normalizeEditorView(p?.editorView),
+    // Explicit field: this function is a whitelist, so a missing entry would silently drop the
+    // collection on restore/import. Older plans become []; unreadable records are wrapped
+    // verbatim (never dropped) so the original data survives and is surfaced for recovery.
+    measurements: carryMeasurementsThroughIdentity(p?.measurements, identity),
   };
 }
 

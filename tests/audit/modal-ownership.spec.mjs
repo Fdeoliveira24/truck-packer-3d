@@ -1197,7 +1197,7 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   settings.close();
 });
 
-test('Show Camera Controls and Show Zoom Controls save independently and the Editor Display rows share one layout', async t => {
+test('Show Camera Controls, Show Zoom Controls and Show Measurement Tool save independently and the Editor Display rows share one layout', async t => {
   const dom = installDom(t);
   const { normalizePreferences } = await import('../../src/core/normalizer.js');
   let prefs = normalizePreferences({ theme: 'light', labelFontSize: 18, units: { length: 'ft', weight: 'kg' } });
@@ -1224,10 +1224,10 @@ test('Show Camera Controls and Show Zoom Controls save independently and the Edi
   const rows = card.children;
   const labelOf = row => row.children?.[0]?.textContent;
   const headingIndex = rows.findIndex(el => el.className === 'tp3d-prefs-heading' && el.textContent === 'Editor Display');
-  const order = ['Default Camera Projection', 'Apply to current Load Plan', 'Show Camera Controls', 'Show Zoom Controls', 'Hidden Case Opacity', 'Label Font Size'];
+  const order = ['Default Camera Projection', 'Apply to current Load Plan', 'Show Camera Controls', 'Show Zoom Controls', 'Show Measurement Tool', 'Hidden Case Opacity', 'Label Font Size'];
   assert.deepEqual(rows.slice(headingIndex + 1, headingIndex + 1 + order.length).map(labelOf), order,
-    'camera and zoom switches sit together under Editor Display, after the projection rows');
-  for (const label of order.slice(0, 4)) {
+    'camera, zoom and measurement switches sit together under Editor Display, after the projection rows');
+  for (const label of order.slice(0, 5)) {
     const row = rows.find(el => labelOf(el) === label);
     assert.ok(row.className.split(' ').includes('tp3d-prefs-row--stacked'), `${label} uses the shared stacked-row alignment`);
   }
@@ -1237,14 +1237,15 @@ test('Show Camera Controls and Show Zoom Controls save independently and the Edi
   assert.equal(projectionRow.children[1].getAttribute('aria-describedby'), projectionRow.children[2].id);
   assert.equal(switchState('camera-controls-visibility'), 'true');
   assert.equal(switchState('zoom-controls-visibility'), 'true');
+  assert.equal(switchState('measurement-tool-visibility'), 'true', 'the Measurement Tool is shown by default');
   settings.close();
 
-  // [camera, zoom] -> each preference changes without moving the other.
-  const combos = [[false, true], [true, false], [false, false], [true, true]];
+  // [camera, zoom, measurement] -> each preference changes without moving the others.
+  const combos = [[false, true, true], [true, false, true], [true, true, false], [false, false, false], [true, true, true]];
   let before = saved.length;
-  for (const [camera, zoom] of combos) {
+  for (const [camera, zoom, measure] of combos) {
     settings.open('preferences');
-    for (const [role, want] of [['camera-controls-visibility', camera], ['zoom-controls-visibility', zoom]]) {
+    for (const [role, want] of [['camera-controls-visibility', camera], ['zoom-controls-visibility', zoom], ['measurement-tool-visibility', measure]]) {
       if ((switchState(role) === 'true') !== want) latest(role).dispatchEvent({ type: 'click' });
     }
     assert.equal(saved.length, before, 'toggling does not save until Save changes');
@@ -1253,6 +1254,7 @@ test('Show Camera Controls and Show Zoom Controls save independently and the Edi
     assert.equal(saved.length, before);
     assert.equal(prefs.showCameraControls, camera, `camera ${camera}`);
     assert.equal(prefs.showZoomControls, zoom, `zoom ${zoom}`);
+    assert.equal(prefs.showMeasurementTool, measure, `measurement ${measure}`);
     assert.equal(prefs.labelFontSize, 18, 'unrelated preferences are preserved');
     assert.equal(prefs.camera.defaultView, 'perspective', 'default projection is untouched by a visibility save');
     settings.close();

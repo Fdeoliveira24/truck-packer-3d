@@ -4919,9 +4919,9 @@ body.tp3d-shared-modal-lock #app .nav {
   font-weight: var(--font-medium);
 }
 
-.tp3d-measure-row__input:focus {
-  outline: none;
-  box-shadow: 0 0 0 3px var(--accent-primary-25);
+.tp3d-measure-row__input:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .tp3d-editor-zoom-controls button:focus-visible {

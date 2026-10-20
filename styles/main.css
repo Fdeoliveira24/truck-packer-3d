@@ -5123,7 +5123,7 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-annot-pin.is-draft .tp3d-annot-pin__badge {
   border: 2px solid var(--accent-primary);
   background: var(--bg-elevated);
-  color: var(--accent-readable);
+  color: var(--text-primary);
   cursor: grab;
   font-size: 12px;
 }
@@ -5369,7 +5369,7 @@ body.tp3d-shared-modal-lock #app .nav {
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
-  width: 304px;
+  width: 336px;
   max-height: calc(100% - 16px);
   overflow: hidden;
   border: 1px solid var(--accent-primary);
@@ -5477,7 +5477,7 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-annot-chip[aria-pressed='true'] {
   border-color: var(--accent-primary-25);
   background: var(--accent-primary-12);
-  color: var(--accent-readable);
+  color: var(--text-primary);
 }
 
 .tp3d-annot-editor__input {
@@ -5510,13 +5510,14 @@ body.tp3d-shared-modal-lock #app .nav {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
 }
 
 .tp3d-annot-swatches {
   display: flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
 }
 
 .tp3d-annot-swatches .tp3d-annot-editor__label {
@@ -5537,6 +5538,37 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-annot-swatch[aria-pressed='true'] {
   box-shadow: 0 0 0 2px var(--text-primary);
+}
+
+/* The custom color: a wheel until one is chosen, then the chosen color. The native picker input covers it. */
+.tp3d-annot-swatch--custom {
+  position: relative;
+  box-sizing: border-box;
+}
+
+.tp3d-annot-swatch--custom:not(.is-selected) {
+  background: conic-gradient(#e5484d, #f5a524, #30a46c, #3b82f6, #6d4aff, #e5484d);
+}
+
+.tp3d-annot-swatch--custom.is-selected {
+  box-shadow: 0 0 0 2px var(--text-primary);
+}
+
+.tp3d-annot-swatch__input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.tp3d-annot-swatch--custom:has(:focus-visible) {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .tp3d-annot-swatch:focus {
@@ -5802,6 +5834,13 @@ body.tp3d-shared-modal-lock #app .nav {
   margin-top: 2px;
 }
 
+.tp3d-annot-panel__blocked-content {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+
 .tp3d-annot-panel__blocked[hidden] {
   display: none;
 }
@@ -5863,7 +5902,7 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-annot-seg__btn[aria-pressed='true'] {
   border-color: var(--accent-primary-25);
   background: var(--accent-primary-14);
-  color: var(--accent-readable);
+  color: var(--text-primary);
 }
 
 .tp3d-annot-seg__btn:disabled {
@@ -5939,7 +5978,7 @@ body.tp3d-shared-modal-lock #app .nav {
   padding: 2px 4px;
   border: 0;
   background: transparent;
-  color: var(--accent-readable);
+  color: var(--text-primary);
   font: inherit;
   font-weight: var(--font-bold);
   text-decoration: underline;

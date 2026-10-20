@@ -76,6 +76,42 @@ test('presets only fill editable text: five fixed texts that fit the caps and ar
   assert.equal(Object.keys(callout('p')).includes('preset'), false);
 });
 
+test('colors: the five built-in names stay valid and a custom color is exactly #RRGGBB, stored lower-case, never replaced', () => {
+  for (const name of A.ANNOTATION_COLORS) assert.equal(A.validateCalloutRecord(callout('n', ground(1, 1), { color: name })), null, name);
+  const custom = callout('c', ground(1, 1), { color: '#A1b2C3' });
+  assert.equal(custom.color, '#a1b2c3', 'canonical lower-case #rrggbb');
+  assert.equal(A.validateCalloutRecord(custom), null);
+  assert.deepEqual(Object.keys(custom).sort(), Object.keys(callout('d')).sort(), 'no second color field is added');
+  // Unsafe or malformed values are refused by the validation gate, not swapped for the default.
+  for (const value of ['#fff', '#12345', '#1234567', 'a1b2c3', '#gggggg', 'rgb(0,0,0)', 'url(javascript:alert(1))', '#a1b2c3;x', ' #a1b2c3', 'red;', '', null, 7]) {
+    const made = callout('x', ground(1, 1), { color: value });
+    assert.notEqual(A.validateCalloutRecord(made), null, `refused: ${String(value)}`);
+    assert.equal(A.validateAnnotationCollection([made]).ok, false, `collection refuses ${String(value)}`);
+    assert.equal(A.editCalloutRecord(callout('e'), { color: value }, 2000), null, `an edit refuses ${String(value)}`);
+  }
+  assert.equal(A.editCalloutRecord(callout('e'), { color: '#00FF7F' }, 2000).color, '#00ff7f');
+  assert.equal(A.editCalloutRecord(callout('e'), { color: 'violet' }, 2000).color, 'violet');
+  assert.equal(A.validateCalloutRecord({ ...callout('s'), color: '#ABCDEF' }), null, 'upper-case hex is a valid stored value and is canonicalised on write');
+  assert.equal(A.normalizeAnnotations([{ ...callout('s'), color: '#ABCDEF' }])[0].color, '#abcdef');
+  // A stored record with a malformed color is kept verbatim as a recovery record, never defaulted.
+  const malformed = { ...callout('m'), color: 'pink' };
+  const [kept] = A.normalizeAnnotations([malformed]);
+  assert.equal(kept.type, A.ANNOTATION_TYPE_UNREADABLE);
+  assert.deepEqual(kept.original, malformed);
+  // Display helpers: an unknown value draws as the default, and the foreground contrasts with a custom color.
+  assert.equal(A.normalizeAnnotationColor('#12AB34'), '#12ab34');
+  assert.equal(A.normalizeAnnotationColor('nope'), 'ink');
+  assert.equal(A.annotationForegroundFor('ink'), null);
+  const ratio = (a, b) => {
+    const lum = hex => [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255).map(c => (c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4)).reduce((sum, c, i) => sum + c * [0.2126, 0.7152, 0.0722][i], 0);
+    const [hi, lo] = [lum(a), lum(b)].sort((x, y) => y - x);
+    return (hi + 0.05) / (lo + 0.05);
+  };
+  for (const color of ['#000000', '#ffffff', '#ffff00', '#fde68a', '#0b1020', '#7f7f7f', '#ff9f1c', '#2f6fed', '#f5f5f5', '#101010']) {
+    assert.ok(ratio(color, A.annotationForegroundFor(color)) >= 4.5, `readable number on ${color}`);
+  }
+});
+
 test('validation names the first problem in a stored callout', () => {
   const ok = callout('v');
   assert.equal(A.validateCalloutRecord(ok), null);

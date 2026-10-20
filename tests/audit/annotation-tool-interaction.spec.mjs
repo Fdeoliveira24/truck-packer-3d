@@ -300,7 +300,8 @@ test('the Annotations control is the first button of the stack and opens a compa
     title: document.querySelector('.tp3d-annot-panel__title').textContent,
     badgeShown: getComputedStyle(document.querySelector('.tp3d-annot-panel__count')).display !== 'none',
     tools: [...document.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].map(b => ({ tool: b.dataset.tool, disabled: b.disabled, pressed: b.getAttribute('aria-pressed') })),
-    display: [...document.querySelectorAll('.tp3d-annot-seg--small .tp3d-annot-seg__btn')].map(b => [b.textContent, b.getAttribute('aria-pressed')]),
+    show: [...document.querySelectorAll('.tp3d-annot-seg--show .tp3d-annot-seg__btn')].map(b => [b.textContent, b.getAttribute('aria-pressed')]),
+    display: [...document.querySelectorAll('.tp3d-annot-seg--display .tp3d-annot-seg__btn')].map(b => [b.textContent, b.getAttribute('aria-pressed')]),
     empty: !document.querySelector('.tp3d-annot-panel__empty').hidden,
   }));
   assert.equal(panel.hidden, false);
@@ -308,6 +309,7 @@ test('the Annotations control is the first button of the stack and opens a compa
   assert.equal(panel.badgeShown, false, 'no count badge while there are no annotations');
   assert.deepEqual(panel.tools.map(t => t.tool), ['callout', 'arrow', 'draw']);
   assert.deepEqual(panel.tools.map(t => t.disabled), [false, true, true], 'Arrow and Draw are clearly unavailable');
+  assert.deepEqual(panel.show, [['All', 'true'], ['Selected', 'false'], ['Off', 'false']]);
   assert.deepEqual(panel.display, [['Markers', 'true'], ['Labels', 'false'], ['Cards', 'false']]);
   assert.equal(panel.empty, true);
   assert.deepEqual(errors, []);
@@ -620,12 +622,32 @@ test('annotations are read-only while an operation or a preview owns the Editor,
   await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__blocked').hidden);
   assert.deepEqual(await controls(), { tool: false, rows: [false, false, false, false, false, false] }, 'editing resumes when the operation ends');
 
-  // A transient AutoPack Results preview is not the committed Pack either.
-  await page.evaluate(() => { window.__realPreview = window.probe.CaseScene.isTransientPreview; window.probe.CaseScene.isTransientPreview = () => true; });
+  // An unapplied AutoPack Results option on screen is not the committed Pack either: the banner says exactly
+  // that, says how to get back, and the one-click way back uses the Editor's own landing (nothing is bypassed).
+  await page.evaluate(() => {
+    const { CaseScene } = window.probe;
+    window.__realPreview = CaseScene.isTransientPreview;
+    window.__realSync = CaseScene.sync;
+    window.__syncs = [];
+    CaseScene.sync = (pack, options) => { window.__syncs.push(Boolean(options && options.transientPreview)); return window.__realSync(pack, options); };
+    CaseScene.isTransientPreview = () => true;
+  });
   await page.waitForFunction(() => !document.querySelector('.tp3d-annot-panel__blocked').hidden);
-  assert.match(await blockedText(), /an AutoPack preview is shown/);
-  await page.evaluate(() => { window.probe.CaseScene.isTransientPreview = window.__realPreview; });
+  const banner = await blockedText();
+  assert.match(banner, /read-only while an unapplied AutoPack option is being previewed/i);
+  assert.match(banner, /Apply it in AutoPack Results, or return to your saved plan/);
+  assert.equal(await page.evaluate(() => /read-only/.test(window.probe.hint())), false, 'the cause is stated once, not repeated under the banner');
+  assert.deepEqual(await controls(), { tool: true, rows: [true, true, true, true, true, true] }, 'editing stays refused against transient poses');
+  await page.click('.tp3d-annot-panel__blocked button');
+  assert.ok((await page.evaluate(() => window.__syncs)).includes(false), 'Return to saved plan renders the committed Pack through the Editor');
+  await page.evaluate(() => {
+    const { CaseScene } = window.probe;
+    CaseScene.isTransientPreview = window.__realPreview;
+    CaseScene.sync = window.__realSync;
+    window.probe.AnnotationTool.sync();
+  });
   await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__blocked').hidden);
+  assert.deepEqual(await controls(), { tool: false, rows: [false, false, false, false, false, false] }, 'once the committed plan shows, editing resumes');
   assert.deepEqual(errors, []);
 });
 
@@ -635,7 +657,7 @@ test('the overlay is DOM above the canvas: no scene objects are added and the ca
   const { page, errors } = await openPanel(browser);
   const base = await page.evaluate(() => ({ pixels: window.probe.canvasData(), objects: window.probe.sceneObjectCount() }));
   await seed(page, [{ title: 'One', ground: [520, 10], keepExpanded: true }, { title: 'Two', ...TOP_OF_B }, { title: 'Three', ...TOP_OF_A }]);
-  await page.click('.tp3d-annot-seg--small .tp3d-annot-seg__btn:has-text("Cards")');
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Cards")');
   await page.waitForSelector('.tp3d-annot-card:not([hidden])');
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 3);
@@ -725,15 +747,15 @@ test('Markers, Labels and Cards are view-level, kept-expanded and Hide are saved
   assert.equal(await visible('.tp3d-annot-pin__chip'), 0, 'and no labels');
   const stored = JSON.stringify(await page.evaluate(() => window.probe.annotations()));
 
-  await page.click('.tp3d-annot-seg--small .tp3d-annot-seg__btn:has-text("Labels")');
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Labels")');
   await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-annot-pin__chip')].some(el => !el.hidden));
   const labels = await page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-pin__chip')].filter(el => !el.hidden).map(el => el.textContent).sort());
   assert.ok(labels.length >= 1 && labels.every(text => ['Plain B', 'Plain C'].includes(text)), 'Labels: a title beside each marker without a card');
   assert.equal(await visible('.tp3d-annot-card'), 1);
 
-  await page.click('.tp3d-annot-seg--small .tp3d-annot-seg__btn:has-text("Cards")');
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Cards")');
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-card:not([hidden])').length >= 3);
-  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-seg--small [aria-pressed="true"]').textContent), 'Cards');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-seg--display [aria-pressed="true"]').textContent), 'Cards');
   assert.equal(JSON.stringify(await page.evaluate(() => window.probe.annotations())), stored, 'the display mode is a view setting: nothing was written');
 
   // Hide / Show is saved with the Load Plan.
@@ -756,7 +778,7 @@ test('Labels mode in a crowded view draws only labels that cover no other label 
   // Four markers a few pixels apart on one case: their labels would pile up.
   await seed(page, [-17, -6, 5, 16].map((x, i) => ({ title: `Latch number ${i + 1}`, cargo: 'cargo-a', local: { x, y: 16, z: i % 2 ? 6 : -6 } })));
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 4);
-  await page.click('.tp3d-annot-seg--small .tp3d-annot-seg__btn:has-text("Labels")');
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Labels")');
   await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-annot-pin__chip')].some(el => !el.hidden));
   const shown = await page.evaluate(() => {
     const rect = el => { const r = el.getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; };
@@ -803,17 +825,356 @@ test('automatically placed cards and labels keep clear of the open panel and of 
       chipsOnPanel: shown('.tp3d-annot-pin__chip').filter(hit).length,
     };
   });
-  await page.click('.tp3d-annot-seg--small .tp3d-annot-seg__btn:has-text("Cards")');
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Cards")');
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-card:not([hidden])').length === 5);
   const cards = await overlapsPanel();
   assert.ok(cards.pinsNearPanel >= 1, 'the scene has a marker whose right-hand card slot would sit under the panel');
   assert.equal(cards.cards, 5);
   assert.equal(cards.cardsOnPanel, 0, 'no automatically placed card is hidden under the panel');
-  await page.click('.tp3d-annot-seg--small .tp3d-annot-seg__btn:has-text("Labels")');
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Labels")');
   await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-annot-pin__chip')].some(el => !el.hidden));
   const labels = await overlapsPanel();
   assert.ok(labels.chips >= 1);
   assert.equal(labels.chipsOnPanel, 0, 'and no label is hidden under it');
+  assert.deepEqual(errors, []);
+});
+
+const livePins = page => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-pin:not(.is-draft)')].filter(el => !el.hidden).map(el => el.querySelector('.tp3d-annot-pin__badge').textContent));
+const liveCards = page => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-card')].filter(el => !el.hidden).map(el => el.getAttribute('aria-label')));
+const showButton = (page, label) => page.locator(`.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("${label}")`);
+const displayButton = (page, label) => page.locator(`.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("${label}")`);
+const dialogButton = (page, name) => page.locator('.modal-overlay, .modal').getByRole('button', { name });
+const editorInside = page => page.evaluate(() => { const ed = document.querySelector('.tp3d-annot-editor'); return Boolean(ed && !ed.hidden && ed.contains(document.activeElement)); });
+
+test('hiding the callout being edited closes its editor; unsaved changes need an explicit decision; unrelated hides leave it open', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'First', ground: [520, 10] }, { title: 'Second', ...TOP_OF_B }]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 2);
+  const record = n => page.evaluate(i => window.probe.annotations()[i], n);
+  const eye = n => page.click(`.tp3d-annot-row:nth-child(${n}) .tp3d-annot-row__eye`);
+
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  // Hiding another callout does not touch the open editor.
+  await eye(2);
+  await page.waitForFunction(() => window.probe.annotations()[1].hidden === true);
+  assert.equal(await editorClosed(page), false, 'an unrelated hide leaves the editor open');
+  await eye(2);
+  await page.waitForFunction(() => window.probe.annotations()[1].hidden === false);
+  assert.equal(await editorClosed(page), false);
+
+  // Hiding the one being edited (nothing unsaved) closes the editor, with no dialog and nothing committed.
+  const before = JSON.stringify(await record(0));
+  await eye(1);
+  await page.waitForFunction(() => window.probe.annotations()[0].hidden === true);
+  assert.equal(await editorClosed(page), true, 'the editor closed');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.modal-overlay, .modal').length), 0, 'no dialog for a clean editor');
+  assert.equal(await page.evaluate(() => { const el = document.querySelector('.tp3d-annot-pin.is-draft'); return !el || el.hidden; }), true, 'no marker preview is left');
+  assert.equal(await editorInside(page), false, 'focus is not stranded in the closed editor');
+  const hidden = await record(0);
+  assert.deepEqual([hidden.title, hidden.hidden], ['First', true]);
+  assert.equal(JSON.stringify({ ...hidden, hidden: false, updatedAt: 0 }), JSON.stringify({ ...JSON.parse(before), updatedAt: 0 }), 'only the hidden flag changed');
+  // Show restores it normally; Escape and the keyboard still work afterwards.
+  await eye(1);
+  await page.waitForFunction(() => window.probe.annotations()[0].hidden === false);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 2);
+  await page.focus('#viewport');
+  await page.keyboard.press('Escape');
+
+  // With unsaved changes: Keep editing changes nothing; Discard and hide closes without saving them.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Unsaved title');
+  await eye(1);
+  await dialogButton(page, 'Keep editing').click();
+  assert.equal(await editorClosed(page), false, 'declining leaves the editor open');
+  assert.equal(await page.inputValue('.tp3d-annot-editor__input'), 'Unsaved title', 'with its unsaved text');
+  assert.deepEqual([(await record(0)).hidden, (await record(0)).title], [false, 'First'], 'and the visibility and record unchanged');
+  await eye(1);
+  await dialogButton(page, 'Discard and hide').click();
+  await page.waitForFunction(() => window.probe.annotations()[0].hidden === true);
+  assert.equal(await editorClosed(page), true);
+  assert.equal((await record(0)).title, 'First', 'the unsaved text was never committed');
+  assert.equal(await count(page), 2);
+  await eye(1);
+  await page.waitForFunction(() => window.probe.annotations()[0].hidden === false);
+  assert.deepEqual(errors, []);
+});
+
+test('Show All / Selected / Off is view state: it filters the overlay, never writes, never overrides Hide, and Off ends invisible gestures', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'One', ground: [520, 10], keepExpanded: true }, { title: 'Two', ...TOP_OF_B }, { title: 'Three', ground: [200, -30] }]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 3);
+  const pressed = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-seg--show .tp3d-annot-seg__btn')].map(b => `${b.textContent}:${b.getAttribute('aria-pressed')}`));
+  assert.deepEqual(await pressed(), ['All:true', 'Selected:false', 'Off:false'], 'All is the default');
+  const snapshot = () => page.evaluate(() => ({ json: JSON.stringify(window.probe.annotations()), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited, cases: window.probe.casesJson() }));
+  const base = await snapshot();
+  assert.deepEqual(await livePins(page), ['1', '2', '3']);
+
+  // Selected: only the selected callout (and its card) is drawn; the list stays complete.
+  await showButton(page, 'Selected').click();
+  assert.deepEqual(await livePins(page), [], 'nothing selected: no graphics (the kept-expanded card too)');
+  assert.deepEqual(await liveCards(page), []);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-row').length), 3, 'the list is still available');
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-card.is-selected');
+  assert.deepEqual(await livePins(page), ['2']);
+  assert.equal((await liveCards(page)).length, 1, 'only the selected card');
+  await page.click('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-row:nth-child(3)').classList.contains('is-selected'));
+  assert.deepEqual(await livePins(page), ['3'], 'selecting another callout moves the view to it');
+
+  // A callout's own Hide always wins over the global mode.
+  await page.click('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__eye');
+  await page.waitForFunction(() => window.probe.annotations()[2].hidden === true);
+  assert.deepEqual(await livePins(page), [], 'a hidden callout is not drawn even when selected');
+  await showButton(page, 'All').click();
+  assert.deepEqual(await livePins(page), ['1', '2']);
+  await page.click('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__eye');
+  await page.waitForFunction(() => window.probe.annotations()[2].hidden === false);
+  const afterHide = await snapshot();
+
+  // Off: no pins, labels, cards or leader lines; the panel stays; creation and gestures are unavailable.
+  await showButton(page, 'Off').click();
+  assert.deepEqual(await livePins(page), []);
+  const graphics = await page.evaluate(() => ({
+    cards: [...document.querySelectorAll('.tp3d-annot-card')].filter(el => !el.hidden).length,
+    chips: [...document.querySelectorAll('.tp3d-annot-pin__chip')].filter(el => !el.hidden && el.closest('.tp3d-annot-pin') && !el.closest('.tp3d-annot-pin').hidden).length,
+    leaders: [...document.querySelectorAll('.tp3d-annot-svg__leader, .tp3d-annot-svg__under')].filter(el => el.getAttribute('d')).length,
+    panelShown: !document.getElementById('editor-annotation-panel').hidden,
+    tool: document.querySelector('.tp3d-annot-seg__btn[data-tool="callout"]').disabled,
+    rows: [...document.querySelectorAll('.tp3d-annot-row__select, .tp3d-annot-row__edit')].every(b => b.disabled),
+    hint: window.probe.hint(),
+  }));
+  assert.deepEqual([graphics.cards, graphics.chips, graphics.leaders, graphics.panelShown, graphics.tool, graphics.rows], [0, 0, 0, true, true, true]);
+  assert.match(graphics.hint, /hidden in the view/i);
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'cargo selection untouched');
+  await click(page, await point(page, ...GROUND_A));
+  assert.equal(await count(page), 3, 'a click on the scene creates nothing while Off');
+  assert.equal(await editorClosed(page), true);
+  await page.focus('#viewport');
+  await page.keyboard.press('Delete');
+  assert.equal(await count(page), 3, 'Delete cannot remove an annotation that cannot be seen');
+
+  // None of the mode changes wrote anything, bumped lastEdited or became a cargo Undo step.
+  assert.deepEqual(await snapshot(), afterHide);
+  assert.equal(afterHide.cases, base.cases);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false);
+
+  // Back to All (the kept-expanded callout shows its card again).
+  await showButton(page, 'All').click();
+  assert.deepEqual(await livePins(page), ['1', '2', '3']);
+  assert.equal((await liveCards(page)).length, 1);
+
+  // Off with an unfinished new callout: nothing happens until the owner decides; a clean one just closes.
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await click(page, await freePoint(page, [GROUND_A, GROUND_B, [60, 0, 60]]));
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await showButton(page, 'Off').click();
+  assert.equal(await editorClosed(page), true, 'a new callout with nothing typed has nothing to lose: it closes');
+  assert.deepEqual(await pressed(), ['All:false', 'Selected:false', 'Off:true']);
+  await showButton(page, 'All').click();
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await click(page, await freePoint(page, [GROUND_A, GROUND_B, [60, 0, 60]]));
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Typed draft');
+  await showButton(page, 'Off').click();
+  await dialogButton(page, 'Keep editing').click();
+  assert.equal(await editorClosed(page), false, 'declining keeps the editor');
+  assert.equal(await page.inputValue('.tp3d-annot-editor__input'), 'Typed draft');
+  assert.deepEqual(await pressed(), ['All:true', 'Selected:false', 'Off:false'], 'and the mode is unchanged');
+  await showButton(page, 'Off').click();
+  await dialogButton(page, 'Discard and turn off').click();
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-seg--show [aria-pressed="true"]').textContent === 'Off');
+  assert.equal(await editorClosed(page), true);
+  assert.equal(await count(page), 3, 'the unsaved callout was never written');
+  assert.deepEqual(await page.evaluate(() => document.querySelector('.tp3d-annot-seg__btn[data-tool="callout"]').getAttribute('aria-pressed')), 'false', 'the tool is disarmed');
+
+  // The view controls stay usable while an operation makes editing read-only.
+  await page.evaluate(() => { window.__op = window.probe.OperationLifecycle.beginOperation('autopacking'); });
+  await page.waitForFunction(() => !document.querySelector('.tp3d-annot-panel__blocked').hidden);
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-seg--show .tp3d-annot-seg__btn, .tp3d-annot-seg--display .tp3d-annot-seg__btn')].every(b => !b.disabled)), true);
+  await showButton(page, 'Selected').click();
+  assert.deepEqual(await pressed(), ['All:false', 'Selected:true', 'Off:false']);
+  await page.evaluate(() => window.probe.OperationLifecycle.finishOperation(window.__op));
+  assert.deepEqual(await snapshot(), afterHide, 'still nothing written');
+
+  // The mode never outlives the panel.
+  await showButton(page, 'Off').click();
+  await page.click('#btn-editor-annotations');
+  await page.click('#btn-editor-annotations');
+  await page.waitForSelector('.tp3d-annot-seg--show');
+  assert.deepEqual(await pressed(), ['All:true', 'Selected:false', 'Off:false']);
+  assert.deepEqual(await livePins(page), ['1', '2', '3']);
+  assert.deepEqual(errors, []);
+});
+
+test('Markers / Labels / Cards switch cleanly in every state: identity, numbering, selection and the saved data never change', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // No annotations: switching is harmless.
+  for (const label of ['Labels', 'Cards', 'Markers', 'Cards', 'Labels', 'Markers']) await displayButton(page, label).click();
+  assert.deepEqual(await livePins(page), []);
+
+  await seed(page, [
+    { title: 'Selected one', description: 'Chosen', ...TOP_OF_A },
+    { title: 'Kept open', description: 'Always expanded', ground: [520, 10], keepExpanded: true },
+    { title: 'Hidden one', ground: [200, -30] },
+    { title: 'Behind', cargo: 'cargo-b', local: { x: 10, y: -12, z: 10 } },
+    { title: 'Plain', ground: [330, 25] },
+  ]);
+  await page.click('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__eye');
+  await page.waitForFunction(() => window.probe.annotations()[2].hidden === true);
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-card.is-selected');
+  await page.waitForTimeout(300);
+  const base = await page.evaluate(() => ({ json: JSON.stringify(window.probe.annotations()), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited }));
+  const state = async () => page.evaluate(() => {
+    const visible = sel => [...document.querySelectorAll(sel)].filter(el => !el.hidden);
+    const pins = visible('.tp3d-annot-pin:not(.is-draft)');
+    return {
+      pins: pins.map(el => el.querySelector('.tp3d-annot-pin__badge').textContent),
+      cards: visible('.tp3d-annot-card').map(el => el.getAttribute('aria-label')),
+      chips: pins.filter(el => !el.querySelector('.tp3d-annot-pin__chip').hidden).map(el => el.querySelector('.tp3d-annot-pin__chip').textContent),
+      selected: [...document.querySelectorAll('.tp3d-annot-row.is-selected')].map(el => el.dataset.annotId),
+      numbers: [...document.querySelectorAll('.tp3d-annot-row__badge')].map(el => el.textContent),
+      selectedCards: visible('.tp3d-annot-card.is-selected').length,
+      data: JSON.stringify(window.probe.annotations()),
+      edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited,
+    };
+  });
+  const check = async (mode, label) => {
+    await displayButton(page, mode).click();
+    await page.waitForFunction(m => [...document.querySelectorAll('.tp3d-annot-seg--display .tp3d-annot-seg__btn')].find(b => b.textContent === m).getAttribute('aria-pressed') === 'true', mode);
+    const now = await state();
+    assert.deepEqual(now.pins.sort(), ['1', '2', '4', '5'], `${label}: every visible callout keeps its marker (the hidden one stays hidden)`);
+    assert.deepEqual(now.numbers, ['1', '2', '3', '4', '5'], `${label}: numbering is stable`);
+    assert.equal(new Set(now.cards).size, now.cards.length, `${label}: no duplicate cards`);
+    assert.equal(now.selectedCards, 1, `${label}: the selected callout keeps its expanded card`);
+    assert.ok(now.cards.some(text => /Kept open/.test(text)), `${label}: the kept-expanded callout keeps its card`);
+    assert.equal(now.selected.length, 1, `${label}: the selection survives`);
+    assert.equal(now.data, base.json, `${label}: nothing was written`);
+    assert.equal(now.edited, base.edited, `${label}: lastEdited is untouched`);
+    if (mode === 'Markers') {
+      assert.deepEqual(now.chips, [], 'Markers: no labels');
+      assert.equal(now.cards.length, 2, 'Markers: only the selected and kept-expanded cards');
+    } else if (mode === 'Labels') {
+      assert.ok(now.chips.length >= 1, 'Labels: titles beside markers');
+      assert.equal(now.cards.length, 2, 'Labels: the selected and kept-expanded cards only');
+      assert.ok(!now.chips.some(text => /Selected one|Kept open/.test(text)), 'Labels: a callout with a card has no duplicate label');
+    } else {
+      assert.ok(now.cards.length >= 3, 'Cards: every eligible callout within the budget');
+      assert.ok(now.cards.length <= 4, 'Cards: never the hidden one');
+      assert.deepEqual(now.chips, [], 'Cards: no stray labels');
+    }
+    return now;
+  };
+  for (const mode of ['Labels', 'Cards', 'Markers', 'Cards', 'Labels', 'Markers', 'Labels', 'Cards']) await check(mode, `switch to ${mode}`);
+
+  // After orbiting and zooming the camera, and in Cards mode again.
+  const box = await page.evaluate(() => window.probe.box('#viewport canvas'));
+  await page.mouse.move(box.x + box.w * 0.3, box.y + box.h * 0.85);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.w * 0.3 + 120, box.y + box.h * 0.85 + 30, { steps: 6 });
+  await page.mouse.up();
+  await page.mouse.move(box.x + box.w * 0.4, box.y + box.h * 0.8);
+  await page.mouse.wheel(0, -300);
+  await page.waitForTimeout(500);
+  for (const mode of ['Markers', 'Labels', 'Cards', 'Markers']) await displayButton(page, mode).click();
+  const afterCamera = await state();
+  assert.equal(afterCamera.data, base.json);
+  assert.equal(afterCamera.edited, base.edited);
+  assert.equal(new Set(afterCamera.cards).size, afterCamera.cards.length);
+  assert.equal(afterCamera.selectedCards, 1);
+  assert.deepEqual(afterCamera.numbers, ['1', '2', '3', '4', '5']);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'view switching is not a cargo Undo step');
+  assert.deepEqual(errors, []);
+});
+
+test('a crowded scene falls back to labels and markers without losing any marker, and keeps the selected and kept-expanded cards first', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, Array.from({ length: 40 }, (_, i) => ({
+    title: `Callout ${i + 1}`, description: 'Dense', ground: [20 + (i % 10) * 20, -40 + Math.floor(i / 10) * 20], keepExpanded: i === 31,
+  })));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 40);
+  await page.click('.tp3d-annot-row:nth-child(7) .tp3d-annot-row__select');
+  await displayButton(page, 'Cards').click();
+  await page.waitForTimeout(400);
+  const now = await page.evaluate(() => ({
+    pins: [...document.querySelectorAll('.tp3d-annot-pin:not(.is-draft)')].filter(el => !el.hidden).length,
+    cards: [...document.querySelectorAll('.tp3d-annot-card')].filter(el => !el.hidden).map(el => el.getAttribute('aria-label')),
+    notice: [...document.querySelectorAll('.tp3d-annot-overflow')].filter(el => !el.hidden).length,
+  }));
+  assert.equal(now.pins, 40, 'no marker is ever hidden by the card budget');
+  assert.ok(now.cards.length >= 2 && now.cards.length < 40, `the budget caps the cards (${now.cards.length})`);
+  assert.ok(now.cards.some(text => /^Callout 7:/.test(text)), 'the selected callout has its card');
+  assert.ok(now.cards.some(text => /^Callout 32:/.test(text)), 'and so does the kept-expanded one');
+  assert.equal(now.notice, 1, 'the overflow is explained');
+  assert.deepEqual(errors, []);
+});
+
+test('custom colors: one native color swatch beside the five names; the color is applied everywhere, readable, and saved as #rrggbb', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openArmed(browser);
+  const style = selector => page.evaluate(sel => { const el = document.querySelector(sel); const cs = getComputedStyle(el); return { bg: cs.backgroundColor, fg: cs.color }; }, selector);
+  await click(page, await freePoint(page, [GROUND_A, GROUND_B]));
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-swatches .tp3d-annot-swatch').length), 6, 'five names plus one custom');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-swatch__input').type), 'color', 'a native, accessible color input');
+  assert.equal(await page.getAttribute('.tp3d-annot-swatch__input', 'aria-label'), 'Custom color');
+  await page.fill('.tp3d-annot-editor__input', 'Yellow note');
+  await page.fill('.tp3d-annot-swatch__input', '#ffff00');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-swatch--custom').classList.contains('is-selected')), true);
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-swatch[aria-pressed="true"]').length), 0, 'no built-in swatch stays selected');
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  const [first] = await page.evaluate(() => window.probe.annotations());
+  assert.equal(first.color, '#ffff00', 'stored as canonical #rrggbb in the one existing color field');
+  assert.deepEqual(Object.keys(first).sort(), ['anchor', 'color', 'createdAt', 'description', 'hidden', 'id', 'keepExpanded', 'offset', 'schemaVersion', 'title', 'type', 'updatedAt']);
+  await page.waitForSelector('.tp3d-annot-pin:not(.is-draft):not([hidden])');
+  assert.deepEqual(await style('.tp3d-annot-pin:not(.is-draft) .tp3d-annot-pin__badge'), { bg: 'rgb(255, 255, 0)', fg: 'rgb(17, 19, 24)' }, 'marker and number: dark text on a light color');
+  assert.deepEqual(await style('.tp3d-annot-row__badge'), { bg: 'rgb(255, 255, 0)', fg: 'rgb(17, 19, 24)' }, 'list swatch');
+  assert.deepEqual(await style('.tp3d-annot-card.is-selected .tp3d-annot-card__swatch'), { bg: 'rgb(255, 255, 0)', fg: 'rgb(17, 19, 24)' }, 'card accent');
+
+  // A very dark custom color gets a white number; dark theme does not change a chosen color.
+  if ((await page.getAttribute('.tp3d-annot-seg__btn[data-tool="callout"]', 'aria-pressed')) !== 'true') await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await click(page, await freePoint(page, [GROUND_B, GROUND_A, [60, 0, 60]]));
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Dark note');
+  await page.fill('.tp3d-annot-swatch__input', '#000000');
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  await page.evaluate(() => { document.documentElement.setAttribute('data-theme', 'dark'); });
+  assert.deepEqual(await style('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__badge'), { bg: 'rgb(0, 0, 0)', fg: 'rgb(255, 255, 255)' });
+  assert.equal((await page.evaluate(() => window.probe.annotations()))[1].color, '#000000');
+
+  // Editing: reopen shows the custom color selected; a built-in name replaces it with no leftover styling.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  assert.equal(await page.inputValue('.tp3d-annot-swatch__input'), '#ffff00');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-swatch--custom').classList.contains('is-selected')), true);
+  await page.click('.tp3d-annot-swatch[data-color="red"]');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-swatch--custom').classList.contains('is-selected')), false);
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(() => window.probe.annotations()[0].color === 'red');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__badge').style.getPropertyValue('--annot-color')), '', 'no leftover inline color');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__badge').dataset.color), 'red');
+
+  // Choosing the custom swatch again brings back the color picked earlier.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.click('.tp3d-annot-swatch__input');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-swatch--custom').classList.contains('is-selected')), true);
+  await page.click('.tp3d-annot-btn:not(.tp3d-annot-btn--primary):not(.tp3d-annot-btn--danger)');
+  // A color is information only: cargo and assessment are untouched.
   assert.deepEqual(errors, []);
 });
 

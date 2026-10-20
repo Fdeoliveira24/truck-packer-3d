@@ -176,6 +176,11 @@
 
 These are unapproved candidates outside the owner-approved sequence in Section 4. No candidate is an active implementation merely because it appears here. Items remain subject to individual product decisions and owner authorization; the sequence in Section 4 takes precedence.
 
+1a. **Simultaneous Measurement and Annotation graphics (desired future behavior; needs a separate owner-approved amendment to the locked Measurement Tool V1 contract)**
+   - Today the Editor keeps exclusive scene-input ownership: opening Annotations exits Measurement Mode and activating Measurement closes the Annotations panel. Saved callouts stay drawn while Measurement is on, but saved measurement graphics are drawn only while Measurement Mode is active (`measurement-tool.js` renders only when active).
+   - Desired: a user can view saved measurement graphics and annotation graphics at the same time, while only one tool at a time owns editing gestures and pointer input.
+   - Smallest safe approach (not started): add a view-only render pass to the Measurement Tool that draws saved Valid measurements (never Needs Review/Unresolved) on its existing SVG layer when the mode is inactive, with no pointer, keyboard or focus ownership and no writes; keep Mode activation exclusive with Annotations gestures; give it a view control like Annotations' Show All / Selected / Off. Required amendment: the Measurement contract's statement that its graphics belong to the active mode, plus the new view control and its tests (capture exclusion, preview-authority rebind and read-only gating must match the Annotations overlay). No change to Measurement data, anchors or persistence.
+
 1. **Professional 3D Editor Visual Foundation**
    - Cargo box presentation, edges/lines, labels, materials; selection/hover clarity, contact cues; truck visual hierarchy
    - Do not rewrite renderer architecture

@@ -5282,6 +5282,8 @@ export function createEditorScreen({
           hasProvisionalPose: () => Boolean(InteractionManager && InteractionManager.hasProvisionalPose && InteractionManager.hasProvisionalPose()),
           // Selecting an annotation clears the cargo selection (so Delete never touches cargo).
           clearCargoSelection: () => { if (InteractionManager && typeof InteractionManager.setSelection === 'function') InteractionManager.setSelection([]); },
+          // Leaves an unapplied AutoPack Results preview for the committed plan (the landing Undo and export use).
+          endResultsPreview: () => endAutoPackResultsPreview(),
         });
         btnAnnotations.addEventListener('click', ev => {
           ev.stopPropagation();

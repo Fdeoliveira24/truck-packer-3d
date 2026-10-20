@@ -108,8 +108,44 @@ export function normalizeCalloutDescription(value) {
   return text || null;
 }
 
+const CUSTOM_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+
+/** True for a custom annotation color: exactly `#RRGGBB` (six hex digits, any case). */
+export function isCustomAnnotationColor(value) {
+  return typeof value === 'string' && CUSTOM_COLOR_PATTERN.test(value);
+}
+
+/** True for a built-in color name or a custom `#RRGGBB` value. */
+export function isValidAnnotationColor(value) {
+  return ANNOTATION_COLORS.includes(value) || isCustomAnnotationColor(value);
+}
+
+/**
+ * The stored form of a valid color: a built-in name unchanged, a custom color as lower-case `#rrggbb`.
+ * Null for anything else, so a write can refuse it instead of quietly storing a different color.
+ * @returns {string | null}
+ */
+export function canonicalAnnotationColor(value) {
+  if (ANNOTATION_COLORS.includes(value)) return value;
+  return isCustomAnnotationColor(value) ? value.toLowerCase() : null;
+}
+
+/** A color that is safe to draw: the canonical value, or the default for anything unrecognised (display only). */
 export function normalizeAnnotationColor(value) {
-  return ANNOTATION_COLORS.includes(value) ? value : DEFAULT_ANNOTATION_COLOR;
+  return canonicalAnnotationColor(value) || DEFAULT_ANNOTATION_COLOR;
+}
+
+/** Foreground (number text) that stays readable on a custom color: near-black or white, whichever contrasts more. */
+export function annotationForegroundFor(color) {
+  if (!isCustomAnnotationColor(color)) return null;
+  const channel = index => {
+    const c = parseInt(color.slice(1 + index * 2, 3 + index * 2), 16) / 255;
+    return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+  const onDark = 1.05 / (luminance + 0.05); // white text
+  const onLight = (luminance + 0.05) / 0.0575; // #111318 text (luminance about 0.0075)
+  return onDark >= onLight ? '#ffffff' : '#111318';
 }
 
 /** A stored or requested card offset, validated and rounded; null means "placed automatically". */
@@ -135,7 +171,8 @@ export function createCalloutRecord({ id, anchor, title, description = null, col
     type: ANNOTATION_TYPE_CALLOUT,
     title: normalizeCalloutTitle(title),
     description: normalizeCalloutDescription(description),
-    color: normalizeAnnotationColor(color),
+    // An invalid color is kept as given so the validation gate refuses the write; it is never replaced.
+    color: canonicalAnnotationColor(color) || color,
     keepExpanded: keepExpanded === true,
     hidden: hidden === true,
     anchor,
@@ -159,7 +196,7 @@ export function editCalloutRecord(record, patch, now) {
   const next = { ...record, updatedAt: now };
   if (Object.hasOwn(patch, 'title')) next.title = normalizeCalloutTitle(patch.title);
   if (Object.hasOwn(patch, 'description')) next.description = normalizeCalloutDescription(patch.description);
-  if (Object.hasOwn(patch, 'color')) next.color = normalizeAnnotationColor(patch.color);
+  if (Object.hasOwn(patch, 'color')) next.color = canonicalAnnotationColor(patch.color) || patch.color;
   if (Object.hasOwn(patch, 'keepExpanded')) next.keepExpanded = patch.keepExpanded === true;
   if (Object.hasOwn(patch, 'hidden')) next.hidden = patch.hidden === true;
   return validateCalloutRecord(next) ? null : canonicalCalloutRecord(next);
@@ -205,7 +242,7 @@ export function validateCalloutRecord(record) {
   }
   if (record.description != null && (typeof record.description !== 'string' ||
       record.description.length > MAX_CALLOUT_DESCRIPTION_LENGTH)) return 'description is invalid';
-  if (!ANNOTATION_COLORS.includes(record.color)) return 'color is invalid';
+  if (!isValidAnnotationColor(record.color)) return 'color is invalid';
   if (typeof record.keepExpanded !== 'boolean' || typeof record.hidden !== 'boolean') return 'display flags are invalid';
   if (record.offset != null) {
     const { offset } = record;
@@ -231,7 +268,7 @@ function canonicalCalloutRecord(record) {
     type: ANNOTATION_TYPE_CALLOUT,
     title: record.title,
     description: record.description == null ? null : record.description,
-    color: record.color,
+    color: canonicalAnnotationColor(record.color) || record.color,
     keepExpanded: record.keepExpanded,
     hidden: record.hidden,
     anchor: canonicalAnchorRecord(record.anchor),

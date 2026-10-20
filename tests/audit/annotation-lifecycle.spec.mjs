@@ -452,6 +452,46 @@ test('Workspace Backup and Active Workspace Backup carry annotations and restore
   assert.equal(Object.hasOwn(JSON.parse(CoreStorage.exportAppJSON()).data.packLibrary[0], 'annotations'), false, 'no annotations, no field');
 });
 
+test('custom colors survive save, duplicate, Load Plan import/export, Workspace Backup and restore; a malformed color is never silently replaced', () => {
+  seed();
+  const added = PackLibrary.addCallout('A', note('Custom', ground(10, 10), { color: '#FFA500' }));
+  assert.equal(added.ok, true);
+  assert.equal(PackLibrary.getAnnotations('A')[0].color, '#ffa500', 'stored canonical');
+  assert.equal(PackLibrary.addCallout('A', note('Bad', ground(11, 11), { color: 'orange' })).reason, 'invalid', 'a malformed color is refused at write');
+  assert.equal(PackLibrary.addCallout('A', note('Bad', ground(11, 11), { color: '#12' })).reason, 'invalid');
+  assert.equal(PackLibrary.getAnnotations('A').length, 1, 'refused writes store nothing');
+  assert.equal(PackLibrary.updateCallout('A', added.annotation.id, { color: 'javascript:1' }).reason, 'invalid');
+  assert.equal(PackLibrary.getAnnotations('A')[0].color, '#ffa500', 'and the stored color is unchanged');
+  assert.equal(PackLibrary.updateCallout('A', added.annotation.id, { color: '#00ff7f' }).ok, true);
+  assert.equal(PackLibrary.updateCallout('A', added.annotation.id, { color: 'red' }).ok, true, 'back to a built-in name');
+  assert.equal(PackLibrary.updateCallout('A', added.annotation.id, { color: '#00FF7F' }).ok, true);
+  assert.equal(PackLibrary.getAnnotations('A')[0].color, '#00ff7f');
+
+  const copy = PackLibrary.duplicate('A');
+  assert.equal(PackLibrary.getAnnotations(copy.id)[0].color, '#00ff7f', 'duplicate');
+
+  const exported = JSON.parse(CoreStorage.exportAppJSON()).data.packLibrary.find(p => p.id === 'A').annotations;
+  assert.equal(exported[0].color, '#00ff7f', 'export');
+  assert.equal(PackLibrary.planPackImport(importPayload(exported)).pack.annotations[0].color, '#00ff7f', 'Load Plan import');
+  const blocked = /Pack import blocked: the annotations are not valid/;
+  for (const color of ['#00ff7', 'teal', '#00ff7fff', 'url(x)']) {
+    assert.throws(() => PackLibrary.planPackImport(importPayload([{ ...exported[0], color }])), blocked, `import refuses ${color}`);
+  }
+
+  const workspaceJson = ImportExport.buildWorkspaceExportJSON('Probe', 'ws-1');
+  const restore = ImportExport.planWorkspaceRestore(ImportExport.parseWorkspaceImportJSON(workspaceJson), { currentState: StateStore.snapshot() });
+  assert.deepEqual(restore.packLibrary.find(p => p.id === 'A').annotations.map(r => r.color), ['#00ff7f'], 'Workspace Backup and restore');
+  const tampered = JSON.parse(workspaceJson);
+  tampered.data.packLibrary.find(p => p.id === 'A').annotations[0].color = 'not-a-color';
+  assert.throws(() => ImportExport.assertRestorableWorkspaceBackup(JSON.stringify(tampered)), /color|annotation/i, 'restore validation is strict');
+
+  // A stored record with a malformed color is preserved verbatim for recovery, not defaulted to Ink.
+  const stored = { ...exported[0], color: 'not-a-color' };
+  const kept = normalizePack(makePack('R', { annotations: [stored] })).annotations;
+  assert.equal(kept[0].type, A.ANNOTATION_TYPE_UNREADABLE);
+  assert.deepEqual(kept[0].original, stored);
+});
+
 // ============================================================================
 // SECTION: CARGO IDENTITY SURVIVES NORMALIZATION
 // ============================================================================

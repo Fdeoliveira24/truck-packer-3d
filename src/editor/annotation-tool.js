@@ -38,6 +38,8 @@
 
 import {
   ANNOTATION_COLORS,
+  annotationForegroundFor,
+  isCustomAnnotationColor,
   ANNOTATION_STATUS,
   ANNOTATION_TYPE_CALLOUT,
   ANNOTATION_TYPE_UNREADABLE,
@@ -88,7 +90,7 @@ const ORTHO_RAY_LENGTH = 1e4;
 const MARKER_ARM_PX = 6;
 const PANEL_MARGIN_PX = 10;
 const PANEL_DRAG_THRESHOLD_PX = 5;
-const EDITOR_WIDTH_PX = 304;
+const EDITOR_WIDTH_PX = 336;
 const EDITOR_FALLBACK_HEIGHT_PX = 404;
 const MIN_RAY_LENGTH = 1e-6;
 const HELD_POSE_NOTICE = 'Place or cancel the held case before working with annotations on cargo.';
@@ -97,7 +99,7 @@ const PICK_REFUSAL_NOTICE = { provisional: HELD_POSE_NOTICE, ambiguous: AMBIGUOU
 // Operations that only read pixels back never block or cancel annotation editing.
 const PASSIVE_OPERATION_KINDS = new Set(['capturingPreview']);
 const BLOCKED_CAUSE_TEXT = Object.freeze({
-  preview: 'an AutoPack preview is shown',
+  preview: 'an unapplied AutoPack option is being previewed',
   autopacking: 'AutoPack is running',
   unpacking: 'Unpack is running',
   changingTruck: 'the truck is being changed',
@@ -105,6 +107,9 @@ const BLOCKED_CAUSE_TEXT = Object.freeze({
 });
 const COLOR_LABELS = Object.freeze({ ink: 'Ink', blue: 'Blue', green: 'Green', red: 'Red', violet: 'Violet' });
 const DISPLAY_MODES = Object.freeze([['markers', 'Markers'], ['labels', 'Labels'], ['cards', 'Cards']]);
+const SHOW_MODES = Object.freeze([['all', 'All'], ['selected', 'Selected'], ['off', 'Off']]);
+const DEFAULT_CUSTOM_COLOR = '#e11d8f';
+const SHOW_OFF_HINT = 'Annotations are hidden in the view. Choose All or Selected to place, select or edit callouts.';
 const TOOL_DEFS = Object.freeze([
   { key: 'callout', label: 'Callout', icon: 'fa-solid fa-location-dot', available: true },
   { key: 'arrow', label: 'Arrow', icon: 'fa-solid fa-arrow-right', available: false },
@@ -132,6 +137,8 @@ export function createAnnotationTool({
   let draft = null; // the editor card: a new callout or an edit of an existing one
   let selectedId = null;
   let display = 'markers'; // view-level: 'markers' | 'labels' | 'cards'; not saved with the Load Plan
+  let showMode = 'all'; // view-level: 'all' | 'selected' | 'off'; never saved, never overrides a record's own hidden flag
+  let lastCustomColor = null; // the custom color last picked in this session, offered again by the swatch
   let records = [];
   let results = [];
   let numbers = new Map();
@@ -308,6 +315,22 @@ export function createAnnotationTool({
     if (el.classList.contains(name) !== on) el.classList.toggle(name, on);
   }
 
+  /**
+   * Colour an element for a record color: a built-in name is styled by the stylesheet (theme aware); a custom
+   * `#rrggbb` is passed as custom properties, with a number color that stays readable on it.
+   */
+  function applyColor(el, color) {
+    if (isCustomAnnotationColor(color)) {
+      el.dataset.color = 'custom';
+      el.style.setProperty('--annot-color', color);
+      el.style.setProperty('--annot-fg', annotationForegroundFor(color));
+    } else {
+      el.dataset.color = color || '';
+      el.style.removeProperty('--annot-color');
+      el.style.removeProperty('--annot-fg');
+    }
+  }
+
   /** Focus returns to the 3D viewport when what held it is about to disappear. */
   function refocusViewportIfLost() {
     const viewport = els.viewport;
@@ -363,6 +386,10 @@ export function createAnnotationTool({
   function select(id, { toggle = false } = {}) {
     let target = id && recordById(id) ? id : null;
     if (toggle && target && selectedId === target) target = null;
+    if (target && showMode === 'off') {
+      notice(SHOW_OFF_HINT);
+      return;
+    }
     if (target && target !== selectedId) {
       if (provisionalPoseActive()) {
         notice(HELD_POSE_NOTICE);
@@ -397,12 +424,13 @@ export function createAnnotationTool({
     if (reattachId && !recordById(reattachId)) reattachId = null;
     if (draft) {
       if (draft.editId && !recordById(draft.editId)) cancelDraft('The callout was removed, so editing was cancelled.');
+      else if (draft.editId && draft.hiddenAtOpen === false && recordById(draft.editId).hidden === true) cancelDraft('The callout was hidden, so editing was cancelled.');
       else if (!draft.editId && cargoPoseKey(pack, draft.anchor) !== draft.poseKey) cancelDraft('The cargo changed, so the new callout was cancelled.');
     }
     if (pinDrag && pinDrag.id !== DRAFT_ID) {
       const record = recordById(pinDrag.id);
       const result = resultById(pinDrag.id);
-      if (!record || !result || result.status !== ANNOTATION_STATUS.VALID) cancelPinDrag('The callout changed, so the move was cancelled.');
+      if (!record || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden) cancelPinDrag('The callout changed, so the move was cancelled.');
       else if (cargoPoseKey(pack, record.anchor) !== pinDrag.poseKey) cancelPinDrag('The cargo changed, so the move was cancelled.');
     }
     if (pinDrag && pinDrag.id === DRAFT_ID && draft && cargoPoseKey(pack, draft.anchor) !== pinDrag.poseKey) {
@@ -509,6 +537,7 @@ export function createAnnotationTool({
     hover = null;
     press = null;
     panelOpen = false;
+    showMode = 'all'; // a view-only mode never outlives the panel that controls it
     clearDeleted();
     if (statusTimer) window.clearTimeout(statusTimer);
     statusTimer = null;
@@ -541,6 +570,10 @@ export function createAnnotationTool({
     const reason = blockedReason();
     if (reason && tool !== key) {
       notice(blockedMessage(reason));
+      return;
+    }
+    if (showMode === 'off') {
+      notice(SHOW_OFF_HINT);
       return;
     }
     if (draft) cancelDraft();
@@ -672,10 +705,15 @@ export function createAnnotationTool({
       notice(blockedMessage(reason));
       return;
     }
+    if (showMode === 'off') {
+      notice(SHOW_OFF_HINT);
+      return;
+    }
     if (draft) cancelDraft();
     reattachId = null;
     draft = {
       editId: id,
+      hiddenAtOpen: record.hidden === true,
       anchor: record.anchor,
       world: null,
       poseKey: null,
@@ -845,6 +883,31 @@ export function createAnnotationTool({
       colors.appendChild(swatch);
       return { color, swatch };
     });
+    // One custom color beside the built-in names: a swatch that opens the browser's native color picker.
+    const customSwatch = htmlEl('span', 'tp3d-annot-swatch tp3d-annot-swatch--custom');
+    customSwatch.dataset.color = 'custom';
+    const customInput = htmlEl('input', 'tp3d-annot-swatch__input');
+    customInput.type = 'color';
+    customInput.value = DEFAULT_CUSTOM_COLOR;
+    customInput.title = 'Custom color';
+    customInput.setAttribute('aria-label', 'Custom color');
+    customInput.addEventListener('click', () => {
+      // Choosing the swatch again brings back the custom color picked earlier, before the picker adjusts it.
+      if (draft && !isCustomAnnotationColor(draft.color) && lastCustomColor) {
+        draft.color = lastCustomColor;
+        syncEditorFields({ keepInputs: true });
+      }
+    });
+    customInput.addEventListener('input', () => {
+      if (!draft) return;
+      const picked = customInput.value.toLowerCase();
+      if (!isCustomAnnotationColor(picked)) return;
+      lastCustomColor = picked;
+      draft.color = picked;
+      syncEditorFields({ keepInputs: true });
+    });
+    customSwatch.appendChild(customInput);
+    colors.appendChild(customSwatch);
     const keepLabel = htmlEl('label', 'tp3d-annot-editor__keep');
     const keep = htmlEl('input');
     keep.type = 'checkbox';
@@ -889,7 +952,7 @@ export function createAnnotationTool({
     return {
       root, head, heading: headline.querySelector('.tp3d-annot-editor__heading'),
       targetText: target.querySelector('.tp3d-annot-editor__target-text'),
-      presetButtons, title, description, swatches, keep, del, cancel, save,
+      presetButtons, title, description, swatches, customSwatch, customInput, keep, del, cancel, save,
     };
   }
 
@@ -916,6 +979,12 @@ export function createAnnotationTool({
     parts.keep.checked = draft.keepExpanded;
     parts.presetButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', draft.preset === key ? 'true' : 'false'));
     parts.swatches.forEach(({ color, swatch }) => setAttr(swatch, 'aria-pressed', draft.color === color ? 'true' : 'false'));
+    const custom = isCustomAnnotationColor(draft.color);
+    applyColor(parts.customSwatch, custom ? draft.color : '');
+    if (!custom) parts.customSwatch.dataset.color = 'custom';
+    toggleClass(parts.customSwatch, 'is-selected', custom);
+    if (custom && parts.customInput.value !== draft.color) parts.customInput.value = draft.color;
+    else if (!custom && lastCustomColor && parts.customInput.value !== lastCustomColor) parts.customInput.value = lastCustomColor;
     setHidden(parts.del, !editing);
     setText(parts.save, editing ? 'Save changes' : 'Save callout');
     parts.save.disabled = !normalizeCalloutTitle(draft.title);
@@ -970,12 +1039,110 @@ export function createAnnotationTool({
       setStatus(blockedMessage(reason));
       return;
     }
+    const record = recordById(id);
+    if (!currentPack() || !isCallout(record)) return;
+    // Hiding the callout whose editor is open closes that editor: nothing is saved, and unsaved edits are
+    // only discarded after the owner agrees. Declining leaves the editor and the visibility untouched.
+    if (!record.hidden && draft && draft.editId === id) {
+      if (!draftIsDirty()) {
+        closeEditingFor(id);
+        writeHidden(id);
+        return;
+      }
+      confirmDiscard({
+        title: 'Discard changes?',
+        message: `Hiding "${record.title}" closes its editor and discards your unsaved changes.`,
+        okLabel: 'Discard and hide',
+      }).then(confirmed => {
+        if (!confirmed || !draft || draft.editId !== id) return;
+        closeEditingFor(id);
+        writeHidden(id);
+      });
+      return;
+    }
+    writeHidden(id);
+  }
+
+  function writeHidden(id) {
+    if (blockedReason()) return;
     const pack = currentPack();
     const record = recordById(id);
     if (!pack || !isCallout(record)) return;
     clearDeleted();
     const outcome = PackLibrary.updateCallout(pack.id, id, { hidden: !record.hidden });
     if (!outcome.ok) UIComponents.showToast('Could not change this callout.', 'error', { title: 'Annotations' });
+  }
+
+  /** Close the editor for `id` and end anything that was moving it, using the same cleanup as Cancel. */
+  function closeEditingFor(id) {
+    if (pinDrag && pinDrag.id === id) cancelPinDrag();
+    if (cardDrag && cardDrag.id === id) cancelCardDrag();
+    if (draft && draft.editId === id) cancelDraft();
+  }
+
+  /** True when the open editor holds text, color or option changes that Save would write. */
+  function draftIsDirty() {
+    if (!draft) return false;
+    const title = normalizeCalloutTitle(draft.title);
+    const description = normalizeCalloutDescription(draft.description);
+    if (draft.editId) {
+      const stored = recordById(draft.editId);
+      if (!isCallout(stored)) return false;
+      return title !== stored.title || description !== (stored.description || null) ||
+        draft.color !== stored.color || draft.keepExpanded !== stored.keepExpanded;
+    }
+    return Boolean(title || description || draft.color !== 'ink' || draft.keepExpanded);
+  }
+
+  function confirmDiscard(options) {
+    return UIComponents.confirm({ cancelLabel: 'Keep editing', danger: true, ...options }).catch(() => false);
+  }
+
+  // ==========================================================================
+  // SECTION: GLOBAL SHOW (All / Selected / Off) — a view setting, never written to the Load Plan
+  // ==========================================================================
+  /** Whether the global Show mode lets this (already drawable) callout be drawn. */
+  function isShownByMode(id) {
+    return showMode === 'all' || (showMode === 'selected' && id === selectedId);
+  }
+
+  /**
+   * Change the global Show mode. All and Selected only filter what is drawn. Off also ends every gesture that
+   * would otherwise act on graphics the owner cannot see; an editor with unsaved changes is only closed after
+   * the owner agrees, and declining changes nothing.
+   */
+  function requestShowMode(mode) {
+    if (!SHOW_MODES.some(([key]) => key === mode) || mode === showMode) return;
+    if (mode === 'off' && draft && draftIsDirty()) {
+      confirmDiscard({
+        title: 'Discard changes?',
+        message: 'Turning annotations off closes the open callout editor and discards its unsaved changes.',
+        okLabel: 'Discard and turn off',
+      }).then(confirmed => {
+        if (confirmed && showMode !== 'off') applyShowMode('off');
+      });
+      return;
+    }
+    applyShowMode(mode);
+  }
+
+  function applyShowMode(mode) {
+    if (mode === 'off') {
+      if (pinDrag) cancelPinDrag();
+      if (cardDrag) cancelCardDrag();
+      if (draft) cancelDraft();
+      reattachId = null;
+      tool = null;
+      hover = null;
+      press = null;
+      selectedId = null;
+      updateCursor();
+    }
+    showMode = mode;
+    visDirty = true;
+    renderPanel();
+    refreshOverlay();
+    if (mode === 'off') refocusViewportIfLost();
   }
 
   /**
@@ -1044,6 +1211,10 @@ export function createAnnotationTool({
     const reason = blockedReason();
     if (reason) {
       notice(blockedMessage(reason));
+      return;
+    }
+    if (showMode === 'off') {
+      notice(SHOW_OFF_HINT);
       return;
     }
     if (draft) cancelDraft();
@@ -1519,7 +1690,18 @@ export function createAnnotationTool({
     body.id = 'editor-annotation-panel-body';
     const blocked = htmlEl('div', 'tp3d-annot-panel__blocked');
     blocked.hidden = true;
-    blocked.append(iconEl('fa-solid fa-lock'), htmlEl('span'));
+    const blockedContent = htmlEl('div', 'tp3d-annot-panel__blocked-content');
+    const blockedAction = htmlEl('button', 'tp3d-annot-btn tp3d-annot-btn--small', 'Return to saved plan');
+    blockedAction.type = 'button';
+    blockedAction.hidden = true;
+    blockedAction.addEventListener('click', () => {
+      // Ends only the transient Results preview (the Editor's own landing); nothing is applied or written.
+      if (typeof els.endResultsPreview === 'function') els.endResultsPreview();
+      renderPanel();
+      refreshOverlay();
+    });
+    blockedContent.append(htmlEl('span'), blockedAction);
+    blocked.append(iconEl('fa-solid fa-lock'), blockedContent);
 
     const toolGroup = segmented('Annotation tool', 'tp3d-annot-seg--tools');
     const toolButtons = TOOL_DEFS.map(def => {
@@ -1552,9 +1734,21 @@ export function createAnnotationTool({
     undoButton.addEventListener('click', undoDelete);
     undoBar.append(undoText, undoButton);
 
+    const show = htmlEl('div', 'tp3d-annot-panel__view');
+    show.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Show'));
+    const showGroup = segmented('Show callouts', 'tp3d-annot-seg--small tp3d-annot-seg--show');
+    const showButtons = SHOW_MODES.map(([key, label]) => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
+      button.type = 'button';
+      button.addEventListener('click', () => requestShowMode(key));
+      showGroup.appendChild(button);
+      return { key, button };
+    });
+    show.appendChild(showGroup);
+
     const view = htmlEl('div', 'tp3d-annot-panel__view');
     view.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Callouts'));
-    const displayGroup = segmented('Callout display', 'tp3d-annot-seg--small');
+    const displayGroup = segmented('Callout display', 'tp3d-annot-seg--small tp3d-annot-seg--display');
     const displayButtons = DISPLAY_MODES.map(([key, label]) => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
       button.type = 'button';
@@ -1568,13 +1762,13 @@ export function createAnnotationTool({
     const warning = htmlEl('div', 'tp3d-annot-panel__notice', "Some saved annotations couldn't be read. The original data is kept until you delete it.");
     warning.hidden = true;
     const list = htmlEl('ul', 'tp3d-annot-panel__list');
-    body.append(blocked, toolGroup, hint, undoBar, view, warning, empty, list);
+    body.append(blocked, toolGroup, hint, undoBar, show, view, warning, empty, list);
 
     els.panel.replaceChildren(head, body);
     rows.clear();
     panelParts = {
-      root: els.panel, head, toggle: toggleButton, chevron, count, body, blocked, blockedText: blocked.querySelector('span'),
-      toolButtons, hint, undoBar, undoText, displayButtons, empty, warning, list,
+      root: els.panel, head, toggle: toggleButton, chevron, count, body, blocked, blockedText: blocked.querySelector('span'), blockedAction,
+      toolButtons, hint, undoBar, undoText, showButtons, displayButtons, empty, warning, list,
     };
     return panelParts;
   }
@@ -1619,7 +1813,7 @@ export function createAnnotationTool({
     return row;
   }
 
-  function updateRow(row, record, result, blocked) {
+  function updateRow(row, record, result, blocked, viewOff) {
     row.id = record.id;
     row.el.dataset.annotId = record.id;
     const callout = isCallout(record);
@@ -1641,14 +1835,14 @@ export function createAnnotationTool({
     const number = numbers.get(record.id);
     if (callout) {
       setText(row.badge, number ? String(number) : '');
-      row.badge.dataset.color = record.color;
+      applyColor(row.badge, record.color);
       toggleClass(row.badge, 'is-flagged', !valid);
     } else {
-      row.badge.dataset.color = '';
+      applyColor(row.badge, '');
       toggleClass(row.badge, 'is-flagged', true);
       if (!row.badge.firstChild || row.badge.firstChild.nodeType !== 1) row.badge.replaceChildren(iconEl('fa-solid fa-triangle-exclamation'));
     }
-    row.select.disabled = !callout;
+    row.select.disabled = !callout || viewOff;
     setAttr(row.select, 'aria-pressed', selected ? 'true' : 'false');
     setAttr(row.select, 'aria-label', `${callout ? `Callout ${number}: ` : ''}${title}, ${sub}${selected ? ', selected' : ''}`);
     row.select.title = callout ? 'Select to show its card' : '';
@@ -1656,7 +1850,7 @@ export function createAnnotationTool({
     setHidden(row.eye, !callout);
     setHidden(row.edit, !callout);
     row.eye.disabled = blocked;
-    row.edit.disabled = blocked;
+    row.edit.disabled = blocked || viewOff;
     row.remove.disabled = blocked;
     if (callout) {
       const hiddenNow = record.hidden === true;
@@ -1672,13 +1866,14 @@ export function createAnnotationTool({
     setText(row.issueText, issue);
     setHidden(row.issue, !issue);
     setHidden(row.reattach, !callout || valid);
-    row.reattach.disabled = blocked;
+    row.reattach.disabled = blocked || viewOff;
   }
 
   /** Context-sensitive guidance: empty unless something is relevant right now. */
   function guidanceText(blockedNow) {
-    if (blockedNow) return blockedMessage(blockedNow);
+    if (blockedNow) return ''; // the banner above already names the cause
     if (statusMessage) return statusMessage;
+    if (showMode === 'off') return SHOW_OFF_HINT;
     if (pinDrag && pinDrag.moved) return 'Drag the marker onto a surface. Esc cancels.';
     if (reattachId) return 'Click cargo, the truck or the ground to re-attach this callout. Esc cancels.';
     if (draft) {
@@ -1695,6 +1890,7 @@ export function createAnnotationTool({
   /** Colour of the dot beside the guidance: orange while a gesture is under way or something needs attention, green after a save. */
   function guidanceTone(blockedNow) {
     if (blockedNow) return 'active';
+    if (showMode === 'off' && !statusMessage) return 'active';
     if (statusMessage) return statusTone || (tool || draft || reattachId ? 'active' : '');
     if (tool || draft || reattachId || (pinDrag && pinDrag.moved) || records.length >= MAX_ANNOTATIONS_PER_PACK) return 'active';
     return '';
@@ -1717,12 +1913,17 @@ export function createAnnotationTool({
     setHidden(parts.body, panelCollapsed);
 
     setHidden(parts.blocked, !blockedNow);
-    if (blockedNow) setText(parts.blockedText, `${blockedMessage(blockedNow)} You can still select and view annotations.`);
+    if (blockedNow) {
+      const how = blockedNow === 'preview' ? ' Apply it in AutoPack Results, or return to your saved plan.' : '';
+      setText(parts.blockedText, `${blockedMessage(blockedNow)}${how} You can still select and view annotations.`);
+    }
+    setHidden(parts.blockedAction, !(blockedNow === 'preview' && typeof els.endResultsPreview === 'function'));
     parts.toolButtons.forEach(({ key, button, available }) => {
       if (!available) return;
       setAttr(button, 'aria-pressed', tool === key ? 'true' : 'false');
-      button.disabled = Boolean(blockedNow) && tool !== key;
+      button.disabled = (Boolean(blockedNow) && tool !== key) || showMode === 'off';
     });
+    parts.showButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', showMode === key ? 'true' : 'false'));
     parts.displayButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', display === key ? 'true' : 'false'));
 
     const hintText = guidanceText(blockedNow);
@@ -1747,7 +1948,7 @@ export function createAnnotationTool({
         row = createRow();
         rows.set(record.id, row);
       }
-      updateRow(row, record, results[index], Boolean(blockedNow));
+      updateRow(row, record, results[index], Boolean(blockedNow), showMode === 'off');
       if (parts.list.children[index] !== row.el) parts.list.insertBefore(row.el, parts.list.children[index] || null);
       seen.add(record.id);
     });
@@ -2063,7 +2264,7 @@ export function createAnnotationTool({
     if (view.pinKey !== key) {
       view.pinKey = key;
       setText(view.badge, String(entry.number));
-      view.pin.dataset.color = record.color;
+      applyColor(view.pin, record.color);
       setAttr(view.pin, 'aria-label', `Callout ${entry.number}: ${record.title}`);
       setAttr(view.pin, 'aria-pressed', flags.selected ? 'true' : 'false');
       view.pin.title = record.title;
@@ -2092,7 +2293,7 @@ export function createAnnotationTool({
     if (wasHidden) parts.card.hidden = false;
     if (view.cardKey !== key) {
       view.cardKey = key;
-      parts.card.dataset.color = record.color;
+      applyColor(parts.card, record.color);
       parts.card.style.width = `${cardW}px`;
       setAttr(parts.card, 'aria-label', `Callout ${entry.number}: ${record.title}`);
       setText(parts.swatch, String(entry.number));
@@ -2154,7 +2355,7 @@ export function createAnnotationTool({
     records.forEach((record, index) => {
       if (!isCallout(record)) return;
       live.add(record.id);
-      if (!drawableIds.has(record.id)) {
+      if (!drawableIds.has(record.id) || !isShownByMode(record.id)) {
         const stale = views.get(record.id);
         if (stale) hideView(stale);
         return;
@@ -2221,7 +2422,7 @@ export function createAnnotationTool({
       entries.filter(entry => entry.view.front && !shownIds.has(entry.record.id))
         .sort((a, b) => a.number - b.number)
         .map(entry => ({ id: entry.record.id, marker: { x: entry.view.screen.x, y: entry.view.screen.y }, text: entry.record.title })),
-      panelBox ? pinRects.concat({ id: '', ...panelBox }) : pinRects, width);
+      panelBox ? pinRects.concat(panelBox.map(box => ({ id: '', ...box }))) : pinRects, width);
     entries.forEach(entry => {
       const showLabel = labelIds.has(entry.record.id);
       updatePin(entry.view, entry, {
@@ -2245,7 +2446,7 @@ export function createAnnotationTool({
       } else if (record.offset) {
         rect = rectFromOffset(marker, record.offset, size, viewport);
       } else {
-        const occupied = [...pinRects.filter(pinRect => pinRect.id !== record.id), ...placed, ...(panelBox ? [panelBox] : [])];
+        const occupied = [...pinRects.filter(pinRect => pinRect.id !== record.id), ...placed, ...(panelBox || [])];
         const auto = autoPlace({ marker, size, viewport, occupied, previousSlot: view.slot });
         view.slot = auto.slot;
         rect = { x: auto.x, y: auto.y, w: auto.w, h: auto.h };
@@ -2332,7 +2533,7 @@ export function createAnnotationTool({
       rect = clampRect({ x: draft.editorPos.x, y: draft.editorPos.y, w: size.w, h: size.h }, viewport);
     } else {
       const panelRect = panelObstacle();
-      const occupied = pinRects.filter(p => p.id !== draft.editId).concat(panelRect ? [panelRect] : []);
+      const occupied = pinRects.filter(p => p.id !== draft.editId).concat(panelRect || []);
       const auto = autoPlace({ marker: { x: screen.x, y: screen.y }, size, viewport, occupied, previousSlot: draft.slot });
       draft.slot = auto.slot;
       rect = { x: auto.x, y: auto.y, w: auto.w, h: auto.h };
@@ -2345,12 +2546,20 @@ export function createAnnotationTool({
     setPath(parts.draftLeaderUnder, d);
   }
 
-  /** The Annotations panel as a rectangle in layer pixels, so the automatic editor placement avoids covering it. */
+  /**
+   * What automatic placement keeps cards, labels and the editor off: the open Annotations panel and the
+   * Editor's own "Load plan needs review" button, as rectangles in layer pixels. Null when neither shows.
+   */
   function panelObstacle() {
-    if (!panelOpen || !els.panel || els.panel.hidden || !els.layer) return null;
+    if (!els.layer || !doc) return null;
     const layerRect = els.layer.getBoundingClientRect();
-    const rect = els.panel.getBoundingClientRect();
-    return { x: rect.left - layerRect.left, y: rect.top - layerRect.top, w: rect.width, h: rect.height };
+    const rects = [];
+    if (panelOpen && els.panel && !els.panel.hidden) rects.push(els.panel.getBoundingClientRect());
+    const status = doc.getElementById('editor-validation-status-btn');
+    if (status && !(status.closest && status.closest('[hidden]'))) rects.push(status.getBoundingClientRect());
+    const found = rects.filter(rect => rect.width > 0 && rect.height > 0)
+      .map(rect => ({ x: rect.left - layerRect.left, y: rect.top - layerRect.top, w: rect.width, h: rect.height }));
+    return found.length ? found : null;
   }
 
   function renderHover(parts, camera, width, height) {

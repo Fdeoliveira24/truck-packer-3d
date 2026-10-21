@@ -697,6 +697,7 @@ export function createMeasurementTool({
     lastBlockedReason = blockedReason();
     CaseScene.setHover(null);
     if (els.button) els.button.setAttribute('aria-pressed', 'true');
+    if (els.labels) els.labels.classList.add('is-active');
     ensureSvg();
     if (doc) {
       doc.addEventListener('keydown', onKeyDownCapture, true);
@@ -744,6 +745,7 @@ export function createMeasurementTool({
       doc.removeEventListener('pointerdown', onPointerDownCapture, true);
     }
     if (els.button) els.button.setAttribute('aria-pressed', 'false');
+    if (els.labels) els.labels.classList.remove('is-active');
     if (els.panel) els.panel.hidden = true;
     if (panelObserver) {
       panelObserver.disconnect();

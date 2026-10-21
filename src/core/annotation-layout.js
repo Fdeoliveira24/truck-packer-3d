@@ -235,25 +235,50 @@ export function fitSheet({ viewport, blockers = [], height, insets = SHEET_INSET
 
 /** Smallest height worth giving the desktop panel: its header, tool and view rows and part of one callout row. */
 export const MIN_PANEL_HEIGHT = 200;
+/**
+ * Where the desktop panel may sit: below the viewport toolbar and left of the viewport controls (px from each edge).
+ * The left and bottom insets are the margin the panel's own drag keeps from the viewport edge.
+ */
+export const PANEL_REGION_INSETS = Object.freeze({ left: 10, top: 64, right: 58, bottom: 10 });
 
 /**
- * The desktop Annotations panel hangs from its top edge. Where a blocker (the AutoPack Results card) sits below that
- * edge over the panel's columns, the panel is limited to the stretch above it, so its list scrolls instead of running
- * under the card. A blocker that starts at or above the panel's top, or that leaves less than `minHeight`, is not
- * something a height limit can fix: the panel is left alone.
+ * Keep the desktop Annotations panel off the AutoPack Results card (or its restore button), wherever the owner left
+ * either of them. Like the editor card, the panel stays put when nothing is in the way. A card over its lower part
+ * leaves it docked and limits its height (the list scrolls); otherwise it moves to the nearest clear spot inside its
+ * region, and when no full-size spot exists it keeps its width and gives up height (its list scrolls, its header and
+ * tools never move off the panel). Display only: the owner's dragged position is never touched, so the panel returns
+ * when Results moves away. `clear` is false only when even a minimum-height panel has nowhere to go; the caller then
+ * leaves it where it is.
  * @param {{ panel: {x:number,y:number,w:number,h:number}, blockers?: Array<{x:number,y:number,w:number,h:number}>,
- *   natural: number, gap?: number, minHeight?: number }} input `natural` is the height the panel would take unlimited.
- * @returns {number|null} The height limit in px, or null when the panel needs none.
+ *   viewport: {width:number,height:number}, insets?: {left:number,top:number,right:number,bottom:number},
+ *   gap?: number, minHeight?: number }} input `panel` is where the panel would sit at its natural height.
+ * @returns {{ dx: number, dy: number, maxHeight: number|null, clear: boolean }} the shift to apply and the height limit
+ *   (null when the natural height fits).
  */
-export function fitHangingPanel({ panel, blockers = [], natural, gap = OBSTACLE_GAP, minHeight = MIN_PANEL_HEIGHT }) {
+export function fitPanelClear({ panel, blockers = [], viewport, insets = PANEL_REGION_INSETS, gap = OBSTACLE_GAP, minHeight = MIN_PANEL_HEIGHT }) {
+  const region = { x: insets.left, y: insets.top, w: viewport.width - insets.left - insets.right, h: viewport.height - insets.top - insets.bottom };
+  const stay = clear => ({ dx: 0, dy: 0, maxHeight: null, clear });
+  if (!isRect(panel) || !(region.w > 0) || !(region.h > 0)) return stay(false);
+  const local = rect => ({ x: rect.x - region.x, y: rect.y - region.y, w: rect.w, h: rect.h });
+  const solid = (Array.isArray(blockers) ? blockers : []).filter(isRect).map(local);
+  const at = local(panel);
+  const hits = rect => solid.some(blocker => overlapArea(rect, inflate(blocker, gap)) > 0);
+  if (!hits(at)) return stay(true);
+  // A card over the panel's lower part: the panel stays where it is docked and its list scrolls above the card.
   let limit = Infinity;
-  for (const blocker of Array.isArray(blockers) ? blockers : []) {
-    if (!isRect(blocker) || blocker.y <= panel.y) continue;
-    if (blocker.x >= panel.x + panel.w || blocker.x + blocker.w <= panel.x) continue;
-    limit = Math.min(limit, blocker.y - gap - panel.y);
+  for (const blocker of solid) {
+    if (blocker.y > at.y && blocker.x < at.x + at.w && blocker.x + blocker.w > at.x) limit = Math.min(limit, blocker.y - gap - at.y);
   }
-  if (!(limit < natural) || limit < minHeight) return null;
-  return Math.floor(limit);
+  if (limit >= minHeight && limit < at.h && !hits({ ...at, h: limit })) return { dx: 0, dy: 0, maxHeight: Math.floor(limit), clear: true };
+  // Anywhere else (over the header, beside it): the nearest clear spot, whole, or the tallest stretch there is.
+  const fit = clearOfBlockers(at, solid, { width: region.w, height: region.h }, { margin: 0, gap, minHeight });
+  if (!fit.clear) return stay(false);
+  return {
+    dx: Math.round(fit.x + region.x - panel.x),
+    dy: Math.round(fit.y + region.y - panel.y),
+    maxHeight: fit.shrunk ? Math.floor(fit.h) : null,
+    clear: true,
+  };
 }
 
 const LABEL_HEIGHT = 20;

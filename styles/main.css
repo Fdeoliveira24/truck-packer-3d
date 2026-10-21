@@ -4466,20 +4466,22 @@ body.tp3d-shared-modal-lock #app .nav {
 
 /* Measurement Tool V1: a restrained dimension-line overlay. Thin neutral lines with short end ticks; the
    brand orange is reserved for the selected or actively edited measurement. It is an SVG/DOM layer above
-   the canvas, so it can never appear in a canvas capture (Screenshot, PDF views, thumbnails, previews). */
+   the canvas, so it can never appear in a canvas capture (Screenshot, PDF views, thumbnails, previews).
+   Saved measurements are an inert view beneath the callout layer (z-index 4), so a line or label never crosses an
+   expanded card or the callout editor. While Measurement Mode owns the scene its lines, labels and grips are the live
+   tool and sit above the callouts, which are then view-only. */
 .tp3d-measure-labels {
   position: absolute;
   inset: 0;
-  z-index: 5;
+  z-index: 3;
   overflow: hidden;
   pointer-events: none;
 }
 
-/* Saved measurements stay drawn (inert) above the callout layer. While a callout is being written its editor card is
-   the topmost surface in the viewport, so the lines and labels step beneath it instead of crossing its fields. */
-.canvas-wrap:has(.tp3d-annot-editor:not([hidden])) .tp3d-measure-labels {
-  z-index: 3;
+.tp3d-measure-labels.is-active {
+  z-index: 5;
 }
+
 
 .tp3d-measure-svg {
   position: absolute;

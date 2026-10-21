@@ -69,8 +69,8 @@ import {
   clampRect,
   clearOfBlockers,
   estimateCardHeight,
-  fitHangingPanel,
   fitLabels,
+  fitPanelClear,
   fitSheet,
   isCompactViewport,
   LABEL_FLIP_MARGIN,
@@ -104,6 +104,8 @@ const EDITOR_WIDTH_PX = 336;
 const EDITOR_FALLBACK_HEIGHT_PX = 404;
 const PANEL_SHEET_MAX_FRACTION = 0.46; // the compact panel's own max-height (styles/main.css)
 const PANEL_LIMIT_PROPERTY = '--tp3d-annot-panel-limit'; // the desktop panel's extra max-height (styles/main.css)
+const PANEL_MAX_HEIGHT_PX = 520; // the desktop panel's own max-height is min(this, the layer's height - the inset below)
+const PANEL_MAX_HEIGHT_INSET_PX = 140;
 const MIN_RAY_LENGTH = 1e-6;
 const HELD_POSE_NOTICE = 'Place or cancel the held case before working with annotations on cargo.';
 const AMBIGUOUS_CARGO_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so a callout cannot be attached to it.';
@@ -181,6 +183,7 @@ export function createAnnotationTool({
   let compact = false;
   let panelCollapsed = false;
   let panelPosition = null;
+  let panelShift = { x: 0, y: 0 }; // display-only shift (px) that keeps the desktop panel off AutoPack Results
   let panelParts = null;
   let panelObserver = null;
   let suppressToggleClick = false;
@@ -1645,12 +1648,21 @@ export function createAnnotationTool({
     return els.panel ? (els.panel.offsetParent || els.panel.parentElement) : null;
   }
 
-  function clampPanelPosition(position) {
+  /** The panel's height if nothing limited it: its own chrome plus the whole list, up to the stylesheet's cap. Null while it is not laid out. */
+  function panelNaturalHeight() {
+    const host = panelHost();
+    const parts = panelParts;
+    if (!host || !parts || parts.root !== els.panel || !parts.root.offsetHeight) return null;
+    const content = parts.root.offsetHeight - parts.list.clientHeight + parts.list.scrollHeight;
+    return Math.max(1, Math.min(content, PANEL_MAX_HEIGHT_PX, host.clientHeight - PANEL_MAX_HEIGHT_INSET_PX));
+  }
+
+  function clampPanelPosition(position, height = els.panel ? els.panel.offsetHeight : 0) {
     const host = panelHost();
     const panel = els.panel;
     if (!host || !panel || !position) return null;
     const maxX = Math.max(PANEL_MARGIN_PX, host.clientWidth - panel.offsetWidth - PANEL_MARGIN_PX);
-    const maxY = Math.max(PANEL_MARGIN_PX, host.clientHeight - panel.offsetHeight - PANEL_MARGIN_PX);
+    const maxY = Math.max(PANEL_MARGIN_PX, host.clientHeight - height - PANEL_MARGIN_PX);
     return {
       x: Math.min(Math.max(Number(position.x) || 0, PANEL_MARGIN_PX), maxX),
       y: Math.min(Math.max(Number(position.y) || 0, PANEL_MARGIN_PX), maxY),
@@ -1672,7 +1684,9 @@ export function createAnnotationTool({
       }
       return;
     }
-    const next = clampPanelPosition(panelPosition);
+    // Where it belongs is decided at its natural height, so a panel limited to clear AutoPack Results does not slide
+    // down as it shrinks. While the owner drags it, it is clamped as shown.
+    const next = clampPanelPosition(panelPosition, panel.classList.contains('is-dragging') ? undefined : (panelNaturalHeight() ?? undefined));
     if (!next) return;
     panel.classList.add('is-dragged');
     panel.style.left = `${next.x}px`;
@@ -1700,6 +1714,8 @@ export function createAnnotationTool({
         if (!moved) {
           moved = true;
           els.panel.classList.add('is-dragging');
+          // The drag starts from the panel as shown (where it is and how tall it is); avoiding Results settles on release.
+          setPanelFit({ limit: els.panel.style.getPropertyValue(PANEL_LIMIT_PROPERTY) });
         }
         moveEv.preventDefault();
         panelPosition = clampPanelPosition({ x: start.left + dx, y: start.top + dy });
@@ -2508,7 +2524,7 @@ export function createAnnotationTool({
     // 4. Pins first (cards avoid every marker), then cards in priority order.
     const pinRects = entries.map(entry => ({ id: entry.record.id, x: entry.view.screen.x - PIN_RECT_PX / 2, y: entry.view.screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }));
     const resultsBox = resultsObstacles();
-    fitPanelSheet(resultsBox, viewport);
+    fitPanel(resultsBox, viewport);
     const panelBox = panelObstacle(resultsBox);
     const labelIds = display === 'markers' ? new Set() : fitLabels(
       entries.filter(entry => entry.view.front && !shownIds.has(entry.record.id))
@@ -2718,41 +2734,55 @@ export function createAnnotationTool({
   }
 
   /**
-   * Keeps the open Annotations panel off the AutoPack Results card; its list scrolls before any control is hidden.
-   * The compact panel is a bottom sheet like the editor and rides in the largest clear stretch (usually straight
-   * above the card). The desktop panel hangs from its top edge and is limited to the stretch above a card below it.
-   * Nothing is overridden (and nothing measured) while Results is not in the way.
+   * The display-only overrides that keep the panel off the AutoPack Results card; no argument clears them all. The
+   * compact panel (a bottom sheet) limits its height and bottom edge; the desktop panel limits its height and shifts.
+   * Neither touches the dragged position the owner chose.
    */
-  function fitPanelSheet(resultsBox, viewport) {
+  function setPanelFit({ maxHeight = '', bottom = '', limit = '', dx = 0, dy = 0 } = {}) {
+    const style = els.panel && els.panel.style;
+    if (!style) return;
+    if (style.maxHeight !== maxHeight) style.maxHeight = maxHeight;
+    if (style.bottom !== bottom) style.bottom = bottom;
+    if (style.getPropertyValue(PANEL_LIMIT_PROPERTY) !== limit) {
+      if (limit) style.setProperty(PANEL_LIMIT_PROPERTY, limit);
+      else style.removeProperty(PANEL_LIMIT_PROPERTY);
+    }
+    const transform = dx || dy ? `translate(${dx}px, ${dy}px)` : '';
+    if (style.transform !== transform) style.transform = transform;
+    panelShift = { x: dx, y: dy };
+  }
+
+  /**
+   * Keeps the open Annotations panel off the AutoPack Results card, wherever either was dragged; the list scrolls
+   * before any control is hidden. The compact panel is a bottom sheet like the editor and rides in the largest clear
+   * stretch (usually straight above the card). The desktop panel moves to the nearest clear spot, or gives up height
+   * where there is none. Nothing is overridden (and nothing measured) while Results is not in the way, and a panel
+   * the owner is dragging is left alone until it is released.
+   */
+  function fitPanel(resultsBox, viewport) {
     const parts = panelParts;
-    if (!parts || parts.root !== els.panel) return;
-    const style = parts.root.style;
-    // Each mode owns different overrides; a resize across the compact threshold must leave none of the other's behind.
-    const apply = (maxHeight, bottom, limit) => {
-      if (style.maxHeight !== maxHeight) style.maxHeight = maxHeight;
-      if (style.bottom !== bottom) style.bottom = bottom;
-      if (style.getPropertyValue(PANEL_LIMIT_PROPERTY) !== limit) {
-        if (limit) style.setProperty(PANEL_LIMIT_PROPERTY, limit);
-        else style.removeProperty(PANEL_LIMIT_PROPERTY);
-      }
-    };
+    if (!parts || parts.root !== els.panel || parts.root.classList.contains('is-dragging')) return;
     const shown = panelOpen && !els.panel.hidden && !els.panel.classList.contains('is-covered');
     if (!shown || !resultsBox.length) {
-      apply('', '', '');
+      setPanelFit();
+      return;
+    }
+    if (!compact) {
+      applyPanelPosition(); // the dragged place at the natural height, whatever this function limited last frame
+      const naturalHeight = panelNaturalHeight();
+      const [box] = layerRects([parts.root]);
+      if (!naturalHeight || !box) return;
+      // Where it would sit unshifted and unlimited: the owner's spot, or the stylesheet's (the measured box less last frame's shift).
+      const natural = { x: box.x - panelShift.x, y: box.y - panelShift.y, w: box.w, h: naturalHeight };
+      const fit = fitPanelClear({ panel: natural, blockers: resultsBox, viewport });
+      setPanelFit(fit.clear ? { limit: fit.maxHeight == null ? '' : `${fit.maxHeight}px`, dx: fit.dx, dy: fit.dy } : {});
       return;
     }
     const rootHeight = parts.root.offsetHeight;
     if (!rootHeight) return;
-    const unlimited = rootHeight - parts.list.clientHeight + parts.list.scrollHeight;
-    if (!compact) {
-      const [panelBox] = layerRects([parts.root]);
-      const limit = panelBox ? fitHangingPanel({ panel: panelBox, blockers: resultsBox, natural: unlimited }) : null;
-      apply('', '', limit == null ? '' : `${limit}px`);
-      return;
-    }
     const cap = Math.floor(viewport.height * PANEL_SHEET_MAX_FRACTION);
-    const fit = fitSheet({ viewport, blockers: resultsBox, height: Math.min(unlimited, cap) });
-    apply(fit.moved ? `${Math.min(fit.maxHeight, cap)}px` : '', fit.moved ? `${fit.bottom}px` : '', '');
+    const fit = fitSheet({ viewport, blockers: resultsBox, height: Math.min(rootHeight - parts.list.clientHeight + parts.list.scrollHeight, cap) });
+    setPanelFit(fit.moved ? { maxHeight: `${Math.min(fit.maxHeight, cap)}px`, bottom: `${fit.bottom}px` } : {});
   }
 
   /** Back to the stylesheet's placement, or (with `height`) the same placement limited to `height` px. True when the limit changed. */

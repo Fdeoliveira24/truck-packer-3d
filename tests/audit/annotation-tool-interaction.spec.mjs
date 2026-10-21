@@ -1611,7 +1611,7 @@ test('an editor whose marker is out of view still keeps clear of AutoPack Result
   assert.deepEqual(errors, []);
 });
 
-test('the desktop panel stays clear of AutoPack Results below it: its list scrolls above the card, every control is reachable, and it returns to full height when Results moves away', { timeout: 150000 }, async t => {
+test('the desktop panel stays clear of AutoPack Results wherever either is dragged (below, over its header, minimized, resized) and returns exactly when Results moves away', { timeout: 180000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);
@@ -1619,7 +1619,11 @@ test('the desktop panel stays clear of AutoPack Results below it: its list scrol
   await frames(page, 4);
   const panel = () => boxOf(page, '#editor-annotation-panel');
   const card = () => boxOf(page, '[data-role="autopack-results-panel"]');
-  const limit = () => page.evaluate(() => document.getElementById('editor-annotation-panel').style.getPropertyValue('--tp3d-annot-panel-limit'));
+  const wrap = () => boxOf(page, '.canvas-wrap');
+  const fitState = () => page.evaluate(() => {
+    const style = document.getElementById('editor-annotation-panel').style;
+    return { transform: style.transform, limit: style.getPropertyValue('--tp3d-annot-panel-limit'), maxHeight: style.maxHeight };
+  });
   // Buttons the panel shows (inside its box and, for rows, inside the scrolled list) that something else is drawn over.
   const covered = () => page.evaluate(() => {
     const root = document.getElementById('editor-annotation-panel');
@@ -1638,41 +1642,106 @@ test('the desktop panel stays clear of AutoPack Results below it: its list scrol
       return !(top && (top === button || button.contains(top)));
     }).length;
   });
+  // A stand-in for the Results card (the panel reads its rectangle from the DOM), placed in viewport coordinates.
+  const placeCard = ({ x, y, w = 420, h = 236 }) => page.evaluate(([left, top, width, height]) => {
+    const host = document.querySelector('.canvas-wrap');
+    const origin = host.getBoundingClientRect();
+    let stand = document.querySelector('[data-role="autopack-results-panel"]');
+    if (!stand) {
+      stand = document.createElement('section');
+      stand.setAttribute('data-role', 'autopack-results-panel');
+      stand.style.cssText = 'position:absolute;z-index:12;background:#fff;border:1px solid #888;box-sizing:border-box';
+      host.appendChild(stand);
+    }
+    Object.assign(stand.style, { left: `${left - origin.left}px`, top: `${top - origin.top}px`, width: `${width}px`, height: `${height}px` });
+  }, [x, y, w, h]);
+  const removeCard = () => page.evaluate(() => document.querySelector('[data-role="autopack-results-panel"]')?.remove());
+  const settled = async () => { await frames(page, 6); return panel(); };
+  // Clear of the card, inside the space between the toolbar and the viewport controls, every shown control reachable.
+  const assertClear = async (label, expectedBox = null) => {
+    const shown = expectedBox || await panel();
+    const stand = await card();
+    const host = await wrap();
+    assert.equal(overlaps(shown, stand), false, `${label}: the panel does not touch Results`);
+    assert.equal(await covered(), 0, `${label}: every control it shows is reachable`);
+    assert.ok(shown.x >= host.x + 9 && shown.r <= host.r - 57 && shown.y >= host.y + 63 && shown.b <= host.b - 9, `${label}: it stays between the toolbar and the viewport controls`);
+  };
   assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').classList.contains('is-compact')), false, 'a desktop-width viewport');
   const full = await panel();
   assert.equal(await covered(), 0);
-  assert.equal(await limit(), '', 'no Results, no limit');
+  assert.deepEqual(await fitState(), { transform: '', limit: '', maxHeight: '' }, 'no Results, no override');
 
-  // A stand-in for the Results card (the panel reads its rectangle from the DOM), over the lower rows of the panel.
-  await page.evaluate(([left, top]) => {
-    const wrap = document.querySelector('.canvas-wrap').getBoundingClientRect();
-    const stand = document.createElement('section');
-    stand.setAttribute('data-role', 'autopack-results-panel');
-    stand.style.cssText = `position:absolute;width:420px;height:236px;z-index:12;background:#fff;border:1px solid #888;left:${left - wrap.left}px;top:${top - wrap.top}px`;
-    document.querySelector('.canvas-wrap').appendChild(stand);
-  }, [full.x - 120, full.y + 260]);
-  await frames(page, 6);
-  const limited = await panel();
-  assert.ok(limited.h < full.h, 'the panel gives up height instead of running under Results');
-  assert.ok(limited.b <= (await card()).y - 4, 'and ends above the card');
-  assert.equal(limited.y, full.y, 'it stays where it was');
-  assert.equal(await covered(), 0, 'every button it shows is reachable');
-  const listScrolls = await page.evaluate(() => { const list = document.querySelector('#editor-annotation-panel .tp3d-annot-panel__list'); return list.scrollHeight > list.clientHeight; });
-  assert.equal(listScrolls, true, 'the rows that no longer fit scroll');
-  await page.evaluate(() => {
-    const rows = document.querySelectorAll('#editor-annotation-panel .tp3d-annot-row');
-    rows[rows.length - 1].scrollIntoView({ block: 'nearest' });
-  });
+  // 1. Results over the lower rows (its default place): the panel gives up height and its list scrolls.
+  await placeCard({ x: full.x - 120, y: full.y + 260 });
+  const below = await settled();
+  assert.ok(below.h < full.h, 'the panel gives up height instead of running under Results');
+  await assertClear('below');
+  assert.equal(await page.evaluate(() => { const list = document.querySelector('#editor-annotation-panel .tp3d-annot-panel__list'); return list.scrollHeight > list.clientHeight; }), true, 'the rows that no longer fit scroll');
+  await page.evaluate(() => { const rows = document.querySelectorAll('#editor-annotation-panel .tp3d-annot-row'); rows[rows.length - 1].scrollIntoView({ block: 'nearest' }); });
   await frames(page, 2);
   assert.equal(await covered(), 0, 'the last row is reachable once scrolled to');
 
-  // Results moves away (here, removed): the stylesheet's own height is back and nothing was left behind.
-  await page.evaluate(() => document.querySelector('[data-role="autopack-results-panel"]').remove());
+  // 2. Results dragged over the panel's own header: the panel moves to the nearest clear spot.
+  await placeCard({ x: full.x - 160, y: full.y - 30 });
+  const aside = await settled();
+  assert.notDeepEqual([aside.x, aside.y], [full.x, full.y], 'the panel moves out from under Results');
+  await assertClear('over the header');
+
+  // 3. Minimized Results (a 52 px chip) over the header: clear as well.
+  await placeCard({ x: full.x - 160, y: full.y - 10, h: 52 });
+  await settled();
+  await assertClear('minimized chip');
+
+  // 4. Results gone: the stylesheet's own spot, exactly, and nothing is left behind.
+  await removeCard();
+  const back = await settled();
+  assert.deepEqual([back.x, back.y, back.h], [full.x, full.y, full.h], 'with Results gone the panel is exactly where it was');
+  assert.deepEqual(await fitState(), { transform: '', limit: '', maxHeight: '' }, 'and no override is left behind');
+
+  // 5. The owner drags the panel somewhere else; Results then covers it. The dragged place is only a preference.
+  const grip = async () => page.evaluate(() => { const r = document.querySelector('#editor-annotation-panel .tp3d-annot-grip').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  const dragBy = async (dx, dy) => {
+    const from = await grip();
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move(from.x + dx / 2, from.y + dy / 2, { steps: 4 });
+    await page.mouse.move(from.x + dx, from.y + dy, { steps: 4 });
+    return { release: () => page.mouse.up() };
+  };
+  const owner = await dragBy(-300, 120);
+  await owner.release();
+  const dropped = await settled();
+  assert.ok(dropped.x < full.x - 100, 'the owner moved the panel');
+  await placeCard({ x: dropped.x - 40, y: dropped.y + 40 });
+  await settled();
+  await assertClear('dragged panel');
+  await removeCard();
+  const home = await settled();
+  assert.deepEqual([home.x, home.y, home.h], [dropped.x, dropped.y, dropped.h], 'with Results gone it returns to where the owner dropped it');
+
+  // 6. Dragging a panel that is currently shown aside starts from where it is shown, and settles clear on release.
+  await placeCard({ x: dropped.x - 40, y: dropped.y + 40 });
+  const shown = await settled();
+  const second = await dragBy(30, -30); // up: a panel shown aside near the bottom edge cannot go further down
+  const during = await panel();
+  assert.ok(Math.abs(during.x - (shown.x + 30)) <= 1 && Math.abs(during.y - (shown.y - 30)) <= 1, 'no jump when a drag starts from the shifted panel');
+  await second.release();
+  await settled();
+  await assertClear('after dragging from the shifted spot');
+  await removeCard();
+  await settled();
+
+  // 7. The window resizes while Results sits over the panel: it re-fits.
+  const spot = await panel();
+  await placeCard({ x: spot.x - 100, y: spot.y + 60 });
+  await settled();
+  await page.setViewportSize({ width: 1150, height: 720 });
+  await frames(page, 8);
+  await assertClear('after a resize');
+  await removeCard();
   await frames(page, 6);
-  const back = await panel();
-  assert.deepEqual([back.x, back.y, back.h], [full.x, full.y, full.h], 'with Results gone the panel is exactly as it was');
-  assert.equal(await limit(), '');
-  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').style.maxHeight), '', 'no height override is left behind');
+  assert.deepEqual(await fitState(), { transform: '', limit: '', maxHeight: '' });
+
   assert.equal(await page.evaluate(() => window.probe.annotations().length), 6, 'nothing was written');
   assert.deepEqual(errors, []);
 });
@@ -1885,6 +1954,12 @@ test('Annotations and a saved measurement are on screen together, and only the t
     const layer = document.querySelector('.tp3d-annot-layer');
     return { viewOnly: layer.classList.contains('is-view-only'), inert: layer.inert };
   });
+  // Saved lines are an inert view beneath the callout layer (so they never cross an expanded card or the editor); while the
+  // ruler owns the scene its live lines, labels and grips are above the (then view-only) callouts.
+  const stacking = () => page.evaluate(() => ({
+    lines: Number(getComputedStyle(document.getElementById('editor-measure-labels')).zIndex),
+    callouts: Number(getComputedStyle(document.querySelector('.tp3d-annot-layer')).zIndex),
+  }));
   const savedRecords = () => page.evaluate(() => JSON.stringify([window.probe.annotations(), window.probe.PackLibrary.getMeasurements('fixture-pack'), window.probe.casesJson()]));
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 2 && [...document.querySelectorAll('.tp3d-measure-svg__segment')].some(g => g.style.display !== 'none'));
   const before = await savedRecords();
@@ -1892,6 +1967,8 @@ test('Annotations and a saved measurement are on screen together, and only the t
   // 1. Annotations open, ruler off: both are drawn, and the passive line does not get in the callouts' way.
   assert.equal(await ruler(), false);
   assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1], 'callouts and the saved line are drawn together');
+  const passive = await stacking();
+  assert.ok(passive.lines < passive.callouts, 'the saved line is drawn beneath the callouts');
   assert.deepEqual(await layerState(), { viewOnly: false, inert: false }, 'callouts are interactive while Annotations owns the scene');
   const centre = await lineCentre(page);
   assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), centre), true, 'the line never catches the pointer');
@@ -1905,6 +1982,8 @@ test('Annotations and a saved measurement are on screen together, and only the t
   assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'false', 'the Annotations panel closes');
   assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1], 'both stay drawn while the ruler is on');
   assert.deepEqual(await layerState(), { viewOnly: true, inert: true }, 'callouts are view only while the ruler owns the scene');
+  const live = await stacking();
+  assert.ok(live.lines > live.callouts, 'while the ruler owns the scene its lines, labels and grips are above the callouts');
   const pin = await pinCentreOf(page);
   assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), pin), true, 'a marker does not intercept the ruler\'s click');
   await click(page, pin);
@@ -1922,6 +2001,7 @@ test('Annotations and a saved measurement are on screen together, and only the t
   await frames(page);
   assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1]);
   assert.deepEqual(await layerState(), { viewOnly: false, inert: false });
+  assert.deepEqual(await stacking(), passive, 'with the ruler off the saved line goes back beneath the callouts');
   const selectedPinIndex = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])')].findIndex(pin => pin.classList.contains('is-selected')));
   assert.equal(await selectedPinIndex(), 0, 'the callout selected before the ruler is still selected (the ruler never changed it)');
   await click(page, await pinCentreOf(page, '.tp3d-annot-pin:not(.is-draft):not([hidden]):not(.is-selected)'));
@@ -1944,18 +2024,10 @@ test('Annotations and a saved measurement are on screen together, and only the t
   await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
   assert.equal(await ruler(), false);
   assert.equal(await page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__marker')].filter(marker => marker.style.display !== 'none').length), 0, 'the line shows no ruler marker');
-  // The line is inert but painted: while the editor is open it steps beneath the callout layer (which holds the editor)
-  // so it cannot cross the fields, and it goes back above the callouts when the editor closes.
-  const stacking = () => page.evaluate(() => ({
-    lines: Number(getComputedStyle(document.getElementById('editor-measure-labels')).zIndex),
-    callouts: Number(getComputedStyle(document.querySelector('.tp3d-annot-layer')).zIndex),
-  }));
-  const writing = await stacking();
-  assert.ok(writing.lines < writing.callouts, 'while a callout is being written the saved line is drawn beneath its editor');
+  assert.deepEqual(await stacking(), passive, 'while a callout is being written the saved line is drawn beneath its editor');
   await page.keyboard.press('Escape'); // closes the editor (one owner per Escape)
   await page.waitForFunction(() => document.querySelector('.tp3d-annot-editor').hidden);
-  const idle = await stacking();
-  assert.ok(idle.lines > idle.callouts, 'with no editor open the saved line is drawn above the callouts again');
+  assert.deepEqual(await stacking(), passive, 'and it stays beneath the callouts once the editor closes');
   assert.equal(await savedRecords(), before, 'a cancelled draft on top of the line wrote nothing');
   assert.deepEqual(errors, []);
 });

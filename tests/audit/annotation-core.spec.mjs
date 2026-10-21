@@ -500,23 +500,63 @@ test('the narrow-viewport sheet sits above the AutoPack Results card, however it
   assert.ok(500 - cramped.bottom <= 150 - L.OBSTACLE_GAP + 1 && cramped.maxHeight >= 1);
 });
 
-test('the desktop panel is limited to the stretch above an AutoPack Results card below it, and is left alone when a height limit cannot help', () => {
-  const panel = { x: 742, y: 64, w: 300, h: 260 };
-  const natural = 440;
-  const results = { x: 490, y: 380, w: 420, h: 237 };
-  assert.equal(L.fitHangingPanel({ panel, blockers: [], natural }), null, 'nothing in the way: no limit');
-  assert.equal(L.fitHangingPanel({ panel, blockers: [results], natural: 200 }), null, 'a panel that already ends above Results needs none');
-  const limit = L.fitHangingPanel({ panel, blockers: [results], natural });
-  assert.equal(limit, results.y - L.OBSTACLE_GAP - panel.y, 'the panel ends one gap above Results');
-  assert.ok(limit >= L.MIN_PANEL_HEIGHT, 'with its header and part of a row still showing');
-  // Results beside the panel (no shared columns) or above its top edge cannot be fixed by height.
-  assert.equal(L.fitHangingPanel({ panel, blockers: [{ x: 100, y: 380, w: 420, h: 237 }], natural }), null);
-  assert.equal(L.fitHangingPanel({ panel, blockers: [{ x: 700, y: 10, w: 420, h: 237 }], natural }), null, 'starting above the top edge: left to the owner');
-  // Results over the panel's own header leaves nothing worth showing: left alone rather than squashed.
-  assert.equal(L.fitHangingPanel({ panel, blockers: [{ x: 700, y: panel.y + 100, w: 420, h: 237 }], natural }), null);
-  // Several blockers: the nearest one below wins; unusable rectangles are ignored.
-  const nearest = L.fitHangingPanel({ panel, blockers: [{ x: 700, y: 500, w: 420, h: 100 }, results, { x: NaN, y: 0, w: 1, h: 1 }, null], natural });
-  assert.equal(nearest, results.y - L.OBSTACLE_GAP - panel.y);
+test('the desktop panel stays clear of the AutoPack Results card wherever either was dragged: it shifts, or gives up height, inside its region', () => {
+  const view = { width: 800, height: 650 };
+  const I = L.PANEL_REGION_INSETS;
+  const panel = { x: view.width - I.right - 300, y: I.top, w: 300, h: 436 }; // the stylesheet's own spot
+  const clearOf = (fit, blocker) => {
+    const placed = { x: panel.x + fit.dx, y: panel.y + fit.dy, w: panel.w, h: fit.maxHeight ?? panel.h };
+    return placed.x + placed.w + L.OBSTACLE_GAP <= blocker.x || blocker.x + blocker.w + L.OBSTACLE_GAP <= placed.x
+      || placed.y + placed.h + L.OBSTACLE_GAP <= blocker.y || blocker.y + blocker.h + L.OBSTACLE_GAP <= placed.y;
+  };
+  const inRegion = fit => {
+    const x = panel.x + fit.dx;
+    const y = panel.y + fit.dy;
+    return x >= I.left && y >= I.top && x + panel.w <= view.width - I.right && y + (fit.maxHeight ?? panel.h) <= view.height - I.bottom;
+  };
+  assert.deepEqual(L.fitPanelClear({ panel, blockers: [], viewport: view }), { dx: 0, dy: 0, maxHeight: null, clear: true }, 'nothing in the way: it stays');
+  assert.deepEqual(L.fitPanelClear({ panel, blockers: [{ x: 20, y: 500, w: 420, h: 100 }], viewport: view }).dx, 0, 'Results elsewhere: it stays');
+
+  // Results across the bottom (its default) over the panel's lower rows: the panel keeps its place and gives up height.
+  const bottom = { x: 190, y: 380, w: 420, h: 237 };
+  const below = L.fitPanelClear({ panel, blockers: [bottom], viewport: view });
+  assert.equal(below.clear, true);
+  assert.deepEqual([below.dx, below.dy], [0, 0], 'it does not move');
+  assert.equal(below.maxHeight, bottom.y - L.OBSTACLE_GAP - panel.y, 'it ends one gap above Results');
+  assert.ok(below.maxHeight >= L.MIN_PANEL_HEIGHT, 'with its header and part of a row still showing');
+  // Room beside the card does not change that: a docked panel is not thrown across the view for a card over its lower rows.
+  const wideView = { width: 1500, height: 650 };
+  const widePanel = { ...panel, x: wideView.width - I.right - 300 };
+  const stillDocked = L.fitPanelClear({ panel: widePanel, blockers: [{ x: widePanel.x - 130, y: 380, w: 420, h: 237 }], viewport: wideView });
+  assert.deepEqual([stillDocked.dx, stillDocked.dy], [0, 0], 'it stays docked');
+  assert.ok(stillDocked.maxHeight >= L.MIN_PANEL_HEIGHT);
+
+  // Results dragged over the panel's header: the panel moves to the nearest clear spot, whole, inside its region.
+  const overHeader = { x: 300, y: 20, w: 420, h: 237 };
+  const moved = L.fitPanelClear({ panel, blockers: [overHeader], viewport: view });
+  assert.equal(moved.clear, true);
+  assert.ok(moved.dx !== 0 || moved.dy !== 0, 'it moves');
+  assert.ok(clearOf(moved, overHeader), 'and no longer touches Results');
+  assert.ok(inRegion(moved), 'inside the space between the toolbar and the viewport controls');
+
+  // The minimized card, an even smaller obstacle, over the header: still clear.
+  const chip = { x: 330, y: 60, w: 420, h: 52 };
+  const aside = L.fitPanelClear({ panel, blockers: [chip], viewport: view });
+  assert.ok(aside.clear && clearOf(aside, chip) && inRegion(aside));
+
+  // The owner's own spot is only a starting point: a dragged panel is moved from where it is.
+  const dragged = { x: 40, y: 150, w: 300, h: 300 };
+  const lowCard = { x: 100, y: 330, w: 420, h: 237 };
+  const fromDragged = L.fitPanelClear({ panel: dragged, blockers: [lowCard], viewport: view });
+  assert.ok(fromDragged.clear && clearOf({ ...fromDragged, dx: fromDragged.dx + dragged.x - panel.x, dy: fromDragged.dy + dragged.y - panel.y }, lowCard), 'a dragged panel is moved from where it was dragged, clear of Results');
+  assert.equal(L.fitPanelClear({ panel: dragged, blockers: [{ x: 600, y: 500, w: 100, h: 60 }], viewport: view }).dx, 0, 'a dragged panel nothing touches stays where it was dragged');
+
+  // Unusable rectangles are ignored; a region too small for the panel gives up (the caller leaves it alone).
+  assert.deepEqual(L.fitPanelClear({ panel, blockers: [null, { x: NaN, y: 0, w: 1, h: 1 }], viewport: view }), { dx: 0, dy: 0, maxHeight: null, clear: true });
+  assert.equal(L.fitPanelClear({ panel, blockers: [overHeader], viewport: { width: 300, height: 300 } }).clear, false);
+  // No spot of at least the minimum height anywhere: clear is false and nothing is shifted.
+  const crammed = L.fitPanelClear({ panel: { ...panel, h: 260 }, blockers: [{ x: 0, y: 70, w: 800, h: 560 }], viewport: view });
+  assert.deepEqual(crammed, { dx: 0, dy: 0, maxHeight: null, clear: false });
 });
 
 test('in a crowded view a label is dropped rather than covering another label or marker; the marker itself is never dropped', () => {

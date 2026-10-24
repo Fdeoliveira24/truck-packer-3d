@@ -1,7 +1,8 @@
 /**
  * @file annotation-tool.js
- * @description Annotations V1A controller: the Annotations panel, callout creation and editing, and the
- *   on-screen markers, labels and cards. THREE and DOM concerns live here; the data model, validation and
+ * @description Annotations controller (V1A callouts, V1B.1 directional arrows): the Annotations panel, callout
+ *   and arrow creation and editing, and the on-screen markers, labels, cards and arrows. THREE and DOM
+ *   concerns live here; the data model, validation and
  *   anchor resolution live in core/annotations.js (on the Measurement anchor model), picking is the shared
  *   editor/surface-picker.js, the screen-space layout is core/annotation-layout.js, and persistence is
  *   PackLibrary. An annotation is informational: it never moves cargo, never takes part in collision,
@@ -11,7 +12,7 @@
  *   - Markers and cards are a DOM/SVG layer above the canvas, so no canvas capture (Screenshot, PDF views,
  *     thumbnails, previews) can include them. Three.js stays authoritative for the camera and for where
  *     cargo is; the layer only projects what the scene displays.
- *   - Only one scene tool owns pointer input. While the Callout tool (or a re-attach) is armed the
+ *   - Only one scene tool owns pointer input. While the Callout or Arrow tool (or a re-attach) is armed the
  *     Editor's pointer handlers delegate here instead of selecting or dragging cargo; OrbitControls is
  *     untouched, so orbit, pan and zoom stay available. The Measurement Tool and Annotations are mutually
  *     exclusive (the Editor wires that). Markers and cards are ordinary DOM, so clicking them never reaches
@@ -21,8 +22,14 @@
  *     effect. Ctrl/Cmd+Z stays cargo history; only an unfinished marker or card drag is cancelled by it.
  *     Deleting a callout offers a one-level Undo button in the panel, independent of cargo history.
  *   - One Escape closes one owner, in this order: a modal, dropdown, text field or popover that owns it
- *     (they keep it), an unfinished drag, the editor card, a pending re-attach, the armed tool, the
- *     annotation selection. Anything else is left to the existing handlers (cargo deselection, drawers).
+ *     (they keep it), an unfinished drag, the editor card, a pending re-attach, a pending arrow tail, the
+ *     armed tool, the annotation selection. Anything else is left to the existing handlers (cargo
+ *     deselection, drawers).
+ *   - An arrow is two surface anchors drawn as an SVG shaft and head in this same layer (never a Three.js
+ *     object, so no capture can include it). It is drawn only while both ends resolve and it is long enough
+ *     to read; its ends move only by the owner's grip drag or Re-attach. Placing one takes two clicks (tail,
+ *     then head): the first click is an unsaved gesture that Escape, closing the panel, Show Off, an
+ *     operation, Measurement Mode, a Load Plan change or a cargo pose change all drop without writing.
  *   - Creating, editing, moving, hiding and deleting are disabled while AutoPack, Unpack, Truck Change, a
  *     Truck Change preview or a transient AutoPack preview is active, and the message names the cause; the
  *     graphics are hidden for the same reasons. The committed scene is the authority, so an open, minimized or
@@ -47,13 +54,17 @@ import {
   annotationForegroundFor,
   isCustomAnnotationColor,
   ANNOTATION_STATUS,
+  ANNOTATION_TYPE_ARROW,
   ANNOTATION_TYPE_CALLOUT,
   ANNOTATION_TYPE_UNREADABLE,
+  ARROW_WIDTHS,
   CALLOUT_PRESETS,
+  DEFAULT_ARROW_WIDTH,
   MAX_ANNOTATIONS_PER_PACK,
   MAX_CALLOUT_DESCRIPTION_LENGTH,
   MAX_CALLOUT_TITLE_LENGTH,
   MAX_CARD_OFFSET_PX,
+  MIN_ARROW_LENGTH_INCHES,
   anchorSurfaceNormal,
   annotationStatusLabel,
   calloutNumbers,
@@ -63,10 +74,14 @@ import {
   normalizeCalloutTitle,
 } from '../core/annotations.js';
 import {
+  ARROW_SAMPLE_FRACTIONS,
+  arrowPathData,
+  arrowShape,
   autoPlace,
   cardBudget,
   cardWidth,
   clampRect,
+  clipSegmentToNear,
   estimateCardHeight,
   fitEditorClear,
   fitLabels,
@@ -110,7 +125,9 @@ const PANEL_MAX_HEIGHT_INSET_PX = 140;
 const MIN_RAY_LENGTH = 1e-6;
 const HELD_POSE_NOTICE = 'Place or cancel the held case before working with annotations on cargo.';
 const AMBIGUOUS_CARGO_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so a callout cannot be attached to it.';
+const AMBIGUOUS_CARGO_ARROW_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so an arrow cannot be attached to it.';
 const PICK_REFUSAL_NOTICE = { provisional: HELD_POSE_NOTICE, ambiguous: AMBIGUOUS_CARGO_NOTICE };
+const PICK_REFUSAL_NOTICE_ARROW = { provisional: HELD_POSE_NOTICE, ambiguous: AMBIGUOUS_CARGO_ARROW_NOTICE };
 // Operations that only read pixels back never block or cancel annotation editing.
 const PASSIVE_OPERATION_KINDS = new Set(['capturingPreview']);
 // Annotations are paused (graphics hidden, editing refused) whenever something other than the committed scene
@@ -126,10 +143,28 @@ const COLOR_LABELS = Object.freeze({ ink: 'Ink', blue: 'Blue', green: 'Green', r
 const DISPLAY_MODES = Object.freeze([['markers', 'Markers'], ['labels', 'Labels'], ['cards', 'Cards']]);
 const SHOW_MODES = Object.freeze([['all', 'All'], ['selected', 'Selected'], ['off', 'Off']]);
 const DEFAULT_CUSTOM_COLOR = '#e11d8f';
+const ARROW_WIDTH_LABELS = Object.freeze({ thin: 'Thin', regular: 'Regular', bold: 'Bold' });
+const ARROW_END_NAMES = Object.freeze({ start: 'tail', end: 'head' });
+const ARROW_HINT_TAIL = 'Click cargo, the truck or the ground to place the arrow tail.';
+const ARROW_HINT_HEAD = 'Click where the arrow should point. You can orbit first. Esc cancels.';
+// The shared reason copy says "callout"; an arrow reports each of its two ends on its own.
+const ARROW_END_REASON_TEXT = Object.freeze({
+  'cargo-missing': 'The cargo this end was attached to is no longer in this Load Plan.',
+  'cargo-ambiguous': 'More than one cargo item in this Load Plan has the same ID, so the cargo this end belongs to cannot be identified.',
+  'case-missing': 'The Case definition for this cargo is missing, so where this end points cannot be checked.',
+  'case-changed': 'The Case size or shape changed, so this end may no longer point to the right place.',
+  'pose-invalid': 'The cargo position or orientation could not be read.',
+  'floor-missing': 'The floor surface for this end no longer exists.',
+  'floor-changed': 'The floor at this spot has changed.',
+  'truck-changed': 'The truck changed after this end was placed.',
+  'truck-unverified': 'The truck this end was placed on cannot be confirmed.',
+  'point-invalid': 'The position of this end could not be calculated.',
+});
+const arrowEndReason = reason => ARROW_END_REASON_TEXT[reason] || 'This end could not be checked.';
 const SHOW_OFF_HINT = 'Annotations are hidden in the view. Choose All or Selected to place, select or edit callouts.';
 const TOOL_DEFS = Object.freeze([
   { key: 'callout', label: 'Callout', icon: 'fa-solid fa-location-dot', available: true },
-  { key: 'arrow', label: 'Arrow', icon: 'fa-solid fa-arrow-right', available: false },
+  { key: 'arrow', label: 'Arrow', icon: 'fa-solid fa-arrow-right', available: true },
   { key: 'draw', label: 'Draw', icon: 'fa-solid fa-pen', available: false },
 ]);
 
@@ -149,8 +184,11 @@ export function createAnnotationTool({
   let els = { button: null, panel: null, layer: null, viewport: null };
   let bound = false;
   let panelOpen = false;
-  let tool = null; // 'callout' while the Callout tool is armed
-  let reattachId = null; // a callout whose marker is waiting for a new surface
+  let tool = null; // 'callout' | 'arrow' while that tool is armed
+  let reattachId = null; // a callout (or an arrow end) whose marker is waiting for a new surface
+  let reattachWhich = null; // 'start' | 'end' when that pending re-attach belongs to an arrow
+  let arrowTail = null; // the first click of a new arrow, waiting for its head: { anchor, world, poseKey }
+  let arrowStyle = { color: 'ink', width: DEFAULT_ARROW_WIDTH }; // what the next new arrow looks like (this session only)
   let draft = null; // the editor card: a new callout or an edit of an existing one
   let selectedId = null;
   let display = 'markers'; // view-level: 'markers' | 'labels' | 'cards'; not saved with the Load Plan
@@ -159,8 +197,9 @@ export function createAnnotationTool({
   let records = [];
   let results = [];
   let numbers = new Map();
-  let drawableIds = new Set();
-  let pinDrag = null; // { id, pointerId, startX, startY, moved, dirty, candidate, poseKey }
+  let arrowNumbers = new Map();
+  let drawableIds = new Set(); // callouts and arrows the overlay may draw (Valid and not hidden)
+  let pinDrag = null; // { id, which (arrow end, else null), pointerId, startX, startY, moved, dirty, candidate, poseKey, target }
   let cardDrag = null; // { id, pointerId, startX, startY, startRect, marker, moved, rect, offset }
   let editorDrag = null;
   let press = null; // { x, y } of a primary press that began on the canvas while a scene tool is armed
@@ -199,6 +238,7 @@ export function createAnnotationTool({
   let lastOwnedElsewhere = false; // another scene tool (Measurement Mode) owned gestures on the previous frame
   let titleRevealPending = false; // the editor just opened: show its title field if the card is shorter than its content
   const views = new Map(); // annotation id -> { pin, chip, badge, card, ... } DOM + per-frame state
+  const arrowViews = new Map(); // arrow id -> { graphic, grips, start/end world + screen, front, ... } DOM + per-frame state
   const rows = new Map();
 
   const picker = createSurfacePicker({
@@ -217,6 +257,10 @@ export function createAnnotationTool({
   const rayDir = new THREE.Vector3();
   const draftWorld = new THREE.Vector3();
   const ghostWorld = new THREE.Vector3();
+  const tailWorld = new THREE.Vector3();
+  const sampleWorld = new THREE.Vector3();
+  const cameraSpaceA = new THREE.Vector3();
+  const cameraSpaceB = new THREE.Vector3();
   const scratchScreen = { x: 0, y: 0 };
   const ghostScreen = { x: 0, y: 0 };
 
@@ -242,6 +286,22 @@ export function createAnnotationTool({
     return index === -1 ? null : results[index];
   };
   const isCallout = record => Boolean(record) && record.type === ANNOTATION_TYPE_CALLOUT;
+  const isArrow = record => Boolean(record) && record.type === ANNOTATION_TYPE_ARROW;
+  const arrowName = id => `Arrow ${arrowNumbers.get(id) || ''}`.trim();
+
+  // The refusal wording names what is being placed: an arrow end or a callout marker.
+  function annotatingAnArrow() {
+    return tool === 'arrow' || (Boolean(reattachId) && isArrow(recordById(reattachId))) || Boolean(pinDrag && pinDrag.which);
+  }
+
+  function pickRefusal(blocked) {
+    return (annotatingAnArrow() ? PICK_REFUSAL_NOTICE_ARROW : PICK_REFUSAL_NOTICE)[blocked] || '';
+  }
+
+  /** Fingerprint of the committed pose of the cargo under BOTH ends of an arrow (a gesture is dropped when it changes). */
+  function arrowPoseKey(pack, record) {
+    return `${cargoPoseKey(pack, record.start)}|${cargoPoseKey(pack, record.end)}`;
+  }
 
   /**
    * Why annotations are paused right now, or null: a transient Results/Truck Change preview or a running
@@ -409,6 +469,7 @@ export function createAnnotationTool({
     records = [];
     results = [];
     numbers = new Map();
+    arrowNumbers = new Map();
     drawableIds = new Set();
     disposeOverlay();
   }
@@ -459,12 +520,18 @@ export function createAnnotationTool({
     records = PackLibrary.getAnnotations(pack);
     results = PackLibrary.resolveAnnotations(pack);
     numbers = calloutNumbers(records);
+    arrowNumbers = new Map();
+    records.forEach(record => { if (isArrow(record)) arrowNumbers.set(record.id, arrowNumbers.size + 1); });
     drawableIds = new Set();
     records.forEach((record, index) => {
-      if (isCallout(record) && results[index] && results[index].status === ANNOTATION_STATUS.VALID && !record.hidden) drawableIds.add(record.id);
+      if ((isCallout(record) || isArrow(record)) && results[index] && results[index].status === ANNOTATION_STATUS.VALID && !record.hidden) drawableIds.add(record.id);
     });
     if (selectedId && !recordById(selectedId)) selectedId = null;
-    if (reattachId && !recordById(reattachId)) reattachId = null;
+    if (reattachId && !recordById(reattachId)) {
+      reattachId = null;
+      reattachWhich = null;
+    }
+    if (arrowTail && cargoPoseKey(pack, arrowTail.anchor) !== arrowTail.poseKey) cancelArrowTail('The cargo changed, so the new arrow was cancelled.');
     if (draft) {
       if (draft.editId && !recordById(draft.editId)) cancelDraft('The callout was removed, so editing was cancelled.');
       else if (draft.editId && draft.hiddenAtOpen === false && recordById(draft.editId).hidden === true) cancelDraft('The callout was hidden, so editing was cancelled.');
@@ -473,8 +540,9 @@ export function createAnnotationTool({
     if (pinDrag && pinDrag.id !== DRAFT_ID) {
       const record = recordById(pinDrag.id);
       const result = resultById(pinDrag.id);
-      if (!record || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden) cancelPinDrag('The callout changed, so the move was cancelled.');
-      else if (cargoPoseKey(pack, record.anchor) !== pinDrag.poseKey) cancelPinDrag('The cargo changed, so the move was cancelled.');
+      const subject = pinDrag.which ? 'arrow' : 'callout';
+      if (!record || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden) cancelPinDrag(`The ${subject} changed, so the move was cancelled.`);
+      else if ((pinDrag.which ? arrowPoseKey(pack, record) : cargoPoseKey(pack, record.anchor)) !== pinDrag.poseKey) cancelPinDrag('The cargo changed, so the move was cancelled.');
     }
     if (pinDrag && pinDrag.id === DRAFT_ID && draft && cargoPoseKey(pack, draft.anchor) !== pinDrag.poseKey) {
       cancelPinDrag('The cargo changed, so the move was cancelled.');
@@ -508,6 +576,7 @@ export function createAnnotationTool({
         if (pinDrag) cancelPinDrag('Undo or redo cancelled the move.');
         if (cardDrag) cancelCardDrag();
         if (reattachId) cancelReattach('Undo or redo cancelled the re-attach.');
+        if (arrowTail) cancelArrowTail('Undo or redo cancelled the new arrow.');
       }
       // Selecting cargo (or clicking empty space) deselects the annotation; our own clearing is not that.
       if (Object.prototype.hasOwnProperty.call(changes, 'selectedInstanceIds') && !selfClearing && selectedId) {
@@ -583,8 +652,10 @@ export function createAnnotationTool({
     cancelPinDrag();
     cancelCardDrag();
     if (draft) cancelDraft();
+    arrowTail = null;
     tool = null;
     reattachId = null;
+    reattachWhich = null;
     hover = null;
     press = null;
     panelOpen = false;
@@ -627,7 +698,9 @@ export function createAnnotationTool({
       return;
     }
     if (draft) cancelDraft();
+    cancelArrowTail();
     reattachId = null;
+    reattachWhich = null;
     tool = tool === key ? null : key;
     hover = null;
     hoverDirty = true;
@@ -662,6 +735,8 @@ export function createAnnotationTool({
   }
 
   function onPointerCancel() {
+    // A pointer interaction that was part of placing an arrow's head is cancelled with the arrow; nothing is written.
+    if (press && arrowTail) cancelArrowTail('Placement cancelled.');
     press = null;
   }
 
@@ -692,7 +767,7 @@ export function createAnnotationTool({
       setStatus('Save or cancel the open callout first.');
       return;
     }
-    if (!reattachId && !draft && records.length >= MAX_ANNOTATIONS_PER_PACK) {
+    if (!reattachId && !draft && !arrowTail && records.length >= MAX_ANNOTATIONS_PER_PACK) {
       notice(`Limit of ${MAX_ANNOTATIONS_PER_PACK} annotations reached. Delete one to add another.`, 'warning');
       return;
     }
@@ -700,11 +775,15 @@ export function createAnnotationTool({
     const picked = pick(clientX, clientY, outcome);
     hover = picked;
     if (!picked) {
-      notice(PICK_REFUSAL_NOTICE[outcome.blocked] || 'Nothing to annotate there. Click cargo, the truck or the ground.');
+      notice(pickRefusal(outcome.blocked) || 'Nothing to annotate there. Click cargo, the truck or the ground.');
       return;
     }
     if (reattachId) {
-      commitReattach(reattachId, picked);
+      commitReattach(reattachId, picked, reattachWhich);
+      return;
+    }
+    if (tool === 'arrow') {
+      handleArrowPick(picked, pack);
       return;
     }
     if (draft) {
@@ -712,6 +791,70 @@ export function createAnnotationTool({
       return;
     }
     openNewDraft(picked, pack);
+  }
+
+  // ==========================================================================
+  // SECTION: ARROW PLACEMENT (two clicks: tail, then head)
+  // ==========================================================================
+  /** The first click holds the tail as an unsaved gesture; the second saves one record. Nothing is written before that. */
+  function handleArrowPick(picked, pack) {
+    if (!arrowTail) {
+      if (records.length >= MAX_ANNOTATIONS_PER_PACK) {
+        notice(`Limit of ${MAX_ANNOTATIONS_PER_PACK} annotations reached. Delete one to add another.`, 'warning');
+        return;
+      }
+      clearCargoSelection();
+      selectedId = null;
+      arrowTail = { anchor: picked.anchor, world: picked.world.clone(), poseKey: cargoPoseKey(pack, picked.anchor) };
+      setStatus('', { sticky: true });
+      visDirty = true;
+      refreshOverlay();
+      return;
+    }
+    // The cargo under the tail must still be posed as it was when the tail was picked.
+    if (cargoPoseKey(pack, arrowTail.anchor) !== arrowTail.poseKey) {
+      cancelArrowTail('The cargo changed, so the new arrow was cancelled.');
+      return;
+    }
+    // Clicking the tail's own spot again (a double-click) is the likely slip: the writer rejects identical ends as
+    // invalid, so answer it here the same way as any other head that is too close.
+    if (arrowTail.world.distanceTo(picked.world) / picker.toWorldScale() < MIN_ARROW_LENGTH_INCHES) {
+      notice('That point is too close to the tail. Click farther away to point the arrow.');
+      return;
+    }
+    const outcome = PackLibrary.addArrow(pack.id, { start: arrowTail.anchor, end: picked.anchor, color: arrowStyle.color, width: arrowStyle.width });
+    if (!outcome.ok) {
+      if (outcome.reason === 'too-short') {
+        // Nothing was written and the tail stays: the owner can simply click farther away.
+        notice('That point is too close to the tail. Click farther away to point the arrow.');
+      } else if (outcome.reason === 'unresolved') {
+        cancelArrowTail('One end of the arrow could not be placed, so it was cancelled.');
+      } else if (outcome.reason === 'limit') {
+        cancelArrowTail(`Limit of ${MAX_ANNOTATIONS_PER_PACK} annotations reached. Delete one to add another.`);
+      } else {
+        cancelArrowTail('');
+        UIComponents.showToast('Could not save this arrow.', 'error', { title: 'Annotations' });
+      }
+      return;
+    }
+    clearDeleted();
+    arrowTail = null;
+    hover = null;
+    hoverDirty = true;
+    adoptSelection(outcome.annotation.id);
+    visDirty = true;
+    setStatus('Arrow saved. Click to start another, or press Esc to finish.', { tone: 'success' });
+    refreshOverlay();
+  }
+
+  /** Drop the unfinished arrow (the tail only ever existed on screen). Safe to call when none is pending. */
+  function cancelArrowTail(message = '') {
+    if (!arrowTail) return;
+    arrowTail = null;
+    visDirty = true;
+    if (message) setStatus(message);
+    else renderPanel();
+    refreshOverlay();
   }
 
   // ==========================================================================
@@ -760,6 +903,12 @@ export function createAnnotationTool({
       return;
     }
     if (draft) cancelDraft();
+    cancelArrowTail();
+    if (tool === 'arrow') {
+      tool = null;
+      hover = null;
+      updateCursor();
+    }
     reattachId = null;
     draft = {
       editId: id,
@@ -851,6 +1000,64 @@ export function createAnnotationTool({
     if (restore) refocusViewportIfLost();
   }
 
+  /**
+   * The color row shared by the callout editor and the arrow options: the five built-in names and one custom
+   * swatch that opens the browser's native color picker. `getColor` reads the color being edited (null when nothing
+   * is), `onPick` receives the chosen color and `sync` shows a color as the pressed one.
+   */
+  function buildColorPicker({ ariaLabel, getColor, onPick }) {
+    const root = htmlEl('div', 'tp3d-annot-swatches');
+    root.setAttribute('role', 'group');
+    root.setAttribute('aria-label', ariaLabel);
+    root.appendChild(htmlEl('span', 'tp3d-annot-editor__label', 'Color'));
+    const swatches = ANNOTATION_COLORS.map(color => {
+      const swatch = htmlEl('button', 'tp3d-annot-swatch');
+      swatch.type = 'button';
+      swatch.dataset.color = color;
+      swatch.title = COLOR_LABELS[color];
+      swatch.setAttribute('aria-label', COLOR_LABELS[color]);
+      swatch.setAttribute('aria-pressed', 'false');
+      swatch.addEventListener('click', () => {
+        if (getColor() == null) return;
+        onPick(color);
+      });
+      root.appendChild(swatch);
+      return { color, swatch };
+    });
+    // One custom color beside the built-in names: a swatch that opens the browser's native color picker.
+    const customSwatch = htmlEl('span', 'tp3d-annot-swatch tp3d-annot-swatch--custom');
+    customSwatch.dataset.color = 'custom';
+    const customInput = htmlEl('input', 'tp3d-annot-swatch__input');
+    customInput.type = 'color';
+    customInput.value = DEFAULT_CUSTOM_COLOR;
+    customInput.title = 'Custom color';
+    customInput.setAttribute('aria-label', 'Custom color');
+    customInput.addEventListener('click', () => {
+      // Choosing the swatch again brings back the custom color picked earlier, before the picker adjusts it.
+      const current = getColor();
+      if (current != null && !isCustomAnnotationColor(current) && lastCustomColor) onPick(lastCustomColor);
+    });
+    customInput.addEventListener('input', () => {
+      if (getColor() == null) return;
+      const picked = customInput.value.toLowerCase();
+      if (!isCustomAnnotationColor(picked)) return;
+      lastCustomColor = picked;
+      onPick(picked);
+    });
+    customSwatch.appendChild(customInput);
+    root.appendChild(customSwatch);
+    function showColor(color) {
+      swatches.forEach(({ color: name, swatch }) => setAttr(swatch, 'aria-pressed', color === name ? 'true' : 'false'));
+      const custom = isCustomAnnotationColor(color);
+      applyColor(customSwatch, custom ? color : '');
+      if (!custom) customSwatch.dataset.color = 'custom';
+      toggleClass(customSwatch, 'is-selected', custom);
+      if (custom && customInput.value !== color) customInput.value = color;
+      else if (!custom && lastCustomColor && customInput.value !== lastCustomColor) customInput.value = lastCustomColor;
+    }
+    return { root, swatches, customSwatch, customInput, sync: showColor };
+  }
+
   function buildEditor() {
     const root = htmlEl('div', 'tp3d-annot-editor');
     root.setAttribute('role', 'dialog');
@@ -914,50 +1121,14 @@ export function createAnnotationTool({
     descLabel.appendChild(description);
 
     const options = htmlEl('div', 'tp3d-annot-editor__options');
-    const colors = htmlEl('div', 'tp3d-annot-swatches');
-    colors.setAttribute('role', 'group');
-    colors.setAttribute('aria-label', 'Callout color');
-    colors.appendChild(htmlEl('span', 'tp3d-annot-editor__label', 'Color'));
-    const swatches = ANNOTATION_COLORS.map(color => {
-      const swatch = htmlEl('button', 'tp3d-annot-swatch');
-      swatch.type = 'button';
-      swatch.dataset.color = color;
-      swatch.title = COLOR_LABELS[color];
-      swatch.setAttribute('aria-label', COLOR_LABELS[color]);
-      swatch.setAttribute('aria-pressed', 'false');
-      swatch.addEventListener('click', () => {
-        if (!draft) return;
+    const colorPicker = buildColorPicker({
+      ariaLabel: 'Callout color',
+      getColor: () => (draft ? draft.color : null),
+      onPick: color => {
         draft.color = color;
         syncEditorFields({ keepInputs: true });
-      });
-      colors.appendChild(swatch);
-      return { color, swatch };
+      },
     });
-    // One custom color beside the built-in names: a swatch that opens the browser's native color picker.
-    const customSwatch = htmlEl('span', 'tp3d-annot-swatch tp3d-annot-swatch--custom');
-    customSwatch.dataset.color = 'custom';
-    const customInput = htmlEl('input', 'tp3d-annot-swatch__input');
-    customInput.type = 'color';
-    customInput.value = DEFAULT_CUSTOM_COLOR;
-    customInput.title = 'Custom color';
-    customInput.setAttribute('aria-label', 'Custom color');
-    customInput.addEventListener('click', () => {
-      // Choosing the swatch again brings back the custom color picked earlier, before the picker adjusts it.
-      if (draft && !isCustomAnnotationColor(draft.color) && lastCustomColor) {
-        draft.color = lastCustomColor;
-        syncEditorFields({ keepInputs: true });
-      }
-    });
-    customInput.addEventListener('input', () => {
-      if (!draft) return;
-      const picked = customInput.value.toLowerCase();
-      if (!isCustomAnnotationColor(picked)) return;
-      lastCustomColor = picked;
-      draft.color = picked;
-      syncEditorFields({ keepInputs: true });
-    });
-    customSwatch.appendChild(customInput);
-    colors.appendChild(customSwatch);
     const keepLabel = htmlEl('label', 'tp3d-annot-editor__keep');
     const keep = htmlEl('input');
     keep.type = 'checkbox';
@@ -965,7 +1136,7 @@ export function createAnnotationTool({
       if (draft) draft.keepExpanded = keep.checked;
     });
     keepLabel.append(keep, doc.createTextNode('Keep expanded'));
-    options.append(colors, keepLabel);
+    options.append(colorPicker.root, keepLabel);
     body.append(presetsWrap, titleLabel, descLabel, options);
 
     const foot = htmlEl('div', 'tp3d-annot-editor__foot');
@@ -1002,7 +1173,7 @@ export function createAnnotationTool({
     return {
       root, head, body, heading: headline.querySelector('.tp3d-annot-editor__heading'),
       targetText: target.querySelector('.tp3d-annot-editor__target-text'),
-      presetButtons, title, description, swatches, customSwatch, customInput, keep, del, cancel, save,
+      presetButtons, title, description, colorPicker, keep, del, cancel, save,
     };
   }
 
@@ -1028,13 +1199,7 @@ export function createAnnotationTool({
     }
     parts.keep.checked = draft.keepExpanded;
     parts.presetButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', draft.preset === key ? 'true' : 'false'));
-    parts.swatches.forEach(({ color, swatch }) => setAttr(swatch, 'aria-pressed', draft.color === color ? 'true' : 'false'));
-    const custom = isCustomAnnotationColor(draft.color);
-    applyColor(parts.customSwatch, custom ? draft.color : '');
-    if (!custom) parts.customSwatch.dataset.color = 'custom';
-    toggleClass(parts.customSwatch, 'is-selected', custom);
-    if (custom && parts.customInput.value !== draft.color) parts.customInput.value = draft.color;
-    else if (!custom && lastCustomColor && parts.customInput.value !== lastCustomColor) parts.customInput.value = lastCustomColor;
+    parts.colorPicker.sync(draft.color);
     setHidden(parts.del, !editing);
     setText(parts.save, editing ? 'Save changes' : 'Save callout');
     parts.save.disabled = !normalizeCalloutTitle(draft.title);
@@ -1091,7 +1256,7 @@ export function createAnnotationTool({
       return;
     }
     const record = recordById(id);
-    if (!currentPack() || !isCallout(record)) return;
+    if (!currentPack() || !(isCallout(record) || isArrow(record))) return;
     // Hiding the callout whose editor is open closes that editor: nothing is saved, and unsaved edits are
     // only discarded after the owner agrees. Declining leaves the editor and the visibility untouched.
     if (!record.hidden && draft && draft.editId === id) {
@@ -1119,10 +1284,38 @@ export function createAnnotationTool({
     if (blockedReason()) return;
     const pack = currentPack();
     const record = recordById(id);
-    if (!pack || !isCallout(record)) return;
+    if (!pack || !(isCallout(record) || isArrow(record))) return;
     clearDeleted();
-    const outcome = PackLibrary.updateCallout(pack.id, id, { hidden: !record.hidden });
-    if (!outcome.ok) UIComponents.showToast('Could not change this callout.', 'error', { title: 'Annotations' });
+    const outcome = isArrow(record)
+      ? PackLibrary.updateArrow(pack.id, id, { hidden: !record.hidden })
+      : PackLibrary.updateCallout(pack.id, id, { hidden: !record.hidden });
+    if (!outcome.ok) UIComponents.showToast(`Could not change this ${isArrow(record) ? 'arrow' : 'callout'}.`, 'error', { title: 'Annotations' });
+  }
+
+  /**
+   * Change the look of arrows. With an arrow selected the change is written to that arrow (one record edit, ends
+   * untouched); either way it becomes the look of the next arrow, so a color or width chosen once carries on.
+   */
+  function setArrowStyle(patch) {
+    const next = { ...arrowStyle, ...patch };
+    if (!next.color || !ARROW_WIDTHS.includes(next.width)) return;
+    arrowStyle = next;
+    const record = recordById(selectedId);
+    if (isArrow(record)) {
+      const reason = blockedReason();
+      if (reason) {
+        notice(blockedMessage(reason));
+        return;
+      }
+      const pack = currentPack();
+      if (!pack) return;
+      clearDeleted();
+      const outcome = PackLibrary.updateArrow(pack.id, record.id, patch);
+      if (!outcome.ok) UIComponents.showToast('Could not change this arrow.', 'error', { title: 'Annotations' });
+      return;
+    }
+    renderPanel();
+    refreshOverlay();
   }
 
   /** Close the editor for `id` and end anything that was moving it, using the same cleanup as Cancel. */
@@ -1194,7 +1387,9 @@ export function createAnnotationTool({
       if (pinDrag) cancelPinDrag();
       if (cardDrag) cancelCardDrag();
       if (draft) cancelDraft();
+      arrowTail = null;
       reattachId = null;
+      reattachWhich = null;
       tool = null;
       hover = null;
       press = null;
@@ -1226,7 +1421,10 @@ export function createAnnotationTool({
     if (draft && draft.editId === id) cancelDraft();
     if (pinDrag && pinDrag.id === id) cancelPinDrag();
     if (cardDrag && cardDrag.id === id) cancelCardDrag();
-    if (reattachId === id) reattachId = null;
+    if (reattachId === id) {
+      reattachId = null;
+      reattachWhich = null;
+    }
     if (selectedId === id) selectedId = null;
     const outcome = PackLibrary.deleteAnnotation(pack.id, id);
     if (!outcome.ok) {
@@ -1264,7 +1462,7 @@ export function createAnnotationTool({
       setStatus(outcome.reason === 'limit' ? 'The annotation limit is reached, so it could not be restored.' : 'It could not be restored.');
       return;
     }
-    if (pending.record.type === ANNOTATION_TYPE_CALLOUT) adoptSelection(pending.record.id);
+    if (pending.record.type === ANNOTATION_TYPE_CALLOUT || pending.record.type === ANNOTATION_TYPE_ARROW) adoptSelection(pending.record.id);
     setStatus('Restored.', { tone: 'success' });
   }
 
@@ -1279,9 +1477,11 @@ export function createAnnotationTool({
     selectedId = id;
   }
 
-  function startReattach(id) {
+  /** Wait for a surface to attach a callout's marker (or, with `which`, one end of an arrow) to. */
+  function startReattach(id, which = null) {
     const record = recordById(id);
-    if (!isCallout(record)) return;
+    const arrowEnd = isArrow(record) && (which === 'start' || which === 'end');
+    if (!isCallout(record) && !arrowEnd) return;
     const reason = blockedReason();
     if (reason) {
       notice(blockedMessage(reason));
@@ -1292,8 +1492,10 @@ export function createAnnotationTool({
       return;
     }
     if (draft) cancelDraft();
+    cancelArrowTail();
     tool = null;
     reattachId = id;
+    reattachWhich = arrowEnd ? which : null;
     hover = null;
     hoverDirty = true;
     select(id);
@@ -1304,22 +1506,44 @@ export function createAnnotationTool({
   function cancelReattach(message = '') {
     if (!reattachId) return;
     reattachId = null;
+    reattachWhich = null;
     hover = null;
     updateCursor();
     if (message) setStatus(message);
     else renderPanel();
   }
 
-  /** Move a callout's marker onto a surface the owner chose. Annotation-only: cargo is never touched. */
-  function commitReattach(id, picked) {
+  /**
+   * Move a callout's marker (or, with `which`, one end of an arrow) onto a surface the owner chose.
+   * Annotation-only: cargo is never touched.
+   */
+  function commitReattach(id, picked, which = null) {
     const pack = currentPack();
     const reason = blockedReason();
     if (reason) {
       notice(blockedMessage(reason));
       return false;
     }
-    if (!pack || !recordById(id)) return false;
+    const record = recordById(id);
+    if (!pack || !record) return false;
     clearDeleted();
+    if (isArrow(record)) {
+      if (which !== 'start' && which !== 'end') return false;
+      const moved = PackLibrary.moveArrowEndpoint(pack.id, id, which, picked.anchor);
+      if (!moved.ok) {
+        // Picking the other end's own spot is rejected as identical ends ('invalid'): the same advice applies.
+        if (moved.reason === 'too-short' || moved.reason === 'invalid') notice('That would make the arrow too short. Pick a spot farther from the other end.');
+        else UIComponents.showToast('Could not move this end of the arrow.', 'error', { title: 'Annotations' });
+        return false;
+      }
+      reattachId = null;
+      reattachWhich = null;
+      hover = null;
+      adoptSelection(id);
+      updateCursor();
+      setStatus(moved.unchanged ? 'The arrow end is already attached there.' : `Arrow ${ARROW_END_NAMES[which]} moved.`, { tone: 'success' });
+      return true;
+    }
     const outcome = PackLibrary.reattachCallout(pack.id, id, picked.anchor);
     if (!outcome.ok) {
       UIComponents.showToast('Could not move this callout.', 'error', { title: 'Annotations' });
@@ -1336,7 +1560,8 @@ export function createAnnotationTool({
   // ==========================================================================
   // SECTION: DRAGS (marker onto a new surface, card to a new place)
   // ==========================================================================
-  function beginPinDrag(ev, id) {
+  /** Start dragging a callout marker, or (with `which`) one end of the selected arrow, onto another surface. */
+  function beginPinDrag(ev, id, which = null) {
     if (ev.button !== 0 || pinDrag || cardDrag) return;
     const pack = currentPack();
     if (!pack) return;
@@ -1347,11 +1572,11 @@ export function createAnnotationTool({
     } else {
       const record = recordById(id);
       const result = resultById(id);
-      if (!isCallout(record) || !result || result.status !== ANNOTATION_STATUS.VALID || blockedReason()) return;
-      poseKey = cargoPoseKey(pack, record.anchor);
+      if (!(which ? isArrow(record) : isCallout(record)) || !result || result.status !== ANNOTATION_STATUS.VALID || blockedReason()) return;
+      poseKey = which ? arrowPoseKey(pack, record) : cargoPoseKey(pack, record.anchor);
     }
     const target = ev.currentTarget || ev.target;
-    pinDrag = { id, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, moved: false, dirty: false, candidate: null, poseKey, target };
+    pinDrag = { id, which, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, moved: false, dirty: false, candidate: null, poseKey, target };
     lastClient = { x: ev.clientX, y: ev.clientY };
     window.addEventListener('pointermove', onPinDragMove);
     window.addEventListener('pointerup', onPinDragUp);
@@ -1390,7 +1615,7 @@ export function createAnnotationTool({
     const outcome = {};
     const picked = pick(ev.clientX, ev.clientY, outcome);
     if (!picked) {
-      notice(`${PICK_REFUSAL_NOTICE[outcome.blocked] || 'Drop the marker on cargo, the truck or the ground.'} It was left where it was.`);
+      notice(`${pickRefusal(outcome.blocked) || `Drop the ${finished.which ? 'handle' : 'marker'} on cargo, the truck or the ground.`} It was left where it was.`);
       return;
     }
     const pack = currentPack();
@@ -1398,7 +1623,7 @@ export function createAnnotationTool({
       if (draft && pack) moveDraftAnchor(picked, pack);
       return;
     }
-    commitReattach(finished.id, picked);
+    commitReattach(finished.id, picked, finished.which);
   }
 
   function onPinDragCancel(ev) {
@@ -1523,6 +1748,11 @@ export function createAnnotationTool({
     layer.addEventListener('pointerdown', ev => {
       if (sceneOwnedElsewhere()) return;
       keyboardModality = false;
+      const grip = ev.target.closest && ev.target.closest('.tp3d-annot-handle');
+      if (grip && layer.contains(grip)) {
+        beginPinDrag({ button: ev.button, pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY, currentTarget: grip, target: grip }, grip.dataset.annotId, grip.dataset.end);
+        return;
+      }
       const pin = ev.target.closest && ev.target.closest('.tp3d-annot-pin');
       if (pin && layer.contains(pin)) {
         beginPinDrag({ button: ev.button, pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY, currentTarget: pin, target: pin }, pin.dataset.annotId);
@@ -1541,6 +1771,12 @@ export function createAnnotationTool({
         const id = act.closest('.tp3d-annot-card')?.dataset.annotId;
         if (act.dataset.act === 'edit') openEditor(id);
         else if (act.dataset.act === 'collapse') select(null);
+        return;
+      }
+      const grip = ev.target.closest && ev.target.closest('.tp3d-annot-handle');
+      if (grip && layer.contains(grip)) {
+        // A click (or Enter / Space) on an end handle moves that end the click-to-place way: the next click on the scene sets it.
+        startReattach(grip.dataset.annotId, grip.dataset.end);
         return;
       }
       const pin = ev.target.closest && ev.target.closest('.tp3d-annot-pin');
@@ -1577,7 +1813,7 @@ export function createAnnotationTool({
   // SECTION: KEYBOARD OWNERSHIP (capture phase)
   // ==========================================================================
   function ownsEscape() {
-    return Boolean(pinDrag || cardDrag || draft || reattachId || tool || selectedId);
+    return Boolean(pinDrag || cardDrag || draft || reattachId || arrowTail || tool || selectedId);
   }
 
   function onKeyDownCapture(ev) {
@@ -1628,11 +1864,16 @@ export function createAnnotationTool({
       cancelDraft();
     } else if (reattachId) {
       cancelReattach('Re-attach cancelled.');
+    } else if (arrowTail) {
+      cancelArrowTail('Arrow cancelled.');
     } else if (tool) {
+      const wasArrow = tool === 'arrow';
       tool = null;
       hover = null;
       updateCursor();
-      renderPanel();
+      // "Click to start another, or press Esc to finish" ends with the tool it was about.
+      if (wasArrow) setStatus('');
+      else renderPanel();
     } else if (selectedId) {
       selectedId = null;
       visDirty = true;
@@ -1655,8 +1896,16 @@ export function createAnnotationTool({
     const host = panelHost();
     const parts = panelParts;
     if (!host || !parts || parts.root !== els.panel || !parts.root.offsetHeight) return null;
-    const content = parts.root.offsetHeight - parts.list.clientHeight + parts.list.scrollHeight;
-    return Math.max(1, Math.min(content, PANEL_MAX_HEIGHT_PX, host.clientHeight - PANEL_MAX_HEIGHT_INSET_PX));
+    return Math.max(1, Math.min(panelContentHeight(parts), PANEL_MAX_HEIGHT_PX, host.clientHeight - PANEL_MAX_HEIGHT_INSET_PX));
+  }
+
+  /**
+   * The panel's height with nothing scrolling: what it is now plus whatever its list hides, or its body while the arrow
+   * look controls make the body the scroller. Measured as it is, so a panel that was limited can grow back.
+   */
+  function panelContentHeight(parts) {
+    const hidden = element => Math.max(0, element.scrollHeight - element.clientHeight);
+    return parts.root.offsetHeight + hidden(parts.list) + hidden(parts.body);
   }
 
   function clampPanelPosition(position, height = els.panel ? els.panel.offsetHeight : 0) {
@@ -1812,7 +2061,7 @@ export function createAnnotationTool({
 
     const show = htmlEl('div', 'tp3d-annot-panel__view');
     show.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Show'));
-    const showGroup = segmented('Show callouts', 'tp3d-annot-seg--small tp3d-annot-seg--show');
+    const showGroup = segmented('Show annotations', 'tp3d-annot-seg--small tp3d-annot-seg--show');
     const showButtons = SHOW_MODES.map(([key, label]) => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
       button.type = 'button';
@@ -1834,7 +2083,7 @@ export function createAnnotationTool({
     });
     view.appendChild(displayGroup);
 
-    const empty = htmlEl('div', 'tp3d-annot-panel__empty', 'No callouts yet. A callout marks a spot on cargo, the truck or the ground. Annotations are notes only and do not change the load.');
+    const empty = htmlEl('div', 'tp3d-annot-panel__empty', 'No annotations yet. A callout marks a spot on cargo, the truck or the ground; an arrow points from one place to another. Annotations are notes only and do not change the load.');
     const warning = htmlEl('div', 'tp3d-annot-panel__notice', "Some saved annotations couldn't be read. The original data is kept until you delete it.");
     warning.hidden = true;
     const list = htmlEl('ul', 'tp3d-annot-panel__list');
@@ -1845,6 +2094,7 @@ export function createAnnotationTool({
     panelParts = {
       root: els.panel, head, toggle: toggleButton, chevron, count, body,
       toolButtons, hint, undoBar, undoText, showButtons, displayButtons, empty, warning, list,
+      arrowOptions: null, arrowTitle: null, widthButtons: [], arrowColors: null,
     };
     return panelParts;
   }
@@ -1878,14 +2128,29 @@ export function createAnnotationTool({
     const reattach = htmlEl('button', 'tp3d-annot-btn tp3d-annot-btn--small', 'Re-attach');
     reattach.type = 'button';
     issue.append(issueText, reattach);
+    // An arrow reports each of its two ends that cannot be placed, each with its own Re-attach.
+    const ends = {};
+    ['start', 'end'].forEach(which => {
+      const line = htmlEl('div', 'tp3d-annot-row__end');
+      line.hidden = true;
+      const reason = htmlEl('div');
+      const button = htmlEl('button', 'tp3d-annot-btn tp3d-annot-btn--small', `Re-attach ${ARROW_END_NAMES[which]}`);
+      button.type = 'button';
+      button.dataset.end = which;
+      line.append(reason, button);
+      issue.appendChild(line);
+      ends[which] = { line, text: reason, button };
+    });
     el.append(selectButton, actions, issue);
-    const row = { el, select: selectButton, badge, name, sub, eye, edit, remove, issue, issueText, reattach, id: null, eyeIcon: eye.firstChild };
+    const row = { el, select: selectButton, badge, name, sub, eye, edit, remove, issue, issueText, reattach, ends, id: null, eyeIcon: eye.firstChild };
     selectButton.addEventListener('click', () => select(row.id, { toggle: true }));
     eye.addEventListener('click', () => toggleHidden(row.id));
     edit.addEventListener('click', () => openEditor(row.id));
     // A click event with detail 0 is a keyboard activation (Enter / Space).
     remove.addEventListener('click', ev => removeAnnotation(row.id, ev.detail === 0));
     reattach.addEventListener('click', () => startReattach(row.id));
+    ends.start.button.addEventListener('click', () => startReattach(row.id, 'start'));
+    ends.end.button.addEventListener('click', () => startReattach(row.id, 'end'));
     return row;
   }
 
@@ -1893,56 +2158,80 @@ export function createAnnotationTool({
     row.id = record.id;
     row.el.dataset.annotId = record.id;
     const callout = isCallout(record);
-    const status = callout && result ? result.status : ANNOTATION_STATUS.UNRESOLVED;
+    const arrow = isArrow(record);
+    const supported = callout || arrow;
+    const status = supported && result ? result.status : ANNOTATION_STATUS.UNRESOLVED;
     const valid = status === ANNOTATION_STATUS.VALID;
-    const title = callout ? record.title : 'Unreadable annotation';
+    const title = callout ? record.title : (arrow ? arrowName(record.id) : 'Unreadable annotation');
     setText(row.name, title);
     let sub;
-    if (!callout) sub = 'Data could not be read';
+    if (!supported) sub = 'Data could not be read';
     else if (!valid) sub = annotationStatusLabel(status);
+    else if (arrow) sub = `${anchorTargetName(record.start)} → ${anchorTargetName(record.end)}${record.hidden ? ' · Hidden' : ''}`;
     else sub = `${anchorTargetName(record.anchor)}${record.hidden ? ' · Hidden' : ''}`;
     setText(row.sub, sub);
-    row.sub.dataset.status = callout ? status : 'unreadable';
+    row.sub.dataset.status = supported ? status : 'unreadable';
     const selected = record.id === selectedId;
     toggleClass(row.el, 'is-selected', selected);
-    toggleClass(row.el, 'is-hidden', callout && record.hidden === true);
-    row.el.dataset.status = callout ? status : 'unreadable';
-    // Number badge: colored when Valid, a dashed ring when it needs attention, a warning icon when unreadable.
+    toggleClass(row.el, 'is-hidden', supported && record.hidden === true);
+    row.el.dataset.status = supported ? status : 'unreadable';
+    row.el.dataset.type = supported ? record.type : 'unreadable';
+    // Badge: a number (callout) or an arrow glyph (arrow), colored when Valid; a dashed ring when it needs attention,
+    // a warning icon when unreadable.
     const number = numbers.get(record.id);
     if (callout) {
       setText(row.badge, number ? String(number) : '');
       applyColor(row.badge, record.color);
       toggleClass(row.badge, 'is-flagged', !valid);
+    } else if (arrow) {
+      applyColor(row.badge, record.color);
+      toggleClass(row.badge, 'is-flagged', !valid);
+      if (!row.badge.firstChild || row.badge.firstChild.nodeType !== 1) row.badge.replaceChildren(iconEl('fa-solid fa-arrow-right'));
     } else {
       applyColor(row.badge, '');
       toggleClass(row.badge, 'is-flagged', true);
       if (!row.badge.firstChild || row.badge.firstChild.nodeType !== 1) row.badge.replaceChildren(iconEl('fa-solid fa-triangle-exclamation'));
     }
-    row.select.disabled = !callout || viewOff;
+    row.select.disabled = !supported || viewOff;
     setAttr(row.select, 'aria-pressed', selected ? 'true' : 'false');
     setAttr(row.select, 'aria-label', `${callout ? `Callout ${number}: ` : ''}${title}, ${sub}${selected ? ', selected' : ''}`);
-    row.select.title = callout ? 'Select to show its card' : '';
+    row.select.title = callout ? 'Select to show its card' : (arrow ? 'Select to edit its ends, color and width' : '');
 
-    setHidden(row.eye, !callout);
+    setHidden(row.eye, !supported);
     setHidden(row.edit, !callout);
     row.eye.disabled = blocked;
     row.edit.disabled = blocked || viewOff;
     row.remove.disabled = blocked;
-    if (callout) {
+    if (supported) {
       const hiddenNow = record.hidden === true;
       const eyeClass = `fa-solid ${hiddenNow ? 'fa-eye-slash' : 'fa-eye'}`;
       if (row.eyeIcon.className !== eyeClass) row.eyeIcon.className = eyeClass;
       setAttr(row.eye, 'aria-label', `${hiddenNow ? 'Show' : 'Hide'} ${title}`);
       row.eye.title = hiddenNow ? 'Show' : 'Hide';
-      setAttr(row.edit, 'aria-label', `Edit ${title}`);
     }
+    if (callout) setAttr(row.edit, 'aria-label', `Edit ${title}`);
     setAttr(row.remove, 'aria-label', `Delete ${title}`);
 
-    const issue = !callout ? describeAnnotationReason('unreadable') : (valid ? '' : describeAnnotationReason(result ? result.reason : 'unreadable'));
+    // A callout reports one reason and one Re-attach; an arrow reports each end that cannot be placed on its own.
+    const issue = !supported ? describeAnnotationReason('unreadable') : (arrow || valid ? '' : describeAnnotationReason(result ? result.reason : 'unreadable'));
     setText(row.issueText, issue);
-    setHidden(row.issue, !issue);
+    setHidden(row.issueText, !issue);
     setHidden(row.reattach, !callout || valid);
     row.reattach.disabled = blocked || viewOff;
+    let endIssues = 0;
+    ['start', 'end'].forEach(which => {
+      const part = row.ends[which];
+      const broken = arrow && !valid && (!result || result[`${which}Status`] !== ANNOTATION_STATUS.VALID);
+      if (broken) endIssues += 1;
+      setHidden(part.line, !broken);
+      if (broken) {
+        const reason = result ? result[`${which}Reason`] : null;
+        const name = ARROW_END_NAMES[which];
+        setText(part.text, `${name[0].toUpperCase()}${name.slice(1)}: ${arrowEndReason(reason)}`);
+        part.button.disabled = blocked || viewOff;
+      }
+    });
+    setHidden(row.issue, !issue && !endIssues);
   }
 
   /** Context-sensitive guidance: empty unless something is relevant right now. */
@@ -1950,16 +2239,21 @@ export function createAnnotationTool({
     if (blockedNow) return blockedMessage(blockedNow);
     if (statusMessage) return statusMessage;
     if (showMode === 'off') return SHOW_OFF_HINT;
-    if (pinDrag && pinDrag.moved) return 'Drag the marker onto a surface. Esc cancels.';
-    if (reattachId) return 'Click cargo, the truck or the ground to re-attach this callout. Esc cancels.';
+    if (pinDrag && pinDrag.moved) return pinDrag.which ? 'Drag the handle onto a surface. Esc cancels.' : 'Drag the marker onto a surface. Esc cancels.';
+    if (reattachId) {
+      return reattachWhich
+        ? `Click cargo, the truck or the ground to set the arrow ${ARROW_END_NAMES[reattachWhich]}. Esc cancels.`
+        : 'Click cargo, the truck or the ground to re-attach this callout. Esc cancels.';
+    }
     if (draft) {
       return draft.editId
         ? 'Editing callout. Drag its marker or card to move them. Esc cancels.'
         : 'Add a title, then save. Click the scene or drag the marker to move it. Esc cancels.';
     }
     if (tool === 'callout') return 'Click cargo, the truck or the ground to place a callout.';
+    if (tool === 'arrow') return arrowTail ? ARROW_HINT_HEAD : ARROW_HINT_TAIL;
     if (records.length >= MAX_ANNOTATIONS_PER_PACK) return `Limit of ${MAX_ANNOTATIONS_PER_PACK} annotations reached. Delete one to add another.`;
-    if (!records.length) return 'Choose Callout, then click cargo, the truck or the ground.';
+    if (!records.length) return 'Choose Callout or Arrow, then click cargo, the truck or the ground.';
     return '';
   }
 
@@ -2006,11 +2300,14 @@ export function createAnnotationTool({
     }
     setHidden(parts.undoBar, !lastDeleted);
     if (lastDeleted) {
-      setText(parts.undoText, lastDeleted.record.type === ANNOTATION_TYPE_CALLOUT ? 'Callout deleted. Cargo is unchanged.' : 'Unreadable annotation deleted.');
+      const deletedType = lastDeleted.record.type;
+      setText(parts.undoText, deletedType === ANNOTATION_TYPE_CALLOUT ? 'Callout deleted. Cargo is unchanged.'
+        : (deletedType === ANNOTATION_TYPE_ARROW ? 'Arrow deleted. Cargo is unchanged.' : 'Unreadable annotation deleted.'));
       parts.undoBar.querySelector('button').disabled = Boolean(blockedNow);
     }
     setHidden(parts.empty, records.length > 0);
     setHidden(parts.warning, !records.some(record => record.type === ANNOTATION_TYPE_UNREADABLE));
+    renderArrowOptions(parts, blockedNow);
 
     const seen = new Set();
     records.forEach((record, index) => {
@@ -2031,6 +2328,61 @@ export function createAnnotationTool({
     applyPanelPosition(); // rows or collapsing change the panel size: keep it inside the viewport
   }
 
+  /**
+   * The look of arrows (width and color), built the first time it is needed. It edits the selected arrow, or what the
+   * next one will look like, and sits below the list so showing it never moves a row under the pointer.
+   */
+  function buildArrowOptions(parts) {
+    const options = htmlEl('div', 'tp3d-annot-panel__arrow');
+    const title = htmlEl('div', 'tp3d-annot-panel__arrow-title');
+    const widthRow = htmlEl('div', 'tp3d-annot-panel__view');
+    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Width'));
+    const widthGroup = segmented('Arrow width', 'tp3d-annot-seg--small tp3d-annot-seg--width');
+    const widthButtons = ARROW_WIDTHS.map(key => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', ARROW_WIDTH_LABELS[key]);
+      button.type = 'button';
+      button.dataset.width = key;
+      button.addEventListener('click', () => setArrowStyle({ width: key }));
+      widthGroup.appendChild(button);
+      return { key, button };
+    });
+    widthRow.appendChild(widthGroup);
+    const colors = buildColorPicker({
+      ariaLabel: 'Arrow color',
+      getColor: () => { const selectedArrow = recordById(selectedId); return isArrow(selectedArrow) ? selectedArrow.color : arrowStyle.color; },
+      onPick: color => setArrowStyle({ color }),
+    });
+    colors.root.classList.add('tp3d-annot-panel__arrow-colors');
+    options.append(title, widthRow, colors.root);
+    parts.body.appendChild(options);
+    parts.arrowOptions = options;
+    parts.arrowTitle = title;
+    parts.widthButtons = widthButtons;
+    parts.arrowColors = colors;
+  }
+
+  /** The arrow look controls: shown while the Arrow tool is armed or an arrow is selected, for that arrow or for the next one. */
+  function renderArrowOptions(parts, blockedNow) {
+    const selectedArrow = recordById(selectedId);
+    const editing = isArrow(selectedArrow) ? selectedArrow : null;
+    const visible = (Boolean(editing) || tool === 'arrow') && showMode !== 'off';
+    toggleClass(parts.body, 'has-arrow-options', visible);
+    if (!visible) {
+      if (parts.arrowOptions) setHidden(parts.arrowOptions, true);
+      return;
+    }
+    if (!parts.arrowOptions) buildArrowOptions(parts);
+    setHidden(parts.arrowOptions, false);
+    const color = editing ? editing.color : arrowStyle.color;
+    const width = editing ? editing.width : arrowStyle.width;
+    setText(parts.arrowTitle, editing ? `${arrowName(editing.id)} look` : 'New arrows look');
+    parts.arrowColors.sync(color);
+    parts.widthButtons.forEach(({ key, button }) => {
+      setAttr(button, 'aria-pressed', width === key ? 'true' : 'false');
+      button.disabled = Boolean(blockedNow);
+    });
+  }
+
   /** React to a change in what (if anything) makes annotations read-only. A blocking operation cancels unfinished edits. */
   function syncBlocked() {
     const reason = blockedReason();
@@ -2040,6 +2392,7 @@ export function createAnnotationTool({
       if (pinDrag) cancelPinDrag(blockedMessage(reason));
       if (cardDrag) cancelCardDrag();
       if (reattachId) cancelReattach(blockedMessage(reason));
+      if (arrowTail) cancelArrowTail(blockedMessage(reason));
       if (draft && !draft.editId) cancelDraft(blockedMessage(reason));
       else if (draft) cancelDraft(blockedMessage(reason));
       if (tool) {
@@ -2073,7 +2426,9 @@ export function createAnnotationTool({
     cancelPinDrag();
     cancelCardDrag();
     if (draft) cancelDraft();
+    arrowTail = null;
     reattachId = null;
+    reattachWhich = null;
     tool = null;
     hover = null;
     press = null;
@@ -2159,7 +2514,17 @@ export function createAnnotationTool({
     ghost.style.display = 'none';
     const draftLeaderUnder = svgEl('path', 'tp3d-annot-svg__under');
     const draftLeader = svgEl('path', 'tp3d-annot-svg__leader is-selected');
-    svg.append(ghost, hoverUnder, hoverMark, draftLeaderUnder, draftLeader);
+    // Arrows sit under everything else the SVG draws (leaders, hover mark, ghost); pins and cards are HTML above it all.
+    const arrowGroup = svgEl('g', 'tp3d-annot-arrows');
+    const preview = makeArrowGraphic('is-preview');
+    const previewTailUnder = svgEl('circle', 'tp3d-annot-arrow__tail-under');
+    const previewTail = svgEl('circle', 'tp3d-annot-arrow__tail');
+    previewTailUnder.setAttribute('r', '8');
+    previewTail.setAttribute('r', '5');
+    previewTailUnder.style.display = 'none';
+    previewTail.style.display = 'none';
+    preview.group.append(previewTailUnder, previewTail);
+    svg.append(arrowGroup, preview.group, ghost, hoverUnder, hoverMark, draftLeaderUnder, draftLeader);
     els.layer.prepend(svg);
     const tip = htmlEl('div', 'tp3d-annot-tip');
     tip.hidden = true;
@@ -2177,8 +2542,220 @@ export function createAnnotationTool({
     layerParts = {
       svg, hoverUnder, hoverMark, ghost, tip, overflow, overflowText: overflow.querySelector('span'),
       draftLeaderUnder, draftLeader, draftPin, leaders: new Map(), keys: { hover: '', ghost: '', draftLeader: '' },
+      arrowGroup, preview, previewTail, previewTailUnder,
     };
     return layerParts;
+  }
+
+  // ==========================================================================
+  // SECTION: ARROWS (SVG shaft + head in the overlay; never a Three.js object)
+  // ==========================================================================
+  /** The four paths of one arrow: a neutral halo under the shaft and under the head, the colored shaft and the head. */
+  function makeArrowGraphic(extraClass = '') {
+    const group = svgEl('g', `tp3d-annot-arrow ${extraClass}`.trim());
+    const under = svgEl('path', 'tp3d-annot-arrow__under');
+    const underHead = svgEl('path', 'tp3d-annot-arrow__under-head');
+    const shaft = svgEl('path', 'tp3d-annot-arrow__shaft');
+    const head = svgEl('path', 'tp3d-annot-arrow__head');
+    group.append(under, underHead, shaft, head);
+    return { group, under, underHead, shaft, head, colorKey: null };
+  }
+
+  function setStyleProp(el, name, value) {
+    if (el.style[name] !== value) el.style[name] = value;
+  }
+
+  /**
+   * Show `shape` (from `arrowShape`, or null to clear) on a graphic. The width is constant on screen; selection
+   * widens and warms the halo and does not touch the occluded look: a hidden arrow stays dashed with a hollow head.
+   */
+  function paintArrow(graphic, shape, { color, selected = false, occluded = false }) {
+    if (graphic.colorKey !== color) {
+      graphic.colorKey = color;
+      applyColor(graphic.group, color);
+    }
+    toggleClass(graphic.group, 'is-selected', selected);
+    toggleClass(graphic.group, 'is-occluded', occluded);
+    const data = arrowPathData(shape);
+    setPath(graphic.under, data.shaft);
+    setPath(graphic.shaft, data.shaft);
+    setPath(graphic.underHead, data.head);
+    setPath(graphic.head, data.head);
+    if (!shape) return;
+    const halo = selected ? 8 : 4;
+    setStyleProp(graphic.shaft, 'strokeWidth', `${shape.shaftWidth}px`);
+    setStyleProp(graphic.under, 'strokeWidth', `${shape.shaftWidth + halo}px`);
+    setStyleProp(graphic.underHead, 'strokeWidth', `${halo}px`);
+  }
+
+  function getArrowView(id) {
+    let view = arrowViews.get(id);
+    if (!view) {
+      const graphic = makeArrowGraphic();
+      graphic.group.dataset.annotId = id;
+      layerParts.arrowGroup.appendChild(graphic.group);
+      const grips = {};
+      ['start', 'end'].forEach(which => {
+        const el = htmlEl('button', 'tp3d-annot-handle');
+        el.type = 'button';
+        el.hidden = true;
+        el.dataset.annotId = id;
+        el.dataset.end = which;
+        els.layer.appendChild(el);
+        grips[which] = { el, key: '' };
+      });
+      view = { id, graphic, grips, startWorld: new THREE.Vector3(), endWorld: new THREE.Vector3(), front: true, measured: false, shown: false };
+      arrowViews.set(id, view);
+      visDirty = true;
+    }
+    return view;
+  }
+
+  function hideArrowView(view) {
+    paintArrow(view.graphic, null, { color: view.graphic.colorKey });
+    view.grips.start.el.hidden = true;
+    view.grips.end.el.hidden = true;
+    view.shown = false;
+  }
+
+  function removeArrowView(id) {
+    const view = arrowViews.get(id);
+    if (!view) return;
+    view.graphic.group.remove();
+    view.grips.start.el.remove();
+    view.grips.end.el.remove();
+    arrowViews.delete(id);
+  }
+
+  /** Camera-space point to layer pixels. Callers have already kept it in front of a perspective camera. */
+  function cameraToLayer(point, camera, width, height) {
+    projected.set(point.x, point.y, point.z).applyMatrix4(camera.projectionMatrix);
+    return { x: (projected.x * 0.5 + 0.5) * width, y: (-projected.y * 0.5 + 0.5) * height };
+  }
+
+  /**
+   * Project the two world ends of an arrow to the layer and shape them. A perspective camera cannot project what is
+   * at or behind its near plane, so the segment is cut there first (the cut end is flagged and gets no head or
+   * handle). Null when nothing can be drawn: behind the camera, off screen, too short on screen or not finite.
+   */
+  function projectArrow(from, to, camera, width, height, viewport, widthName) {
+    cameraSpaceA.copy(from).applyMatrix4(camera.matrixWorldInverse);
+    cameraSpaceB.copy(to).applyMatrix4(camera.matrixWorldInverse);
+    let a = { x: cameraSpaceA.x, y: cameraSpaceA.y, z: cameraSpaceA.z };
+    let b = { x: cameraSpaceB.x, y: cameraSpaceB.y, z: cameraSpaceB.z };
+    let tailClipped = false;
+    let headClipped = false;
+    if (camera.isPerspectiveCamera) {
+      const clipped = clipSegmentToNear(a, b, -(camera.near + 0.001));
+      if (!clipped) return null;
+      ({ a, b } = clipped);
+      tailClipped = clipped.aClipped;
+      headClipped = clipped.bClipped;
+    }
+    const tail = cameraToLayer(a, camera, width, height);
+    const head = cameraToLayer(b, camera, width, height);
+    const shape = arrowShape({ tail, head, width: widthName, viewport, headClipped });
+    return shape ? { shape, tail, head, tailClipped, headClipped } : null;
+  }
+
+  /**
+   * Which arrows are drawn this frame and where they project. An arrow is drawn only while it is Valid (both ends
+   * resolve), not hidden, shown by the Show mode, still at least the minimum length apart as the scene displays
+   * it (cargo may have moved since it was saved; the record is never touched) and projects to a readable shape.
+   */
+  function collectArrows(camera, width, height, viewport) {
+    const entries = [];
+    const live = new Set();
+    const scale = picker.toWorldScale();
+    records.forEach((record, index) => {
+      if (!isArrow(record)) return;
+      live.add(record.id);
+      const known = arrowViews.get(record.id);
+      if (!drawableIds.has(record.id) || !isShownByMode(record.id)) {
+        if (known) hideArrowView(known);
+        return;
+      }
+      const view = known || getArrowView(record.id);
+      const result = results[index];
+      const candidate = pinDrag && pinDrag.moved && pinDrag.id === record.id && pinDrag.which && pinDrag.candidate ? pinDrag.candidate : null;
+      // The end being dragged follows the surface under the pointer; everything else follows the displayed scene.
+      const startOk = candidate && pinDrag.which === 'start' ? view.startWorld.copy(candidate.world) : liveAnchorWorld(record.start, result.start, view.startWorld);
+      const endOk = candidate && pinDrag.which === 'end' ? view.endWorld.copy(candidate.world) : liveAnchorWorld(record.end, result.end, view.endWorld);
+      if (!startOk || !endOk || view.startWorld.distanceTo(view.endWorld) / scale < MIN_ARROW_LENGTH_INCHES) {
+        hideArrowView(view);
+        return;
+      }
+      const projection = projectArrow(view.startWorld, view.endWorld, camera, width, height, viewport, record.width);
+      if (!projection) {
+        hideArrowView(view);
+        return;
+      }
+      entries.push({ record, view, projection, selected: record.id === selectedId });
+    });
+    [...arrowViews.keys()].forEach(id => { if (!live.has(id)) removeArrowView(id); });
+    return entries;
+  }
+
+  function placeGrip(grip, screen, label, dragging) {
+    if (!screen) {
+      setHidden(grip.el, true);
+      return;
+    }
+    const transform = `translate(${screen.x.toFixed(1)}px, ${screen.y.toFixed(1)}px)`;
+    if (grip.key !== transform) {
+      grip.key = transform;
+      grip.el.style.transform = transform;
+    }
+    setAttr(grip.el, 'aria-label', label);
+    grip.el.title = 'Drag to move this end';
+    toggleClass(grip.el, 'is-dragging', dragging);
+    setHidden(grip.el, false);
+  }
+
+  /** Paint every drawn arrow. Two end handles exist only on the selected arrow, and not while a tool or re-attach owns the scene. */
+  function drawArrows(entries, width, height) {
+    const gripsAllowed = !isActive() && !sceneOwnedElsewhere();
+    entries.forEach(({ record, view, projection, selected }) => {
+      paintArrow(view.graphic, projection.shape, { color: record.color, selected, occluded: !view.front });
+      view.shown = true;
+      ['start', 'end'].forEach(which => {
+        const screen = which === 'start' ? projection.tail : projection.head;
+        const clipped = which === 'start' ? projection.tailClipped : projection.headClipped;
+        const onScreen = !clipped && screen.x >= 0 && screen.x <= width && screen.y >= 0 && screen.y <= height;
+        const dragging = Boolean(pinDrag && pinDrag.moved && pinDrag.id === record.id && pinDrag.which === which);
+        placeGrip(view.grips[which], selected && gripsAllowed && onScreen ? screen : null,
+          `${arrowName(record.id)} ${ARROW_END_NAMES[which]} handle. Drag it, or press Enter and click the scene.`, dragging);
+      });
+    });
+  }
+
+  /** While an arrow is being placed: a dot at the tail and the arrow it would make to the surface under the pointer. */
+  function renderArrowPreview(parts, camera, width, height, viewport) {
+    const { preview, previewTail, previewTailUnder } = parts;
+    const showDot = visible => {
+      setStyleProp(previewTail, 'display', visible ? '' : 'none');
+      setStyleProp(previewTailUnder, 'display', visible ? '' : 'none');
+    };
+    if (!arrowTail || blockedReason()) {
+      paintArrow(preview, null, { color: arrowStyle.color });
+      showDot(false);
+      return;
+    }
+    if (!liveAnchorWorld(arrowTail.anchor, null, tailWorld)) tailWorld.copy(arrowTail.world);
+    const tailScreen = projectToLayer(tailWorld, camera, width, height, scratchScreen);
+    if (tailScreen) {
+      const cx = tailScreen.x.toFixed(1);
+      const cy = tailScreen.y.toFixed(1);
+      [previewTail, previewTailUnder].forEach(dot => {
+        setAttr(dot, 'cx', cx);
+        setAttr(dot, 'cy', cy);
+      });
+    }
+    showDot(Boolean(tailScreen));
+    const target = hover && hover.world && !(pinDrag && pinDrag.moved) ? hover.world : null;
+    const far = target && tailWorld.distanceTo(target) / picker.toWorldScale() >= MIN_ARROW_LENGTH_INCHES;
+    const projection = far ? projectArrow(tailWorld, target, camera, width, height, viewport, arrowStyle.width) : null;
+    paintArrow(preview, projection ? projection.shape : null, { color: arrowStyle.color });
   }
 
   function makePin(id) {
@@ -2269,8 +2846,12 @@ export function createAnnotationTool({
   /** Remove every drawn element (the loop has stopped, the panel closed with nothing to show, or the Editor was left). */
   function disposeOverlay() {
     [...views.keys()].forEach(removeView);
+    [...arrowViews.keys()].forEach(removeArrowView);
     if (editorParts) setHidden(editorParts.root, true);
     if (layerParts) {
+      paintArrow(layerParts.preview, null, { color: arrowStyle.color });
+      layerParts.previewTail.style.display = 'none';
+      layerParts.previewTailUnder.style.display = 'none';
       layerParts.draftPin.pin.hidden = true;
       layerParts.tip.hidden = true;
       layerParts.overflow.hidden = true;
@@ -2313,7 +2894,6 @@ export function createAnnotationTool({
   function computeFront(entry, camera, meshes) {
     const { record, view } = entry;
     const spec = anchorSurfaceNormal(record.anchor);
-    const scale = picker.toWorldScale();
     let hasNormal = false;
     if (spec) {
       if (spec.frame === 'world') {
@@ -2335,15 +2915,25 @@ export function createAnnotationTool({
       const facing = ortho ? normalVec.dot(viewDir) < 0 : normalVec.dot(rayDir.subVectors(camPos, view.world)) > 0;
       if (!facing) return false;
     }
-    // Cast from the camera TOWARD the marker, stopping just short of it: whatever is hit on the way hides it.
-    // (Casting from the marker would start inside any cargo that was moved onto it, where back faces are culled.)
+    return isRayClear(view.world, camera, meshes);
+  }
+
+  /**
+   * Whether nothing in the scene stands between the camera and `point`. The ray goes from the camera TOWARD the point,
+   * stopping just short of it: whatever is hit on the way hides it. (Casting from the point would start inside any
+   * cargo that was moved onto it, where back faces are culled.)
+   */
+  function isRayClear(point, camera, meshes) {
+    const scale = picker.toWorldScale();
     let far;
-    if (ortho) {
+    if (camera.isOrthographicCamera) {
+      camera.getWorldDirection(viewDir);
       rayDir.copy(viewDir);
-      rayOrigin.copy(view.world).addScaledVector(viewDir, -ORTHO_RAY_LENGTH);
+      rayOrigin.copy(point).addScaledVector(viewDir, -ORTHO_RAY_LENGTH);
       far = ORTHO_RAY_LENGTH - OCCLUSION_STOP_INCHES * scale;
     } else {
-      rayDir.subVectors(view.world, camPos);
+      camera.getWorldPosition(camPos);
+      rayDir.subVectors(point, camPos);
       far = rayDir.length() - OCCLUSION_STOP_INCHES * scale;
       if (far <= MIN_RAY_LENGTH) return true;
       rayDir.normalize();
@@ -2353,6 +2943,18 @@ export function createAnnotationTool({
     raycaster.near = 0;
     raycaster.far = far;
     return raycaster.intersectObjects(meshes, false).length === 0;
+  }
+
+  /**
+   * An arrow is in the clear only when nothing hides any of three points along it (tail, middle, head). Sampled,
+   * never stored, and at most a few rays per arrow per refresh; one hidden sample marks the whole arrow occluded.
+   */
+  function computeArrowFront(view, camera, meshes) {
+    for (const fraction of ARROW_SAMPLE_FRACTIONS) {
+      sampleWorld.lerpVectors(view.startWorld, view.endWorld, fraction);
+      if (!isRayClear(sampleWorld, camera, meshes)) return false;
+    }
+    return true;
   }
 
   function updatePin(view, entry, flags) {
@@ -2485,6 +3087,7 @@ export function createAnnotationTool({
       entries.push({ record, view, number: numbers.get(record.id), selected: record.id === selectedId, dragging });
     });
     [...views.keys()].forEach(id => { if (!live.has(id)) removeView(id); });
+    const arrowEntries = collectArrows(camera, width, height, viewport);
 
     // 2. Facing and occlusion, refreshed only after something moved and at most every OCCLUSION_INTERVAL_MS.
     let signature = cameraSignature(camera);
@@ -2492,14 +3095,20 @@ export function createAnnotationTool({
       const p = entry.view.world;
       signature += (i + 1) * (p.x * 1.1 + p.y * 1.3 + p.z * 1.7);
     });
+    arrowEntries.forEach((entry, i) => {
+      const a = entry.view.startWorld;
+      const b = entry.view.endWorld;
+      signature += (i + 1.5) * (a.x * 0.9 + a.y * 1.2 + a.z * 1.6) + (i + 2.5) * (b.x * 1.3 + b.y * 0.8 + b.z * 1.1);
+    });
     if (signature !== lastSignature) {
       lastSignature = signature;
       visDirty = true;
     }
-    // A marker that has never been measured is measured at once, so it is never first drawn as facing the camera.
+    // A marker or arrow that has never been measured is measured at once, so it is never first drawn as in the clear.
     const unmeasured = entries.filter(entry => !entry.view.measured);
+    const arrowsUnmeasured = arrowEntries.filter(entry => !entry.view.measured);
     const due = visDirty && now - lastVisAt >= OCCLUSION_INTERVAL_MS;
-    if ((due || unmeasured.length) && entries.length) {
+    if ((due || unmeasured.length || arrowsUnmeasured.length) && (entries.length || arrowEntries.length)) {
       if (due) {
         visDirty = false;
         lastVisAt = now;
@@ -2509,7 +3118,12 @@ export function createAnnotationTool({
         entry.view.front = computeFront(entry, camera, meshes);
         entry.view.measured = true;
       });
+      (due ? arrowEntries : arrowsUnmeasured).forEach(entry => {
+        entry.view.front = computeArrowFront(entry.view, camera, meshes);
+        entry.view.measured = true;
+      });
     }
+    drawArrows(arrowEntries, width, height);
 
     // 3. Which cards are shown: selected, kept expanded and (in Cards mode) every visible one, within a budget.
     const editingId = draft && draft.editId;
@@ -2593,6 +3207,7 @@ export function createAnnotationTool({
       setText(parts.overflowText, `${overflow} more ${overflow === 1 ? 'callout is' : 'callouts are'} shown without a card. Zoom in or hide some to see their cards.`);
     }
     renderDraft(parts, camera, width, height, viewport, pinRects, panelBox, resultsBox);
+    renderArrowPreview(parts, camera, width, height, viewport);
     renderHover(parts, camera, width, height);
     renderGhost(parts, camera, width, height, entries);
   }
@@ -2818,7 +3433,7 @@ export function createAnnotationTool({
     const rootHeight = parts.root.offsetHeight;
     if (!rootHeight) return;
     const cap = Math.floor(viewport.height * PANEL_SHEET_MAX_FRACTION);
-    const fit = fitSheet({ viewport, blockers: resultsBox, height: Math.min(rootHeight - parts.list.clientHeight + parts.list.scrollHeight, cap) });
+    const fit = fitSheet({ viewport, blockers: resultsBox, height: Math.min(panelContentHeight(parts), cap) });
     setPanelFit(fit.moved ? { maxHeight: `${Math.min(fit.maxHeight, cap)}px`, bottom: `${fit.bottom}px` } : {});
   }
 
@@ -2898,9 +3513,22 @@ export function createAnnotationTool({
 
   /** While a saved marker is dragged: a faint ring where it was. */
   function renderGhost(parts, camera, width, height, entries) {
-    const entry = pinDrag && pinDrag.moved && pinDrag.id !== DRAFT_ID ? entries.find(e => e.record.id === pinDrag.id) : null;
+    const dragged = pinDrag && pinDrag.moved && pinDrag.id !== DRAFT_ID ? pinDrag : null;
+    const entry = dragged && !dragged.which ? entries.find(e => e.record.id === dragged.id) : null;
     let shownGhost = false;
-    if (entry) {
+    if (dragged && dragged.which) {
+      // An arrow end being dragged: a faint ring where that end is saved.
+      const index = records.findIndex(record => record.id === dragged.id);
+      const record = index === -1 ? null : records[index];
+      if (isArrow(record) && liveAnchorWorld(record[dragged.which], results[index][dragged.which], ghostWorld)) {
+        const screen = projectToLayer(ghostWorld, camera, width, height, ghostScreen);
+        if (screen) {
+          parts.ghost.setAttribute('cx', screen.x.toFixed(1));
+          parts.ghost.setAttribute('cy', screen.y.toFixed(1));
+          shownGhost = true;
+        }
+      }
+    } else if (entry) {
       const index = records.findIndex(record => record.id === entry.record.id);
       if (index !== -1 && liveAnchorWorld(entry.record.anchor, results[index].point, ghostWorld)) {
         const screen = projectToLayer(ghostWorld, camera, width, height, ghostScreen);

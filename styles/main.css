@@ -5023,7 +5023,8 @@ body.tp3d-shared-modal-lock #app .nav {
   opacity: 0.7;
 }
 
-/* The user's colors, one place: pins, cards, list badges and swatches read --annot-color / --annot-fg. */
+/* The user's colors, one place: pins, cards, arrows, list badges and swatches read --annot-color / --annot-fg. */
+.tp3d-annot-arrow[data-color='ink'],
 .tp3d-annot-pin[data-color='ink'],
 .tp3d-annot-card[data-color='ink'],
 .tp3d-annot-row__badge[data-color='ink'],
@@ -5032,6 +5033,7 @@ body.tp3d-shared-modal-lock #app .nav {
   --annot-fg: var(--annot-on-ink);
 }
 
+.tp3d-annot-arrow[data-color='blue'],
 .tp3d-annot-pin[data-color='blue'],
 .tp3d-annot-card[data-color='blue'],
 .tp3d-annot-row__badge[data-color='blue'],
@@ -5040,6 +5042,7 @@ body.tp3d-shared-modal-lock #app .nav {
   --annot-fg: var(--annot-on-color);
 }
 
+.tp3d-annot-arrow[data-color='green'],
 .tp3d-annot-pin[data-color='green'],
 .tp3d-annot-card[data-color='green'],
 .tp3d-annot-row__badge[data-color='green'],
@@ -5048,6 +5051,7 @@ body.tp3d-shared-modal-lock #app .nav {
   --annot-fg: var(--annot-on-color);
 }
 
+.tp3d-annot-arrow[data-color='red'],
 .tp3d-annot-pin[data-color='red'],
 .tp3d-annot-card[data-color='red'],
 .tp3d-annot-row__badge[data-color='red'],
@@ -5056,12 +5060,139 @@ body.tp3d-shared-modal-lock #app .nav {
   --annot-fg: var(--annot-on-color);
 }
 
+.tp3d-annot-arrow[data-color='violet'],
 .tp3d-annot-pin[data-color='violet'],
 .tp3d-annot-card[data-color='violet'],
 .tp3d-annot-row__badge[data-color='violet'],
 .tp3d-annot-swatch[data-color='violet'] {
   --annot-color: var(--annot-violet);
   --annot-fg: var(--annot-on-color);
+}
+
+/* Annotations V1B.1 arrows: a shaft and a solid head drawn in the same SVG, under the markers. Their width is a
+   screen-pixel stroke (set from the width name), so it never scales with zoom. A neutral halo keeps them legible over
+   any cargo color in both themes; the user's color is --annot-color, as for markers. */
+.tp3d-annot-svg .tp3d-annot-arrow__under,
+.tp3d-annot-svg .tp3d-annot-arrow__under-head {
+  fill: none;
+  stroke: var(--bg-elevated);
+  stroke-opacity: 0.72;
+  stroke-linecap: butt;
+  stroke-linejoin: round;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow__under-head {
+  fill: var(--bg-elevated);
+  fill-opacity: 0.72;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow__shaft {
+  fill: none;
+  stroke: var(--annot-color, var(--annot-ink));
+  stroke-linecap: butt;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow__head {
+  fill: var(--annot-color, var(--annot-ink));
+  stroke: var(--annot-color, var(--annot-ink));
+  stroke-width: 1px;
+  stroke-linejoin: round;
+}
+
+/* Selected: the halo turns brand orange and widens (the arrow keeps its own color, so a color change is visible). */
+.tp3d-annot-svg .tp3d-annot-arrow.is-selected .tp3d-annot-arrow__under,
+.tp3d-annot-svg .tp3d-annot-arrow.is-selected .tp3d-annot-arrow__under-head {
+  stroke: var(--accent-primary);
+  stroke-opacity: 0.95;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow.is-selected .tp3d-annot-arrow__under-head {
+  fill: var(--accent-primary);
+  fill-opacity: 0.95;
+}
+
+/* Hidden by cargo or the truck from where the camera is: dashed and dimmed with a hollow head, selected or not
+   (selection never makes it look unobstructed). */
+.tp3d-annot-svg .tp3d-annot-arrow.is-occluded .tp3d-annot-arrow__shaft {
+  stroke-dasharray: 7 5;
+  opacity: 0.7;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow.is-occluded .tp3d-annot-arrow__head {
+  fill: var(--bg-elevated);
+  fill-opacity: 0.55;
+  stroke-width: 1.75px;
+  stroke-dasharray: 4 2.5;
+  opacity: 0.85;
+}
+
+/* While placing: the arrow the next click would make, and a dot where the tail is. */
+.tp3d-annot-svg .tp3d-annot-arrow.is-preview .tp3d-annot-arrow__shaft,
+.tp3d-annot-svg .tp3d-annot-arrow.is-preview .tp3d-annot-arrow__head {
+  opacity: 0.85;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow__tail-under {
+  fill: var(--bg-elevated);
+  fill-opacity: 0.8;
+  stroke: none;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow__tail {
+  fill: var(--annot-color, var(--annot-ink));
+  stroke: var(--bg-elevated);
+  stroke-width: 1.5px;
+}
+
+/* End handles of the selected arrow: a ring (tail) and a filled dot (head) with a generous invisible hit area. */
+.tp3d-annot-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 5;
+  width: 28px;
+  height: 28px;
+  margin: -14px 0 0 -14px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: grab;
+  pointer-events: auto;
+  touch-action: none;
+  will-change: transform;
+}
+
+.tp3d-annot-handle[hidden] {
+  display: none;
+}
+
+.tp3d-annot-handle::before {
+  content: '';
+  position: absolute;
+  inset: 7px;
+  box-sizing: border-box;
+  border: 2px solid var(--accent-primary);
+  border-radius: 50%;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-sm);
+}
+
+.tp3d-annot-handle[data-end='end']::before {
+  background: var(--accent-primary);
+  border-color: var(--bg-elevated);
+}
+
+.tp3d-annot-handle:focus {
+  outline: none;
+}
+
+.tp3d-annot-handle:focus-visible::before {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.tp3d-annot-handle.is-dragging {
+  cursor: grabbing;
 }
 
 /* Marker: a numbered dot with a generous invisible hit area. */
@@ -6190,6 +6321,58 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-row__issue .tp3d-annot-btn {
+  margin-top: 8px;
+}
+
+/* The look of arrows (width and color) for the selected arrow, or for the next one: below the list, so showing it
+   never moves a row under the pointer. */
+.tp3d-annot-panel__arrow {
+  flex: none;
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.tp3d-annot-panel__arrow[hidden] {
+  display: none;
+}
+
+/* With the look controls showing, the rows and the controls scroll together, and the controls stay pinned to the bottom
+   edge: in a height-limited panel (beside AutoPack Results, or the narrow sheet) they must never squeeze the list to
+   nothing, and every row and control stays reachable. */
+.tp3d-annot-panel__body.has-arrow-options {
+  overflow-y: auto;
+  scroll-padding-bottom: 116px; /* what scrolling a row or button into view leaves clear of the pinned controls */
+}
+
+.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__list {
+  flex: none;
+  overflow: visible;
+}
+
+.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__arrow {
+  position: sticky;
+  bottom: 0;
+  background: var(--bg-elevated);
+}
+
+.tp3d-annot-panel__arrow-title {
+  padding: 0 14px 8px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  font-weight: var(--font-semibold);
+}
+
+.tp3d-annot-panel__arrow-colors {
+  padding: 0 14px;
+}
+
+.tp3d-annot-panel__arrow-colors .tp3d-annot-editor__label {
+  width: 52px;
+  margin-right: 2px;
+  font-size: inherit;
+}
+
+.tp3d-annot-row__end + .tp3d-annot-row__end {
   margin-top: 8px;
 }
 

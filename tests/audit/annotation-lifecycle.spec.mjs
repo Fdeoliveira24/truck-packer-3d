@@ -570,3 +570,374 @@ test('an annotation on cargo whose ID another item shares is never resolved onto
   assert.deepEqual(statuses(copy.id), ['unresolved:cargo-ambiguous', 'valid'].map(s => (s === 'unresolved:cargo-ambiguous' ? 'unresolved:cargo-missing' : s)),
     'in the copy the ambiguous anchor names no cargo at all');
 });
+
+// ============================================================================
+// SECTION: ARROWS (V1B.1) — writers, derived validity, duplicate, import, backup, identity
+// ============================================================================
+
+const floorAnchor = (x = 120) => M.buildFloorAnchor({ surface: 'main', point: { x, y: 0, z: 0 } });
+const arrowRecord = (id, start = ground(0, 60), end = ground(40, 60), extra = {}) => A.createArrowRecord({ id, start, end, now: 1, ...extra });
+const top = instanceId => onCargo(instanceId, { x: 0, y: 16, z: 0 });
+const solidAt = (id, x) => ({ ...solidInstance(id), transform: { ...solidInstance(id).transform, position: { x, y: 16, z: 0 } } });
+const twoCrates = packId => ['first', 'second'].map((_, i) => PackLibrary.addInstance(packId, CASE.id, { x: 60 + i * 100, y: 16, z: 0 }));
+const wrapperOf = (id, original, reason = 'Saved by a newer version of the app.') => ({ id, type: 'unreadable', schemaVersion: 1, reason, original });
+const setLastEdited = (packId, value) => StateStore.set({
+  packLibrary: StateStore.get('packLibrary').map(p => (p.id === packId ? { ...p, lastEdited: value } : p)),
+}, { skipHistory: true });
+
+test('arrow writers are annotation-only edits: lastEdited moves, cargo Undo does not, cargo and callouts stay untouched', () => {
+  seed();
+  const [a, b] = twoCrates('A');
+  const callout1 = PackLibrary.addCallout('A', note('Beside', ground(3, 3))).annotation;
+  StateStore.resetHistory();
+  setLastEdited('A', 123);
+  const notifications = [];
+  const unsubscribe = StateStore.subscribe((_changes, _state, notification) => { if (notification) notifications.push(notification.type); });
+  try {
+    const cargoBefore = JSON.stringify(stored('A').cases);
+    const calloutBefore = JSON.stringify(PackLibrary.getAnnotations('A')[0]);
+    const added = PackLibrary.addArrow('A', { start: top(a.id), end: top(b.id), color: '#FFA500', width: 'bold' });
+    assert.equal(added.ok, true);
+    assert.deepEqual([added.annotation.type, added.annotation.color, added.annotation.width, added.annotation.hidden], ['arrow', '#ffa500', 'bold', false]);
+    assert.equal(notifications.at(-1), 'pack-annotations', 'the derived notification: only the overlay and list refresh');
+    assert.ok(stored('A').lastEdited > 123, 'creating an arrow updates lastEdited');
+    assert.equal(StateStore.undo(), false, 'and adds no cargo Undo step');
+    assert.equal(stored('B').annotations, undefined, 'another Load Plan is untouched');
+    const id = added.annotation.id;
+
+    assert.equal(PackLibrary.updateArrow('A', id, { color: 'red', width: 'thin', hidden: true }).ok, true);
+    const edited = PackLibrary.getAnnotations('A')[1];
+    assert.deepEqual([edited.color, edited.width, edited.hidden], ['red', 'thin', true]);
+    assert.deepEqual([edited.start, edited.end, edited.createdAt], [added.annotation.start, added.annotation.end, added.annotation.createdAt]);
+    const editedAt = stored('A').lastEdited;
+    assert.equal(PackLibrary.updateArrow('A', id, { width: 'thin' }).unchanged, true, 'an unchanged edit writes nothing');
+    assert.equal(stored('A').lastEdited, editedAt);
+    assert.equal(PackLibrary.updateArrow('A', id, { width: 'huge' }).reason, 'invalid');
+    assert.equal(PackLibrary.updateArrow('A', id, { color: 'javascript:1' }).reason, 'invalid');
+    assert.equal(PackLibrary.updateArrow('A', 'nope', { width: 'bold' }).reason, 'not-found');
+    assert.equal(PackLibrary.updateArrow('missing', id, { width: 'bold' }).reason, 'pack-not-found');
+    assert.equal(PackLibrary.updateArrow('A', callout1.id, { width: 'bold' }).reason, 'not-found', 'a callout is not an arrow');
+    assert.equal(PackLibrary.updateCallout('A', id, { title: 'x' }).reason, 'not-found', 'nor an arrow a callout');
+    assert.equal(PackLibrary.reattachCallout('A', id, ground(1, 1)).reason, 'not-found');
+
+    const toFloor = floorAnchor(100);
+    assert.equal(PackLibrary.moveArrowEndpoint('A', id, 'end', toFloor).ok, true);
+    const moved = PackLibrary.getAnnotations('A')[1];
+    assert.deepEqual([moved.start, moved.end, moved.createdAt, moved.width], [added.annotation.start, toFloor, added.annotation.createdAt, 'thin'], 'only that end moved');
+    assert.equal(PackLibrary.moveArrowEndpoint('A', id, 'end', toFloor).unchanged, true);
+    const refused = JSON.stringify(PackLibrary.getAnnotations('A'));
+    assert.equal(PackLibrary.moveArrowEndpoint('A', id, 'middle', ground(9, 9)).reason, 'invalid');
+    assert.equal(PackLibrary.moveArrowEndpoint('A', id, 'end', { kind: 'space', surface: 'sky', position: { x: 0, y: 0, z: 0 } }).reason, 'invalid');
+    assert.equal(PackLibrary.moveArrowEndpoint('A', id, 'end', { ...top(a.id), local: { x: 0, y: 0, z: 0 } }).reason, 'invalid', 'a point off the cargo surface');
+    assert.equal(PackLibrary.moveArrowEndpoint('A', id, 'end', added.annotation.start).reason, 'invalid', 'both ends on the same point');
+    assert.equal(PackLibrary.moveArrowEndpoint('A', callout1.id, 'end', ground(9, 9)).reason, 'not-found');
+    assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), refused, 'refused moves change nothing');
+
+    const removed = PackLibrary.deleteAnnotation('A', id);
+    assert.deepEqual([removed.ok, removed.index, removed.removed.type], [true, 1, 'arrow']);
+    assert.equal(PackLibrary.restoreAnnotation('A', removed.removed, removed.index).ok, true, 'the type-agnostic Undo puts an arrow back');
+    assert.deepEqual(PackLibrary.getAnnotations('A').map(r => r.id), [callout1.id, id]);
+    assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')[0]), calloutBefore, 'the callout is byte-identical');
+    assert.equal(JSON.stringify(stored('A').cases), cargoBefore, 'cargo is untouched');
+    assert.equal(StateStore.undo(), false, 'no arrow edit added a cargo Undo step');
+  } finally { unsubscribe(); }
+});
+
+test('an arrow is only written against ends that resolve now and sit at least half an inch apart; a refused write changes nothing', () => {
+  seed([makePack('A'), makePack('D', { cases: [solidInstance('dup'), solidInstance('dup')] })]);
+  const [a, b] = twoCrates('A');
+  StateStore.resetHistory();
+  const before = snapshotOf();
+  const refuse = (input, reason, packId = 'A') => {
+    assert.equal(PackLibrary.addArrow(packId, input).reason, reason, JSON.stringify(Object.keys(input)));
+    assert.equal(snapshotOf(), before, 'nothing was written');
+  };
+  refuse({ start: top('gone'), end: top(b.id) }, 'unresolved');
+  refuse({ start: top(a.id), end: floorAnchor(1000) }, 'unresolved');
+  refuse({ start: onCargo('dup'), end: ground(40, 60) }, 'unresolved', 'D');
+  refuse({ start: ground(10, 10), end: ground(10.4, 10) }, 'too-short');
+  refuse({ start: ground(10, 10), end: ground(10, 10) }, 'invalid');
+  refuse({ start: ground(10, 10), end: ground(40, 10), width: 'huge' }, 'invalid');
+  refuse({ start: ground(10, 10), end: ground(40, 10), color: 'url(x)' }, 'invalid');
+  refuse({ start: null, end: ground(40, 10) }, 'invalid');
+  assert.equal(PackLibrary.addArrow('missing', { start: ground(1, 1), end: ground(9, 9) }).reason, 'pack-not-found');
+  StateStore.set({ caseLibrary: [{ ...CASE, dimensions: { ...CASE.dimensions, length: 60 } }] }, { skipHistory: true });
+  const resized = snapshotOf();
+  assert.equal(PackLibrary.addArrow('A', { start: top(a.id), end: ground(40, 60) }).reason, 'unresolved', 'Needs Review is refused too');
+  assert.equal(snapshotOf(), resized);
+  StateStore.set({ caseLibrary: [CASE] }, { skipHistory: true });
+
+  assert.equal(PackLibrary.addArrow('A', { start: ground(10, 10), end: ground(10.5, 10) }).ok, true, 'exactly half an inch is long enough');
+  for (const [start, end] of [[top(a.id), top(b.id)], [top(a.id), floorAnchor()], [floorAnchor(), ground(2, 2)], [ground(2, 2), top(b.id)]]) {
+    assert.equal(PackLibrary.addArrow('A', { start, end }).ok, true, `${start.kind} to ${end.kind}`);
+  }
+
+  // Moving an end: the new anchor must resolve; a broken other end only means the length is not checked.
+  const arrow = PackLibrary.addArrow('A', { start: top(a.id), end: ground(40, 60) }).annotation;
+  assert.equal(PackLibrary.moveArrowEndpoint('A', arrow.id, 'end', top('gone')).reason, 'unresolved');
+  assert.equal(PackLibrary.moveArrowEndpoint('A', arrow.id, 'end', M.buildSpaceAnchor({ surface: 'free', point: { x: 60, y: 32.2, z: 0 } })).reason, 'too-short', 'it would end on top of its tail');
+  PackLibrary.removeInstances('A', [a.id]);
+  assert.equal(PackLibrary.resolveAnnotations('A').at(-1).startReason, 'cargo-missing');
+  assert.equal(PackLibrary.moveArrowEndpoint('A', arrow.id, 'end', ground(40, 20)).ok, true, 'the healthy end of a broken arrow can still move');
+  assert.equal(PackLibrary.moveArrowEndpoint('A', arrow.id, 'start', onCargo(a.id, { x: 5, y: 16, z: 0 })).reason, 'unresolved', 'but not onto cargo that is gone');
+  assert.equal(PackLibrary.moveArrowEndpoint('A', arrow.id, 'start', top(a.id)).unchanged, true, 'naming the very anchor it already has writes nothing');
+  assert.equal(PackLibrary.moveArrowEndpoint('A', arrow.id, 'start', ground(3, 3)).ok, true, 'repairing the broken end');
+  assert.equal(PackLibrary.resolveAnnotations('A').at(-1).status, 'valid');
+});
+
+test('arrows share the per-plan maximum of 200 with callouts and recovery records, and the generic Pack update cannot write them', () => {
+  seed([makePack('A', { annotations: [{ id: 'junk' }] }), makePack('B')]);
+  for (let i = 0; i < 198; i++) assert.equal(PackLibrary.addCallout('A', note(`N${i}`, ground(i, 1))).ok, true);
+  const last = PackLibrary.addArrow('A', { start: ground(0, 60), end: ground(40, 60) });
+  assert.equal(last.ok, true);
+  assert.equal(PackLibrary.getAnnotations('A').length, 200, '198 callouts + 1 recovery record + 1 arrow');
+  const before = JSON.stringify(PackLibrary.getAnnotations('A'));
+  assert.equal(PackLibrary.addArrow('A', { start: ground(1, 60), end: ground(41, 60) }).reason, 'limit');
+  assert.equal(PackLibrary.addCallout('A', note('over')).reason, 'limit');
+  assert.equal(PackLibrary.restoreAnnotation('A', arrowRecord('late'), 0).reason, 'limit');
+  assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), before, 'nothing is truncated or replaced');
+
+  PackLibrary.deleteAnnotation('A', last.annotation.id);
+  const written = stored('A');
+  assert.equal(PackLibrary.update('A', { annotations: [arrowRecord('sneak')] }), null, 'the generic writer refuses arrows');
+  assert.equal(PackLibrary.update('A', { annotations: [] }), null);
+  assert.equal(PackLibrary.update('A', { annotations: [arrowRecord('sneak')], title: 'Sneaky' }), null, 'a mixed patch is refused whole');
+  assert.equal(stored('A'), written, 'the Pack is untouched');
+  PackLibrary.addArrow('B', { start: ground(0, 60), end: ground(40, 60) });
+  assert.ok(PackLibrary.update('B', { ...stored('B'), title: 'Whole-Pack patch' }), 'a whole-Pack patch repeating the same annotations still works');
+  assert.equal(PackLibrary.getAnnotations('B').length, 1);
+});
+
+test('cargo Undo/Redo keeps arrows and never rolls lastEdited back past an arrow edit', () => {
+  seed();
+  PackLibrary.addArrow('A', { start: ground(0, 60), end: ground(40, 60) });
+  StateStore.set({ packLibrary: StateStore.get('packLibrary').map(p => (p.id === 'A' ? { ...p, notes: 'cargo edit' } : p)) });
+  const second = PackLibrary.addArrow('A', { start: ground(5, 5), end: floorAnchor(50) });
+  PackLibrary.updateArrow('A', second.annotation.id, { width: 'bold', hidden: true });
+  const editedAt = stored('A').lastEdited;
+  assert.equal(StateStore.undo(), true, 'the cargo edit is undone');
+  assert.equal(stored('A').notes, undefined);
+  assert.equal(PackLibrary.getAnnotations('A').length, 2, 'Undo neither erases nor resurrects arrows');
+  assert.deepEqual([PackLibrary.getAnnotations('A')[1].width, PackLibrary.getAnnotations('A')[1].hidden], ['bold', true], 'including the latest edit');
+  assert.ok(stored('A').lastEdited >= editedAt);
+  assert.equal(StateStore.redo(), true);
+  assert.equal(stored('A').notes, 'cargo edit');
+  assert.equal(PackLibrary.getAnnotations('A').length, 2);
+  assert.ok(stored('A').lastEdited >= editedAt);
+});
+
+test('each arrow end follows its own cargo: moving, deleting or resizing one flags the arrow, never edits or relocates it', () => {
+  seed();
+  const [a, b] = twoCrates('A');
+  PackLibrary.addArrow('A', { start: top(a.id), end: top(b.id) });
+  const record = JSON.stringify(PackLibrary.getAnnotations('A'));
+  const resolved = () => PackLibrary.resolveAnnotations('A')[0];
+  const first = resolved();
+  assert.deepEqual([first.status, first.start.x, first.end.x], ['valid', 60, 160]);
+  const pose = (position, rotation = { x: 0, y: 0, z: 0 }) => ({ transform: { position, rotation, scale: { x: 1, y: 1, z: 1 } } });
+  assert.ok(PackLibrary.updateInstance('A', b.id, pose({ x: 200, y: 16, z: 10 })));
+  assert.deepEqual([resolved().start, resolved().end.x, resolved().end.z], [first.start, 200, 10], 'only the end on the moved cargo moved');
+  assert.ok(PackLibrary.updateInstance('A', a.id, { ...pose({ x: 500, y: 16, z: 200 }), placement: 'staged' }));
+  assert.equal(resolved().status, 'valid', 'a staged case keeps its arrow');
+  assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), record, 'the stored arrow never changed');
+
+  PackLibrary.removeInstances('A', [b.id]);
+  assert.equal(PackLibrary.getAnnotations('A').length, 1, 'editing cargo never deletes an arrow');
+  const gone = resolved();
+  assert.deepEqual([gone.status, gone.reason, gone.start, gone.end], ['unresolved', 'cargo-missing', null, null], 'no half arrow, no fabricated position');
+  assert.deepEqual([gone.startStatus, gone.endStatus, gone.endReason], ['valid', 'unresolved', 'cargo-missing'], 'the broken end is named');
+  assert.equal(StateStore.undo(), true);
+  assert.equal(resolved().status, 'valid', 'Undo restores the same instance ID and the arrow resolves again');
+  assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), record);
+
+  const setCase = patch => StateStore.set({ caseLibrary: [{ ...CASE, ...patch }] }, { skipHistory: true });
+  setCase({ dimensions: { ...CASE.dimensions, length: 60 } });
+  assert.deepEqual([resolved().status, resolved().reason, resolved().start, resolved().end], ['needs-review', 'case-changed', null, null]);
+  setCase({});
+  assert.equal(resolved().status, 'valid', 'restoring the definition recovers it');
+  assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), record, 'nothing was rewritten or relocated');
+});
+
+test('duplicating a Load Plan re-targets each arrow end to its own copied cargo; unmapped ends stay exact and wrappers are copied verbatim', () => {
+  seed();
+  const [a, b] = twoCrates('A');
+  assert.deepEqual(stored('A').cases.map(c => c.id), [a.id, b.id]);
+  PackLibrary.addArrow('A', { start: top(a.id), end: top(b.id), color: 'blue', width: 'bold' });
+  PackLibrary.addArrow('A', { start: top(b.id), end: floorAnchor() });
+  PackLibrary.addArrow('A', { start: ground(2, 2), end: top(a.id) });
+  PackLibrary.addCallout('A', note('On a', top(a.id)));
+  const original = JSON.stringify(PackLibrary.getAnnotations('A'));
+  const copy = PackLibrary.duplicate('A');
+  const [copyA, copyB] = copy.cases.map(c => c.id);
+  assert.equal(new Set([a.id, b.id, copyA, copyB]).size, 4);
+  const [one, two, three, note1] = PackLibrary.getAnnotations(copy.id);
+  assert.deepEqual([one.start.instanceId, one.end.instanceId], [copyA, copyB], 'each end follows its own cargo, not swapped');
+  assert.deepEqual([one.color, one.width], ['blue', 'bold'], 'presentation travels with it');
+  assert.deepEqual([two.start.instanceId, two.end], [copyB, floorAnchor()], 'cargo to floor');
+  assert.deepEqual([three.start, three.end.instanceId], [ground(2, 2), copyA], 'space to cargo');
+  assert.equal(note1.anchor.instanceId, copyA);
+  assert.deepEqual(statuses(copy.id), ['valid', 'valid', 'valid', 'valid']);
+  assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), original, 'the original plan keeps its anchors');
+
+  // A damaged plan: an ambiguous ID is never mapped, an unknown ID stays exact, a wrapper is not touched.
+  const inner = arrowRecord('inner', onCargo('solo'), ground(1, 1));
+  seed([makePack('X', {
+    loadPlanNumber: 'LP-X', cases: [solidInstance('dup'), solidInstance('dup'), solidAt('solo', 160)],
+    annotations: [arrowRecord('amb', onCargo('dup'), onCargo('solo')), arrowRecord('mix', onCargo('solo'), onCargo('stranger')), wrapperOf('w', inner)],
+  })]);
+  assert.deepEqual(statuses('X'), ['unresolved:cargo-ambiguous', 'unresolved:cargo-missing', 'unresolved:unreadable']);
+  const damaged = PackLibrary.duplicate('X');
+  const soloCopy = damaged.cases[2].id;
+  const [amb, mix, wrapper] = PackLibrary.getAnnotations(damaged.id);
+  assert.deepEqual([amb.start.instanceId, amb.end.instanceId], ['dup', soloCopy], 'the ambiguous end is left exactly as it was');
+  assert.deepEqual([mix.start.instanceId, mix.end.instanceId], [soloCopy, 'stranger'], 'an unknown end is left exactly as it was');
+  assert.deepEqual(wrapper, wrapperOf('w', inner), 'a wrapper is copied verbatim, its contents never remapped');
+  assert.deepEqual(statuses(damaged.id), ['unresolved:cargo-missing', 'unresolved:cargo-missing', 'unresolved:unreadable'], 'in the copy neither dangling end names any cargo');
+});
+
+test('importing a Load Plan remaps both arrow ends through the regenerated IDs; a damaged or unsupported record rejects the whole import', () => {
+  seed([makePack('A')]);
+  const inner = arrowRecord('inner', onCargo('old-1', { x: 1, y: 16, z: 2 }), ground(1, 1));
+  const list = [
+    arrowRecord('a1', onCargo('old-1', { x: 1, y: 16, z: 2 }), onCargo('old-2', { x: 3, y: 16, z: 0 })),
+    arrowRecord('a2', onCargo('never-existed', { x: 0, y: 16, z: 0 }), ground(9, 9)),
+    arrowRecord('a3', onCargo(' old-2 ', { x: 0, y: 16, z: 0 }), floorAnchor()),
+    wrapperOf('w', inner),
+  ];
+  const plan = PackLibrary.planPackImport(importPayload(list, [solidInstance('old-1'), solidAt('old-2', 160)]));
+  const [new1, new2] = plan.pack.cases.map(c => c.id);
+  assert.equal(new1 !== 'old-1' && new2 !== 'old-2', true, 'imports regenerate instance IDs');
+  const out = plan.pack.annotations;
+  assert.deepEqual([out[0].start.instanceId, out[0].end.instanceId], [new1, new2], 'each end through the same old-to-new map');
+  assert.deepEqual([out[0].start.local, out[0].end.local], [list[0].start.local, list[0].end.local]);
+  assert.deepEqual([out[1].start.instanceId, out[1].end], ['never-existed', ground(9, 9)], 'a valid reference to missing cargo is retained, never guessed');
+  assert.equal(out[2].start.instanceId, new2, 'a trimmed-equal ID follows the map too');
+  assert.deepEqual(out[3], list[3], 'a wrapper is accepted verbatim: not remapped, not converted');
+  assert.equal(out[3].original.start.instanceId, 'old-1');
+
+  const blocked = /Pack import blocked: the annotations are not valid/;
+  const good = list[1];
+  const rejected = [
+    ['unknown width', { ...good, width: 'huge' }], ['unknown key', { ...good, label: 'Door' }], ['same point', { ...good, end: good.start }],
+    ['later schema', { ...good, schemaVersion: 2 }], ['draw', { id: 'd', type: 'draw', schemaVersion: 1, points: [1, 2] }], ['missing end', { ...good, end: undefined }],
+  ];
+  for (const [label, record] of rejected) assert.throws(() => PackLibrary.planPackImport(importPayload([good, record])), blocked, label);
+  assert.throws(() => PackLibrary.planPackImport(importPayload([good, { ...good }])), /duplicate/);
+  assert.equal(PackLibrary.planPackImport(importPayload(Array.from({ length: 200 }, (_, i) => arrowRecord(`r${i}`, ground(i, 1), ground(i, 40))))).pack.annotations.length, 200);
+  assert.throws(() => PackLibrary.planPackImport(importPayload(Array.from({ length: 201 }, (_, i) => arrowRecord(`r${i}`, ground(i, 1), ground(i, 40))))), /too many/);
+});
+
+test('arrows survive export, Load Plan import/export, Workspace Backup and restore; a tampered arrow or a draw is refused', () => {
+  const inner = arrowRecord('inner', onCargo(' c1 '), ground(1, 1));
+  const list = [
+    arrowRecord('a', onCargo(' c1 '), onCargo('c2'), { color: '#ABCDEF', width: 'thin', hidden: true }),
+    arrowRecord('b', ground(4, 4), floorAnchor()),
+    callout('c', ground(1, 1)),
+    wrapperOf('w', inner),
+  ];
+  const plan = makePack('S', { loadPlanNumber: 'LP-S', cases: [solidAt(' c1 ', 60), solidAt('c2', 160)], annotations: list });
+  seed([plan]);
+  assert.deepEqual(statuses('S'), ['valid', 'valid', 'valid', 'unresolved:unreadable']);
+  for (const project of [projectPortablePack, projectPortableWorkspacePack]) {
+    assert.deepEqual(project(plan).annotations, A.normalizeAnnotations(list), `${project.name} carries arrows`);
+  }
+  const check = (cases, annotations, label) => {
+    assert.deepEqual(cases.map(c => c.id), ['c1', 'c2'], `${label}: the cargo IDs are canonical`);
+    assert.deepEqual([annotations[0].start.instanceId, annotations[0].end.instanceId], ['c1', 'c2'], `${label}: both ends followed`);
+    assert.deepEqual([annotations[0].color, annotations[0].width, annotations[0].hidden], ['#abcdef', 'thin', true], `${label}: presentation survives`);
+    assert.deepEqual(annotations[1], list[1], `${label}: an arrow between non-cargo anchors is exact`);
+    assert.deepEqual(annotations[3], list[3], `${label}: the wrapper is exact, its ' c1 ' untouched`);
+    assert.equal(annotations.length, 4, `${label}: nothing dropped`);
+  };
+  const workspaceJson = ImportExport.buildWorkspaceExportJSON('Probe', 'ws-1');
+  const restore = ImportExport.planWorkspaceRestore(ImportExport.parseWorkspaceImportJSON(workspaceJson), { currentState: StateStore.snapshot() });
+  check(restore.packLibrary[0].cases, restore.packLibrary[0].annotations, 'Workspace Backup');
+  StateStore.init({ currentScreen: 'editor', currentPackId: 'S', caseLibrary: restore.caseLibrary, folderLibrary: [], preferences: {}, packLibrary: restore.packLibrary });
+  assert.deepEqual(statuses('S'), ['valid', 'valid', 'valid', 'unresolved:unreadable'], 'and they resolve after the restore');
+  const again = normalizeAppData({ caseLibrary: restore.caseLibrary, packLibrary: restore.packLibrary, folderLibrary: [], preferences: {} });
+  assert.deepEqual(again.packLibrary[0].annotations, restore.packLibrary[0].annotations, 'restoring restored data changes nothing');
+  const app = ImportExport.parseAppImportJSON(ImportExport.buildAppExportJSON());
+  check(app.packLibrary[0].cases, app.packLibrary[0].annotations, 'Active Workspace Backup');
+  assert.deepEqual(JSON.parse(CoreStorage.exportAppJSON()).data.packLibrary[0].annotations.map(r => r.id), ['a', 'b', 'c', 'w']);
+  assert.doesNotThrow(() => ImportExport.assertRestorableWorkspaceBackup(workspaceJson));
+
+  const tamper = mutate => {
+    const copy = JSON.parse(workspaceJson);
+    mutate(copy.data.packLibrary[0].annotations);
+    return JSON.stringify(copy);
+  };
+  assert.throws(() => ImportExport.assertRestorableWorkspaceBackup(tamper(l => { l[0].width = 'huge'; })), /annotation/i);
+  assert.throws(() => ImportExport.assertRestorableWorkspaceBackup(tamper(l => { l[0].label = 'x'; })), /annotation/i);
+  assert.throws(() => ImportExport.assertRestorableWorkspaceBackup(tamper(l => { l[0].end = l[0].start; })), /annotation/i);
+  assert.throws(() => ImportExport.assertRestorableWorkspaceBackup(tamper(l => { l.push({ id: 'd', type: 'draw', schemaVersion: 1, points: [] }); })), /annotation/i, 'draw is not accepted until V1B.2');
+  assert.throws(() => ImportExport.assertRestorableWorkspaceBackup(tamper(l => { l[1].id = 'a'; })), /duplicate/i);
+
+  // A single Load Plan exported and imported again: ends follow the regenerated IDs, nothing else changes.
+  seed([makePack('P', { loadPlanNumber: 'LP-P', cases: [solidAt('p1', 60), solidAt('p2', 160)], annotations: [arrowRecord('a', top('p1'), top('p2'), { width: 'bold' })] })]);
+  const exported = ImportExport.buildRestorablePackExportJSON(PackLibrary.getById('P'));
+  emptyDestination();
+  const imported = PackLibrary.planPackImport(ImportExport.parsePackImportJSON(exported)).pack;
+  const [n1, n2] = imported.cases.map(c => c.id);
+  assert.deepEqual([imported.annotations[0].start.instanceId, imported.annotations[0].end.instanceId, imported.annotations[0].width], [n1, n2, 'bold']);
+  assert.equal(n1 !== 'p1' && n2 !== 'p2', true);
+});
+
+test('normalization canonicalizes both arrow ends, withholds an arrow on a contested ID and never converts a wrapper', () => {
+  const inner = arrowRecord('inner', onCargo(' c1 '), ground(1, 1));
+  const raw = makePack('S', {
+    loadPlanNumber: 'LP-S', cases: [solidAt(' c1 ', 60), solidAt(' c2 ', 160)],
+    annotations: [arrowRecord('a', onCargo(' c1 '), onCargo(' c2 ')), wrapperOf('w', inner)],
+  });
+  const normalized = normalizePack(raw, caseMap, 1);
+  assert.deepEqual(normalized.cases.map(c => c.id), ['c1', 'c2']);
+  assert.deepEqual([normalized.annotations[0].start.instanceId, normalized.annotations[0].end.instanceId], ['c1', 'c2']);
+  assert.deepEqual(normalized.annotations[1], raw.annotations[1], 'the wrapper keeps its original ID spelling: nothing reached inside it');
+  assert.equal(raw.annotations[0].start.instanceId, ' c1 ', 'the raw input was not mutated');
+  const twice = normalizePack(normalized, caseMap, 1);
+  assert.deepEqual(twice, normalized);
+  assert.deepEqual(normalizePack(twice, caseMap, 1), normalized);
+  assert.equal(normalizePack(twice, caseMap, 1).annotations, twice.annotations, 'an unchanged list is returned as is');
+  seed([normalized]);
+  assert.deepEqual(statuses('S'), ['valid', 'unresolved:unreadable'], 'the wrapper has a unique holder to resolve onto, and still does not');
+
+  const noCase = id => ({ ...solidInstance(id), caseId: '' }); // normalization discards an instance with no Case reference
+  const rawX = makePack('X', {
+    loadPlanNumber: 'LP-X', cases: [solidInstance('cargo'), noCase(' cargo '), solidAt('other', 160)],
+    annotations: [
+      arrowRecord('on-start', onCargo(' cargo '), onCargo('other')), arrowRecord('on-end', onCargo('other'), onCargo(' cargo ')),
+      arrowRecord('fine', onCargo('other'), ground(1, 1)),
+    ],
+  });
+  seed([{ ...rawX, cases: rawX.cases.map(c => ({ ...c, caseId: CASE.id })) }]);
+  assert.deepEqual(statuses('X'), ['unresolved:cargo-ambiguous', 'unresolved:cargo-ambiguous', 'valid'], 'as written, the plan is ambiguous: nothing rewritten');
+  const normalizedX = normalizePack(rawX, caseMap, 1);
+  assert.deepEqual(normalizedX.cases.map(c => c.id), ['cargo', 'other']);
+  assert.deepEqual(normalizedX.annotations.slice(0, 2).map(r => r.type), [A.ANNOTATION_TYPE_UNREADABLE, A.ANNOTATION_TYPE_UNREADABLE], 'either end contested withholds the whole arrow');
+  assert.deepEqual(normalizedX.annotations.slice(0, 2).map(r => r.original), rawX.annotations.slice(0, 2), 'verbatim');
+  assert.equal(normalizedX.annotations[2].type, A.ANNOTATION_TYPE_ARROW);
+  seed([normalizedX]);
+  assert.deepEqual(statuses('X'), ['unresolved:unreadable', 'unresolved:unreadable', 'valid'], 'never Valid on the surviving cargo');
+  assert.deepEqual(normalizePack(normalizedX, caseMap, 1), normalizedX, 'idempotent');
+});
+
+test('an older unreadable wrapper holding a valid arrow stays inert through every write; draw stays unsupported', () => {
+  const inner = arrowRecord('inner', onCargo('c1'), ground(40, 60));
+  const wrapper = wrapperOf('w', inner);
+  const drawRaw = { id: 'drw', type: 'draw', schemaVersion: 1, points: [1, 2] };
+  seed([makePack('A', { loadPlanNumber: 'LP-A', cases: [solidInstance('c1')], annotations: [wrapper, drawRaw] })]);
+  assert.deepEqual(statuses('A'), ['unresolved:unreadable', 'unresolved:unreadable'], 'c1 exists and the arrow validates, but the wrapper is not resurrected');
+  const added = PackLibrary.addArrow('A', { start: ground(0, 60), end: ground(40, 60) });
+  assert.equal(added.ok, true);
+  const kept = stored('A').annotations;
+  assert.deepEqual(kept[0], wrapper, 'a write wraps, never converts or discards');
+  assert.deepEqual([kept[1].type, kept[1].reason, kept[1].original], ['unreadable', 'Saved by a newer version of the app.', drawRaw], 'draw is kept and explained');
+  assert.equal(PackLibrary.updateArrow('A', 'w', { width: 'bold' }).reason, 'not-found', 'a wrapper cannot be edited as an arrow');
+  assert.equal(PackLibrary.moveArrowEndpoint('A', 'w', 'end', ground(9, 9)).reason, 'not-found');
+  assert.equal(PackLibrary.restoreAnnotation('A', drawRaw, 0).reason, 'invalid', 'draw cannot be written yet');
+  assert.equal(PackLibrary.restoreAnnotation('A', { ...inner, id: 'fresh' }, 0).ok, true, 'while a real arrow can');
+  const copy = PackLibrary.duplicate('A');
+  assert.deepEqual(PackLibrary.getAnnotations(copy.id).filter(r => r.type === 'unreadable').map(r => r.original), [inner, drawRaw], 'duplicate copies wrappers verbatim');
+  assert.deepEqual(JSON.parse(CoreStorage.exportAppJSON()).data.packLibrary.find(p => p.id === 'A').annotations.filter(r => r.id === 'w'), [wrapper], 'and exports it verbatim');
+  assert.equal(PackLibrary.deleteAnnotation('A', 'w').ok, true, 'the owner can still delete it deliberately');
+  assert.equal(PackLibrary.getAnnotations('A').some(r => r.id === 'w'), false);
+});

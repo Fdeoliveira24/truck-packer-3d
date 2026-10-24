@@ -19,8 +19,15 @@
  *   moves the anchor or any cargo. Nothing derived is stored: status, number, face normal, occlusion and
  *   screen position are all recomputed.
  *
- *   Later releases add `arrow` and `draw` records to the same collection. A record this version does not
- *   understand (including those) is kept verbatim as an `unreadable` recovery record, never dropped.
+ *   V1B.1 adds `arrow`: a directional line between two independent anchors (`start` is the tail, `end` the
+ *   head). Each endpoint is a Measurement anchor of any kind, so an arrow can run from one cargo item to the
+ *   floor or to another item, and each follows its own cargo identity. An arrow is drawable only while BOTH
+ *   endpoints resolve as Valid; otherwise the record is kept and each endpoint explains itself.
+ *
+ *   A later release adds `draw`. A record this version does not understand (including that) is kept
+ *   verbatim as an `unreadable` recovery record, never dropped. A recovery record is inert: nothing here
+ *   converts one back into an annotation, because the identity decisions that were made while it was
+ *   wrapped (see carryAnnotationsThroughIdentity) cannot be re-established from the stored data.
  * @module core/annotations
  */
 
@@ -38,9 +45,10 @@ import {
 // ============================================================================
 
 export const ANNOTATION_SCHEMA_VERSION = 1;
-/** Every annotation type together (callouts now; arrows and drawings later) in one Load Plan. */
+/** Every annotation type together (callouts, arrows and later drawings, plus recovery records) in one Load Plan. */
 export const MAX_ANNOTATIONS_PER_PACK = 200;
 export const ANNOTATION_TYPE_CALLOUT = 'callout';
+export const ANNOTATION_TYPE_ARROW = 'arrow';
 /** Wrapper that keeps an unreadable stored record verbatim so it is never silently dropped. */
 export const ANNOTATION_TYPE_UNREADABLE = 'unreadable';
 export const MAX_CALLOUT_TITLE_LENGTH = 48;
@@ -50,10 +58,16 @@ export const MAX_CARD_OFFSET_PX = 2000;
 export const ANNOTATION_COLORS = Object.freeze(['ink', 'blue', 'green', 'red', 'violet']);
 export const DEFAULT_ANNOTATION_COLOR = 'ink';
 export const ANNOTATION_STATUS = MEASUREMENT_STATUS;
+export const ARROW_WIDTHS = Object.freeze(['thin', 'regular', 'bold']);
+export const DEFAULT_ARROW_WIDTH = 'regular';
+/** A new or moved arrow must span at least this much between its resolved endpoints (inches). */
+export const MIN_ARROW_LENGTH_INCHES = 0.5;
 
 const MAX_ID_LENGTH = 64;
 /** Record types a later release writes. An older build keeps them untouched and says why. */
-const FUTURE_TYPES = new Set(['arrow', 'draw']);
+const FUTURE_TYPES = new Set(['draw']);
+/** The only top-level keys an arrow may carry; any other key makes the record unreadable, never dropped. */
+const ARROW_KEYS = new Set(['id', 'type', 'schemaVersion', 'color', 'width', 'hidden', 'start', 'end', 'createdAt', 'updatedAt']);
 
 /**
  * Optional starting texts for the callout editor. Picking one only fills the title and description,
@@ -229,6 +243,61 @@ export function offsetCalloutRecord(record, offset, now) {
   return validateCalloutRecord(next) ? null : canonicalCalloutRecord(next);
 }
 
+/**
+ * New arrow record: `start` is the tail, `end` the head. `id` and `now` are injected so callers own identity
+ * and time. The record is not validated (an invalid color or width is kept as given, so the gate refuses it
+ * instead of storing a different value); callers pass it through validateAnnotationCollection.
+ * @param {{ id: string, start: Record<string, any>, end: Record<string, any>, color?: string, width?: string,
+ *   hidden?: boolean, now: number }} input
+ */
+export function createArrowRecord({ id, start, end, color = DEFAULT_ANNOTATION_COLOR, width = DEFAULT_ARROW_WIDTH, hidden = false, now }) {
+  return {
+    id: String(id),
+    type: ANNOTATION_TYPE_ARROW,
+    schemaVersion: ANNOTATION_SCHEMA_VERSION,
+    color: canonicalAnnotationColor(color) || color,
+    width,
+    hidden: hidden === true,
+    start,
+    end,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+/**
+ * Pure edit of an arrow's presentation. Unknown patch keys are ignored; the endpoints, identity and creation
+ * time are preserved. Null when the result would not be a valid arrow (for example an unknown width).
+ * @param {Record<string, any>} record
+ * @param {{ color?: string, width?: string, hidden?: boolean }} patch
+ * @param {number} now
+ */
+export function editArrowRecord(record, patch, now) {
+  if (!isRecord(record) || record.type !== ANNOTATION_TYPE_ARROW || !isFiniteNumber(now) || !isRecord(patch)) return null;
+  /** @type {Record<string, any>} */
+  const next = { ...record, updatedAt: now };
+  if (Object.hasOwn(patch, 'color')) next.color = canonicalAnnotationColor(patch.color) || patch.color;
+  if (Object.hasOwn(patch, 'width')) next.width = patch.width;
+  if (Object.hasOwn(patch, 'hidden')) next.hidden = patch.hidden === true;
+  return validateArrowRecord(next) ? null : canonicalArrowRecord(next);
+}
+
+/**
+ * Replace one endpoint with a new, deliberately chosen anchor (a grip drag or Re-attach). The other endpoint,
+ * the presentation, the identity and the creation time are preserved. Null for an unknown endpoint name or a
+ * result that is not a valid arrow (an invalid anchor, or both endpoints naming the same point).
+ * @param {Record<string, any>} record
+ * @param {'start' | 'end'} which
+ * @param {Record<string, any>} anchor
+ * @param {number} now
+ */
+export function replaceArrowEndpoint(record, which, anchor, now) {
+  if (which !== 'start' && which !== 'end') return null;
+  if (!isRecord(record) || record.type !== ANNOTATION_TYPE_ARROW || !isFiniteNumber(now)) return null;
+  const next = { ...record, [which]: anchor, updatedAt: now };
+  return validateArrowRecord(next) ? null : canonicalArrowRecord(next);
+}
+
 // ============================================================================
 // SECTION: VALIDATION
 // ============================================================================
@@ -261,6 +330,30 @@ export function validateCalloutRecord(record) {
   return validateAnchorRecord(record.anchor, 'anchor');
 }
 
+/**
+ * Strict structural validity of a stored arrow. It judges the record only: whether the cargo an endpoint
+ * names still exists, or how long the arrow currently is, are derived and never decide validity. An
+ * unsupported top-level key is a problem (the record is then kept verbatim as unreadable) rather than
+ * something to drop, so nothing a newer or damaged writer stored is silently lost.
+ * @returns {string | null} the first problem with a stored arrow, or null when it is a valid arrow
+ */
+export function validateArrowRecord(record) {
+  if (!isRecord(record)) return 'record must be an object';
+  const idError = validateRecordId(record);
+  if (idError) return idError;
+  if (record.type !== ANNOTATION_TYPE_ARROW) return 'type is not supported';
+  if (record.schemaVersion !== ANNOTATION_SCHEMA_VERSION) return 'schemaVersion is not supported';
+  if (Object.keys(record).some(key => !ARROW_KEYS.has(key))) return 'record has an unsupported field';
+  if (!isValidAnnotationColor(record.color)) return 'color is invalid';
+  if (!ARROW_WIDTHS.includes(record.width)) return 'width is invalid';
+  if (typeof record.hidden !== 'boolean') return 'display flags are invalid';
+  if (!isFiniteNumber(record.createdAt) || !isFiniteNumber(record.updatedAt)) return 'timestamps are invalid';
+  const anchorError = validateAnchorRecord(record.start, 'start') || validateAnchorRecord(record.end, 'end');
+  if (anchorError) return anchorError;
+  return JSON.stringify(canonicalAnchorRecord(record.start)) === JSON.stringify(canonicalAnchorRecord(record.end))
+    ? 'start and end are the same point' : null;
+}
+
 function validateRecoveryRecord(record) {
   if (!isRecord(record)) return 'record must be an object';
   const idError = validateRecordId(record);
@@ -284,6 +377,21 @@ function canonicalCalloutRecord(record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     schemaVersion: ANNOTATION_SCHEMA_VERSION,
+  };
+}
+
+function canonicalArrowRecord(record) {
+  return {
+    id: record.id,
+    type: ANNOTATION_TYPE_ARROW,
+    schemaVersion: ANNOTATION_SCHEMA_VERSION,
+    color: canonicalAnnotationColor(record.color) || record.color,
+    width: record.width,
+    hidden: record.hidden,
+    start: canonicalAnchorRecord(record.start),
+    end: canonicalAnchorRecord(record.end),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
   };
 }
 
@@ -326,6 +434,20 @@ function unreadableReason(entry) {
   return 'The saved annotation could not be read.';
 }
 
+/**
+ * The one place that knows which authored record types this version understands. A record of any other
+ * type, or one that fails its own type's validation, reports that problem and is never repaired.
+ * @returns {{ record: Record<string, any> | null, error: string | null }} exactly one of the two is set
+ */
+function readAuthoredRecord(entry) {
+  if (isRecord(entry) && entry.type === ANNOTATION_TYPE_ARROW) {
+    const error = validateArrowRecord(entry);
+    return error ? { record: null, error } : { record: canonicalArrowRecord(entry), error: null };
+  }
+  const error = validateCalloutRecord(entry);
+  return error ? { record: null, error } : { record: canonicalCalloutRecord(entry), error: null };
+}
+
 const normalizedCache = new WeakMap();
 
 /**
@@ -348,14 +470,14 @@ export function normalizeAnnotations(raw) {
   } else {
     out = [];
     raw.forEach((entry, index) => {
-      const calloutError = validateCalloutRecord(entry);
-      if (!calloutError) {
+      const authored = readAuthoredRecord(entry);
+      if (authored.record) {
         if (used.has(entry.id)) {
           out.push(wrapUnreadable(entry, index, 'Duplicate annotation ID in this Load Plan.', used));
           return;
         }
         used.add(entry.id);
-        out.push(canonicalCalloutRecord(entry));
+        out.push(authored.record);
         return;
       }
       if (!validateRecoveryRecord(entry) && !used.has(entry.id)) {
@@ -374,10 +496,11 @@ export function normalizeAnnotations(raw) {
 }
 
 /**
- * Strict validation for import and restore. A structurally valid collection (callouts and explicit
+ * Strict validation for import and restore. A structurally valid collection (callouts, arrows and explicit
  * recovery records) is accepted, INCLUDING cargo anchors that reference instances that do not exist
- * (they resolve as Unresolved). Any malformed record, duplicate annotation ID within the plan, or more
- * than MAX_ANNOTATIONS_PER_PACK rejects the whole collection; nothing is truncated or repaired.
+ * (they resolve as Unresolved). Any malformed record, a record type this version does not write (such as
+ * `draw`), a duplicate annotation ID within the plan, or more than MAX_ANNOTATIONS_PER_PACK rejects the
+ * whole collection; nothing is truncated or repaired.
  * @param {unknown} raw
  * @returns {{ ok: true, annotations: Array<Record<string, any>> } | { ok: false, error: string }}
  */
@@ -391,14 +514,14 @@ export function validateAnnotationCollection(raw) {
   const annotations = [];
   for (let index = 0; index < raw.length; index++) {
     const entry = raw[index];
-    const calloutError = validateCalloutRecord(entry);
+    const authored = readAuthoredRecord(entry);
     let canonical;
-    if (!calloutError) {
-      canonical = canonicalCalloutRecord(entry);
+    if (authored.record) {
+      canonical = authored.record;
     } else if (!validateRecoveryRecord(entry)) {
       canonical = canonicalRecoveryRecord(entry);
     } else {
-      return { ok: false, error: `annotations[${index}] ${calloutError}` };
+      return { ok: false, error: `annotations[${index}] ${authored.error}` };
     }
     if (ids.has(canonical.id)) {
       return { ok: false, error: `duplicate annotation id "${canonical.id}"` };
@@ -413,12 +536,28 @@ export function validateAnnotationCollection(raw) {
 // SECTION: INSTANCE-ID REMAPPING (DUPLICATE / IMPORT / NORMALIZATION)
 // ============================================================================
 
+/** The anchors a record is attached to: one for a callout, two independent ones for an arrow, none for a recovery record. */
+function anchorsOf(record) {
+  if (record.type === ANNOTATION_TYPE_CALLOUT) return [record.anchor];
+  if (record.type === ANNOTATION_TYPE_ARROW) return [record.start, record.end];
+  return [];
+}
+
+/** The anchor itself when the map has no different instance for it; a floor or space anchor never has one. */
+function remapAnchorInstance(anchor, map) {
+  if (anchor.kind !== 'cargo') return anchor;
+  const key = instanceIdentityKey(anchor.instanceId);
+  const next = key === null ? undefined : map.get(key);
+  return next === undefined || next === anchor.instanceId ? anchor : { ...anchor, instanceId: next };
+}
+
 /**
  * Remap cargo anchors through a deterministic old-instance-ID to new-instance-ID map keyed by the shared
  * identity key (instanceIdentityKey in core/measurements.js), so an anchor naming `" cargo "` follows the
- * instance the map knows as `"cargo"`. An anchor whose instance is not in the map is left exactly as it
- * is (it stays Unresolved); a replacement is never guessed. Floor and space anchors and recovery records
- * are untouched. If nothing changes the normalized list itself is returned.
+ * instance the map knows as `"cargo"`. An arrow's two endpoints are remapped independently, each by its
+ * own cargo. An anchor whose instance is not in the map is left exactly as it is (it stays Unresolved); a
+ * replacement is never guessed. Floor and space anchors and recovery records are untouched. If nothing
+ * changes the normalized list itself is returned.
  * @param {unknown} annotations
  * @param {Map<string, string> | Record<string, string>} idMap
  */
@@ -426,11 +565,16 @@ export function remapAnnotationInstanceIds(annotations, idMap) {
   const map = idMap instanceof Map ? idMap : new Map(Object.entries(idMap || {}));
   const records = normalizeAnnotations(annotations);
   const remapped = records.map(record => {
-    if (record.type !== ANNOTATION_TYPE_CALLOUT || record.anchor.kind !== 'cargo') return record;
-    const key = instanceIdentityKey(record.anchor.instanceId);
-    const next = key === null ? undefined : map.get(key);
-    return next === undefined || next === record.anchor.instanceId
-      ? record : { ...record, anchor: { ...record.anchor, instanceId: next } };
+    if (record.type === ANNOTATION_TYPE_CALLOUT) {
+      const anchor = remapAnchorInstance(record.anchor, map);
+      return anchor === record.anchor ? record : { ...record, anchor };
+    }
+    if (record.type === ANNOTATION_TYPE_ARROW) {
+      const start = remapAnchorInstance(record.start, map);
+      const end = remapAnchorInstance(record.end, map);
+      return start === record.start && end === record.end ? record : { ...record, start, end };
+    }
+    return record;
   });
   return remapped.every((record, index) => record === records[index]) ? records : remapped;
 }
@@ -443,15 +587,19 @@ const CONTESTED_IDENTITY_REASON =
  * (core/measurements.js), as one step so neither half can be forgotten: anchors naming a canonicalized
  * instance follow it, and an annotation anchored on a CONTESTED key (an ID the source gave to several
  * items, of which only one survived) is withheld whole and verbatim into the unreadable recovery record,
- * so the surviving cargo never inherits the reference.
+ * so the surviving cargo never inherits the reference. An arrow is withheld whole when EITHER endpoint is
+ * on a contested key (the other endpoint's remap is discarded with it: the wrapper keeps the record as
+ * it came in). Nothing here ever unwraps a recovery record, and the wrapper is not inspected: its
+ * contents were not carried through any earlier identity decision, so it cannot be trusted to name the
+ * cargo it appears to name.
  * @param {unknown} rawAnnotations the stored annotations as they came in
  * @param {{ idMap: Map<string, string>, contestedKeys: Set<string> }} identity from canonicalizeInstanceIds
  */
 export function carryAnnotationsThroughIdentity(rawAnnotations, identity) {
   const records = remapAnnotationInstanceIds(rawAnnotations, identity.idMap);
   if (!identity.contestedKeys.size) return records;
-  const contested = record => record.type === ANNOTATION_TYPE_CALLOUT && record.anchor.kind === 'cargo' &&
-    identity.contestedKeys.has(instanceIdentityKey(record.anchor.instanceId));
+  const contested = record => anchorsOf(record).some(anchor => anchor.kind === 'cargo' &&
+    identity.contestedKeys.has(instanceIdentityKey(anchor.instanceId)));
   const targets = new Set(records.flatMap((record, index) => (contested(record) ? [index] : [])));
   if (!targets.size) return records;
   // normalizeAnnotations yields one record per stored entry, so the stored entry at the same position is
@@ -498,11 +646,16 @@ function isFinitePoint(point) {
 /**
  * Derived validity and committed position (inches) for one annotation. A position exists only when the
  * anchor resolves; Needs Review and Unresolved never carry one (nothing is fabricated or relocated).
+ * An arrow has no single `point`: it reports `start` and `end` positions (both or neither) plus the
+ * status and reason of each endpoint.
  * @param {Record<string, any>} record normalized record
  * @param {Parameters<typeof resolveAnchor>[1]} context the same context the Measurement Tool resolves with
- * @returns {{ id: string, status: string, reason: string | null, point: { x: number, y: number, z: number } | null }}
+ * @returns {{ id: string, status: string, reason: string | null, point: { x: number, y: number, z: number } | null,
+ *   start?: { x: number, y: number, z: number } | null, end?: { x: number, y: number, z: number } | null,
+ *   startStatus?: string, endStatus?: string, startReason?: string | null, endReason?: string | null }}
  */
 export function resolveAnnotation(record, context) {
+  if (record.type === ANNOTATION_TYPE_ARROW) return resolveArrow(record, context);
   if (record.type !== ANNOTATION_TYPE_CALLOUT) {
     return { id: record.id, status: ANNOTATION_STATUS.UNRESOLVED, reason: 'unreadable', point: null };
   }
@@ -515,6 +668,54 @@ export function resolveAnnotation(record, context) {
     return { id: record.id, status: ANNOTATION_STATUS.UNRESOLVED, reason: 'point-invalid', point: null };
   }
   return { id: record.id, status: ANNOTATION_STATUS.VALID, reason: null, point: resolution.point };
+}
+
+/**
+ * Both endpoints of an arrow resolved separately. The whole arrow takes the worst endpoint's status
+ * (Unresolved dominates Needs Review, as for a measurement) and carries positions only when BOTH are Valid,
+ * so a half-resolved arrow can never be drawn as if it pointed somewhere. Each endpoint keeps its own
+ * status and reason so the owner can see which end needs attention. A Valid endpoint whose position is not
+ * a finite number counts as Unresolved (`point-invalid`).
+ */
+function resolveArrow(record, context) {
+  const [start, end] = [record.start, record.end].map(anchor => {
+    const resolution = resolveAnchor(anchor, context);
+    return resolution.status === ANNOTATION_STATUS.VALID && !isFinitePoint(resolution.point)
+      ? { status: ANNOTATION_STATUS.UNRESOLVED, reason: 'point-invalid', point: null } : resolution;
+  });
+  const endpoints = { startStatus: start.status, endStatus: end.status, startReason: start.reason, endReason: end.reason };
+  const worst = [start, end].find(r => r.status === ANNOTATION_STATUS.UNRESOLVED) ||
+    [start, end].find(r => r.status === ANNOTATION_STATUS.NEEDS_REVIEW);
+  if (worst) {
+    return { id: record.id, status: worst.status, reason: worst.reason, point: null, start: null, end: null, ...endpoints };
+  }
+  return { id: record.id, status: ANNOTATION_STATUS.VALID, reason: null, point: null, start: start.point, end: end.point, ...endpoints };
+}
+
+/**
+ * Whether an arrow may be WRITTEN (created, or an endpoint moved), judged against the committed layout.
+ * This is a write-time rule only: it is never applied to stored, imported or restored data, and a stored
+ * arrow that later becomes too short (cargo moved) simply is not drawn.
+ *  - Creation (`moved` null): both endpoints must resolve Valid, and be at least MIN_ARROW_LENGTH_INCHES apart.
+ *  - A moved endpoint (`moved` 'start' | 'end'): that endpoint must resolve Valid. The other endpoint may be
+ *    broken (moving an endpoint is how a broken arrow is repaired, one end at a time); the length is
+ *    checked only when both ends can be placed.
+ * A Needs Review or Unresolved endpoint, including cargo whose ID is ambiguous, is refused: a new arrow is
+ * only ever attached to something that currently resolves.
+ * @param {Record<string, any>} record the arrow as it would be stored
+ * @param {Parameters<typeof resolveAnchor>[1]} context
+ * @param {'start' | 'end' | null} [moved]
+ * @returns {'unresolved' | 'too-short' | null}
+ */
+export function arrowPlacementProblem(record, context, moved = null) {
+  const start = resolveAnchor(record.start, context);
+  const end = resolveAnchor(record.end, context);
+  const placeable = resolution => resolution.status === ANNOTATION_STATUS.VALID && isFinitePoint(resolution.point);
+  const required = moved === 'start' ? [start] : moved === 'end' ? [end] : [start, end];
+  if (!required.every(placeable)) return 'unresolved';
+  if (!placeable(start) || !placeable(end)) return null;
+  const length = Math.hypot(end.point.x - start.point.x, end.point.y - start.point.y, end.point.z - start.point.z);
+  return length < MIN_ARROW_LENGTH_INCHES ? 'too-short' : null;
 }
 
 /** @returns {Array<ReturnType<typeof resolveAnnotation>>} one result per normalized record, in order */

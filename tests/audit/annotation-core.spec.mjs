@@ -180,7 +180,7 @@ test('lenient normalization never drops, coerces or truncates what it cannot rea
   assert.deepEqual(A.normalizeAnnotations(null), []);
   const good = callout('good');
   const malformed = { id: 'bad', type: 'callout', title: '', anchor: { kind: 'mystery' } };
-  const future = { id: 'arr', type: 'arrow', schemaVersion: 1, a: {}, b: {} };
+  const future = { id: 'drw', type: 'draw', schemaVersion: 1, points: [] };
   const newer = { ...good, id: 'newer', schemaVersion: 9 };
   const list = [good, malformed, 'garbage', 42, null, future, newer];
   const frozen = JSON.stringify(list);
@@ -342,6 +342,260 @@ test('an annotation on a contested ID is withheld whole and verbatim, so the sur
   assert.equal(A.carryAnnotationsThroughIdentity(carried, identity)[0].type, A.ANNOTATION_TYPE_UNREADABLE, 'idempotent');
   const clean = M.canonicalizeInstanceIds(['a', 'b'], () => 'minted');
   assert.equal(A.carryAnnotationsThroughIdentity(raw, clean), A.remapAnnotationInstanceIds(raw, clean.idMap));
+});
+
+// ============================================================================
+// SECTION: ARROWS (V1B.1) — record, gates, identity, resolution
+// ============================================================================
+
+const FLOOR_ANCHOR = M.buildFloorAnchor({ surface: 'main', point: { x: 100, y: 0, z: 0 } });
+const arrow = (id, start = ground(5, 5), end = ground(40, 5), extra = {}) => A.createArrowRecord({ id, start, end, now: 1000, ...extra });
+const ARROW_KEYS = ['color', 'createdAt', 'end', 'hidden', 'id', 'schemaVersion', 'start', 'type', 'updatedAt', 'width'];
+
+test('an arrow is exactly the contracted record: two independent anchors, presentation only, nothing derived', () => {
+  const made = arrow('a1', onCargo('inst-1'), FLOOR_ANCHOR, { color: '#A1B2C3', width: 'bold' });
+  assert.deepEqual(Object.keys(made).sort(), ARROW_KEYS);
+  assert.deepEqual([made.type, made.schemaVersion, made.color, made.width, made.hidden, made.createdAt, made.updatedAt], ['arrow', 1, '#a1b2c3', 'bold', false, 1000, 1000]);
+  assert.equal(A.ANNOTATION_SCHEMA_VERSION, 1, 'the schema version is unchanged');
+  const defaults = arrow('a2');
+  assert.deepEqual([defaults.color, defaults.width, defaults.hidden], ['ink', 'regular', false]);
+  assert.deepEqual([...A.ARROW_WIDTHS], ['thin', 'regular', 'bold']);
+  assert.equal(A.validateArrowRecord(made), null);
+  for (const key of ['label', 'title', 'offset', 'status', 'length', 'anchor']) assert.equal(Object.hasOwn(made, key), false, `no ${key}`);
+  assert.deepEqual(A.normalizeAnnotations([made]), [made], 'canonical form is the record itself');
+  assert.deepEqual(A.validateAnnotationCollection([made]).annotations, [made]);
+  assert.deepEqual(A.normalizeAnnotations(JSON.parse(JSON.stringify([made]))), [made], 'survives a JSON round trip exactly');
+  // An invalid value is kept as given so the gate refuses the write; it is never replaced by a default.
+  assert.notEqual(A.validateArrowRecord(arrow('w', ground(1, 1), ground(9, 9), { width: 'huge' })), null);
+  assert.notEqual(A.validateArrowRecord(arrow('c', ground(1, 1), ground(9, 9), { color: 'pink' })), null);
+});
+
+test('arrow validation names the first problem, rejects unknown top-level keys and leaves callout validation alone', () => {
+  const ok = arrow('v', onCargo('inst-1'), ground(40, 5));
+  const bad = (patch, pattern) => assert.match(A.validateArrowRecord({ ...ok, ...patch }) || '', pattern, JSON.stringify(patch).slice(0, 60));
+  bad({ id: '' }, /id/);
+  bad({ id: 'x'.repeat(65) }, /id/);
+  bad({ type: 'callout' }, /type/);
+  bad({ schemaVersion: 2 }, /schemaVersion/);
+  bad({ color: 'pink' }, /color/);
+  bad({ color: '#12' }, /color/);
+  bad({ width: 'huge' }, /width/);
+  bad({ width: undefined }, /width/);
+  bad({ width: 3 }, /width/);
+  bad({ hidden: 1 }, /flags/);
+  bad({ createdAt: 'now' }, /timestamps/);
+  bad({ updatedAt: NaN }, /timestamps/);
+  bad({ start: null }, /start/);
+  bad({ end: { kind: 'space', surface: 'sky', position: { x: 0, y: 0, z: 0 } } }, /end\.surface/);
+  bad({ start: { ...onCargo('inst-1'), local: { x: 0, y: 0, z: 0 } } }, /start is not on the surface/);
+  bad({ label: 'Door' }, /unsupported field/);
+  bad({ title: 'x' }, /unsupported field/);
+  bad({ anchor: ground(1, 1) }, /unsupported field/);
+  bad({ end: ok.start }, /same point/);
+  bad({ end: { ...ok.start, junk: 1 } }, /same point/);
+  assert.match(A.validateArrowRecord(JSON.parse('{"__proto__": {"x": 1}, "id": "p", "type": "arrow", "schemaVersion": 1}')) || '', /unsupported field/, 'a __proto__ key is just an unknown key');
+  assert.match(A.validateArrowRecord(null), /object/);
+  // Callouts: the V1A validator is unchanged and still refuses an arrow as "not a callout".
+  assert.match(A.validateCalloutRecord(ok), /type/);
+  assert.match(A.validateArrowRecord(callout('c')), /type/);
+});
+
+test('lenient normalization keeps a valid arrow, wraps every unreadable one verbatim and never converts a wrapper', () => {
+  const good = arrow('good', onCargo('inst-1'), FLOOR_ANCHOR);
+  const malformed = { ...arrow('bad'), width: 'huge' };
+  const extra = { ...arrow('extra'), label: 'Door', note: { nested: true } };
+  const newer = { ...arrow('newer'), schemaVersion: 9 };
+  const sameEnds = { ...arrow('same'), end: ground(5, 5) };
+  const legacy = { id: 'arrow-1', type: 'arrow', schemaVersion: 1 };
+  const draw = { id: 'drw', type: 'draw', schemaVersion: 1, points: [1, 2] };
+  const list = [good, malformed, extra, newer, sameEnds, legacy, draw, callout('c')];
+  const frozen = JSON.stringify(list);
+  const out = A.normalizeAnnotations(list);
+  assert.equal(JSON.stringify(list), frozen, 'the stored input is not mutated');
+  assert.equal(out.length, list.length, 'nothing is dropped');
+  assert.deepEqual(out[0], good);
+  assert.deepEqual(out.slice(1, 7).map(r => r.type), Array(6).fill(A.ANNOTATION_TYPE_UNREADABLE));
+  assert.deepEqual([malformed, extra, newer, sameEnds, legacy, draw].map((original, i) => out[i + 1].original), [malformed, extra, newer, sameEnds, legacy, draw],
+    'every original is preserved verbatim, including an unknown key');
+  assert.equal(out[2].original.note.nested, true);
+  assert.equal(out[1].reason, 'The saved annotation could not be read.', 'a malformed arrow is damaged, not "from a newer version"');
+  assert.equal(out[2].reason, 'The saved annotation could not be read.');
+  assert.equal(out[3].reason, 'Saved by a newer version of the app.', 'a later schemaVersion is');
+  assert.equal(out[6].reason, 'Saved by a newer version of the app.', 'draw stays a future type until V1B.2');
+  assert.equal(out[7].type, A.ANNOTATION_TYPE_CALLOUT);
+  assert.equal(new Set(out.map(r => r.id)).size, out.length);
+  assert.equal(A.normalizeAnnotations(out), out, 'idempotent');
+  assert.deepEqual(A.normalizeAnnotations(JSON.parse(JSON.stringify(out))), out);
+  // Arrow and callout share one ID space.
+  const twin = A.normalizeAnnotations([callout('same-id'), arrow('same-id')]);
+  assert.deepEqual([twin[0].type, twin[1].type, twin[1].reason], ['callout', 'unreadable', 'Duplicate annotation ID in this Load Plan.']);
+  assert.deepEqual(twin[1].original, arrow('same-id'));
+});
+
+test('an unreadable wrapper stays inert even when its original is a valid arrow with a unique current holder', () => {
+  const inner = arrow('inner', onCargo('inst-1'), FLOOR_ANCHOR);
+  const wrapper = { id: 'w', type: 'unreadable', schemaVersion: 1, reason: 'Saved by a newer version of the app.', original: inner };
+  const ctx = context();
+  assert.equal(A.resolveAnnotation(A.normalizeAnnotations([wrapper])[0], ctx).status, 'unresolved', 'the wrapped arrow is not drawable');
+  assert.equal(A.resolveAnnotation(inner, ctx).status, 'valid', 'control: the same arrow outside a wrapper resolves');
+  const normalized = A.normalizeAnnotations([wrapper]);
+  assert.deepEqual(normalized, [wrapper], 'not converted');
+  assert.deepEqual(A.validateAnnotationCollection([wrapper]).annotations, [wrapper], 'import and restore accept it verbatim');
+  const identity = M.canonicalizeInstanceIds(['inst-1'], () => 'minted');
+  assert.deepEqual(A.carryAnnotationsThroughIdentity([wrapper], identity), [wrapper], 'identity decisions never reach inside a wrapper');
+  assert.deepEqual(A.remapAnnotationInstanceIds([wrapper], new Map([['inst-1', 'other']])), [wrapper], 'nor does a duplicate or import remap');
+  const contested = M.canonicalizeInstanceIds(['inst-1', ' inst-1 '], () => 'minted', [true, false]);
+  assert.deepEqual(A.carryAnnotationsThroughIdentity([wrapper], contested), [wrapper], 'a contested key does not re-wrap or unwrap it either');
+  // A wrapper whose original is a callout is just as inert.
+  const calloutWrapper = { id: 'cw', type: 'unreadable', schemaVersion: 1, reason: 'x', original: callout('inner-c', onCargo('inst-1')) };
+  assert.deepEqual(A.normalizeAnnotations([calloutWrapper]), [calloutWrapper]);
+});
+
+test('strict validation accepts arrows and wrappers, rejects anything unreadable, draw or unknown, and shares the 200 cap', () => {
+  const good = arrow('g', onCargo('inst-1'), ground(40, 5));
+  const dangling = arrow('d', onCargo('gone'), FLOOR_ANCHOR);
+  const wrapper = A.normalizeAnnotations([{ id: 'x' }])[0];
+  const mixed = A.validateAnnotationCollection([callout('c'), good, dangling, wrapper]);
+  assert.equal(mixed.ok, true, 'a reference to missing cargo is valid, resolved as Unresolved later');
+  assert.deepEqual(mixed.annotations, [callout('c'), good, dangling, wrapper]);
+  const err = entry => A.validateAnnotationCollection([callout('c'), entry]).error || '';
+  assert.match(err({ ...good, width: 'huge' }), /annotations\[1\] width is invalid/);
+  assert.match(err({ ...good, label: 'x' }), /annotations\[1\] record has an unsupported field/);
+  assert.match(err({ ...good, schemaVersion: 2 }), /annotations\[1\] schemaVersion/);
+  assert.match(err({ ...good, end: good.start }), /annotations\[1\] start and end are the same point/);
+  assert.match(err({ id: 'drw', type: 'draw', schemaVersion: 1, points: [] }), /annotations\[1\] type is not supported/, 'draw is not accepted until V1B.2');
+  assert.match(A.validateAnnotationCollection([callout('c'), { ...good, id: 'c' }]).error, /duplicate annotation id "c"/);
+  const callouts = n => Array.from({ length: n }, (_, i) => callout(`c${i}`, ground(i, 1)));
+  assert.equal(A.validateAnnotationCollection([...callouts(199), good]).annotations.length, 200, 'callouts and arrows share one cap');
+  assert.match(A.validateAnnotationCollection([...callouts(200), good]).error, /too many annotations \(201; maximum 200\)/);
+  assert.match(A.validateAnnotationCollection([good, ...callouts(199), wrapper]).error, /too many annotations/, 'recovery records count too');
+});
+
+test('editing an arrow changes only presentation; moving an endpoint changes only that endpoint', () => {
+  const base = arrow('e', onCargo('inst-1'), ground(40, 5));
+  const edited = A.editArrowRecord(base, { color: '#00FF7F', width: 'thin', hidden: true, id: 'hijack', start: FLOOR_ANCHOR, type: 'callout' }, 5000);
+  assert.deepEqual([edited.color, edited.width, edited.hidden], ['#00ff7f', 'thin', true]);
+  assert.deepEqual([edited.id, edited.type, edited.createdAt, edited.updatedAt], ['e', 'arrow', 1000, 5000]);
+  assert.deepEqual([edited.start, edited.end], [base.start, base.end], 'unknown patch keys (id, start, type) are ignored');
+  assert.equal(A.editArrowRecord(base, { width: 'huge' }, 5000), null);
+  assert.equal(A.editArrowRecord(base, { color: 'url(x)' }, 5000), null);
+  assert.equal(A.editArrowRecord(base, { color: 'violet' }, 5000).color, 'violet');
+  assert.equal(A.editArrowRecord(base, { width: 'bold' }, NaN), null);
+  assert.equal(A.editArrowRecord(callout('c'), { width: 'bold' }, 5000), null, 'only an arrow can be edited as one');
+  assert.equal(A.editArrowRecord(base, null, 5000), null);
+
+  const moved = A.replaceArrowEndpoint(base, 'end', FLOOR_ANCHOR, 7000);
+  assert.deepEqual([moved.start, moved.end], [base.start, FLOOR_ANCHOR]);
+  assert.deepEqual([moved.color, moved.width, moved.id, moved.createdAt, moved.updatedAt], [base.color, base.width, 'e', 1000, 7000]);
+  assert.deepEqual(A.replaceArrowEndpoint(base, 'start', ground(9, 9), 7000).end, base.end, 'the other end is untouched');
+  assert.equal(A.replaceArrowEndpoint(base, 'middle', FLOOR_ANCHOR, 7000), null);
+  assert.equal(A.replaceArrowEndpoint(base, 'end', { kind: 'space', surface: 'sky', position: { x: 0, y: 0, z: 0 } }, 7000), null);
+  assert.equal(A.replaceArrowEndpoint(base, 'end', { ...onCargo('inst-1'), local: { x: 0, y: 0, z: 0 } }, 7000), null, 'a point off the cargo surface is refused');
+  assert.equal(A.replaceArrowEndpoint(base, 'end', base.start, 7000), null, 'both ends cannot name the same point');
+  assert.equal(A.replaceArrowEndpoint(callout('c'), 'end', FLOOR_ANCHOR, 7000), null);
+  assert.equal(A.replaceArrowEndpoint(base, 'end', FLOOR_ANCHOR, NaN), null);
+});
+
+test('arrow resolution is the worst of its two ends and carries positions only when both are Valid', () => {
+  const resolve = (record, overrides) => A.resolveAnnotation(record, context(overrides));
+  const ok = resolve(arrow('a', onCargo('inst-1'), ground(10, 20)));
+  assert.deepEqual([ok.status, ok.reason, ok.point, ok.start, ok.end], ['valid', null, null, { x: 84, y: 102, z: 3 }, { x: 10, y: 0, z: 20 }]);
+  assert.deepEqual([ok.startStatus, ok.endStatus, ok.startReason, ok.endReason], ['valid', 'valid', null, null]);
+  assert.equal(resolve(arrow('a', onCargo('inst-1'), FLOOR_ANCHOR)).status, 'valid', 'cargo to floor');
+  const surface = M.buildSpaceAnchor({ surface: 'ground', point: { x: 3, y: 0, z: 3 } });
+  assert.equal(resolve(arrow('a', surface, onCargo('inst-1'))).status, 'valid', 'space to cargo');
+
+  const missing = resolve(arrow('a', onCargo('inst-1'), ground(10, 20)), { getInstance: () => null });
+  assert.deepEqual([missing.status, missing.reason, missing.start, missing.end], ['unresolved', 'cargo-missing', null, null], 'no half arrow');
+  assert.deepEqual([missing.startStatus, missing.startReason, missing.endStatus, missing.endReason], ['unresolved', 'cargo-missing', 'valid', null], 'the broken end is named');
+  const resized = resolve(arrow('a', ground(10, 20), onCargo('inst-1')), { getCase: () => ({ ...CASE, dimensions: { ...CASE.dimensions, length: 60 } }) });
+  assert.deepEqual([resized.status, resized.reason, resized.start, resized.endStatus, resized.endReason], ['needs-review', 'case-changed', null, 'needs-review', 'case-changed']);
+  const bothWays = resolve(arrow('a', onCargo('inst-1'), onCargo('inst-2')), {
+    getInstance: id => (id === 'inst-1' ? instance() : null), getCase: () => ({ ...CASE, dimensions: { ...CASE.dimensions, length: 60 } }),
+  });
+  assert.deepEqual([bothWays.status, bothWays.startStatus, bothWays.endStatus, bothWays.reason], ['unresolved', 'needs-review', 'unresolved', 'cargo-missing'], 'Unresolved dominates Needs Review');
+  const ambiguous = resolve(arrow('a', onCargo('inst-1'), ground(10, 20)), { isInstanceAmbiguous: () => true });
+  assert.deepEqual([ambiguous.status, ambiguous.reason], ['unresolved', 'cargo-ambiguous']);
+  const noFloor = resolve(arrow('a', ground(10, 20), FLOOR_ANCHOR), { floors: [] });
+  assert.deepEqual([noFloor.status, noFloor.reason, noFloor.endReason], ['unresolved', 'floor-missing', 'floor-missing']);
+  assert.deepEqual(A.resolveAnnotationList([arrow('a'), callout('c'), { id: 'junk' }], context()).map(r => r.status), ['valid', 'valid', 'unresolved']);
+  assert.deepEqual(A.resolveAnnotation(callout('c'), context()).point, { x: 5, y: 0, z: 5 }, 'a callout resolves exactly as before');
+});
+
+test('each arrow end follows its own cargo through remapping; an unmapped end is never guessed', () => {
+  const both = arrow('both', onCargo(' old-1 '), onCargo('old-2'));
+  const mixed = arrow('mixed', onCargo('old-1'), FLOOR_ANCHOR);
+  const space = arrow('space', ground(1, 1), onCargo(' old-2 '));
+  const partial = arrow('partial', onCargo('old-1'), onCargo('stranger'));
+  const map = new Map([['old-1', 'new-1'], ['old-2', 'new-2']]);
+  const out = A.remapAnnotationInstanceIds([both, mixed, space, partial, callout('c', onCargo('old-1'))], map);
+  assert.deepEqual([out[0].start.instanceId, out[0].end.instanceId], ['new-1', 'new-2'], 'both ends, independently');
+  assert.deepEqual([out[1].start.instanceId, out[1].end], ['new-1', FLOOR_ANCHOR], 'cargo to floor: the floor end is untouched');
+  assert.deepEqual([out[2].start, out[2].end.instanceId], [ground(1, 1), 'new-2'], 'space to cargo');
+  assert.deepEqual([out[3].start.instanceId, out[3].end.instanceId], ['new-1', 'stranger'], 'an end the map does not know stays exactly as it is');
+  assert.equal(out[4].anchor.instanceId, 'new-1', 'callouts remap as before');
+  assert.deepEqual(out[0].start.local, both.start.local, 'only the instance ID changes');
+  const unchanged = [mixed, space];
+  assert.equal(A.remapAnnotationInstanceIds(unchanged, new Map()), A.normalizeAnnotations(unchanged), 'nothing changed: the normalized list itself is returned');
+  const swapped = A.remapAnnotationInstanceIds([both], new Map([['old-1', 'old-2'], ['old-2', 'old-1']]))[0];
+  assert.deepEqual([swapped.start.instanceId, swapped.end.instanceId], ['old-2', 'old-1'], 'a swap is applied once, never chained');
+});
+
+test('an arrow with either end on a contested ID is withheld whole and verbatim; ambiguous and missing cargo stay arrows', () => {
+  const identity = M.canonicalizeInstanceIds(['cargo', ' cargo ', 'other'], () => 'minted', [true, false, true]);
+  assert.deepEqual([...identity.contestedKeys], ['cargo']);
+  const carryIdentity = { idMap: new Map([['other', 'other-2']]), contestedKeys: identity.contestedKeys };
+  const raw = [
+    arrow('start-contested', onCargo(' cargo '), ground(40, 5)),
+    arrow('end-contested', ground(40, 5), onCargo('cargo')),
+    arrow('half-remap', onCargo('other'), onCargo(' cargo ')),
+    arrow('fine', onCargo('other'), ground(40, 5)),
+    arrow('dangling', onCargo('elsewhere'), FLOOR_ANCHOR),
+  ];
+  const carried = A.carryAnnotationsThroughIdentity(raw, carryIdentity);
+  assert.deepEqual(carried.slice(0, 3).map(r => r.type), Array(3).fill(A.ANNOTATION_TYPE_UNREADABLE));
+  assert.deepEqual(carried.slice(0, 3).map(r => r.original), raw.slice(0, 3), 'the pre-remap record is preserved, including the end that did map');
+  assert.equal(carried[2].original.start.instanceId, 'other', 'the end that would have been remapped was not');
+  assert.match(carried[0].reason, /shared its ID with another cargo item/);
+  assert.equal(carried[3].type, A.ANNOTATION_TYPE_ARROW);
+  assert.equal(carried[3].start.instanceId, 'other-2', 'an unaffected arrow still follows the map');
+  assert.equal(carried[4].start.instanceId, 'elsewhere', 'a dangling reference is left as it is');
+  assert.equal(new Set(carried.map(r => r.id)).size, carried.length);
+  assert.deepEqual(A.carryAnnotationsThroughIdentity(carried, carryIdentity), carried, 'idempotent');
+  const clean = M.canonicalizeInstanceIds(['a', 'b'], () => 'minted');
+  assert.equal(A.carryAnnotationsThroughIdentity(raw, clean), A.remapAnnotationInstanceIds(raw, clean.idMap), 'no contested key: the plain remap');
+  // Survivors that share an ID are neither mapped nor contested: the arrow is kept and resolves as ambiguous.
+  const shared = M.canonicalizeInstanceIds(['dup', 'dup'], () => 'minted');
+  assert.equal(shared.idMap.size, 0);
+  assert.equal(shared.contestedKeys.size, 0);
+  const kept = A.carryAnnotationsThroughIdentity([arrow('amb', onCargo('dup'), ground(40, 5))], shared)[0];
+  assert.equal(kept.type, A.ANNOTATION_TYPE_ARROW);
+  assert.deepEqual(A.resolveAnnotation(kept, context({ isInstanceAmbiguous: () => true })).reason, 'cargo-ambiguous');
+  // Missing cargo is derived, never a reason to wrap or reassign.
+  assert.equal(A.resolveAnnotation(carried[4], context({ getInstance: () => null })).startReason, 'cargo-missing');
+});
+
+test('an arrow may be written only against ends that resolve and, when both do, at least half an inch apart', () => {
+  const problem = (record, overrides, moved) => A.arrowPlacementProblem(record, context(overrides), moved);
+  assert.equal(A.MIN_ARROW_LENGTH_INCHES, 0.5);
+  assert.equal(problem(arrow('a', ground(5, 5), ground(40, 5))), null);
+  assert.equal(problem(arrow('a', ground(5, 5), ground(5.5, 5))), null, 'exactly half an inch is long enough');
+  assert.equal(problem(arrow('a', ground(5, 5), ground(5.4, 5))), 'too-short');
+  assert.equal(problem(arrow('a', ground(5, 5), ground(5, 5.49))), 'too-short');
+  const nearCargo = M.buildSpaceAnchor({ surface: 'free', point: { x: 84, y: 102.3, z: 3 } });
+  assert.equal(problem(arrow('a', onCargo('inst-1'), nearCargo)), 'too-short', 'measured between the resolved points, whatever the anchor kinds');
+  assert.equal(problem(arrow('a', onCargo('inst-1'), ground(10, 20)), { getInstance: () => null }), 'unresolved');
+  assert.equal(problem(arrow('a', onCargo('inst-1'), ground(10, 20)), { isInstanceAmbiguous: () => true }), 'unresolved');
+  assert.equal(problem(arrow('a', ground(10, 20), onCargo('inst-1')), { getCase: () => ({ ...CASE, shape: 'cylinder' }) }), 'unresolved', 'Needs Review is refused too');
+  assert.equal(problem(arrow('a', ground(10, 20), FLOOR_ANCHOR), { floors: [] }), 'unresolved');
+  // Moving one end: that end must resolve; a broken other end only means the length cannot be checked.
+  const broken = arrow('m', onCargo('inst-1'), ground(40, 5));
+  const gone = { getInstance: () => null };
+  assert.equal(problem(arrow('m', ground(9, 9), ground(40, 5)), gone, 'start'), null);
+  assert.equal(problem(broken, gone, 'start'), 'unresolved');
+  assert.equal(problem(broken, gone, 'end'), null, 'repairing the healthy end of a broken arrow is allowed');
+  assert.equal(problem(arrow('m', ground(9, 9), ground(9.2, 9)), {}, 'end'), 'too-short');
+  assert.equal(problem(arrow('m', ground(9, 9), onCargo('inst-1')), gone, 'start'), null, 'the broken end is not the one being placed');
 });
 
 // ============================================================================

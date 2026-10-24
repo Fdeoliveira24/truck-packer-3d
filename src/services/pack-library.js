@@ -2764,18 +2764,22 @@ function commitAnnotations(previousPack, annotations) {
 const sameAnnotationContent = (a, b) => JSON.stringify({ ...a, updatedAt: 0 }) === JSON.stringify({ ...b, updatedAt: 0 });
 
 /**
- * Apply a pure record edit to one callout and commit it. An edit that changes nothing writes nothing.
- * @returns {{ ok: true, pack: any, annotation: any, unchanged?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' }}
+ * Apply a pure record edit to one stored annotation of the given type and commit it. An edit that changes
+ * nothing writes nothing. `placement`, when given, is a write-time rule judged on the edited record against
+ * the committed layout; it returns the reason to refuse the write, or null.
+ * @returns {{ ok: true, pack: any, annotation: any, unchanged?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' | 'unresolved' | 'too-short' }}
  */
-function editStoredCallout(packId, annotationId, edit) {
+function editStoredAnnotation(packId, annotationId, type, edit, placement = null) {
   const previousPack = getById(packId);
   if (!previousPack) return { ok: false, reason: 'pack-not-found' };
   const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
   const index = current.findIndex(record => record.id === annotationId);
-  if (index === -1 || current[index].type !== CoreAnnotations.ANNOTATION_TYPE_CALLOUT) return { ok: false, reason: 'not-found' };
+  if (index === -1 || current[index].type !== type) return { ok: false, reason: 'not-found' };
   const edited = edit(current[index], Date.now());
   if (!edited) return { ok: false, reason: 'invalid' };
   if (sameAnnotationContent(edited, current[index])) return { ok: true, pack: previousPack, annotation: current[index], unchanged: true };
+  const problem = placement ? placement(edited, previousPack) : null;
+  if (problem) return { ok: false, reason: problem };
   const next = current.map((record, i) => (i === index ? edited : record));
   return { ok: true, pack: commitAnnotations(previousPack, next), annotation: edited };
 }
@@ -2802,7 +2806,8 @@ export function addCallout(packId, { anchor, title, description = null, color, k
 
 /** Edit a callout's text, color, kept-expanded flag or visibility. */
 export function updateCallout(packId, annotationId, patch) {
-  return editStoredCallout(packId, annotationId, (record, now) => CoreAnnotations.editCalloutRecord(record, patch, now));
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_CALLOUT,
+    (record, now) => CoreAnnotations.editCalloutRecord(record, patch, now));
 }
 
 /**
@@ -2810,12 +2815,54 @@ export function updateCallout(packId, annotationId, patch) {
  * edit: the card offset is kept, the anchor is validated, and cargo is never moved, rotated or selected.
  */
 export function reattachCallout(packId, annotationId, anchor) {
-  return editStoredCallout(packId, annotationId, (record, now) => CoreAnnotations.reattachCalloutRecord(record, anchor, now));
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_CALLOUT,
+    (record, now) => CoreAnnotations.reattachCalloutRecord(record, anchor, now));
 }
 
 /** Store (or with null, clear) where a callout's card sits relative to its marker. */
 export function setCalloutOffset(packId, annotationId, offset) {
-  return editStoredCallout(packId, annotationId, (record, now) => CoreAnnotations.offsetCalloutRecord(record, offset, now));
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_CALLOUT,
+    (record, now) => CoreAnnotations.offsetCalloutRecord(record, offset, now));
+}
+
+/**
+ * Create one arrow from two anchors the owner chose (`start` is the tail, `end` the head). Both endpoints
+ * must resolve against the committed layout and be at least MIN_ARROW_LENGTH_INCHES apart, otherwise
+ * nothing is written. Exactly one record is written, or nothing.
+ * @param {string} packId
+ * @param {{ start?: any, end?: any, color?: string, width?: string }} [input]
+ * @returns {{ ok: true, annotation: any, pack: any } | { ok: false, reason: 'pack-not-found' | 'limit' | 'invalid' | 'unresolved' | 'too-short' }}
+ */
+export function addArrow(packId, { start, end, color, width } = {}) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
+  if (current.length >= CoreAnnotations.MAX_ANNOTATIONS_PER_PACK) return { ok: false, reason: 'limit' };
+  const record = CoreAnnotations.createArrowRecord({ id: Utils.uuid(), start, end, color, width, now: Date.now() });
+  const checked = CoreAnnotations.validateAnnotationCollection([record]);
+  if (!checked.ok) return { ok: false, reason: 'invalid' };
+  const annotation = checked.annotations[0];
+  const problem = CoreAnnotations.arrowPlacementProblem(annotation, anchorResolutionContext(previousPack));
+  if (problem) return { ok: false, reason: problem };
+  return { ok: true, annotation, pack: commitAnnotations(previousPack, [...current, annotation]) };
+}
+
+/** Edit an arrow's color, width or visibility. Its endpoints are never touched, so no placement rule applies. */
+export function updateArrow(packId, annotationId, patch) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_ARROW,
+    (record, now) => CoreAnnotations.editArrowRecord(record, patch, now));
+}
+
+/**
+ * Move one end of an arrow onto an anchor the owner chose (a grip drag or Re-attach). The new anchor must
+ * resolve against the committed layout, and the arrow must stay at least MIN_ARROW_LENGTH_INCHES long when
+ * both ends can be placed. The other end may be broken: moving one end is how a broken arrow is repaired.
+ * @param {'start' | 'end'} which
+ */
+export function moveArrowEndpoint(packId, annotationId, which, anchor) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_ARROW,
+    (record, now) => CoreAnnotations.replaceArrowEndpoint(record, which, anchor, now),
+    (edited, pack) => CoreAnnotations.arrowPlacementProblem(edited, anchorResolutionContext(pack), which));
 }
 
 /** Deliberate, individual deletion (also removes an unreadable recovery record). Cargo is never touched. */

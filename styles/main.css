@@ -5699,6 +5699,14 @@ body.tp3d-shared-modal-lock #app .nav {
   display: none;
 }
 
+/* The desktop panel is drawn above the callout editor, so while the editor has no room beside it the panel yields:
+   it keeps its place and size (the editor's placement stays measurable and nothing moves) and is simply not painted or
+   clickable until the editor closes. */
+.tp3d-annot-panel.is-behind-editor {
+  visibility: hidden;
+  pointer-events: none;
+}
+
 .tp3d-annot-panel.is-collapsed {
   width: auto;
   min-width: 156px;

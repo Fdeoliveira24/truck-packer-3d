@@ -1314,6 +1314,18 @@ const editorControls = page => page.evaluate(() => {
   }));
 });
 const REACHABLE = { title: true, save: true, cancel: true };
+// The topmost element at five points across a control's width: a control only partly covered fails, not just one covered at its centre.
+// `true` when it is topmost at every point, otherwise what covers it (so a failure names the culprit).
+const unobstructed = (page, selector) => page.evaluate(sel => {
+  const el = document.querySelector(sel);
+  if (!el) return 'missing';
+  const r = el.getBoundingClientRect();
+  for (const fraction of [0.1, 0.3, 0.5, 0.7, 0.9]) {
+    const hit = document.elementFromPoint(r.left + r.width * fraction, r.top + r.height / 2);
+    if (hit !== el && !el.contains(hit)) return `${hit ? `${hit.tagName}.${hit.className}` : 'nothing'} at ${Math.round(fraction * 100)}% of ${Math.round(r.width)}px`;
+  }
+  return true;
+}, selector);
 const boxOf = (page, selector) => page.evaluate(sel => window.probe.box(sel), selector);
 // Two animation frames: the overlays redraw on their own frame loops, so a state change is settled only after one.
 const frames = (page, n = 2) => page.evaluate(count => new Promise(resolve => {
@@ -1743,6 +1755,240 @@ test('the desktop panel stays clear of AutoPack Results wherever either is dragg
   assert.deepEqual(await fitState(), { transform: '', limit: '', maxHeight: '' });
 
   assert.equal(await page.evaluate(() => window.probe.annotations().length), 6, 'nothing was written');
+  assert.deepEqual(errors, []);
+});
+
+test('N01: at 1100x620 with both sidebars open, 24 callouts and applied AutoPack Results, the callout editor is never under the Annotations panel: every control takes an ordinary click, the panel yields only while the editor is open, and nothing else changes', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1100, height: 620 });
+  await seed(page, Array.from({ length: 24 }, (_, index) => ({ title: `Callout ${index + 1}`, ground: [20 + (index % 8) * 60, -40 + Math.floor(index / 8) * 40] })));
+  await page.evaluate(() => {
+    const { M, PackLibrary } = window.probe;
+    const at = (x, z) => M.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z } });
+    if (!PackLibrary.addMeasurement('fixture-pack', { start: at(100, 70), end: at(260, 80) }).ok) throw new Error('measurement seed failed');
+  });
+
+  // A real AutoPack, then the applied committed layout with Results expanded at its default spot.
+  await page.click('#btn-autopack');
+  await page.waitForFunction(() => window.probe.OperationLifecycle.isBusy());
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults') && !window.probe.OperationLifecycle.isBusy(), null, { timeout: 120000 });
+  await page.waitForFunction(() => !window.probe.CaseScene.isTransientPreview());
+  const toggle = page.locator('[data-focus-key="results-toggle"]');
+  if (await page.evaluate(() => window.probe.StateStore.get('autoPackResults').minimized)) await toggle.click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === false);
+  // The "Packed N of N cases" toast sits over the top of the panel for a few seconds: start from a quiet screen.
+  const toastsGone = () => page.waitForFunction(() => !document.querySelector('#toast-container .toast'), null, { timeout: 30000 });
+  await toastsGone();
+  await frames(page, 3);
+
+  const SAVE = '.tp3d-annot-editor .tp3d-annot-btn--primary';
+  const CANCEL = '.tp3d-annot-editor__foot .tp3d-annot-btn:not(.tp3d-annot-btn--primary):not(.tp3d-annot-btn--danger)';
+  const TITLE = '.tp3d-annot-editor__input';
+  const PANEL = '#editor-annotation-panel';
+  const resultsBox = () => boxOf(page, '[data-role="autopack-results-panel"]');
+  const panelState = () => page.evaluate(sel => { const el = document.querySelector(sel); const style = getComputedStyle(el); return { visibility: style.visibility, pointer: style.pointerEvents, display: style.display }; }, PANEL);
+  const sweep = async message => {
+    assert.deepEqual(await editorControls(page), REACHABLE, `${message}: Title, Save and Cancel are the topmost elements at their centres`);
+    assert.equal(await unobstructed(page, SAVE), true, `${message}: Save is clear along its whole width`);
+    assert.equal(await unobstructed(page, CANCEL), true, `${message}: Cancel is clear along its whole width`);
+    const editor = await boxOf(page, '.tp3d-annot-editor');
+    assert.equal(overlaps(editor, await resultsBox()), false, `${message}: Results does not cover the editor`);
+    assert.equal(overlaps(editor, await boxOf(page, '#editor-zoom-controls')), false, `${message}: nor do the viewport controls`);
+    return editor;
+  };
+  const stable = async message => {
+    const seen = await page.evaluate(() => new Promise(resolve => {
+      const rects = new Set();
+      let left = 6;
+      const step = () => {
+        const el = document.querySelector('.tp3d-annot-editor:not([hidden])');
+        if (el) { const r = el.getBoundingClientRect(); rects.add([r.left, r.top, r.width, r.height].map(n => n.toFixed(1)).join(',')); }
+        left -= 1;
+        if (left > 0) window.requestAnimationFrame(step); else resolve([...rects]);
+      };
+      window.requestAnimationFrame(step);
+    }));
+    assert.equal(seen.length, 1, `${message}: the editor does not jitter (one rectangle over 6 frames)`);
+  };
+  const resultsState = () => page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults')));
+  const records = () => page.evaluate(() => window.probe.annotations());
+  const measurementsNow = () => page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getMeasurements('fixture-pack')));
+  const appliedPill = () => page.evaluate(() => Boolean(document.querySelector('.tp3d-autopack-results__current-pill')));
+  const results0 = await resultsState();
+  const cargo0 = await page.evaluate(() => window.probe.casesJson());
+  const measurements0 = await measurementsNow();
+  const records0 = await records();
+  const applied0 = await appliedPill();
+  assert.equal(records0.length, 24);
+  assert.ok((await resultsBox()).h > 150, 'Results is expanded');
+  const panelHome = await boxOf(page, PANEL);
+  assert.equal((await panelState()).visibility, 'visible');
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false, 'the applied committed layout is shown');
+
+  // 1. Edit the first callout.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await frames(page, 3);
+  const editor = await sweep('with Results expanded');
+  // The scenario is the tight one: the panel and the editor genuinely share space, and the panel is the one that gives way.
+  assert.equal(overlaps(await boxOf(page, PANEL), editor), true, 'precondition: there is no room for the panel beside the editor');
+  assert.deepEqual(await panelState(), { visibility: 'hidden', pointer: 'none', display: 'flex' }, 'the panel yields (kept in place, not painted, not clickable) while the editor is open');
+  assert.deepEqual(await boxOf(page, PANEL), panelHome, 'and it never moves or resizes');
+  const titleFocused = () => page.evaluate(() => Boolean(document.activeElement && document.activeElement.classList.contains('tp3d-annot-editor__input')));
+  assert.equal(await titleFocused(), true, 'keyboard focus is in the editor title');
+  await stable('with Results expanded');
+
+  // 2. The title takes a real pointer click, the edit is typed, and Save takes an ordinary click.
+  await page.click(TITLE);
+  assert.equal(await titleFocused(), true, 'the title field has the focus after a pointer click');
+  assert.equal(await page.inputValue(TITLE), 'Callout 1', 'the title is readable');
+  await page.fill(TITLE, 'Edited under pressure');
+  await page.click(SAVE, { timeout: 5000 });
+  await page.waitForFunction(() => window.probe.annotations()[0].title === 'Edited under pressure');
+  assert.equal(await editorClosed(page), true);
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('editor-annotation-panel')).visibility === 'visible');
+  assert.deepEqual(await boxOf(page, PANEL), panelHome, 'with the editor closed the panel is exactly where it was');
+  await toastsGone();
+  assert.equal(await unobstructed(page, '.tp3d-annot-seg__btn[data-tool="callout"]'), true, 'and its controls are reachable again');
+  const after = await records();
+  assert.deepEqual(after.slice(1), records0.slice(1), 'no other callout changed');
+  assert.deepEqual(after[0].anchor, records0[0].anchor, 'the edited callout keeps its anchor');
+
+  // 3. Reopen, change the text and Cancel with an ordinary click: nothing is saved.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await frames(page, 3);
+  await sweep('after reopening');
+  await page.fill(TITLE, 'Discard me');
+  await page.click(CANCEL, { timeout: 5000 });
+  await page.waitForFunction(() => { const el = document.querySelector('.tp3d-annot-editor'); return !el || el.hidden; });
+  assert.equal((await records())[0].title, 'Edited under pressure', 'Cancel left the saved text');
+
+  // 4. Results minimized: the editor is still clear of the panel's takeover and Save still takes a click.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await toggle.click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === true);
+  await frames(page, 3);
+  await sweep('with Results minimized');
+  await stable('with Results minimized');
+  await toggle.click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === false);
+  await frames(page, 3);
+  await sweep('with Results expanded again');
+
+  // 5. A larger window leaves room for both; a return to 1100x620 takes the panel back out of the way again, with no jitter.
+  for (const [width, height] of [[1400, 900], [1100, 620]]) {
+    await page.setViewportSize({ width, height });
+    await frames(page, 3);
+    const laidOut = await sweep(`after resizing to ${width}x${height}`);
+    await stable(`at ${width}x${height}`);
+    const hidden = (await panelState()).visibility === 'hidden';
+    assert.equal(hidden, overlaps(await boxOf(page, PANEL), laidOut), `at ${width}x${height} the panel yields exactly when the editor needs its space`);
+    if (width === 1400) assert.equal(hidden, false, 'with room for both, the panel stays visible beside the editor');
+  }
+  await page.click(CANCEL, { timeout: 5000 });
+  await page.waitForFunction(() => { const el = document.querySelector('.tp3d-annot-editor'); return !el || el.hidden; });
+  await page.setViewportSize({ width: 1100, height: 620 });
+  await frames(page, 3);
+  assert.deepEqual(await boxOf(page, PANEL), panelHome, 'after every transition the panel is where the owner had it');
+
+  // 6. Nothing but the one edited title changed.
+  assert.equal(await resultsState(), results0, 'AutoPack Results: run, options, selection and applied option are unchanged');
+  assert.equal(await appliedPill(), applied0, 'the Applied marker is as it was');
+  assert.equal(await page.evaluate(() => Boolean(document.querySelector('.tp3d-autopack-results__stale-badge'))), false, 'Results did not go stale');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargo0, 'cargo positions and quantities are unchanged');
+  assert.equal(await measurementsNow(), measurements0, 'measurements are unchanged');
+  assert.deepEqual((await records()).slice(1), records0.slice(1));
+  assert.deepEqual(errors, []);
+});
+
+test('N01: the panel yields to an open editor only while they share space: an editor dragged over it, a panel dragged over the editor and a resize leave the panel\'s own position and every record untouched', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser); // 1400x900: room for both
+  await seed(page, [{ title: 'One', ground: [100, 10] }, { title: 'Two', ground: [200, 30] }, { title: 'Three', ground: [300, -20] }]);
+  const PANEL = '#editor-annotation-panel';
+  const EDITOR = '.tp3d-annot-editor:not([hidden])';
+  const SAVE = '.tp3d-annot-editor .tp3d-annot-btn--primary';
+  const CANCEL = '.tp3d-annot-editor__foot .tp3d-annot-btn:not(.tp3d-annot-btn--primary):not(.tp3d-annot-btn--danger)';
+  const records0 = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const cargo0 = await page.evaluate(() => window.probe.casesJson());
+  const panelVisible = () => page.evaluate(sel => getComputedStyle(document.querySelector(sel)).visibility === 'visible', PANEL);
+  const sweep = async message => {
+    assert.deepEqual(await editorControls(page), REACHABLE, `${message}: Title, Save and Cancel are reachable`);
+    assert.equal(await unobstructed(page, SAVE), true, `${message}: Save is clear along its whole width`);
+    assert.equal(await unobstructed(page, CANCEL), true, `${message}: Cancel is clear along its whole width`);
+  };
+  const dragFrom = async (grab, to) => {
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    await page.mouse.move((grab.x + to.x) / 2, (grab.y + to.y) / 2, { steps: 4 });
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await page.mouse.up();
+    await frames(page, 3);
+  };
+  const centre = box => ({ x: box.x + box.w / 2, y: box.y + box.h / 2 });
+  // The editor drags by its header (a press on a button there does not start a drag); the heading text is the plain part of it.
+  const headPoint = async () => { const b = await boxOf(page, '.tp3d-annot-editor__heading'); return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; };
+  const gripPoint = async () => { const b = await boxOf(page, `${PANEL} .tp3d-annot-grip`); return { x: b.x + b.w / 2, y: b.y + b.h / 2 }; };
+  const editorOpen = async () => {
+    await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__edit');
+    await page.waitForSelector(EDITOR);
+    await frames(page, 3);
+  };
+  const editorClose = async () => {
+    await page.click(CANCEL, { timeout: 5000 });
+    await page.waitForFunction(() => { const el = document.querySelector('.tp3d-annot-editor'); return !el || el.hidden; });
+    await frames(page, 3);
+  };
+
+  // Room for both: nothing yields and nothing overlaps.
+  await editorOpen();
+  assert.equal(await panelVisible(), true, 'with room for both the panel stays');
+  assert.equal(overlaps(await boxOf(page, EDITOR), await boxOf(page, PANEL)), false);
+  // The panel's "Editing callout" hint is shown while an editor is open, so the box to hold steady is the one with the editor open.
+  const panelBeside = await boxOf(page, PANEL);
+  await sweep('beside the panel');
+
+  // The owner drags the editor over the panel: the panel yields, in place, and the editor stays usable.
+  await dragFrom(await headPoint(), centre(await boxOf(page, PANEL)));
+  assert.equal(overlaps(await boxOf(page, EDITOR), await boxOf(page, PANEL)), true, 'precondition: the owner put the editor over the panel');
+  assert.equal(await panelVisible(), false, 'the panel yields to the editor the owner placed');
+  assert.deepEqual(await boxOf(page, PANEL), panelBeside, 'without moving or resizing');
+  await sweep('over the panel');
+
+  // Dragged away again, the panel is back at once and exactly where it was.
+  await dragFrom(await headPoint(), { x: 400, y: 450 });
+  assert.equal(overlaps(await boxOf(page, EDITOR), await boxOf(page, PANEL)), false, 'precondition: the editor is clear of the panel again');
+  assert.equal(await panelVisible(), true, 'the panel returns when the editor leaves');
+  assert.deepEqual(await boxOf(page, PANEL), panelBeside);
+  await sweep('after moving away');
+
+  // The owner drags the panel over the open editor and drops it there: the editor wins, the panel's dropped position is kept.
+  await dragFrom(await gripPoint(), centre(await boxOf(page, EDITOR)));
+  const dropped = await boxOf(page, PANEL);
+  assert.notDeepEqual([dropped.x, dropped.y], [panelBeside.x, panelBeside.y], 'precondition: the panel was moved');
+  assert.equal(overlaps(await boxOf(page, EDITOR), dropped), true, 'precondition: the panel was dropped over the editor');
+  assert.equal(await panelVisible(), false, 'the panel yields once it is dropped over the editor');
+  await sweep('with the panel dropped over it');
+  await editorClose();
+  assert.equal(await panelVisible(), true, 'closing the editor restores the panel');
+  const restored = await boxOf(page, PANEL);
+  assert.deepEqual([restored.x, restored.y], [dropped.x, dropped.y], "at the position the owner dropped it, not a position the editor chose");
+
+  // A smaller window: the editor is placed for it and stays usable; the panel yields only if they share space.
+  await page.setViewportSize({ width: 1100, height: 620 });
+  await frames(page, 4);
+  await editorOpen();
+  await sweep('at 1100x620');
+  assert.equal(await panelVisible(), !overlaps(await boxOf(page, EDITOR), await boxOf(page, PANEL)), 'the panel yields exactly when it shares space with the editor');
+  await editorClose();
+  assert.equal(await panelVisible(), true);
+
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), records0, 'no record changed');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargo0, 'cargo is unchanged');
   assert.deepEqual(errors, []);
 });
 

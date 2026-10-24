@@ -67,8 +67,8 @@ import {
   cardBudget,
   cardWidth,
   clampRect,
-  clearOfBlockers,
   estimateCardHeight,
+  fitEditorClear,
   fitLabels,
   fitPanelClear,
   fitSheet,
@@ -76,6 +76,7 @@ import {
   LABEL_FLIP_MARGIN,
   leaderLine,
   offsetFromRect,
+  overlapArea,
   rectFromOffset,
   VIEWPORT_MARGIN,
 } from '../core/annotation-layout.js';
@@ -184,6 +185,7 @@ export function createAnnotationTool({
   let panelCollapsed = false;
   let panelPosition = null;
   let panelShift = { x: 0, y: 0 }; // display-only shift (px) that keeps the desktop panel off AutoPack Results
+  let panelBehindEditor = false; // the desktop panel yields to an open editor card it would otherwise hide (display only)
   let panelParts = null;
   let panelObserver = null;
   let suppressToggleClick = false;
@@ -1984,6 +1986,7 @@ export function createAnnotationTool({
     toggleClass(parts.root, 'is-collapsed', panelCollapsed);
     toggleClass(parts.root, 'is-compact', compact);
     toggleClass(parts.root, 'is-covered', compact && Boolean(draft));
+    toggleClass(parts.root, 'is-behind-editor', panelBehindEditor && !compact && Boolean(draft));
     setHidden(parts.body, panelCollapsed);
 
     parts.toolButtons.forEach(({ key, button, available }) => {
@@ -2600,6 +2603,7 @@ export function createAnnotationTool({
       if (!pin.pin.hidden) pin.pin.hidden = true;
       setPath(parts.draftLeader, '');
       setPath(parts.draftLeaderUnder, '');
+      setPanelBehindEditor(false);
       return;
     }
     // The new callout's marker, or (when editing) the existing marker is drawn by its own view.
@@ -2638,6 +2642,7 @@ export function createAnnotationTool({
       parts2.root.style.transform = '';
       keepTitleInView(parts2, fitEditorSheet(parts2, viewport, resultsBox, natural));
       hideLeader();
+      setPanelBehindEditor(false); // the compact panel is covered by the sheet's own rule
       return;
     }
     const size = { w: EDITOR_WIDTH_PX, h: Math.min(natural, Math.max(1, viewport.height - 2 * VIEWPORT_MARGIN)) };
@@ -2658,22 +2663,25 @@ export function createAnnotationTool({
     // The AutoPack Results card can sit anywhere the owner dragged it, and it is drawn above this layer: the
     // card keeps clear of it (display only; the stored position is untouched) so Save, Cancel and the fields stay
     // reachable. With no full-size spot it gives up height, and with no usable spot at all it becomes the sheet.
-    // Automatic placement also keeps off the Annotations panel and its own marker, relaxing those one at a time
-    // (as before Results was an obstacle) rather than covering Save; a card the owner positioned only yields to Results.
+    // The Annotations panel is drawn above this card as well, so a card that meets it has its fields underneath:
+    // automatic placement keeps off the panel and its own marker, relaxing the marker and then the panel (which then
+    // yields while the card is open) rather than covering Save. A card the owner positioned only yields to Results.
     const markerBox = screen ? [{ x: screen.x - PIN_RECT_PX / 2, y: screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }] : [];
-    const tiers = ownerPlaced ? [resultsBox] : [(panelBox || []).concat(markerBox), panelBox || [], resultsBox];
-    let fit = null;
-    for (const blockers of tiers) {
-      fit = clearOfBlockers(rect, blockers, viewport);
-      if (fit.clear) break;
-    }
+    const panelRects = panelRectsNow();
+    const placement = fitEditorClear({ rect, viewport, panel: panelRects, status: statusObstacle(), results: resultsBox, marker: markerBox, controls: controlsObstacle(), ownerPlaced });
+    const fit = placement.fit;
+    // A panel the owner is dragging stays under their pointer; it yields once it is dropped.
+    const panelDragging = Boolean(els.panel && els.panel.classList.contains('is-dragging'));
     if (!fit.clear) {
       toggleClass(parts2.root, 'is-sheet', true);
       parts2.root.style.transform = '';
       keepTitleInView(parts2, fitEditorSheet(parts2, viewport, resultsBox, natural));
       hideLeader();
+      const [sheet] = layerRects([parts2.root]);
+      setPanelBehindEditor(!panelDragging && Boolean(sheet) && panelRects.some(box => overlapArea(sheet, box) > 0), parts2);
       return;
     }
+    setPanelBehindEditor(!panelDragging && placement.coversPanel, parts2);
     toggleClass(parts2.root, 'is-sheet', false);
     keepTitleInView(parts2, resetEditorFit(parts2, fit.shrunk ? fit.h : null));
     rect = { x: fit.x, y: fit.y, w: fit.w, h: fit.h };
@@ -2716,12 +2724,41 @@ export function createAnnotationTool({
    */
   function panelObstacle(resultsBox = resultsObstacles()) {
     if (!els.layer || !doc) return null;
-    const status = doc.getElementById('editor-validation-status-btn');
-    const found = layerRects([
-      panelOpen && els.panel && !els.panel.hidden ? els.panel : null,
-      status && !(status.closest && status.closest('[hidden]')) ? status : null,
-    ]).concat(resultsBox);
+    const found = panelRectsNow().concat(statusObstacle(), resultsBox);
     return found.length ? found : null;
+  }
+
+  /** The open Annotations panel's rectangle in layer pixels (empty when it is closed or covered by the compact sheet). A panel yielding to the editor keeps its layout box, so this stays measurable. */
+  function panelRectsNow() {
+    if (!els.layer || !doc) return [];
+    return layerRects([panelOpen && els.panel && !els.panel.hidden ? els.panel : null]);
+  }
+
+  /** The viewport control stack (annotations, measurement, camera and zoom buttons) down the right-hand edge. */
+  function controlsObstacle() {
+    if (!els.layer || !doc) return [];
+    const stack = doc.getElementById('editor-zoom-controls');
+    return layerRects([stack && !(stack.closest && stack.closest('[hidden]')) ? stack : null]);
+  }
+
+  /** The Editor's "Load plan needs review" button, when it shows. */
+  function statusObstacle() {
+    if (!els.layer || !doc) return [];
+    const status = doc.getElementById('editor-validation-status-btn');
+    return layerRects([status && !(status.closest && status.closest('[hidden]')) ? status : null]);
+  }
+
+  /**
+   * The desktop Annotations panel is drawn above the editor card, so while the card has no room beside it the panel
+   * yields: it keeps its place and size (so the placement above stays stable and its saved position is untouched)
+   * and is only not painted or clickable until the card closes. Focus that was inside it moves to the card.
+   */
+  function setPanelBehindEditor(on, editor = null) {
+    const yielding = Boolean(on) && !compact;
+    if (panelBehindEditor !== yielding) panelBehindEditor = yielding;
+    if (!els.panel) return;
+    toggleClass(els.panel, 'is-behind-editor', yielding);
+    if (yielding && editor && doc && els.panel.contains(doc.activeElement)) editor.title.focus({ preventScroll: true });
   }
 
   /**

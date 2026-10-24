@@ -233,6 +233,41 @@ export function fitSheet({ viewport, blockers = [], height, insets = SHEET_INSET
   return { moved: true, bottom: Math.round(viewport.height - best.end), maxHeight: Math.max(1, Math.floor(Math.min(cap, best.end - best.start))) };
 }
 
+/**
+ * Where the desktop editor card sits. It keeps clear of the AutoPack Results card and the "Load plan needs review"
+ * button (hard), and of its own marker and the Annotations panel where there is room (soft). The panel is drawn
+ * above the card, so a card that overlaps it has its Title, Save and Cancel underneath: that is only ever accepted
+ * with `coversPanel` true, and the caller then hides the panel for as long as the card is open. The marker is
+ * relaxed before the panel, and the panel before the card gives up (`fit.clear` false: the caller shows the sheet).
+ * Once the panel yields the card also keeps off the viewport control stack, so the end of Save is not left under it.
+ * A card the owner placed keeps its spot and yields only to Results; where it meets the panel the panel yields.
+ * Display only: neither the stored card position nor the panel's own position is touched.
+ * @param {{ rect: {x:number,y:number,w:number,h:number}, viewport: {width:number,height:number},
+ *   panel?: Array<{x:number,y:number,w:number,h:number}>, status?: Array<{x:number,y:number,w:number,h:number}>,
+ *   results?: Array<{x:number,y:number,w:number,h:number}>, marker?: Array<{x:number,y:number,w:number,h:number}>,
+ *   controls?: Array<{x:number,y:number,w:number,h:number}>, ownerPlaced?: boolean }} input
+ * @returns {{ fit: ReturnType<typeof clearOfBlockers>, coversPanel: boolean }}
+ */
+export function fitEditorClear({ rect, viewport, panel = [], status = [], results = [], marker = [], controls = [], ownerPlaced = false }) {
+  const solid = list => (Array.isArray(list) ? list : []).filter(isRect);
+  const [panels, statuses, resultCards, markers, stack] = [panel, status, results, marker, controls].map(solid);
+  const tiers = ownerPlaced
+    ? [resultCards]
+    : [
+      [...panels, ...statuses, ...resultCards, ...markers],
+      [...panels, ...statuses, ...resultCards],
+      [...statuses, ...resultCards, ...stack, ...markers],
+      [...statuses, ...resultCards, ...stack],
+      [...statuses, ...resultCards],
+    ];
+  let fit = null;
+  for (const blockers of tiers) {
+    fit = clearOfBlockers(rect, blockers, viewport);
+    if (fit.clear) break;
+  }
+  return { fit, coversPanel: fit.clear && panels.some(box => overlapArea(fit, box) > 0) };
+}
+
 /** Smallest height worth giving the desktop panel: its header, tool and view rows and part of one callout row. */
 export const MIN_PANEL_HEIGHT = 200;
 /**

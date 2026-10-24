@@ -473,6 +473,62 @@ test('the editor card keeps clear of the AutoPack Results card wherever it is, n
   assert.equal(L.clearOfBlockers(card, [{ x: 1, y: 1, w: 0, h: 0 }, { x: NaN, y: 0, w: 5, h: 5 }, null], view).y, 380);
 });
 
+test('the desktop editor never lands under the Annotations panel: it keeps clear while there is room, relaxes its marker first, and otherwise the panel yields', () => {
+  const touches = (a, b) => L.overlapArea(a, b) > 0;
+  // N01: 1100x620 with both sidebars open (a 556x538 canvas), expanded Results at its default spot and a 213px panel above it.
+  const view = { width: 556, height: 538 };
+  const panel = { x: 197, y: 65, w: 300, h: 213 };
+  const results = { x: 68, y: 284, w: 420, h: 237 };
+  const preferred = { x: 211, y: 9, w: 336, h: 269 };
+  const marker = { x: 260, y: 150, w: 22, h: 22 };
+  const stack = { x: 508, y: 180, w: 36, h: 180 }; // the viewport control stack down the right-hand edge
+  const tight = L.fitEditorClear({ rect: preferred, viewport: view, panel: [panel], results: [results], marker: [marker], controls: [stack] });
+  assert.equal(tight.fit.clear, true, 'there is a spot clear of Results');
+  assert.equal(touches(tight.fit, results), false, 'Results never covers the card');
+  assert.equal(tight.coversPanel, true, 'with no room beside the panel the panel is the one that yields, and the caller is told');
+  assert.equal(touches(tight.fit, panel), true, '(and that is a real overlap: the previous placement hid the card under the panel)');
+  assert.equal(touches(tight.fit, stack), false, 'once the panel yields the end of Save is not left under the viewport controls either');
+  assert.equal(tight.fit.y, preferred.y, 'it only slides sideways, staying at its preferred height');
+  assert.equal(L.fitEditorClear({ rect: preferred, viewport: view, panel: [panel], results: [results], marker: [marker] }).fit.x, preferred.x, 'with no controls to avoid it keeps its preferred place');
+
+  // Room beside the panel: the card goes there and the panel is untouched.
+  const roomy = L.fitEditorClear({ rect: { x: 400, y: 70, w: 336, h: 269 }, viewport: { width: 1200, height: 800 }, panel: [{ x: 850, y: 64, w: 300, h: 213 }], results: [{ x: 300, y: 560, w: 420, h: 237 }], marker: [marker], controls: [{ x: 1152, y: 300, w: 36, h: 180 }] });
+  assert.equal(roomy.fit.clear, true);
+  assert.equal(roomy.coversPanel, false, 'where it fits beside the panel it never hides it');
+  assert.equal(touches(roomy.fit, { x: 850, y: 64, w: 300, h: 213 }), false);
+
+  // The marker is relaxed before the panel: no spot is clear of both, so the card sits on its marker rather than hide the panel.
+  const wideMarker = { x: 20, y: 100, w: 40, h: 22 };
+  const sidePanel = { x: 392, y: 64, w: 300, h: 213 };
+  const squeezed = L.fitEditorClear({ rect: { x: 8, y: 8, w: 336, h: 269 }, viewport: { width: 700, height: 330 }, panel: [sidePanel], marker: [wideMarker] });
+  assert.equal(squeezed.fit.clear, true);
+  assert.equal(squeezed.coversPanel, false, 'the panel stays');
+  assert.equal(touches(squeezed.fit, sidePanel), false);
+  assert.equal(touches(squeezed.fit, wideMarker), true, 'the marker is what was given up');
+
+  // A card the owner placed keeps its spot over the panel (the panel yields); it moves only for Results.
+  const dragged = { x: 600, y: 70, w: 336, h: 269 };
+  const ownerOnPanel = L.fitEditorClear({ rect: dragged, viewport: { width: 1000, height: 700 }, panel: [{ x: 640, y: 64, w: 300, h: 213 }], ownerPlaced: true });
+  assert.deepEqual([ownerOnPanel.fit.x, ownerOnPanel.fit.y], [dragged.x, dragged.y], 'the owner placement is respected');
+  assert.equal(ownerOnPanel.coversPanel, true);
+  const ownerOnResults = L.fitEditorClear({ rect: dragged, viewport: { width: 1000, height: 700 }, panel: [{ x: 640, y: 64, w: 300, h: 213 }], results: [{ x: 560, y: 120, w: 420, h: 237 }], ownerPlaced: true });
+  assert.equal(ownerOnResults.fit.clear, true);
+  assert.equal(touches(ownerOnResults.fit, { x: 560, y: 120, w: 420, h: 237 }), false, 'Results still wins over the owner placement');
+
+  // Nowhere clear of Results: no spot, and nothing is claimed about the panel (the caller shows the sheet).
+  const none = L.fitEditorClear({ rect: { x: 8, y: 8, w: 336, h: 269 }, viewport: { width: 400, height: 330 }, panel: [{ x: 90, y: 64, w: 300, h: 213 }], results: [{ x: 8, y: 40, w: 384, h: 270 }] });
+  assert.equal(none.fit.clear, false);
+  assert.equal(none.coversPanel, false);
+
+  // Unusable rectangles are ignored, a missing panel is never "covered", and the inputs are never rewritten.
+  assert.equal(L.fitEditorClear({ rect: preferred, viewport: view, panel: [null, { x: NaN, y: 0, w: 5, h: 5 }, { x: 0, y: 0, w: 0, h: 9 }], results: 'nope' }).coversPanel, false);
+  assert.equal(L.fitEditorClear({ rect: preferred, viewport: view }).coversPanel, false);
+  const inputs = { rect: { ...preferred }, viewport: { ...view }, panel: [{ ...panel }], results: [{ ...results }], marker: [{ ...marker }] };
+  const frozen = JSON.parse(JSON.stringify(inputs));
+  L.fitEditorClear(inputs);
+  assert.deepEqual(inputs, frozen, 'pure: nothing it was given changes');
+});
+
 test('the narrow-viewport sheet sits above the AutoPack Results card, however it is moved, and limits its height instead of hiding a button', () => {
   const view = { width: 420, height: 800 };
   const natural = 440;

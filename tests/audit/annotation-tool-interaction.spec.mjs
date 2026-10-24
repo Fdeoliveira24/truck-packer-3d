@@ -3076,10 +3076,15 @@ test('an arrow hidden by cargo is dashed with a hollow head even when selected; 
   assert.notEqual((await look(hidden.id)).shaftDash, 'none');
   assert.equal((await gripsShown(page)).length, 2);
   // When the cargo moves off it, the arrow is in the clear again: the state follows the scene and nothing is stored.
+  // The Editor normally brings the meshes up to date a moment after a Load Plan edit; an occlusion refresh that lands in
+  // that gap measures the old meshes and (for an arrow or marker on the ground) is not repeated until the view or an
+  // anchor changes. The scene is brought up to date in the same task here so the assertion does not depend on that gap.
   const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
   await page.evaluate(() => {
-    const inst = window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
-    window.probe.PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, z: inst.transform.position.z + 200 } } });
+    const { PackLibrary, CaseScene } = window.probe;
+    const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+    PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, z: inst.transform.position.z + 200 } } });
+    CaseScene.sync(PackLibrary.getById('fixture-pack'));
   });
   await page.waitForFunction(id => !document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-occluded'), hidden.id);
   assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'occlusion is derived, never saved');

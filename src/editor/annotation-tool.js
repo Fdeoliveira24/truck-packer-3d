@@ -841,7 +841,7 @@ export function createAnnotationTool({
     arrowTail = null;
     hover = null;
     hoverDirty = true;
-    adoptSelection(outcome.annotation.id);
+    // The saved arrow is not selected: the tool stays armed and the next click starts another one.
     visDirty = true;
     setStatus('Arrow saved. Click to start another, or press Esc to finish.', { tone: 'success' });
     refreshOverlay();
@@ -1293,15 +1293,16 @@ export function createAnnotationTool({
   }
 
   /**
-   * Change the look of arrows. With an arrow selected the change is written to that arrow (one record edit, ends
-   * untouched); either way it becomes the look of the next arrow, so a color or width chosen once carries on.
+   * Change the look of arrows. With an arrow selected the change is written to that arrow alone (one record edit, ends
+   * untouched) and the defaults stay as they were; with none selected it sets the look of the next new arrows.
    */
   function setArrowStyle(patch) {
-    const next = { ...arrowStyle, ...patch };
-    if (!next.color || !ARROW_WIDTHS.includes(next.width)) return;
-    arrowStyle = next;
     const record = recordById(selectedId);
-    if (isArrow(record)) {
+    const editing = isArrow(record);
+    // A selected arrow is edited on its own; only with none selected does this set what the next new arrows look like.
+    const next = { ...(editing ? record : arrowStyle), ...patch };
+    if (!next.color || !ARROW_WIDTHS.includes(next.width)) return;
+    if (editing) {
       const reason = blockedReason();
       if (reason) {
         notice(blockedMessage(reason));
@@ -1314,6 +1315,7 @@ export function createAnnotationTool({
       if (!outcome.ok) UIComponents.showToast('Could not change this arrow.', 'error', { title: 'Annotations' });
       return;
     }
+    arrowStyle = { color: next.color, width: next.width };
     renderPanel();
     refreshOverlay();
   }

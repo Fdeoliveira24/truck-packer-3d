@@ -2719,34 +2719,67 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
   assert.equal(await tailShown(page), false);
   assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed'), 'true', 'the tool stays armed for the next arrow');
   assert.match(await page.evaluate(() => window.probe.hint()), /Arrow saved/);
-  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow.is-selected').length === 1);
-  assert.deepEqual((await arrowGraphics(page)).map(({ occluded, selected, head }) => ({ occluded, selected, head })), [{ occluded: false, selected: true, head: true }]);
+  // The saved arrow is drawn but not selected: the next click starts another one, and nothing offers its handles yet.
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  assert.deepEqual((await arrowGraphics(page)).map(({ occluded, selected, head }) => ({ occluded, selected, head })), [{ occluded: false, selected: false, head: true }]);
   assert.deepEqual(await gripsShown(page), [], 'no end handles while a tool owns the scene');
   const row = await rowOf(page, 0);
-  assert.deepEqual([row.name, row.sub, row.selected, row.flagged], ['Arrow 1', 'Ground → Ground', true, false], 'the row is named, numbered and says where it is attached');
+  assert.deepEqual([row.name, row.sub, row.selected, row.flagged], ['Arrow 1', 'Ground → Ground', false, false], 'the row is named, numbered and says where it is attached');
   assert.equal(await page.locator('.tp3d-annot-panel__count').textContent(), '1');
+  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New arrows look', 'with no arrow selected the look controls are for the next arrows');
+  const stored = () => page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const edited = () => page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  const placeArrow = async (from, to) => {
+    const count = await page.evaluate(() => window.probe.annotations().length);
+    await click(page, await freePoint(page, [from]));
+    await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+    await click(page, await freePoint(page, [to]));
+    await page.waitForFunction(n => window.probe.annotations().length === n + 1, count);
+    assert.equal(await page.evaluate(() => window.probe.annotations().length), count + 1, 'exactly one record per arrow');
+    return page.evaluate(() => window.probe.annotations().at(-1));
+  };
+  const selectedRows = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-row.is-selected').length);
 
-  // The look chosen once carries on: it edits the selected arrow, and the next arrow starts the same way.
-  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'Arrow 1 look');
+  // With none selected, the look sets what the next arrows start with: it writes nothing, and every new arrow gets it.
+  const beforeDefaults = { json: await stored(), edited: await edited() };
   await page.click('.tp3d-annot-panel__arrow .tp3d-annot-swatch[data-color="red"]');
   await page.click('.tp3d-annot-seg--width .tp3d-annot-seg__btn[data-width="bold"]');
-  await page.waitForFunction(() => window.probe.annotations()[0].color === 'red' && window.probe.annotations()[0].width === 'bold');
-  const [edited] = await page.evaluate(() => window.probe.annotations());
-  assert.deepEqual([edited.id, edited.start, edited.end, edited.createdAt], [saved.id, saved.start, saved.end, saved.createdAt], 'only the look changed; the ends are untouched');
-  await click(page, await freePoint(page, [GROUND_B]));
-  await click(page, await freePoint(page, [GROUND_A]));
-  await page.waitForFunction(() => window.probe.annotations().length === 2);
-  const [, second] = await page.evaluate(() => window.probe.annotations());
-  assert.deepEqual([second.color, second.width], ['red', 'bold'], 'the next arrow starts with the look just chosen');
+  await frames(page, 3);
+  assert.deepEqual({ json: await stored(), edited: await edited() }, beforeDefaults, 'choosing defaults writes nothing');
+  const second = await placeArrow(GROUND_B, GROUND_A);
+  assert.deepEqual([second.color, second.width], ['red', 'bold'], 'the next arrow starts with the defaults just chosen');
   assert.ok(near(second.start.position.x, GROUND_B[0], 1.5) && near(second.end.position.x, GROUND_A[0], 1.5), 'tail first, head second');
-  assert.deepEqual([(await rowOf(page, 0)).name, (await rowOf(page, 1)).name, (await rowOf(page, 1)).selected], ['Arrow 1', 'Arrow 2', true]);
+  assert.deepEqual((await page.evaluate(() => window.probe.annotations()))[0], saved, 'the first arrow is untouched');
+  assert.deepEqual([await selectedRows(), (await rowOf(page, 1)).name, await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed')], [0, 'Arrow 2', 'true'], 'saving again selects nothing and keeps the tool armed');
+  const third = await placeArrow(GROUND_A, GROUND_B);
+  assert.deepEqual([third.color, third.width], ['red', 'bold'], 'repeated creation keeps the defaults');
 
-  // A custom color is one more color: stored as #rrggbb and drawn with it.
+  // A selected arrow is edited on its own: one record changes, the others and the defaults do not.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow 1 look');
+  const beforeEdit = await page.evaluate(() => window.probe.annotations());
+  await page.click('.tp3d-annot-panel__arrow .tp3d-annot-swatch[data-color="blue"]');
+  await page.click('.tp3d-annot-seg--width .tp3d-annot-seg__btn[data-width="thin"]');
+  await page.waitForFunction(() => window.probe.annotations()[0].color === 'blue' && window.probe.annotations()[0].width === 'thin');
+  const afterEdit = await page.evaluate(() => window.probe.annotations());
+  assert.deepEqual([afterEdit[0].id, afterEdit[0].start, afterEdit[0].end, afterEdit[0].createdAt], [saved.id, saved.start, saved.end, saved.createdAt], 'only the look changed; the ends are untouched');
+  assert.deepEqual(afterEdit.slice(1), beforeEdit.slice(1), 'no other arrow is written');
+  assert.equal(afterEdit.length, 3, 'editing never adds or removes a record');
+  const fourth = await placeArrow(GROUND_B, GROUND_A);
+  assert.deepEqual([fourth.color, fourth.width], ['red', 'bold'], 'editing an arrow did not change what new arrows start with');
+  assert.equal(await selectedRows(), 0, 'starting an arrow ends the selection');
+  assert.deepEqual((await page.evaluate(() => window.probe.annotations())).slice(0, 3).map(({ color, width }) => [color, width]), [['blue', 'thin'], ['red', 'bold'], ['red', 'bold']]);
+
+  // A custom color is one more color: stored as #rrggbb, drawn with it, and again only for the arrow being edited.
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow 2 look');
   await page.fill('.tp3d-annot-panel__arrow .tp3d-annot-swatch__input', '#12ab34');
   await page.waitForFunction(() => window.probe.annotations()[1].color === '#12ab34');
   await frames(page, 3);
   assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-arrow.is-selected .tp3d-annot-arrow__shaft')).stroke), 'rgb(18, 171, 52)');
   assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-arrow.is-selected .tp3d-annot-arrow__shaft')).strokeWidth), '5px', 'bold is a constant 5 screen pixels');
+  const fifth = await placeArrow(GROUND_A, GROUND_B);
+  assert.deepEqual([fifth.color, fifth.width], ['red', 'bold'], 'a custom color on one arrow is not a new default');
   assert.deepEqual(errors, []);
 });
 

@@ -30,6 +30,7 @@ import {
   migrateLoadPlanNumbers,
 } from './business-identity.js';
 import { canonicalizeInstanceIds, carryMeasurementsThroughIdentity } from './measurements.js';
+import { carryAnnotationsThroughIdentity } from './annotations.js';
 
 const DEFAULT_TRUCK = { length: 636, width: 102, height: 98 };
 const EDITOR_VIEW_PRECISION = 1000;
@@ -515,6 +516,9 @@ export function normalizePack(p, caseMap = new Map(), now = Date.now()) {
     // collection on restore/import. Older plans become []; unreadable records are wrapped
     // verbatim (never dropped) so the original data survives and is surfaced for recovery.
     measurements: carryMeasurementsThroughIdentity(p?.measurements, identity),
+    // Same rule for Annotations: an explicit field (the function is a whitelist), older plans become [],
+    // unreadable records are kept verbatim, and anchors follow the one cargo identity decision above.
+    annotations: carryAnnotationsThroughIdentity(p?.annotations, identity),
   };
 }
 

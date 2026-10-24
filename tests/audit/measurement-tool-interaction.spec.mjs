@@ -135,7 +135,7 @@ const canvas = () => SceneManager.getRenderer().domElement;
 const livePack = () => PackLibrary.getById(packId);
 const hintEl = () => document.querySelector('.tp3d-measure-panel__hint');
 window.probe = {
-  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, InteractionManager, M,
+  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, InteractionManager, MeasurementTool, PreferencesManager, M,
   modalOwner: () => (UIComponents.modalOwnership.getActiveOwner() || {}).kind || null,
   measurements: () => PackLibrary.getMeasurements(packId),
   resolved: () => PackLibrary.resolveMeasurements(packId),
@@ -327,6 +327,13 @@ test('a background thumbnail capture never blocks or cancels a measurement, whil
 });
 
 const modeIsOff = () => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'false';
+// What the measurement overlay is drawing right now: segment kinds, visible labels, visible markers.
+const overlayState = page => page.evaluate(() => ({
+  segments: [...document.querySelectorAll('.tp3d-measure-svg__segment')]
+    .map(group => group.getAttribute('class').replace('tp3d-measure-svg__segment', '').trim()),
+  labels: [...document.querySelectorAll('.tp3d-measure-label')].filter(label => !label.hidden).length,
+  markers: [...document.querySelectorAll('.tp3d-measure-svg__marker')].filter(marker => marker.style.display !== 'none').length,
+}));
 const modeIsOn = () => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true';
 
 test('one Escape fully exits Measurement Mode: unfinished work is dropped, saved measurements stay, and no other Escape owner sees the key', { timeout: 120000 }, async t => {
@@ -351,8 +358,8 @@ test('one Escape fully exits Measurement Mode: unfinished work is dropped, saved
   await page.keyboard.press('Escape');
   await page.waitForFunction(modeIsOff);
   assert.equal(await page.evaluate(() => document.getElementById('editor-measure-panel').hidden), true, 'the panel hides like a manual toggle-off');
-  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-measure-svg__segment, .tp3d-measure-label').length), 0,
-    'the dimension lines, markers and labels leave the overlay');
+  assert.deepEqual(await overlayState(page), { segments: ['is-saved'], labels: 1, markers: 0 },
+    'only the saved line and its label stay (view only): the unfinished point, preview, ghost, markers and grips are gone');
   assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), saved, 'saved measurements are preserved and the unfinished one never appears');
   assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), edited, 'nothing was written');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-b'],
@@ -612,9 +619,21 @@ test('G5 the overlay is SVG/DOM above the canvas: no scene objects are added and
   assert.equal(shown.layerIsPassive, 'none', 'the layer never intercepts pointer events meant for the canvas');
   assert.equal(shown.objects, baseline.objects, 'the tool adds nothing to the 3D scene, so no capture can include it');
   assert.equal(shown.pixels, baseline.pixels, 'canvas pixels (what Screenshot, PDF views and thumbnails read) are identical with measurements shown');
-  // Leaving the mode removes every overlay node.
+  // Leaving the mode keeps the saved line on screen as a plain overlay: still nothing in the scene, same pixels.
   await page.click('#btn-editor-measure');
-  await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-svg__segment, .tp3d-measure-label').length === 0);
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') !== 'true');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-svg__segment').length === 1 && [...document.querySelectorAll('.tp3d-measure-label')].some(label => !label.hidden));
+  const viewOnly = await page.evaluate(() => ({
+    objects: window.probe.sceneObjectCount(),
+    pixels: window.probe.canvasData(),
+    svgInLayer: !!document.querySelector('#editor-measure-labels > svg.tp3d-measure-svg'),
+    layerIsPassive: getComputedStyle(document.getElementById('editor-measure-labels')).pointerEvents,
+  }));
+  assert.equal(viewOnly.svgInLayer, true);
+  assert.equal(viewOnly.layerIsPassive, 'none');
+  assert.equal(viewOnly.objects, baseline.objects, 'view only adds nothing to the 3D scene');
+  assert.equal(viewOnly.pixels, baseline.pixels, 'and canvas pixels (Screenshot, PDF views, thumbnails) are identical with the saved line shown');
+  assert.deepEqual(await overlayState(page), { segments: ['is-saved'], labels: 1, markers: 0 });
 });
 
 test('the Measurements panel drags by its grip like AutoPack Results, stays inside the viewport and still collapses on a click', { timeout: 90000 }, async t => {
@@ -1108,5 +1127,243 @@ test('P1-3 real pointer: a click in the Front Overhang cab void never creates a 
   await setTruckShape(page, { shapeMode: 'frontBonus', shapeConfig: { bonusLength: 100, bonusHeight: 80 } });
   await page.waitForFunction(() => window.probe.resolved()[0].status === 'needs-review');
   assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), stored, 'the stored anchor is untouched');
+  assert.deepEqual(errors, []);
+});
+
+// ==============================================================================================================
+// View only: a saved Valid measurement stays drawn while the ruler is off, and is purely passive.
+// ==============================================================================================================
+// Two animation frames: the overlay redraws on its own frame loop, so a state change is settled only after one.
+const frames = (page, n = 2) => page.evaluate(count => new Promise(resolve => {
+  const step = left => (left <= 0 ? resolve() : window.requestAnimationFrame(() => step(left - 1)));
+  step(count);
+}), n);
+const EMPTY_OVERLAY = { segments: [], labels: 0, markers: 0 };
+const SAVED_ONLY = { segments: ['is-saved'], labels: 1, markers: 0 };
+// The drawn line's endpoints in client pixels next to where the saved anchors project right now.
+const lineEnds = page => page.evaluate(() => {
+  const group = [...document.querySelectorAll('.tp3d-measure-svg__segment')].find(g => g.style.display !== 'none');
+  if (!group) return null;
+  const numbers = group.querySelector('.tp3d-measure-svg__line').getAttribute('d').match(/-?\d+(\.\d+)?/g).map(Number);
+  const origin = document.getElementById('editor-measure-labels').getBoundingClientRect();
+  const [result] = window.probe.resolved();
+  const a = window.probe.screenOf(result.start.x, result.start.y, result.start.z);
+  const b = window.probe.screenOf(result.end.x, result.end.y, result.end.z);
+  return { drawn: [numbers[0] + origin.left, numbers[1] + origin.top, numbers[2] + origin.left, numbers[3] + origin.top], expected: [a.x, a.y, b.x, b.y] };
+});
+// The saved line sits on its anchors for the current camera, projection, viewport and cargo poses (1.5 px).
+async function assertFollows(page, message) {
+  await page.waitForFunction(() => {
+    const group = [...document.querySelectorAll('.tp3d-measure-svg__segment')].find(g => g.style.display !== 'none');
+    if (!group) return false;
+    const numbers = group.querySelector('.tp3d-measure-svg__line').getAttribute('d').match(/-?\d+(\.\d+)?/g).map(Number);
+    const origin = document.getElementById('editor-measure-labels').getBoundingClientRect();
+    const [result] = window.probe.resolved();
+    const a = window.probe.screenOf(result.start.x, result.start.y, result.start.z);
+    const b = window.probe.screenOf(result.end.x, result.end.y, result.end.z);
+    return [a.x - origin.left, a.y - origin.top, b.x - origin.left, b.y - origin.top].every((value, i) => Math.abs(value - numbers[i]) <= 1.5);
+  }, null, { polling: 'raf' }).catch(async error => {
+    throw new Error(`${message}: ${JSON.stringify(await lineEnds(page))}\n${error.message}`);
+  });
+  const ends = await lineEnds(page);
+  ends.drawn.forEach((value, i) => assert.ok(Math.abs(value - ends.expected[i]) <= 1.5, `${message}: ${JSON.stringify(ends)}`));
+}
+const exitMode = async page => {
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(modeIsOff);
+};
+
+test('view only: a saved line stays after the ruler is turned off and is purely passive', { timeout: 120000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openMeasuring(browser);
+  await measure(page, await point(page, ...GROUND_A), await point(page, ...GROUND_B));
+  const saved = JSON.stringify(await page.evaluate(() => window.probe.measurements()));
+  const edited = await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  // Track what the overlay must not hold on to once the mode is off: listeners on the global input targets.
+  await page.evaluate(() => {
+    const entries = [];
+    const nameOf = target => (target === window ? 'window' : target === document ? 'document' : target === document.body ? 'body'
+      : target && target.id === 'viewport' ? 'viewport' : target && target.tagName === 'CANVAS' ? 'canvas' : null);
+    const captureOf = options => (typeof options === 'boolean' ? options : Boolean(options && options.capture));
+    const same = (e, target, type, listener, options) => e.target === target && e.type === type && e.listener === listener && e.capture === captureOf(options);
+    const add = EventTarget.prototype.addEventListener;
+    const remove = EventTarget.prototype.removeEventListener;
+    EventTarget.prototype.addEventListener = function patchedAdd(type, listener, options) {
+      const name = nameOf(this);
+      if (name && listener && !entries.some(e => same(e, this, type, listener, options))) entries.push({ target: this, name, type, listener, capture: captureOf(options) });
+      return add.call(this, type, listener, options);
+    };
+    EventTarget.prototype.removeEventListener = function patchedRemove(type, listener, options) {
+      const index = entries.findIndex(e => same(e, this, type, listener, options));
+      if (index >= 0) entries.splice(index, 1);
+      return remove.call(this, type, listener, options);
+    };
+    window.__liveListeners = () => entries.map(e => `${e.name}:${e.type}`).sort();
+    window.__notes = 0;
+    window.probe.StateStore.subscribe(() => { window.__notes += 1; });
+  });
+
+  await exitMode(page);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-svg__segment').length === 1);
+  assert.deepEqual(await overlayState(page), SAVED_ONLY, 'the saved Valid line and its label stay; no preview, ghost, marker or draft');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-measure-panel').hidden), true, 'the panel stays closed');
+  assert.equal(await page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__grips')].every(path => !path.getAttribute('d'))), true, 'no grips');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-measure-svg__segment.is-selected, .tp3d-measure-label.is-selected').length), 0, 'nothing is selected');
+  assert.deepEqual(await page.evaluate(() => window.__liveListeners()), [], 'no pointer, keyboard or capture listener is left on window, document, the viewport or the canvas');
+  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false);
+
+  // Idle redraws are not store traffic and not writes.
+  const idle = await page.evaluate(() => window.__notes);
+  await frames(page, 30);
+  assert.equal(await page.evaluate(() => window.__notes), idle, 'redrawing the saved line notifies nobody and writes nothing');
+
+  // Pointer: the line and its label never catch the pointer, show no hover marker and select nothing.
+  const { drawn } = await lineEnds(page);
+  const mid = { x: (drawn[0] + drawn[2]) / 2, y: (drawn[1] + drawn[3]) / 2 };
+  assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), mid), true,
+    'the canvas, not the overlay, is under the line');
+  await page.mouse.move(mid.x, mid.y, { steps: 4 });
+  await frames(page, 4);
+  assert.deepEqual(await overlayState(page), SAVED_ONLY, 'hovering the line adds no marker or emphasis');
+  assert.equal(await page.evaluate(() => document.body.style.cursor || document.getElementById('viewport').style.cursor), '', 'no ruler cursor');
+  await click(page, mid);
+  await frames(page, 4);
+  assert.deepEqual(await overlayState(page), SAVED_ONLY, 'a click on the line neither selects nor places anything');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-measure-panel').hidden), true);
+
+  // Keyboard: nothing here belongs to the ruler.
+  await page.focus('#viewport');
+  const escape = await page.evaluate(() => {
+    const ev = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    document.getElementById('viewport').dispatchEvent(ev);
+    return ev.defaultPrevented;
+  });
+  assert.equal(escape, false, 'Escape is not consumed by a view-only line');
+  await page.keyboard.press('Delete');
+  await page.keyboard.press('Backspace');
+  await frames(page, 4);
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), saved, 'Delete and Backspace cannot remove a view-only line');
+  assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), edited, 'nothing was written');
+  assert.deepEqual(await overlayState(page), SAVED_ONLY);
+  assert.deepEqual(await page.evaluate(() => window.__liveListeners()), []);
+
+  // Turning the ruler back on finds the same line and lets it be edited again.
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(modeIsOn);
+  assert.deepEqual(await overlayState(page), SAVED_ONLY);
+  assert.equal(await page.evaluate(() => window.probe.measurements().length), 1);
+  assert.deepEqual(errors, []);
+});
+
+test('view only: the saved line follows camera orbit and zoom, projection, a nudged or rotated cargo and a resized viewport', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors, rect } = await openMeasuring(browser);
+  await selectCargo(page, rect, 'cargo-b');
+  await measure(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')), await point(page, ...GROUND_B));
+  await exitMode(page);
+  await cameraSettled(page);
+  await assertFollows(page, 'at rest');
+  const edited = () => page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  const editedBefore = await edited();
+  const notes = () => page.evaluate(() => window.__notes);
+  await page.evaluate(() => { window.__notes = 0; });
+
+  // Orbit and zoom (camera work).
+  await page.mouse.move(rect.x + rect.w * 0.5, rect.y + rect.h * 0.2);
+  await page.mouse.down();
+  await page.mouse.move(rect.x + rect.w * 0.5 + 90, rect.y + rect.h * 0.2 + 30, { steps: 8 });
+  await page.mouse.up();
+  await cameraSettled(page);
+  await assertFollows(page, 'after an orbit');
+  await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h / 2);
+  await page.mouse.wheel(0, -200);
+  await cameraSettled(page);
+  await assertFollows(page, 'after a zoom');
+
+  // Projection.
+  for (const projection of ['orthographic', 'perspective']) {
+    await page.evaluate(next => { const v = window.probe.SceneManager.getEditorView(); window.probe.SceneManager.applyEditorView({ ...v, projection: next }); }, projection);
+    await cameraSettled(page);
+    await assertFollows(page, `in ${projection}`);
+  }
+  assert.equal(await edited(), editedBefore, 'camera work and redraws wrote nothing');
+
+  // Viewport resize.
+  await page.setViewportSize({ width: 1180, height: 760 });
+  await cameraSettled(page);
+  await assertFollows(page, 'after the viewport shrinks');
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await cameraSettled(page);
+  await assertFollows(page, 'after it grows back');
+  assert.equal(await edited(), editedBefore);
+
+  // A committed nudge and rotation of the cargo an endpoint sits on: the line follows its new pose.
+  assert.ok((await page.evaluate(() => window.probe.selection())).includes('cargo-b'), 'cargo-b is still selected');
+  const startBefore = await page.evaluate(() => window.probe.resolved()[0].start);
+  await viewportKey(page, 'ArrowRight');
+  await page.waitForFunction(before => { const now = window.probe.resolved()[0].start; return Math.hypot(now.x - before.x, now.z - before.z) > 0.5; }, startBefore);
+  await cameraSettled(page);
+  await assertFollows(page, 'after a nudge');
+  const startNudged = await page.evaluate(() => window.probe.resolved()[0].start);
+  await viewportKey(page, 'r');
+  await page.waitForFunction(before => { const now = window.probe.resolved()[0].start; return Math.hypot(now.x - before.x, now.z - before.z) > 0.5; }, startNudged);
+  await cameraSettled(page);
+  await assertFollows(page, 'after a rotation');
+  assert.deepEqual(await overlayState(page), SAVED_ONLY);
+  assert.deepEqual(errors, []);
+});
+
+test('view only: nothing is drawn while an operation runs, for another Load Plan or with the tool hidden, and the line returns from the saved records', { timeout: 150000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openMeasuring(browser);
+  await measure(page, await point(page, ...GROUND_A), await point(page, ...GROUND_B));
+  await exitMode(page);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-svg__segment').length === 1);
+  const saved = JSON.stringify(await page.evaluate(() => window.probe.measurements()));
+  const drawn = async expected => {
+    await frames(page, 3);
+    assert.deepEqual(await overlayState(page), expected);
+  };
+
+  // A passive thumbnail capture only reads pixels: the line stays.
+  await page.evaluate(() => { window.__capture = window.probe.OperationLifecycle.beginOperation('capturingPreview'); });
+  await drawn(SAVED_ONLY);
+  await page.evaluate(() => window.probe.OperationLifecycle.finishOperation(window.__capture));
+
+  // Real operations show poses the Load Plan does not hold: no line, no label, no node left over.
+  for (const kind of ['autopacking', 'unpacking', 'changingTruck']) {
+    await page.evaluate(k => { window.__op = window.probe.OperationLifecycle.beginOperation(k); }, kind);
+    await drawn(EMPTY_OVERLAY);
+    assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-measure-svg__segment, .tp3d-measure-label').length), 0, `${kind}: the overlay nodes are gone`);
+    await page.evaluate(() => window.probe.OperationLifecycle.finishOperation(window.__op));
+    await drawn(SAVED_ONLY);
+  }
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), saved, 'the records never changed');
+
+  // Another Load Plan has its own (here: no) measurements; switching back restores this one's line.
+  const other = await page.evaluate(() => {
+    const pack = window.probe.PackLibrary.create({ title: 'Other plan' });
+    window.probe.StateStore.set({ currentPackId: pack.id });
+    return pack.id;
+  });
+  await drawn(EMPTY_OVERLAY);
+  await page.evaluate(() => window.probe.StateStore.set({ currentPackId: 'fixture-pack' }));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-svg__segment').length === 1);
+  await drawn(SAVED_ONLY);
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), saved);
+  assert.ok(other);
+
+  // The Settings toggle hides the ruler button and with it the saved lines (they could not be edited or deleted otherwise).
+  await page.evaluate(() => window.probe.PreferencesManager.set({ ...window.probe.PreferencesManager.get(), showMeasurementTool: false }));
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').hidden === true);
+  await drawn(EMPTY_OVERLAY);
+  await page.evaluate(() => window.probe.PreferencesManager.set({ ...window.probe.PreferencesManager.get(), showMeasurementTool: true }));
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').hidden === false);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-svg__segment').length === 1);
+  await drawn(SAVED_ONLY);
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), saved, 'the preference never touched the records');
   assert.deepEqual(errors, []);
 });

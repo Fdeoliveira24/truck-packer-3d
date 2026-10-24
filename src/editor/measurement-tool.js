@@ -24,6 +24,12 @@
  *     they always do; a gesture that loses its cargo is cancelled by sync() and writes nothing.
  *   - Lines, ticks and labels are drawn as an SVG/DOM layer above the canvas, so they can never
  *     appear in a canvas capture (Screenshot, PDF views, thumbnails, previews).
+ *   - Saved measurements and the editing mode are separate. A saved Valid measurement stays drawn after the
+ *     mode ends ("view only"): just its line, ticks and distance label, with no grips, draft points or
+ *     hover marker, no pointer or keyboard ownership and no write of any kind. The view follows cargo,
+ *     camera, projection and viewport changes, and it is drawn only for the committed scene: nothing is
+ *     drawn while AutoPack, Unpack or a truck change runs or while an unapplied preview is shown. Hiding the
+ *     tool in Settings hides the lines with it. Saved callouts stay drawn while the mode is on.
  *   - The list panel can be dragged by its header grip (the same 2x3 dot grip as the AutoPack
  *     Results panel) so it never has to cover content. The position is a per-session view
  *     convenience: it is not saved with the Load Plan and never touches cargo or camera.
@@ -47,19 +53,14 @@ import {
   MEASUREMENT_STATUS,
   MEASUREMENT_TYPE_POINT_TO_POINT,
   MEASUREMENT_TYPE_UNREADABLE,
-  buildCargoAnchor,
-  buildFloorAnchor,
-  buildSpaceAnchor,
-  cargoAnchorLocal,
   defaultMeasurementName,
   describeMeasurementReason,
   formatMeasurementLength,
-  instanceIdentityKey,
   measureBetween,
   measurementStatusLabel,
   resolveAnchor,
-  resolveCargoPose,
 } from '../core/measurements.js';
+import { createSurfacePicker } from './surface-picker.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 // A real mouse or trackpad click jitters a few pixels; anything larger is an orbit/pan drag.
@@ -69,12 +70,6 @@ const MIN_SEGMENT_INCHES = 0.05;
 const MIN_MOVE_INCHES = 0.05;
 const STATUS_VISIBLE_MS = 2600;
 const NOTICE_INTERVAL_MS = 1400;
-const GROUND_MAX_DISTANCE_WORLD = 800;
-const INCH_TO_WORLD_FALLBACK = 0.05;
-const AXIS_NAMES = ['x', 'y', 'z'];
-// A ray hit within this distance of a shell face's edge still counts as on it (half the anchor tolerance,
-// so the point built from it always validates).
-const SHELL_FACE_SLACK_INCHES = 0.005;
 const LABEL_MARGIN_PX = 12;
 // Dimension-line geometry, in screen pixels. The hit radii are invisible and deliberately larger
 // than the drawn grips, so a precise drag is easy without making the grips look heavy.
@@ -136,7 +131,6 @@ export function createMeasurementTool({
   let rafId = null;
   let records = [];
   let results = [];
-  let sceneIdsByKey = new Map(); // identity key -> the instance's own ID, for each unambiguous cargo item
   let lengthUnit = 'in';
   let statusMessage = '';
   let statusTone = ''; // presentation only: colours the guidance dot ('success' after a save or move)
@@ -149,6 +143,8 @@ export function createMeasurementTool({
   let panelObserver = null;
   let suppressToggleClick = false;
   let svg = null;
+  let syncedPackId = null; // the Load Plan `records` and `results` were derived from (view-only drawing never trusts older ones)
+  let toolShown = true; // the Settings toggle, read when it changes (not per frame): hidden means no ruler and no saved lines
   const rows = new Map(); // measurement id -> { el, select, name, value, rename, remove, issue, input }
   const visuals = new Map(); // measurement id -> segment visual
   const overlayOrigin = { left: 0, top: 0 };
@@ -157,8 +153,6 @@ export function createMeasurementTool({
   let hoverMarker = null;
   let pendingMarker = null;
 
-  const raycaster = new THREE.Raycaster();
-  const ndc = new THREE.Vector2();
   const scratchA = new THREE.Vector3();
   const scratchB = new THREE.Vector3();
   const scratchC = new THREE.Vector3();
@@ -169,13 +163,8 @@ export function createMeasurementTool({
   // ==========================================================================
   // SECTION: SMALL HELPERS
   // ==========================================================================
-  const toWorldScale = () => (typeof SceneManager.toWorld === 'function' ? SceneManager.toWorld(1) : INCH_TO_WORLD_FALLBACK);
   const inEditor = () => StateStore.get('currentScreen') === 'editor';
   const currentPack = () => PackLibrary.getById(StateStore.get('currentPackId'));
-  const getCanvas = () => {
-    const renderer = SceneManager.getRenderer && SceneManager.getRenderer();
-    return renderer ? renderer.domElement : null;
-  };
   // The positioned ancestor the panel's left/top are measured from.
   const panelHost = () => (els.panel ? (els.panel.offsetParent || els.panel.parentElement) : null);
 
@@ -197,14 +186,17 @@ export function createMeasurementTool({
     return `Measurements are read-only while ${BLOCKED_CAUSE_TEXT[reason] || 'an operation is running'}.`;
   }
 
-  function inchesToWorldVector(point, target) {
-    const scale = toWorldScale();
-    return target.set(point.x * scale, point.y * scale, point.z * scale);
-  }
-
-  function worldVectorToInches(vector) {
-    const scale = toWorldScale();
-    return { x: vector.x / scale, y: vector.y / scale, z: vector.z / scale };
+  /**
+   * True when saved Valid measurements should be on screen while the mode is off: in the Editor, for the Load
+   * Plan the records belong to, with the tool enabled in Settings. Needs Review and Unresolved ones never get
+   * geometry, so a Load Plan with only those draws nothing.
+   */
+  function viewOnlyWanted() {
+    if (!bound || active || !inEditor() || !els.labels) return false;
+    if (syncedPackId === null || syncedPackId !== StateStore.get('currentPackId') || !currentPack()) return false;
+    if (!toolShown) return false;
+    return results.some((result, index) => result.status === MEASUREMENT_STATUS.VALID &&
+      records[index] && records[index].type === MEASUREMENT_TYPE_POINT_TO_POINT);
   }
 
   function setStatus(message, { sticky = false, tone = '' } = {}) {
@@ -235,199 +227,10 @@ export function createMeasurementTool({
   // The Editor holds a scene-only pose (live drag, gizmo stroke, held case): meshes are not where the Load Plan says.
   const provisionalPoseActive = () => typeof els.hasProvisionalPose === 'function' && Boolean(els.hasProvisionalPose());
 
-  /**
-   * The one cargo instance an ID names in the Load Plan. When more than one carries it (damaged data is
-   * kept, never repaired) it is `ambiguous` and no instance is returned: an anchor is never attached to
-   * an arbitrary one of them.
-   */
-  function lookupInstance(pack, instanceId) {
-    const key = instanceIdentityKey(instanceId);
-    const matches = key === null ? [] : (pack.cases || []).filter(inst => inst && instanceIdentityKey(inst.id) === key);
-    return { instance: matches.length === 1 ? matches[0] : null, ambiguous: matches.length > 1 };
-  }
-
-  /**
-   * Fingerprint of the COMMITTED pose of the cargo an anchor refers to, as the pure resolver reads it.
-   * A gesture records it when it starts and is dropped if it changes. Null for anchors that are not on cargo.
-   */
-  function cargoPoseKey(pack, anchor) {
-    if (!pack || !anchor || anchor.kind !== 'cargo') return null;
-    const { instance, ambiguous } = lookupInstance(pack, anchor.instanceId);
-    if (ambiguous) return 'ambiguous';
-    if (!instance) return 'missing';
-    const pose = resolveCargoPose(instance, CaseLibrary.getById(instance.caseId));
-    if (!pose) return 'invalid';
-    return [pose.center.x, pose.center.y, pose.center.z, pose.rotation.x, pose.rotation.y, pose.rotation.z]
-      .map(value => value.toFixed(6)).join(',');
-  }
-
-  // ==========================================================================
-  // SECTION: PICKING (anything visible: cargo, truck floor, truck shell, ground)
-  // ==========================================================================
-  function describeCargoHit(hit, pack) {
-    const instanceId = hit.object && hit.object.userData ? hit.object.userData.instanceId : null;
-    const { instance, ambiguous } = lookupInstance(pack, instanceId);
-    // Visible cargo that cannot be told apart from another item: refuse it (see pick) instead of guessing.
-    if (ambiguous) return { ambiguous: true, fromCargo: true, distance: hit.distance };
-    if (!instance) return null;
-    const caseData = CaseLibrary.getById(instance.caseId);
-    hit.object.updateWorldMatrix(true, false);
-    const local = worldVectorToInches(hit.object.worldToLocal(hit.point.clone()));
-    // Any shape: the picked point is the real surface hit on the cargo's own mesh, stored in the
-    // cargo's frame so it follows the cargo. If the Case definition is missing there is nothing to
-    // anchor to, so keep the point fixed in space.
-    const anchor = buildCargoAnchor({ instanceId, local, caseData }) ||
-      buildSpaceAnchor({ surface: 'free', point: worldVectorToInches(hit.point) });
-    if (!anchor) return null;
-    return { kind: anchor.kind, anchor, world: hit.point.clone(), distance: hit.distance, fromCargo: true };
-  }
-
-  // Ray / axis-aligned box entry distance (slab method) in world units, or null.
-  function rayBoxEntry(ray, min, max) {
-    let tMin = 0;
-    let tMax = Infinity;
-    for (const axis of ['x', 'y', 'z']) {
-      const origin = ray.origin[axis];
-      const direction = ray.direction[axis];
-      if (Math.abs(direction) < 1e-9) {
-        if (origin < min[axis] || origin > max[axis]) return null;
-        continue;
-      }
-      let t1 = (min[axis] - origin) / direction;
-      let t2 = (max[axis] - origin) / direction;
-      if (t1 > t2) [t1, t2] = [t2, t1];
-      tMin = Math.max(tMin, t1);
-      tMax = Math.min(tMax, t2);
-      if (tMin > tMax) return null;
-    }
-    return tMin;
-  }
-
-  function pickFloor(ray, pack) {
-    const floors = PackLibrary.getMeasurementFloors(pack);
-    if (!floors.length || ray.direction.y >= -1e-6) return null;
-    const scale = toWorldScale();
-    // Solid bodies under raised floors (Wheel Wells, the over-cab deck) occlude floor behind them.
-    const bodies = floors.filter(floor => floor.elevation > 0.01).map(floor => ({
-      min: { x: floor.xMin * scale, y: 0, z: floor.zMin * scale },
-      max: { x: floor.xMax * scale, y: floor.elevation * scale, z: floor.zMax * scale },
-    }));
-    let best = null;
-    floors.forEach(floor => {
-      const elevation = floor.elevation * scale;
-      const t = (elevation - ray.origin.y) / ray.direction.y;
-      if (!(t > 0)) return;
-      const x = (ray.origin.x + ray.direction.x * t) / scale;
-      const z = (ray.origin.z + ray.direction.z * t) / scale;
-      if (x < floor.xMin || x > floor.xMax || z < floor.zMin || z > floor.zMax) return;
-      if (best && best.distance <= t) return;
-      const blocked = bodies.some(body => {
-        const entry = rayBoxEntry(ray, body.min, body.max);
-        return entry !== null && entry > 0 && entry < t - 1e-3;
-      });
-      if (blocked) return;
-      const anchor = buildFloorAnchor({ surface: floor.surface, point: { x, y: floor.elevation, z } });
-      if (!anchor) return;
-      best = { kind: 'floor', anchor, world: new THREE.Vector3(x * scale, elevation, z * scale), distance: t };
-    });
-    return best;
-  }
-
-  /**
-   * Truck walls, ceiling and end planes that physically exist (PackLibrary.getMeasurementShellFaces). The
-   * shell is see-through, so the surface the user sees "behind" is the far side: of all the faces the ray
-   * leaves the truck through, the farthest one. A ray that crosses a region with no face (the Front
-   * Overhang cab void) finds none there and falls through to the floor or the ground.
-   */
-  function pickShell(ray, pack) {
-    const faces = PackLibrary.getMeasurementShellFaces(pack);
-    if (!faces.length) return null;
-    const scale = toWorldScale();
-    const slack = SHELL_FACE_SLACK_INCHES * scale;
-    let best = null;
-    faces.forEach(face => {
-      const axis = AXIS_NAMES[face.axis];
-      const direction = ray.direction[axis];
-      // Only faces the ray leaves through: a near wall is seen through, never picked.
-      if (direction * face.outward < 1e-9) return;
-      const t = (face.min[face.axis] * scale - ray.origin[axis]) / direction;
-      if (!(t > 0) || (best && best.t >= t)) return;
-      const hit = [ray.origin.x + ray.direction.x * t, ray.origin.y + ray.direction.y * t, ray.origin.z + ray.direction.z * t];
-      if (!hit.every((value, i) => value >= face.min[i] * scale - slack && value <= face.max[i] * scale + slack)) return;
-      best = { face, t, hit };
-    });
-    if (!best) return null;
-    const world = new THREE.Vector3(best.hit[0], best.hit[1], best.hit[2]);
-    // The anchor remembers the truck AND its effective usable zones, so a configuration change within one
-    // shape mode (Front Overhang length, Wheel Well size) is recognised later.
-    const anchor = buildSpaceAnchor({ surface: best.face.surface, point: worldVectorToInches(world), truck: pack.truck, zones: PackLibrary.getMeasurementZones(pack) });
-    return anchor ? { kind: 'space', anchor, world, distance: best.t } : null;
-  }
-
-  /** The ground plane anywhere, including outside the truck (staging area, yard). Never the sky. */
-  function pickGround(ray) {
-    if (ray.direction.y >= -1e-6) return null;
-    const t = -ray.origin.y / ray.direction.y;
-    if (!(t > 0) || t > GROUND_MAX_DISTANCE_WORLD) return null;
-    const world = new THREE.Vector3(ray.origin.x + ray.direction.x * t, 0, ray.origin.z + ray.direction.z * t);
-    const anchor = buildSpaceAnchor({ surface: 'ground', point: worldVectorToInches(world) });
-    return anchor ? { kind: 'space', anchor, world, distance: t } : null;
-  }
-
-  /**
-   * The surface under a screen point, or null. `outcome.blocked` is set to 'provisional' when the nearest
-   * surface is cargo while the Editor holds a scene-only pose, and to 'ambiguous' when it is cargo whose
-   * ID another item shares: nothing is picked, and nothing behind that cargo is substituted for it.
-   */
-  function pick(clientX, clientY, outcome = null) {
-    const camera = SceneManager.getCamera();
-    const canvas = getCanvas();
-    const pack = currentPack();
-    if (!camera || !canvas || !pack) return null;
-    const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0) return null;
-    ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
-    raycaster.setFromCamera(ndc, camera);
-    let best = null;
-    const meshes = CaseScene.getRaycastMeshes().filter(mesh => mesh.parent && mesh.parent.visible !== false);
-    const cargoHit = meshes.length ? raycaster.intersectObjects(meshes, false)[0] : null;
-    if (cargoHit) best = describeCargoHit(cargoHit, pack);
-    const floorHit = pickFloor(raycaster.ray, pack);
-    if (floorHit && (!best || floorHit.distance < best.distance)) best = floorHit;
-    if (best && best.fromCargo && provisionalPoseActive()) {
-      if (outcome) outcome.blocked = 'provisional';
-      return null;
-    }
-    if (best && best.ambiguous) {
-      if (outcome) outcome.blocked = 'ambiguous';
-      return null;
-    }
-    // Cargo and floor win; then the see-through truck shell; then the ground anywhere.
-    return best || pickShell(raycaster.ray, pack) || pickGround(raycaster.ray);
-  }
-
-  // ==========================================================================
-  // SECTION: LIVE ENDPOINTS (follow the scene's displayed pose, never persisted)
-  // ==========================================================================
-  /**
-   * World position of an anchor as the scene currently displays it. Cargo anchors follow the live
-   * group transform (so they track drags, nudges, animation and AutoPack preview); nothing here is
-   * written back. Falls back to the committed resolution when the group is unavailable.
-   */
-  function liveAnchorWorld(anchor, committedPoint, target) {
-    if (anchor.kind === 'cargo') {
-      // The scene keys cargo by the instance's own ID; an anchor may carry the same identity in another
-      // spelling (a trimmed-equal ID), and an ID shared by several instances maps to none.
-      const group = CaseScene.getObject(anchor.instanceId) || CaseScene.getObject(sceneIdsByKey.get(instanceIdentityKey(anchor.instanceId)));
-      const local = group ? cargoAnchorLocal(anchor) : null;
-      if (group && local) {
-        inchesToWorldVector(local, target);
-        group.updateMatrixWorld(true);
-        return group.localToWorld(target);
-      }
-    }
-    return committedPoint ? inchesToWorldVector(committedPoint, target) : null;
-  }
+  // The one surface picker shared with the Annotations tool: picking, committed-pose keys, ambiguous-ID
+  // refusal and live (displayed-pose) anchor positions. See editor/surface-picker.js.
+  const picker = createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, PackLibrary, getPack: currentPack, hasProvisionalPose: provisionalPoseActive });
+  const { pick, liveAnchorWorld, lookupInstance, cargoPoseKey, worldVectorToInches, getCanvas } = picker;
 
   // ==========================================================================
   // SECTION: OVERLAY (restrained SVG dimension lines, DOM labels) — never part of a canvas capture
@@ -627,7 +430,14 @@ export function createMeasurementTool({
 
   function updateOverlay() {
     const camera = SceneManager.getCamera();
-    if (!camera || !active || !ensureSvg()) return;
+    if (!camera || !ensureSvg()) return;
+    // Only the committed scene is measured. While an operation runs or an unapplied preview is shown the
+    // scene displays poses the Load Plan does not hold, so nothing is drawn; the lines come back from the
+    // saved records when the committed scene returns.
+    if (blockedReason()) {
+      disposeAllVisuals();
+      return;
+    }
     const rect = els.labels.getBoundingClientRect();
     overlayOrigin.left = rect.left;
     overlayOrigin.top = rect.top;
@@ -636,7 +446,6 @@ export function createMeasurementTool({
 
     // Saved measurements: only Valid ones are drawn. Needs Review and Unresolved never get geometry.
     const live = new Set();
-    const readOnly = Boolean(blockedReason());
     let ghostDrawn = false;
     results.forEach((result, index) => {
       const record = records[index];
@@ -667,7 +476,7 @@ export function createMeasurementTool({
       }
       const inches = measureBetween(worldVectorToInches(a), worldVectorToInches(b)).distance;
       const selected = record.id === selectedId || dragging;
-      drawSegment(visual, a, b, labelText(record, inches, selected), camera, width, height, { selected, grips: selected && !readOnly });
+      drawSegment(visual, a, b, labelText(record, inches, selected), camera, width, height, { selected, grips: selected });
     });
     visuals.forEach((visual, id) => {
       if (live.has(id)) return;
@@ -705,7 +514,7 @@ export function createMeasurementTool({
     }
 
     // Where a click would land: a small neutral "+", only on something measurable.
-    const showHover = hover && hover.world && !drag && !hoverGrip && !hoverMeasurementId && !readOnly;
+    const showHover = hover && hover.world && !drag && !hoverGrip && !hoverMeasurementId;
     if (showHover) {
       if (!hoverMarker) hoverMarker = makeMarker('hover');
       setMarker(hoverMarker, projectPoint(hover.world, camera, width, height));
@@ -714,9 +523,8 @@ export function createMeasurementTool({
     }
   }
 
-  function disposeAllVisuals() {
-    visuals.forEach(disposeSegment);
-    visuals.clear();
+  /** Everything an editing session draws beyond the saved lines: the live preview, the move ghost and the markers. */
+  function disposeTransientVisuals() {
     if (previewVisual) disposeSegment(previewVisual);
     if (ghostVisual) disposeSegment(ghostVisual);
     previewVisual = null;
@@ -725,6 +533,12 @@ export function createMeasurementTool({
     disposeMarker(pendingMarker);
     hoverMarker = null;
     pendingMarker = null;
+  }
+
+  function disposeAllVisuals() {
+    visuals.forEach(disposeSegment);
+    visuals.clear();
+    disposeTransientVisuals();
   }
 
   // ==========================================================================
@@ -775,7 +589,7 @@ export function createMeasurementTool({
   }
 
   // ==========================================================================
-  // SECTION: FRAME LOOP (runs only while Measurement Mode is active)
+  // SECTION: FRAME LOOP (runs while Measurement Mode is active, or while saved lines are shown view-only)
   // ==========================================================================
   function updateCursor() {
     const canvas = getCanvas();
@@ -809,7 +623,11 @@ export function createMeasurementTool({
   }
 
   function frame(now) {
-    if (!active) return;
+    if (!active) {
+      // View only: redraw the saved lines for the camera and cargo as they are now. No hit testing, no cursor.
+      updateOverlay();
+      return;
+    }
     const reason = syncBlocked();
     if (drag) {
       if (drag.dirty && lastClient) {
@@ -829,13 +647,22 @@ export function createMeasurementTool({
 
   function loop(now) {
     rafId = null;
-    if (!active) return;
+    if (!active && !viewOnlyWanted()) {
+      // Nothing is left to show (other Load Plan, left the Editor, tool hidden, no Valid measurement).
+      disposeAllVisuals();
+      return;
+    }
     frame(now);
     rafId = window.requestAnimationFrame(loop);
   }
 
   function startLoop() {
     if (rafId === null) rafId = window.requestAnimationFrame(loop);
+  }
+
+  /** Start drawing when there is something to draw and nothing is drawing it yet. */
+  function ensureLoop() {
+    if (rafId === null && (active || viewOnlyWanted())) startLoop();
   }
 
   function stopLoop() {
@@ -870,6 +697,7 @@ export function createMeasurementTool({
     lastBlockedReason = blockedReason();
     CaseScene.setHover(null);
     if (els.button) els.button.setAttribute('aria-pressed', 'true');
+    if (els.labels) els.labels.classList.add('is-active');
     ensureSvg();
     if (doc) {
       doc.addEventListener('keydown', onKeyDownCapture, true);
@@ -917,6 +745,7 @@ export function createMeasurementTool({
       doc.removeEventListener('pointerdown', onPointerDownCapture, true);
     }
     if (els.button) els.button.setAttribute('aria-pressed', 'false');
+    if (els.labels) els.labels.classList.remove('is-active');
     if (els.panel) els.panel.hidden = true;
     if (panelObserver) {
       panelObserver.disconnect();
@@ -924,7 +753,15 @@ export function createMeasurementTool({
     }
     rows.forEach(row => row.el.remove());
     rows.clear();
-    disposeAllVisuals();
+    // The editing session's own drawing goes; the saved lines stay on screen as a view when there are any.
+    disposeTransientVisuals();
+    if (viewOnlyWanted()) {
+      // Redraw now, not on the next frame, so no frame shows the finished session's selection or grips.
+      updateOverlay();
+      startLoop();
+    } else {
+      disposeAllVisuals();
+    }
     if (wasActive) updateCursor();
     return wasActive;
   }
@@ -1585,20 +1422,19 @@ export function createMeasurementTool({
   /** Re-derive validity from committed data. Cheap; called on render and on measurement writes. */
   function sync() {
     const pack = currentPack();
-    lengthUnit = (PreferencesManager.get().units || {}).length || 'in';
+    const preferences = PreferencesManager.get();
+    lengthUnit = (preferences.units || {}).length || 'in';
+    toolShown = preferences.showMeasurementTool !== false;
     if (!pack || !inEditor()) {
       records = [];
       results = [];
+      syncedPackId = null;
       if (active) exit();
       return;
     }
     records = PackLibrary.getMeasurements(pack);
     results = PackLibrary.resolveMeasurements(pack);
-    sceneIdsByKey = new Map();
-    (pack.cases || []).forEach(inst => {
-      const key = inst ? instanceIdentityKey(inst.id) : null;
-      if (key !== null) sceneIdsByKey.set(key, sceneIdsByKey.has(key) ? null : inst.id);
-    });
+    syncedPackId = pack.id;
     if (selectedId && !records.some(record => record.id === selectedId)) selectedId = null;
     if (renamingId && !records.some(record => record.id === renamingId)) renamingId = null;
     if (pending && !pendingStillValid(pack)) {
@@ -1614,6 +1450,7 @@ export function createMeasurementTool({
       }
     }
     if (active) renderPanel();
+    ensureLoop();
   }
 
   function pendingStillValid(pack) {
@@ -1634,8 +1471,10 @@ export function createMeasurementTool({
   /** Show or hide the ruler per Settings. Hiding it while active exits the mode and cancels any gesture. */
   function syncVisibility() {
     const show = PreferencesManager.get().showMeasurementTool !== false;
+    toolShown = show;
     if (!show && active) exit();
     if (els.button) els.button.hidden = !show;
+    ensureLoop(); // showing the tool again brings its saved lines back; hiding it ends the view-only loop by itself
     return show;
   }
 
@@ -1644,11 +1483,21 @@ export function createMeasurementTool({
     if (bound) return;
     bound = true;
     StateStore.subscribe(changes => {
-      if (!active) return;
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
-        exit();
+        if (active) {
+          exit();
+          return;
+        }
+        // Another Load Plan, a workspace swap or the Editor closing: the saved lines belong to the old one.
+        if (syncedPackId !== null) {
+          records = [];
+          results = [];
+          syncedPackId = null;
+          disposeAllVisuals();
+        }
         return;
       }
+      if (!active) return;
       if (changes._undo || changes._redo) {
         if (drag) cancelDrag('Undo or redo cancelled the move.');
         cancelPending('Undo or redo cancelled the unfinished measurement.');
@@ -1665,6 +1514,11 @@ export function createMeasurementTool({
   // to the application-lifetime singleton (it is created once in app.js and never torn down), so they stay.
   function destroy() {
     exit();
+    stopLoop();
+    records = [];
+    results = [];
+    syncedPackId = null;
+    disposeAllVisuals();
     if (svg && svg.parentNode) svg.parentNode.removeChild(svg);
     svg = null;
   }

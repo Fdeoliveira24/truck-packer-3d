@@ -39,6 +39,7 @@ import {
   projectPortableFolder,
 } from './import-schema.js';
 import { normalizeMeasurements } from './measurements.js';
+import { normalizeAnnotations } from './annotations.js';
 
 export const STORAGE_KEY = 'truckPacker3d:v1';
 export const IMPORT_SCOPE_CHANGED_MESSAGE =
@@ -864,9 +865,13 @@ export function exportAppJSON() {
     // Measurements are projected explicitly (canonical records; unreadable stored data kept as a
     // verbatim recovery record), never passed through a generic spread.
     const measurements = normalizeMeasurements(pack.measurements);
+    const annotations = normalizeAnnotations(pack.annotations);
     const portable = { ...pack, truck, cases };
     if (measurements.length) portable.measurements = measurements;
     else delete portable.measurements;
+    // Annotations travel the same way: explicit projection, empty omitted, unreadable kept verbatim.
+    if (annotations.length) portable.annotations = annotations;
+    else delete portable.annotations;
     return portable;
   });
   const payload = {

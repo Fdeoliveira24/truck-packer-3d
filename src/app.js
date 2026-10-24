@@ -63,6 +63,7 @@ import { TrailerPresets } from './data/trailer-presets.js';
 import { createSceneRuntime } from './editor/scene-runtime.js';
 import { createTrailerGeometry } from './editor/trailer-geometry.js';
 import { createMeasurementTool } from './editor/measurement-tool.js';
+import { createAnnotationTool } from './editor/annotation-tool.js';
 import { createCaseScene, createInteractionManager, createEditorScreen } from './screens/editor-screen.js';
 import { createPacksScreen } from './screens/packs-screen.js';
 import { createCasesScreen } from './screens/cases-screen.js';
@@ -1579,6 +1580,19 @@ const TP3D_BUILD_STAMP = Object.freeze({
       OperationLifecycle,
     });
 
+    // Annotations V1: informational callouts attached to cargo, the truck or the ground. Like the ruler, a
+    // DOM/SVG layer above the canvas (so no canvas capture includes it) that never mutates cargo. Only one
+    // scene tool owns the pointer at a time; the Editor keeps Annotations and Measurement mutually exclusive.
+    const AnnotationTool = createAnnotationTool({
+      SceneManager,
+      CaseScene,
+      CaseLibrary,
+      PackLibrary,
+      StateStore,
+      UIComponents,
+      OperationLifecycle,
+    });
+
     const InteractionManager = createInteractionManager({
       SceneManager,
       CaseScene,
@@ -1589,6 +1603,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       UIComponents,
       OperationLifecycle,
       MeasurementTool,
+      AnnotationTool,
     });
 
     // ============================================================================
@@ -2545,6 +2560,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       TruckChangeController,
       OperationLifecycle,
       MeasurementTool,
+      AnnotationTool,
     });
     EditorUI.setPreviewViewSettledCallback(() => AutoPackPreviewScheduler.schedule());
 
@@ -7292,6 +7308,15 @@ const TP3D_BUILD_STAMP = Object.freeze({
         if (notification?.type === 'pack-measurements') {
           PacksUI.render();
           EditorUI.syncMeasurements();
+          AutoPackPreviewScheduler.schedule();
+          return;
+        }
+        // Annotation-only write: the same route as a measurement write. Autosaved above; refresh the overlay
+        // and list and the Load Plan card (lastEdited), re-request the preview freshness check, and do no
+        // cargo, scene or Inspector work.
+        if (notification?.type === 'pack-annotations') {
+          PacksUI.render();
+          EditorUI.syncAnnotations();
           AutoPackPreviewScheduler.schedule();
           return;
         }

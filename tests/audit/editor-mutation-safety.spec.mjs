@@ -1447,8 +1447,12 @@ test('PACK-PREVIEW-SCHEDULER wiring uses pre-navigation flush and shared manual 
   // freshness (a current thumbnail yields no candidate) without reconstructing the Editor.
   assert.match(subscriber, /if \(notification\?\.type === 'pack-measurements'\) \{\s*PacksUI\.render\(\);\s*EditorUI\.syncMeasurements\(\);\s*AutoPackPreviewScheduler\.schedule\(\);\s*return;/,
     'a measurement-only write schedules preview freshness without reconstructing Editor');
-  assert.equal((subscriber.match(/AutoPackPreviewScheduler\.schedule\(\)/g) || []).length, 3,
-    'the subscriber schedules freshness for Pack view metadata, after a measurement-only write, and for normal visual dependencies');
+  // An annotation-only write is the same kind of authored-collection write: it replaces the Pack object, so it
+  // re-requests freshness and refreshes the overlay without reconstructing the Editor or the scene.
+  assert.match(subscriber, /if \(notification\?\.type === 'pack-annotations'\) \{\s*PacksUI\.render\(\);\s*EditorUI\.syncAnnotations\(\);\s*AutoPackPreviewScheduler\.schedule\(\);\s*return;/,
+    'an annotation-only write schedules preview freshness without reconstructing Editor');
+  assert.equal((subscriber.match(/AutoPackPreviewScheduler\.schedule\(\)/g) || []).length, 4,
+    'the subscriber schedules freshness for Pack view metadata, after a measurement-only write, after an annotation-only write, and for normal visual dependencies');
   assert.ok(subscriber.indexOf('EditorUI.render();') < subscriber.indexOf('if (previewContextChanged'),
     'Pack activation synchronizes Editor before preview freshness is scheduled');
   assert.ok(shellSrc.indexOf('beforeNavigate(previousScreen, screenKey)') < shellSrc.indexOf('StateStore.set({ currentScreen: screenKey }'));

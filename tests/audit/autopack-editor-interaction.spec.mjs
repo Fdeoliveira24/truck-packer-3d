@@ -1476,10 +1476,10 @@ test('Editor View commands fit truck bounds and preserve Pack camera ownership',
       'Camera Views is no longer a top toolbar action');
     const stack = await page.locator('#editor-zoom-controls > button').evaluateAll(buttons =>
       buttons.map(button => ({ id: button.id, top: button.getBoundingClientRect().top, left: button.getBoundingClientRect().left })));
-    assert.deepEqual(stack.map(item => item.id), ['btn-editor-measure', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out'],
-      'Measurement Tool, camera, Zoom In, Zoom Out from top to bottom');
+    assert.deepEqual(stack.map(item => item.id), ['btn-editor-annotations', 'btn-editor-measure', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out'],
+      'Annotations, Measurement Tool, camera, Zoom In, Zoom Out from top to bottom (the owner-approved Annotations order)');
     assert.ok(stack.every((item, index) => index === 0 || stack[index - 1].top < item.top) && new Set(stack.map(item => item.left)).size === 1,
-      'the four buttons form one aligned vertical column');
+      'the five buttons form one aligned vertical column');
     assert.equal(await page.locator('#btn-editor-view i').getAttribute('class'), 'fa-solid fa-video',
       'a video-camera icon, not a photograph camera');
     await page.locator('#btn-editor-view').focus();

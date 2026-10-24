@@ -37,6 +37,8 @@ Preserve the recognizable orange-accent identity and current interaction contrac
 | Error interaction | `--error-hover: #dc2626`; `--error-pressed: #b91c1c` | Inherited |
 | Focus | `--focus-ring: var(--accent-primary)` | Inherited |
 
+`--accent-readable` is a dark brown (`#9a5100`) and is **not** part of the intended visual direction for selected controls. Selected segmented controls, chips and toggles use the soft orange tint (`--accent-primary-12/14`), the `--accent-primary-25` border and `--text-primary` text, so they stay readable in both themes. Do not use `--accent-readable` for selected-control text; remaining uses are legacy (`.toolbar-btn.active`, `.auth-link:hover`) and are not to be copied into new components.
+
 The same stylesheet has separate `--util-*` colors for Space Utilization density and diagnostic display. Those are capacity-analysis semantics, not a safety or compliance rating. Brand orange and warning amber are distinct roles even where their hues are close; choose by meaning. Light/dark themes are selected through Preferences (`src/services/preferences-manager.js`, `src/core/normalizer.js`, and Settings). Current preference values are `light` and `dark`; automatic/system theme and user-selected accent colors are not present.
 
 **Accessibility concern for the CSS audit:** Current primary buttons pair white `--accent-foreground` text with `--accent-primary: #ff9f1c`, approximately `2.05:1` contrast. Treat this as an unresolved accessibility issue in the upcoming CSS audit; this contract does not prescribe or implement the correction.

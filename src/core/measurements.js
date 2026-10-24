@@ -572,6 +572,10 @@ function canonicalAnchor(anchor) {
   };
 }
 
+// The anchor model is shared with Annotations (core/annotations.js): the same validation and canonical
+// form for a cargo, floor or space anchor, so there is exactly one definition of what an anchor is.
+export { validateAnchor as validateAnchorRecord, canonicalAnchor as canonicalAnchorRecord };
+
 function canonicalPointRecord(record) {
   return {
     id: record.id,

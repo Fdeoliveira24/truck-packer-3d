@@ -2167,6 +2167,7 @@ export function createInteractionManager({
   UIComponents,
   OperationLifecycle = null,
   MeasurementTool = null,
+  AnnotationTool = null,
 }) {
   const InteractionManager = (() => {
     // True while a mutating editor operation (AutoPack / Unpack / Truck Change /
@@ -2893,6 +2894,8 @@ export function createInteractionManager({
       if (!isEditorActive()) return;
       // Measurement Mode owns the pointer: no hover, drag or gizmo handling. OrbitControls is separate.
       if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerMove(ev); return; }
+      // The armed Annotations tool (Callout, Re-attach) owns the pointer the same way.
+      if (AnnotationTool && AnnotationTool.isActive()) { AnnotationTool.onPointerMove(ev); return; }
       updatePointer(ev);
 
       if (gizmoDragging && draggingId) {
@@ -2934,6 +2937,7 @@ export function createInteractionManager({
       domEl.parentElement?.focus({ preventScroll: true });
       // Measurement Mode owns primary presses: they never select, drag or grab a gizmo handle.
       if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerDown(ev); return; }
+      if (AnnotationTool && AnnotationTool.isActive()) { AnnotationTool.onPointerDown(ev); return; }
       updatePointer(ev);
 
       // V3A: gizmo handles take grab priority over case picking.
@@ -2979,6 +2983,7 @@ export function createInteractionManager({
         return;
       }
       if (MeasurementTool && MeasurementTool.isActive()) { if (ev) MeasurementTool.onPointerUp(ev); return; }
+      if (AnnotationTool && AnnotationTool.isActive()) { if (ev) AnnotationTool.onPointerUp(ev); return; }
       if (!pressed && !draggingId) return;
 
       if (draggingId) {
@@ -3015,6 +3020,7 @@ export function createInteractionManager({
 
     function onCancel() {
       if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerCancel(); return; }
+      if (AnnotationTool && AnnotationTool.isActive()) { AnnotationTool.onPointerCancel(); return; }
       if (!pressed && !draggingId && !gizmoDragging) return;
       if (gizmoDragging) {
         cancelGizmoDrag();
@@ -3307,6 +3313,7 @@ export function createInteractionManager({
     function onDblClick(ev) {
       // A double-click in Measurement Mode neither places a zero-length measurement nor focuses the camera.
       if (MeasurementTool && MeasurementTool.onDoubleClick(ev)) return;
+      if (AnnotationTool && AnnotationTool.onDoubleClick(ev)) return;
       // Both clicks must originate in this Pack's viewport. The second click
       // used to open a Load Plan must not focus cargo exposed beneath the card.
       if (!isEditorActive() || focusClickPackId !== StateStore.get('currentPackId')) return;
@@ -3933,7 +3940,7 @@ export function createInteractionManager({
       UIComponents.showToast(formatDeleteResultMessage(result, ids), 'info');
     }
 
-    // Measurement Mode takes over (and later returns) the pointer: drop stale hover emphasis.
+    // Measurement Mode and the Annotations tool take over (and later return) the pointer: drop stale hover emphasis.
     function resetHover() {
       hoveredId = null;
       CaseScene.setHover(null);
@@ -3971,6 +3978,7 @@ export function createEditorScreen({
   TruckChangeController,
   OperationLifecycle = null,
   MeasurementTool = null,
+  AnnotationTool = null,
 }) {
   const EditorUI = (() => {
     // Runtime authority only: navigation IDs cannot prove what the scene contains.
@@ -4152,10 +4160,10 @@ export function createEditorScreen({
       }
       // Only the whitelisted derived-metadata boundary can rebind authority.
       // An ordinary Pack replacement still requires a full committed render.
-      // A measurement-only edit is such a boundary: it replaces the Pack object but keeps the same
-      // cargo, truck and visual signature (the guards below and rebindPreviewPack re-check all three).
+      // A measurement-only or annotation-only edit is such a boundary: it replaces the Pack object but keeps
+      // the same cargo, truck and visual signature (the guards below and rebindPreviewPack re-check all three).
       if ((notification?.type === 'pack-preview' || notification?.type === 'pack-view' ||
-          notification?.type === 'pack-measurements') && previewScene &&
+          notification?.type === 'pack-measurements' || notification?.type === 'pack-annotations') && previewScene &&
           previewScene.pack === notification.previousPack &&
           PackLibrary.getById(notification.pack.id) === notification.pack &&
           CoreStorage.isScopeContextCurrent(previewScene.scope) &&
@@ -4241,6 +4249,7 @@ export function createEditorScreen({
     const caseListEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-case-list'));
     const btnAutopack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-autopack'));
     const btnUnpack = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-unpack'));
+    const btnAnnotations = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-annotations'));
     const btnMeasure = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-measure'));
     const btnView = /** @type {HTMLButtonElement|null} */ (document.getElementById('btn-editor-view'));
     const zoomControlsEl = /** @type {HTMLElement|null} */ (document.getElementById('editor-zoom-controls'));
@@ -5249,6 +5258,9 @@ export function createEditorScreen({
             UIComponents.showToast(NO_LOAD_PLAN_MESSAGE, 'warning', { title: 'Measurements' });
             return;
           }
+          // Only one scene tool owns pointer input: starting Measurement closes the Annotations panel (its
+          // saved callouts stay drawn; an unsaved callout is dropped without writing).
+          if (!wasActive && AnnotationTool) AnnotationTool.closePanel();
           MeasurementTool.toggle();
           if (!wasActive && !MeasurementTool.isActive()) {
             UIComponents.showToast('The 3D view is not ready yet.', 'info', { title: 'Measurements' });
@@ -5257,6 +5269,39 @@ export function createEditorScreen({
           if (InteractionManager && typeof InteractionManager.resetHover === 'function') InteractionManager.resetHover();
         });
         MeasurementTool.syncVisibility();
+      }
+      if (AnnotationTool && btnAnnotations) {
+        AnnotationTool.bind({
+          button: btnAnnotations,
+          panel: document.getElementById('editor-annotation-panel'),
+          layer: document.getElementById('editor-annotation-layer'),
+          viewport: viewportEl,
+          // The load-status popover closes on Escape first; the Annotations tool takes the next one.
+          escapeOwnedElsewhere: () => validationPopoverOpen,
+          // A live drag, gizmo stroke or held case displays cargo away from its committed pose.
+          hasProvisionalPose: () => Boolean(InteractionManager && InteractionManager.hasProvisionalPose && InteractionManager.hasProvisionalPose()),
+          // Selecting an annotation clears the cargo selection (so Delete never touches cargo).
+          clearCargoSelection: () => { if (InteractionManager && typeof InteractionManager.setSelection === 'function') InteractionManager.setSelection([]); },
+          // A read-only question: does Measurement Mode own the scene's gestures right now? Saved callouts stay
+          // drawn but take no input while it does.
+          isSceneToolOwnedElsewhere: () => Boolean(MeasurementTool && MeasurementTool.isActive()),
+        });
+        btnAnnotations.addEventListener('click', ev => {
+          ev.stopPropagation();
+          UIComponents.closeAllDropdowns();
+          const wasOpen = AnnotationTool.isPanelOpen();
+          if (!wasOpen && !PackLibrary.getById(StateStore.get('currentPackId'))) {
+            UIComponents.showToast(NO_LOAD_PLAN_MESSAGE, 'warning', { title: 'Annotations' });
+            return;
+          }
+          // Only one scene tool owns pointer input: opening Annotations leaves Measurement Mode.
+          if (!wasOpen && MeasurementTool && MeasurementTool.isActive()) MeasurementTool.exit();
+          AnnotationTool.togglePanel();
+          if (!wasOpen && !AnnotationTool.isPanelOpen()) {
+            UIComponents.showToast('The 3D view is not ready yet.', 'info', { title: 'Annotations' });
+          }
+          if (InteractionManager && typeof InteractionManager.resetHover === 'function') InteractionManager.resetHover();
+        });
       }
       if (btnView) {
         btnView.addEventListener('click', ev => {
@@ -5396,6 +5441,7 @@ export function createEditorScreen({
       renderHandlingRulesStatus(pack);
       // Re-derive measurement validity from the freshly committed Pack (cargo, Case or truck changed).
       if (MeasurementTool) MeasurementTool.sync();
+      if (AnnotationTool) AnnotationTool.sync();
       SceneManager.resize();
       if (!isViewOwnerCurrent()) {
         invalidateViewOwner();
@@ -5455,7 +5501,7 @@ export function createEditorScreen({
       if (btnView) btnView.hidden = !showCamera;
       if (btnZoomIn) btnZoomIn.hidden = !showZoom;
       if (btnZoomOut) btnZoomOut.hidden = !showZoom;
-      zoomControlsEl.hidden = !(showMeasure || showCamera || showZoom);
+      zoomControlsEl.hidden = !(showMeasure || showCamera || showZoom || Boolean(btnAnnotations));
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene
@@ -8340,8 +8386,13 @@ export function createEditorScreen({
       if (MeasurementTool && StateStore.get('currentScreen') === 'editor') MeasurementTool.sync();
     }
 
+    // Annotation-only change: re-derive validity and refresh the overlay/list. No scene or Inspector render.
+    function syncAnnotations() {
+      if (AnnotationTool && StateStore.get('currentScreen') === 'editor') AnnotationTool.sync();
+    }
+
     return { init: initEditorUI, render, renderSelection, onActivated, resetWorkspaceState, syncViewportControls,
-      syncMeasurements, getCurrentCameraPack, applyCameraProjection,
+      syncMeasurements, syncAnnotations, getCurrentCameraPack, applyCameraProjection,
       getPreviewScene, getExportScene, getPreviewView, flushPendingView, setPreviewViewSettledCallback };
   })();
 

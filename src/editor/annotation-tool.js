@@ -92,6 +92,7 @@ import {
   leaderLine,
   offsetFromRect,
   overlapArea,
+  panelBodyFlows,
   rectFromOffset,
   VIEWPORT_MARGIN,
 } from '../core/annotation-layout.js';
@@ -227,6 +228,7 @@ export function createAnnotationTool({
   let panelBehindEditor = false; // the desktop panel yields to an open editor card it would otherwise hide (display only)
   let panelParts = null;
   let panelObserver = null;
+  let flowObserver = null;
   let suppressToggleClick = false;
   let layerParts = null;
   let layerObserver = null;
@@ -234,6 +236,7 @@ export function createAnnotationTool({
   let visDirty = true;
   let lastVisAt = 0;
   let lastSignature = NaN;
+  let lastGeometryRevision = NaN; // CaseScene's count of syncs that changed what stands in the scene
   let selfClearing = false;
   let lastOwnedElsewhere = false; // another scene tool (Measurement Mode) owned gestures on the previous frame
   let titleRevealPending = false; // the editor just opened: show its title field if the card is shorter than its content
@@ -632,6 +635,10 @@ export function createAnnotationTool({
       panelObserver = new ResizeObserver(() => applyPanelPosition());
       panelObserver.observe(host);
     }
+    if (typeof ResizeObserver === 'function') {
+      flowObserver = new ResizeObserver(() => syncPanelFlow()); // the panel's height is limited by the window, a card or the sheet
+      flowObserver.observe(els.panel);
+    }
     sync();
     const unreadable = records.filter(record => record.type === ANNOTATION_TYPE_UNREADABLE).length;
     if (unreadable) {
@@ -667,6 +674,10 @@ export function createAnnotationTool({
     if (panelObserver) {
       panelObserver.disconnect();
       panelObserver = null;
+    }
+    if (flowObserver) {
+      flowObserver.disconnect();
+      flowObserver = null;
     }
     if (els.panel) els.panel.hidden = true;
     rows.forEach(row => row.el.remove());
@@ -2328,6 +2339,26 @@ export function createAnnotationTool({
       rows.delete(id);
     });
     applyPanelPosition(); // rows or collapsing change the panel size: keep it inside the viewport
+    syncPanelFlow();
+  }
+
+  /**
+   * Whether the panel body scrolls as a whole under its header (the tool, Show and Callouts rows, the list and the arrow look
+   * controls together) instead of keeping those rows and controls fixed around a scrolling list. A panel limited in height
+   * (a small window, the Results card below it, the narrow sheet) must never lose its rows to pinned controls. Decided from
+   * the measured heights, never from a window size, so it follows whatever limits the panel; the class changes only how the
+   * panel's own content scrolls, never the panel's box, so it cannot feed back into the height it is decided from.
+   */
+  function syncPanelFlow() {
+    const parts = panelParts;
+    if (!parts || parts.root !== els.panel || els.panel.hidden || !parts.root.offsetHeight) return;
+    const footerHeight = parts.arrowOptions && !parts.arrowOptions.hidden ? parts.arrowOptions.offsetHeight : 0;
+    toggleClass(parts.body, 'is-flow', panelBodyFlows({
+      panelHeight: parts.root.offsetHeight,
+      contentHeight: panelContentHeight(parts),
+      headHeight: parts.head.offsetHeight,
+      footerHeight,
+    }));
   }
 
   /**
@@ -3106,6 +3137,13 @@ export function createAnnotationTool({
       lastSignature = signature;
       visDirty = true;
     }
+    // Cargo that was added, removed, resized, moved or hidden by a scene sync is not in the signature above (a ground marker
+    // or arrow does not move with it), so a completed sync that changed the layout asks for a new measurement of its own.
+    const geometryRevision = typeof CaseScene.getGeometryRevision === 'function' ? CaseScene.getGeometryRevision() : 0;
+    if (geometryRevision !== lastGeometryRevision) {
+      lastGeometryRevision = geometryRevision;
+      visDirty = true;
+    }
     // A marker or arrow that has never been measured is measured at once, so it is never first drawn as in the clear.
     const unmeasured = entries.filter(entry => !entry.view.measured);
     const arrowsUnmeasured = arrowEntries.filter(entry => !entry.view.measured);
@@ -3116,6 +3154,9 @@ export function createAnnotationTool({
         lastVisAt = now;
       }
       const meshes = CaseScene.getRaycastMeshes().filter(mesh => mesh.parent && mesh.parent.visible !== false);
+      // A scene sync moves the cargo groups at once, but world matrices are only refreshed when the renderer next draws. The
+      // rays must test the layout that was just synchronized, not the one drawn last frame (this runs inside the sync's own task).
+      meshes.forEach(mesh => mesh.updateWorldMatrix(true, false));
       (due ? entries : unmeasured).forEach(entry => {
         entry.view.front = computeFront(entry, camera, meshes);
         entry.view.measured = true;

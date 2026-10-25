@@ -869,6 +869,51 @@ test('the desktop panel stays clear of the AutoPack Results card wherever either
   assert.deepEqual(crammed, { dx: 0, dy: 0, maxHeight: null, clear: false });
 });
 
+test('the desktop panel has no cliff above AutoPack Results: short of its preferred minimum it keeps giving up height down to a floor, and only below the floor is it left where it is', () => {
+  const view = { width: 800, height: 650 };
+  const I = L.PANEL_REGION_INSETS;
+  const panel = { x: view.width - I.right - 300, y: I.top, w: 300, h: 436 };
+  assert.ok(L.PANEL_FLOOR_HEIGHT < L.MIN_PANEL_HEIGHT, 'a floor under the preferred minimum');
+  // A card across the whole region, `room` px below the panel's top plus the gap it must keep (so there is no spot beside or
+  // below it): the panel can be exactly `room` tall, docked where it is.
+  const withRoom = room => L.fitPanelClear({ panel, blockers: [{ x: 0, y: panel.y + room + L.OBSTACLE_GAP, w: view.width, h: 600 }], viewport: view });
+  let previous = Infinity;
+  for (const room of [300, 260, 213, 201, 200, 199, 198, 180, 160, 151, 150]) {
+    const fit = withRoom(room);
+    assert.deepEqual([fit.clear, fit.dx, fit.dy, fit.maxHeight], [true, 0, 0, room], `${room} px of room: it stays docked and is exactly as tall as the room`);
+    assert.ok(fit.maxHeight <= previous, 'never taller as the room shrinks');
+    previous = fit.maxHeight;
+  }
+  assert.deepEqual(withRoom(L.PANEL_FLOOR_HEIGHT - 1), { dx: 0, dy: 0, maxHeight: null, clear: false }, 'below the floor nothing useful fits: the caller leaves it alone');
+  // The preferred minimum still wins where it can: a card over the header moves the panel whole rather than squeezing it.
+  const overHeader = { x: 300, y: 20, w: 420, h: 237 };
+  const moved = L.fitPanelClear({ panel, blockers: [overHeader], viewport: view });
+  assert.ok(moved.clear && (moved.maxHeight === null || moved.maxHeight >= L.MIN_PANEL_HEIGHT), 'moved to a spot with at least the preferred minimum');
+  // The floor is only a fallback: with the floor raised to the minimum the old cliff is back.
+  assert.equal(L.fitPanelClear({ panel, blockers: [{ x: 0, y: panel.y + 198 + L.OBSTACLE_GAP, w: view.width, h: 600 }], viewport: view, floorHeight: L.MIN_PANEL_HEIGHT }).clear, false);
+});
+
+test('a height-limited panel scrolls as a whole instead of pinning controls over its rows', () => {
+  const head = 43;
+  const arrowFooter = 104;
+  const flows = input => L.panelBodyFlows({ headHeight: head, ...input });
+  // Everything fits: nothing scrolls, so the choice is moot.
+  assert.equal(flows({ panelHeight: 300, contentHeight: 300, footerHeight: arrowFooter }), false);
+  assert.equal(flows({ panelHeight: 150, contentHeight: 151 }), false, 'a 1 px overflow is a rounding difference, not a scroll');
+  // With the look controls showing, they stay pinned only while at least PANEL_PIN_MIN_SCROLL px of scrolling room remains beside them.
+  const pinnedAt = height => !flows({ panelHeight: height, contentHeight: 520, footerHeight: arrowFooter });
+  const smallestPinned = [...Array(400).keys()].map(n => 150 + n).find(pinnedAt);
+  assert.equal(smallestPinned, head + arrowFooter + L.PANEL_PIN_MIN_SCROLL, 'pinned from exactly the height that leaves the minimum scrolling room');
+  assert.ok([smallestPinned, smallestPinned + 100, 520].every(pinnedAt) && ![smallestPinned - 1, 213, 198, 150].some(pinnedAt), 'monotonic: no height pins, un-pins and pins again');
+  // Without them, the fixed tool/Show/Callouts rows need the preferred minimum to leave a list: below it everything scrolls.
+  assert.equal(flows({ panelHeight: L.MIN_PANEL_HEIGHT, contentHeight: 520 }), false);
+  assert.equal(flows({ panelHeight: L.MIN_PANEL_HEIGHT - 1, contentHeight: 520 }), true);
+  assert.equal(flows({ panelHeight: L.PANEL_FLOOR_HEIGHT, contentHeight: 520 }), true);
+  // Unusable measurements never switch layouts.
+  assert.equal(flows({ panelHeight: NaN, contentHeight: 520, footerHeight: arrowFooter }), false);
+  assert.equal(flows({ panelHeight: 100, contentHeight: undefined }), false);
+});
+
 test('in a crowded view a label is dropped rather than covering another label or marker; the marker itself is never dropped', () => {
   const pinAt = (id, x, y) => ({ id, x: x - 12, y: y - 12, w: 24, h: 24 });
   const label = (id, x, y, text = 'FRAGILE') => ({ id, marker: { x, y }, text });

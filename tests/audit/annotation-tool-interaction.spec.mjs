@@ -3076,17 +3076,108 @@ test('an arrow hidden by cargo is dashed with a hollow head even when selected; 
   assert.notEqual((await look(hidden.id)).shaftDash, 'none');
   assert.equal((await gripsShown(page)).length, 2);
   // When the cargo moves off it, the arrow is in the clear again: the state follows the scene and nothing is stored.
-  // The Editor normally brings the meshes up to date a moment after a Load Plan edit; an occlusion refresh that lands in
-  // that gap measures the old meshes and (for an arrow or marker on the ground) is not repeated until the view or an
-  // anchor changes. The scene is brought up to date in the same task here so the assertion does not depend on that gap.
   const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
   await page.evaluate(() => {
-    const { PackLibrary, CaseScene } = window.probe;
-    const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
-    PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, z: inst.transform.position.z + 200 } } });
-    CaseScene.sync(PackLibrary.getById('fixture-pack'));
+    const inst = window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+    window.probe.PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, z: inst.transform.position.z + 200 } } });
   });
   await page.waitForFunction(id => !document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-occluded'), hidden.id);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'occlusion is derived, never saved');
+  assert.deepEqual(errors, []);
+});
+
+test('occlusion follows the synchronized scene: cargo moved off or onto a ground arrow or marker re-measures it, also when the meshes synchronize after the first measurement, and an unchanged scene is never re-measured', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // An arrow whose middle runs under cargo-a, and a callout on the ground under cargo-b (each seen only through that cargo).
+  const arrow = await seedArrow(page, [20, -20], [120, -20]);
+  await seed(page, [{ title: 'Under the case', ground: [300, 20] }]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1 && document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1);
+  // Count every occlusion measurement (each reads the scene's raycast meshes) and note when the last one ran.
+  await page.evaluate(() => {
+    const { CaseScene } = window.probe;
+    const real = CaseScene.getRaycastMeshes.bind(CaseScene);
+    window.__rays = 0;
+    window.__rayAt = performance.now();
+    CaseScene.getRaycastMeshes = () => { window.__rays += 1; window.__rayAt = performance.now(); return real(); };
+  });
+  const looks = () => page.evaluate(id => ({
+    arrow: document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-occluded'),
+    marker: document.querySelector('.tp3d-annot-pin:not(.is-draft)').classList.contains('is-hollow'),
+  }), arrow.id);
+  const becomes = async (expected, label) => {
+    await page.waitForFunction(([id, want]) => {
+      const a = document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-occluded');
+      const m = document.querySelector('.tp3d-annot-pin:not(.is-draft)').classList.contains('is-hollow');
+      return a === want.arrow && m === want.marker;
+    }, [arrow.id, expected]);
+    assert.deepEqual(await looks(), expected, label);
+  };
+  // No measurement has run for a moment: the next change meets a refresh that is due, which is the ordinary case. One
+  // cargo moves per step, as in a single Load Plan edit (a second change right behind it would re-measure by itself).
+  const quiet = () => page.waitForFunction(() => performance.now() - window.__rayAt > 150);
+  const moveCargo = (id, delta) => page.evaluate(([cargo, by]) => {
+    const { PackLibrary } = window.probe;
+    const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === cargo);
+    PackLibrary.updateInstance('fixture-pack', cargo, { transform: { ...inst.transform, position: { ...inst.transform.position, z: inst.transform.position.z + by } } });
+  }, [id, delta]);
+  const rays = () => page.evaluate(() => window.__rays);
+  const sceneZ = id => page.evaluate(cargo => window.probe.CaseScene.getObject(cargo).position.z, id);
+  const committedZ = id => page.evaluate(cargo => window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === cargo).transform.position.z, id);
+  await becomes({ arrow: true, marker: true }, 'both start behind cargo');
+  const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const camera = await page.evaluate(() => window.probe.camera());
+
+  // 1. The ordinary Editor path, both ways: a Load Plan edit moves one cargo (no drag) and the view never moves.
+  await quiet();
+  await moveCargo('cargo-a', 200);
+  await becomes({ arrow: false, marker: true }, 'cargo-a moved off the arrow: only the arrow is in the clear');
+  await quiet();
+  await moveCargo('cargo-b', 200);
+  await becomes({ arrow: false, marker: false }, 'cargo-b moved off the marker: both are in the clear');
+  await quiet();
+  await moveCargo('cargo-a', -200);
+  await becomes({ arrow: true, marker: false }, 'cargo-a moved back onto the arrow');
+  await quiet();
+  await moveCargo('cargo-b', -200);
+  await becomes({ arrow: true, marker: true }, 'cargo-b moved back onto the marker');
+
+  // 2. The meshes synchronize AFTER the tool measured: the scene sync is held, the change is measured against the old layout,
+  //    then the sync completes and the new layout is measured from the synchronized scene with no camera move.
+  for (const [id, hiddenAfter] of [['cargo-a', { arrow: false, marker: true }], ['cargo-b', { arrow: false, marker: false }]]) {
+    await quiet();
+    await page.evaluate(() => {
+      const { CaseScene } = window.probe;
+      window.__realSync = CaseScene.sync;
+      CaseScene.sync = () => {}; // the Editor's render reaches the tool, but the scene does not synchronize yet
+    });
+    const before = await rays();
+    const heldZ = await sceneZ(id);
+    await moveCargo(id, 200);
+    await page.waitForFunction(count => window.__rays > count, before);
+    await quiet();
+    assert.equal(await sceneZ(id), heldZ, `${id}: the scene still holds the old layout`);
+    assert.notEqual(await committedZ(id), heldZ, `${id}: while the committed layout has moved`);
+    assert.notDeepEqual(await looks(), hiddenAfter, `${id}: measured against the old layout while the scene had not synchronized`);
+    await page.evaluate(() => {
+      const { CaseScene, PackLibrary } = window.probe;
+      CaseScene.sync = window.__realSync;
+      CaseScene.sync(PackLibrary.getById('fixture-pack'));
+    });
+    await becomes(hiddenAfter, `${id}: the completed sync re-measures the new layout`);
+    assert.notEqual(await sceneZ(id), heldZ, `${id}: the scene now shows the committed layout`);
+  }
+  assert.equal(await page.evaluate(() => window.probe.camera()), camera, 'no camera move was needed');
+
+  // 3. An unchanged scene is never re-measured: re-syncing the same layout, and frames passing, run no more rays.
+  await quiet();
+  const settledRays = await rays();
+  const revision = await page.evaluate(() => window.probe.CaseScene.getGeometryRevision());
+  await page.evaluate(() => window.probe.CaseScene.sync(window.probe.PackLibrary.getById('fixture-pack')));
+  await frames(page, 12);
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.getGeometryRevision()), revision, 'syncing the same layout is not a change');
+  assert.equal(await rays(), settledRays, 'nothing moved, so nothing was measured again');
   assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'occlusion is derived, never saved');
   assert.deepEqual(errors, []);
 });
@@ -3310,5 +3401,174 @@ test('the arrow look controls never push the rows out of reach beside Results: t
   await removeCard();
   await frames(page, 8);
   assert.ok(near((await panel()).h, full.h, 1), 'the panel is back to its full height');
+  assert.deepEqual(errors, []);
+});
+
+test('beside expanded Results the panel never runs under the card and never loses its rows to the look controls: at 1100x620 (also with the Outdated header), at every height down to its floor and compact, Show, the tools, every row, Re-attach and the look controls stay reachable', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1100, height: 620 });
+  // Two callouts, three Valid arrows and an arrow whose tail sat on cargo that is now gone (Unresolved, with Re-attach).
+  await seed(page, [{ title: 'Callout 1', ground: [100, 10] }, { title: 'Callout 2', ground: [140, 10] }]);
+  for (const [from, to] of [[[60, -20], [180, -20]], [[10, -30], [10, 40]], [[250, -30], [330, 10]]]) await seedArrow(page, from, to);
+  const broken = await seedArrow(page, TOP_OF_B, [520, 10]);
+  await page.evaluate(() => window.probe.PackLibrary.removeInstances('fixture-pack', ['cargo-b']));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 6);
+  const panel = () => boxOf(page, '#editor-annotation-panel');
+  const card = () => boxOf(page, '[data-role="autopack-results-panel"]');
+  const flows = () => page.evaluate(() => document.querySelector('#editor-annotation-panel .tp3d-annot-panel__body').classList.contains('is-flow'));
+  // A stand-in for the Results card (the panel reads its rectangle from the DOM), placed in viewport coordinates.
+  const placeCard = ({ x, y, w = 420, h = 237 }) => page.evaluate(([left, top, width, height]) => {
+    const host = document.querySelector('.canvas-wrap');
+    const origin = host.getBoundingClientRect();
+    let stand = document.querySelector('[data-role="autopack-results-panel"]');
+    if (!stand) {
+      stand = document.createElement('section');
+      stand.setAttribute('data-role', 'autopack-results-panel');
+      stand.style.cssText = 'position:absolute;z-index:12;background:#fff;border:1px solid #888;box-sizing:border-box';
+      host.appendChild(stand);
+      // The Editor's own render drops a Results card it did not create when a row is selected: put the stand-in back in
+      // the same task, so it stays where the real card would stay through every click below.
+      window.__standInObserver = new MutationObserver(() => { if (!stand.isConnected) host.appendChild(stand); });
+      window.__standInObserver.observe(host, { childList: true });
+    }
+    Object.assign(stand.style, { left: `${left - origin.left}px`, top: `${top - origin.top}px`, width: `${width}px`, height: `${height}px` });
+  }, [x, y, w, h]);
+  const removeCard = () => page.evaluate(() => {
+    if (window.__standInObserver) window.__standInObserver.disconnect();
+    window.__standInObserver = null;
+    document.querySelector('[data-role="autopack-results-panel"]')?.remove();
+  });
+  // Every visible button the panel has, once scrolled into view, takes the click (nothing is drawn over it).
+  const unreachable = () => page.evaluate(() => [...document.querySelectorAll('#editor-annotation-panel button')].filter(button => {
+    const r = button.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }).filter(button => {
+    button.scrollIntoView({ block: 'nearest' });
+    const r = button.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !(top && (top === button || button.contains(top)));
+  }).map(button => button.getAttribute('aria-label') || button.textContent.trim()));
+  const inventory = () => page.evaluate(() => {
+    const visible = el => el.getClientRects().length > 0;
+    const root = document.getElementById('editor-annotation-panel');
+    return {
+      show: [...root.querySelectorAll('.tp3d-annot-seg--show .tp3d-annot-seg__btn')].filter(visible).length,
+      tools: [...root.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].filter(visible).length,
+      rows: [...root.querySelectorAll('.tp3d-annot-row__select')].filter(visible).length,
+      reattach: [...root.querySelectorAll('button')].filter(b => /^Re-attach/.test(b.textContent.trim()) && visible(b)).length,
+      look: [...root.querySelectorAll('.tp3d-annot-panel__arrow .tp3d-annot-seg__btn, .tp3d-annot-panel__arrow .tp3d-annot-swatch')].filter(visible).length,
+    };
+  });
+  // At the top of the body, with no scrolling: do the tool and Show buttons (and the first row) take a click, or does a pinned
+  // footer sit over them?
+  const hittableAtTop = () => page.evaluate(() => {
+    document.querySelector('#editor-annotation-panel .tp3d-annot-panel__body').scrollTop = 0;
+    const hit = selector => {
+      const el = document.querySelector(`#editor-annotation-panel ${selector}`);
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return Boolean(top && (top === el || el.contains(top)));
+    };
+    return { tools: hit('.tp3d-annot-seg--tools .tp3d-annot-seg__btn'), show: hit('.tp3d-annot-seg--show .tp3d-annot-seg__btn'), row: hit('.tp3d-annot-row__select') };
+  });
+  const assertUsable = async (label, { look = true, rowAtTop = true } = {}) => {
+    const shown = await panel();
+    const stand = await card();
+    assert.equal(overlaps(shown, stand), false, `${label}: the panel does not touch Results`);
+    const top = await hittableAtTop();
+    assert.deepEqual([top.tools, top.show], [true, true], `${label}: the tool and Show buttons are in reach without scrolling`);
+    if (rowAtTop) assert.equal(top.row, true, `${label}: so is the first row`);
+    assert.deepEqual(await unreachable(), [], `${label}: every control it has can be reached`);
+    const have = await inventory();
+    assert.deepEqual([have.show, have.tools, have.rows, have.reattach > 0, look ? have.look > 0 : true], [3, 3, 6, true, true], `${label}: Show, the tools, every row, Re-attach and the look controls are all there`);
+  };
+
+  // An arrow is selected, so its look controls are showing. With no card the panel is at its full size and pins them.
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select');
+  await page.waitForFunction(() => !document.querySelector('.tp3d-annot-panel__arrow')?.hidden);
+  await frames(page, 6);
+  const full = await panel();
+  assert.equal(await flows(), false, 'room enough: the look controls stay pinned under the scrolling rows');
+  assert.deepEqual(await unreachable(), [], 'no Results: everything is reachable');
+
+  // 1. Normal expanded Results at 1100x620 (the geometry of the real card): 213 px above it.
+  await placeCard({ x: full.x - 129, y: full.y + 219, h: 237 });
+  await frames(page, 8);
+  const normal = await panel();
+  assert.ok(near(normal.h, 213, 1.5) && normal.y === full.y, 'it gives up height and keeps its place');
+  assert.equal(await flows(), true, 'too short for pinned controls: everything scrolls under the header');
+  await assertUsable('normal Results');
+
+  // 2. The Outdated header makes the card taller: 198 px above it, two short of the preferred minimum. No cliff.
+  await placeCard({ x: full.x - 129, y: full.y + 204, h: 252 });
+  await frames(page, 8);
+  const outdated = await panel();
+  const outdatedCard = await card();
+  assert.ok(near(outdated.h, 198, 1.5) && outdated.y === full.y, 'still docked above the card, a little shorter');
+  await assertUsable('Outdated Results');
+  // Show, selecting a row and Re-attach take real clicks (they are scrolled to and must not be covered).
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("Selected")');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-seg--show .tp3d-annot-seg__btn[aria-pressed="true"]').textContent.trim() === 'Selected');
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("All")');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-seg--show .tp3d-annot-seg__btn[aria-pressed="true"]').textContent.trim() === 'All');
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select >> nth=1');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row.is-selected').length === 1);
+  await page.click(endButton(broken.id, 'start'));
+  await page.waitForFunction(() => /set the arrow tail/i.test(window.probe.hint()));
+  await page.focus('#viewport');
+  await page.keyboard.press('Escape');
+  assert.doesNotMatch(await page.evaluate(() => window.probe.hint()), /set the arrow tail/i, 'Re-attach was reachable and Escape cancels it');
+  assert.deepEqual(await card(), outdatedCard, 'Results never moved');
+  await page.waitForFunction(() => window.probe.hint() === ''); // the status line is gone: the rows sit where they settle
+
+  // 3. Every height from plenty of room down to the floor: the panel is exactly as tall as the room, never under the card.
+  for (const room of [260, 236, 213, 200, 199, 198, 190, 175, 160, 150]) {
+    await placeCard({ x: full.x - 129, y: full.y + room + 6, h: 237 });
+    await frames(page, 6);
+    const shown = await panel();
+    assert.ok(near(shown.h, Math.min(full.h, room), 1.5), `${room} px of room: the panel is ${Math.round(shown.h)} px (the room, not a cliff)`);
+    await assertUsable(`${room} px of room`, { rowAtTop: room >= 198 });
+  }
+  // Below the floor nothing useful fits: V1A's rule applies (the panel is left where it is and the card stays on top).
+  await placeCard({ x: full.x - 129, y: full.y + 140 + 6, h: 237 });
+  await frames(page, 6);
+  assert.ok(near((await panel()).h, full.h, 1), 'under the floor the panel is not squeezed into a sliver');
+
+  // 4. The owner's dragged place is a preference: the fit is temporary and ends when Results moves away.
+  await removeCard();
+  await frames(page, 6);
+  const home = await panel();
+  assert.deepEqual([home.x, home.y, home.h], [full.x, full.y, full.h], 'with Results gone the panel is back exactly');
+  assert.equal(await flows(), false, 'and its look controls are pinned again');
+  const grip = () => page.evaluate(() => { const r = document.querySelector('#editor-annotation-panel .tp3d-annot-grip').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  const from = await grip();
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x - 120, from.y - 20, { steps: 6 });
+  await page.mouse.up();
+  await frames(page, 6);
+  const dropped = await panel();
+  assert.ok(dropped.x < full.x - 80, 'the owner moved the panel');
+  await placeCard({ x: dropped.x - 129, y: dropped.y + 204, h: 252 });
+  await frames(page, 8);
+  assert.ok(near((await panel()).h, 198, 1.5), 'the dragged panel is fitted above the card too');
+  await assertUsable('dragged panel beside Outdated Results');
+  await removeCard();
+  await frames(page, 6);
+  const back = await panel();
+  assert.deepEqual([back.x, back.y, back.h], [dropped.x, dropped.y, dropped.h], 'with Results gone it returns to where the owner dropped it');
+
+  // 5. Compact: the bottom sheet rides above the card and scrolls as a whole.
+  await page.setViewportSize({ width: 500, height: 740 });
+  await frames(page, 8);
+  const wrap = await boxOf(page, '.canvas-wrap');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').classList.contains('is-compact')), true);
+  await placeCard({ x: wrap.x + 60, y: wrap.b - 280, w: 380, h: 250 });
+  await frames(page, 10);
+  assert.equal(await flows(), true, 'compact: the sheet scrolls as a whole');
+  await assertUsable('compact');
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 6, 'nothing was written');
   assert.deepEqual(errors, []);
 });

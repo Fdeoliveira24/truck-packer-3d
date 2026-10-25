@@ -6339,12 +6339,17 @@ body.tp3d-shared-modal-lock #app .nav {
 /* With the look controls showing, the rows and the controls scroll together, and the controls stay pinned to the bottom
    edge: in a height-limited panel (beside AutoPack Results, or the narrow sheet) they must never squeeze the list to
    nothing, and every row and control stays reachable. */
-.tp3d-annot-panel__body.has-arrow-options {
+.tp3d-annot-panel__body.has-arrow-options,
+.tp3d-annot-panel__body.is-flow {
   overflow-y: auto;
+}
+
+.tp3d-annot-panel__body.has-arrow-options {
   scroll-padding-bottom: 116px; /* what scrolling a row or button into view leaves clear of the pinned controls */
 }
 
-.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__list {
+.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__list,
+.tp3d-annot-panel__body.is-flow .tp3d-annot-panel__list {
   flex: none;
   overflow: visible;
 }
@@ -6353,6 +6358,16 @@ body.tp3d-shared-modal-lock #app .nav {
   position: sticky;
   bottom: 0;
   background: var(--bg-elevated);
+}
+
+/* A panel too short to keep rows beside pinned controls (set from its measured height, so it follows any window or card
+   size): the tool, Show and Callouts rows, the list and the look controls all scroll together under the header. */
+.tp3d-annot-panel__body.has-arrow-options.is-flow {
+  scroll-padding-bottom: 0;
+}
+
+.tp3d-annot-panel__body.has-arrow-options.is-flow .tp3d-annot-panel__arrow {
+  position: static;
 }
 
 .tp3d-annot-panel__arrow-title {

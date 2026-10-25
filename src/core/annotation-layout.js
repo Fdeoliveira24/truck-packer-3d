@@ -272,6 +272,13 @@ export function fitEditorClear({ rect, viewport, panel = [], status = [], result
 /** Smallest height worth giving the desktop panel: its header, tool and view rows and part of one callout row. */
 export const MIN_PANEL_HEIGHT = 200;
 /**
+ * Where a panel that cannot have MIN_PANEL_HEIGHT still gives up height rather than being left under Results: its header
+ * and tool row with a little of what scrolls beneath them. Below this nothing useful fits and it stays where it is.
+ */
+export const PANEL_FLOOR_HEIGHT = 150;
+/** Scrolling room that must remain beside the arrow look controls for them to stay pinned (else they scroll with the rows). */
+export const PANEL_PIN_MIN_SCROLL = 150;
+/**
  * Where the desktop panel may sit: below the viewport toolbar and left of the viewport controls (px from each edge).
  * The left and bottom insets are the margin the panel's own drag keeps from the viewport edge.
  */
@@ -282,16 +289,17 @@ export const PANEL_REGION_INSETS = Object.freeze({ left: 10, top: 64, right: 58,
  * either of them. Like the editor card, the panel stays put when nothing is in the way. A card over its lower part
  * leaves it docked and limits its height (the list scrolls); otherwise it moves to the nearest clear spot inside its
  * region, and when no full-size spot exists it keeps its width and gives up height (its list scrolls, its header and
- * tools never move off the panel). Display only: the owner's dragged position is never touched, so the panel returns
- * when Results moves away. `clear` is false only when even a minimum-height panel has nowhere to go; the caller then
- * leaves it where it is.
+ * tools never move off the panel). Where not even `minHeight` is available it keeps giving up height down to `floorHeight`
+ * (its whole body scrolls under the header), so a few pixels of room never leave it under the card. Display only: the
+ * owner's dragged position is never touched, so the panel returns when Results moves away. `clear` is false only when even
+ * a floor-height panel has nowhere to go; the caller then leaves it where it is.
  * @param {{ panel: {x:number,y:number,w:number,h:number}, blockers?: Array<{x:number,y:number,w:number,h:number}>,
  *   viewport: {width:number,height:number}, insets?: {left:number,top:number,right:number,bottom:number},
- *   gap?: number, minHeight?: number }} input `panel` is where the panel would sit at its natural height.
+ *   gap?: number, minHeight?: number, floorHeight?: number }} input `panel` is where the panel would sit at its natural height.
  * @returns {{ dx: number, dy: number, maxHeight: number|null, clear: boolean }} the shift to apply and the height limit
  *   (null when the natural height fits).
  */
-export function fitPanelClear({ panel, blockers = [], viewport, insets = PANEL_REGION_INSETS, gap = OBSTACLE_GAP, minHeight = MIN_PANEL_HEIGHT }) {
+export function fitPanelClear({ panel, blockers = [], viewport, insets = PANEL_REGION_INSETS, gap = OBSTACLE_GAP, minHeight = MIN_PANEL_HEIGHT, floorHeight = PANEL_FLOOR_HEIGHT }) {
   const region = { x: insets.left, y: insets.top, w: viewport.width - insets.left - insets.right, h: viewport.height - insets.top - insets.bottom };
   const stay = clear => ({ dx: 0, dy: 0, maxHeight: null, clear });
   if (!isRect(panel) || !(region.w > 0) || !(region.h > 0)) return stay(false);
@@ -300,21 +308,43 @@ export function fitPanelClear({ panel, blockers = [], viewport, insets = PANEL_R
   const at = local(panel);
   const hits = rect => solid.some(blocker => overlapArea(rect, inflate(blocker, gap)) > 0);
   if (!hits(at)) return stay(true);
-  // A card over the panel's lower part: the panel stays where it is docked and its list scrolls above the card.
-  let limit = Infinity;
-  for (const blocker of solid) {
-    if (blocker.y > at.y && blocker.x < at.x + at.w && blocker.x + blocker.w > at.x) limit = Math.min(limit, blocker.y - gap - at.y);
-  }
-  if (limit >= minHeight && limit < at.h && !hits({ ...at, h: limit })) return { dx: 0, dy: 0, maxHeight: Math.floor(limit), clear: true };
-  // Anywhere else (over the header, beside it): the nearest clear spot, whole, or the tallest stretch there is.
-  const fit = clearOfBlockers(at, solid, { width: region.w, height: region.h }, { margin: 0, gap, minHeight });
-  if (!fit.clear) return stay(false);
-  return {
-    dx: Math.round(fit.x + region.x - panel.x),
-    dy: Math.round(fit.y + region.y - panel.y),
-    maxHeight: fit.shrunk ? Math.floor(fit.h) : null,
-    clear: true,
+  // The tallest the panel can be, down to `floor`: docked where it is with its list scrolling above the card, or shifted
+  // to the nearest clear spot (whole, or giving up height there). null when even `floor` has nowhere to go.
+  const fitAbove = floor => {
+    // A card over the panel's lower part: the panel stays where it is docked and its list scrolls above the card.
+    let limit = Infinity;
+    for (const blocker of solid) {
+      if (blocker.y > at.y && blocker.x < at.x + at.w && blocker.x + blocker.w > at.x) limit = Math.min(limit, blocker.y - gap - at.y);
+    }
+    if (limit >= floor && limit < at.h && !hits({ ...at, h: limit })) return { dx: 0, dy: 0, maxHeight: Math.floor(limit), clear: true };
+    // Anywhere else (over the header, beside it): the nearest clear spot, whole, or the tallest stretch there is.
+    const fit = clearOfBlockers(at, solid, { width: region.w, height: region.h }, { margin: 0, gap, minHeight: floor });
+    if (!fit.clear) return null;
+    return {
+      dx: Math.round(fit.x + region.x - panel.x),
+      dy: Math.round(fit.y + region.y - panel.y),
+      maxHeight: fit.shrunk ? Math.floor(fit.h) : null,
+      clear: true,
+    };
   };
+  // The preferred minimum first (the layout V1A settled), then down to the floor: a few pixels short of the preferred
+  // minimum must not leave the panel under the card, so there is no cliff where the room above Results runs out.
+  return fitAbove(minHeight) || (floorHeight < minHeight ? fitAbove(floorHeight) : null) || stay(false);
+}
+
+/**
+ * Whether the panel body scrolls as a whole (everything below the header, the arrow look controls included) instead of
+ * keeping its rows fixed and scrolling only the list. A panel limited in height (beside Results, in a small window, as the
+ * narrow sheet) must never lose its tool, Show or list rows to controls that stay put: where the pinned look controls would
+ * leave less than `minScroll` of scrolling room, or the fixed rows would leave no list, everything scrolls together.
+ * @param {{ panelHeight: number, contentHeight: number, headHeight: number, footerHeight?: number, minHeight?: number, minScroll?: number }} input
+ *   `contentHeight` is the panel's height with nothing scrolling; `footerHeight` is the arrow look controls' (0 when hidden).
+ * @returns {boolean}
+ */
+export function panelBodyFlows({ panelHeight, contentHeight, headHeight, footerHeight = 0, minHeight = MIN_PANEL_HEIGHT, minScroll = PANEL_PIN_MIN_SCROLL }) {
+  if (![panelHeight, contentHeight, headHeight, footerHeight].every(finite)) return false;
+  if (!(contentHeight > panelHeight + 1)) return false; // everything fits: there is nothing to scroll
+  return footerHeight > 0 ? panelHeight - headHeight - footerHeight < minScroll : panelHeight < minHeight;
 }
 
 const LABEL_HEIGHT = 20;

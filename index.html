@@ -914,8 +914,8 @@
                   </button>
                 </div>
                 <!-- Floating viewport controls, top to bottom: Annotations, Measurement Tool, Camera Views, Zoom In,
-                     Zoom Out. The Measurement, Camera and Zoom buttons are hidden independently by their Settings
-                     preferences; Annotations is always available. -->
+                     Zoom Out. Each button is hidden independently by its Settings preference (Show Annotations, Show
+                     Measurement Tool, Show Camera Controls, Show Zoom Controls); the group hides when none remain. -->
                 <div class="tp3d-editor-zoom-controls" id="editor-zoom-controls" role="group" aria-label="Annotation, measurement, camera and zoom controls">
                   <button id="btn-editor-annotations" type="button" aria-label="Annotations" aria-pressed="false" aria-controls="editor-annotation-panel" title="Annotations">
                     <i class="fa-solid fa-marker" aria-hidden="true"></i>
@@ -940,7 +940,7 @@
                 <!-- Annotations: callout markers and cards are a DOM/SVG layer above the canvas, so no canvas
                      capture (Screenshot, PDF views, thumbnails, previews) can include them. The compact
                      Annotations panel stays hidden until the Annotations control is on. -->
-                <div class="tp3d-annot-layer" id="editor-annotation-layer" role="group" aria-label="Callouts"></div>
+                <div class="tp3d-annot-layer" id="editor-annotation-layer" role="group" aria-label="Annotations"></div>
                 <section class="tp3d-annot-panel" id="editor-annotation-panel" aria-label="Annotations" hidden></section>
                 <!-- Bottom-left utility stack: AutoPack Results restore (top) above the
                      Load Plan Needs Review warning (bottom). Each control is hidden when unused. -->

@@ -180,7 +180,7 @@ test('lenient normalization never drops, coerces or truncates what it cannot rea
   assert.deepEqual(A.normalizeAnnotations(null), []);
   const good = callout('good');
   const malformed = { id: 'bad', type: 'callout', title: '', anchor: { kind: 'mystery' } };
-  const future = { id: 'arr', type: 'arrow', schemaVersion: 1, a: {}, b: {} };
+  const future = { id: 'drw', type: 'draw', schemaVersion: 1, points: [] };
   const newer = { ...good, id: 'newer', schemaVersion: 9 };
   const list = [good, malformed, 'garbage', 42, null, future, newer];
   const frozen = JSON.stringify(list);
@@ -342,6 +342,260 @@ test('an annotation on a contested ID is withheld whole and verbatim, so the sur
   assert.equal(A.carryAnnotationsThroughIdentity(carried, identity)[0].type, A.ANNOTATION_TYPE_UNREADABLE, 'idempotent');
   const clean = M.canonicalizeInstanceIds(['a', 'b'], () => 'minted');
   assert.equal(A.carryAnnotationsThroughIdentity(raw, clean), A.remapAnnotationInstanceIds(raw, clean.idMap));
+});
+
+// ============================================================================
+// SECTION: ARROWS (V1B.1) — record, gates, identity, resolution
+// ============================================================================
+
+const FLOOR_ANCHOR = M.buildFloorAnchor({ surface: 'main', point: { x: 100, y: 0, z: 0 } });
+const arrow = (id, start = ground(5, 5), end = ground(40, 5), extra = {}) => A.createArrowRecord({ id, start, end, now: 1000, ...extra });
+const ARROW_KEYS = ['color', 'createdAt', 'end', 'hidden', 'id', 'schemaVersion', 'start', 'type', 'updatedAt', 'width'];
+
+test('an arrow is exactly the contracted record: two independent anchors, presentation only, nothing derived', () => {
+  const made = arrow('a1', onCargo('inst-1'), FLOOR_ANCHOR, { color: '#A1B2C3', width: 'bold' });
+  assert.deepEqual(Object.keys(made).sort(), ARROW_KEYS);
+  assert.deepEqual([made.type, made.schemaVersion, made.color, made.width, made.hidden, made.createdAt, made.updatedAt], ['arrow', 1, '#a1b2c3', 'bold', false, 1000, 1000]);
+  assert.equal(A.ANNOTATION_SCHEMA_VERSION, 1, 'the schema version is unchanged');
+  const defaults = arrow('a2');
+  assert.deepEqual([defaults.color, defaults.width, defaults.hidden], ['ink', 'regular', false]);
+  assert.deepEqual([...A.ARROW_WIDTHS], ['thin', 'regular', 'bold']);
+  assert.equal(A.validateArrowRecord(made), null);
+  for (const key of ['label', 'title', 'offset', 'status', 'length', 'anchor']) assert.equal(Object.hasOwn(made, key), false, `no ${key}`);
+  assert.deepEqual(A.normalizeAnnotations([made]), [made], 'canonical form is the record itself');
+  assert.deepEqual(A.validateAnnotationCollection([made]).annotations, [made]);
+  assert.deepEqual(A.normalizeAnnotations(JSON.parse(JSON.stringify([made]))), [made], 'survives a JSON round trip exactly');
+  // An invalid value is kept as given so the gate refuses the write; it is never replaced by a default.
+  assert.notEqual(A.validateArrowRecord(arrow('w', ground(1, 1), ground(9, 9), { width: 'huge' })), null);
+  assert.notEqual(A.validateArrowRecord(arrow('c', ground(1, 1), ground(9, 9), { color: 'pink' })), null);
+});
+
+test('arrow validation names the first problem, rejects unknown top-level keys and leaves callout validation alone', () => {
+  const ok = arrow('v', onCargo('inst-1'), ground(40, 5));
+  const bad = (patch, pattern) => assert.match(A.validateArrowRecord({ ...ok, ...patch }) || '', pattern, JSON.stringify(patch).slice(0, 60));
+  bad({ id: '' }, /id/);
+  bad({ id: 'x'.repeat(65) }, /id/);
+  bad({ type: 'callout' }, /type/);
+  bad({ schemaVersion: 2 }, /schemaVersion/);
+  bad({ color: 'pink' }, /color/);
+  bad({ color: '#12' }, /color/);
+  bad({ width: 'huge' }, /width/);
+  bad({ width: undefined }, /width/);
+  bad({ width: 3 }, /width/);
+  bad({ hidden: 1 }, /flags/);
+  bad({ createdAt: 'now' }, /timestamps/);
+  bad({ updatedAt: NaN }, /timestamps/);
+  bad({ start: null }, /start/);
+  bad({ end: { kind: 'space', surface: 'sky', position: { x: 0, y: 0, z: 0 } } }, /end\.surface/);
+  bad({ start: { ...onCargo('inst-1'), local: { x: 0, y: 0, z: 0 } } }, /start is not on the surface/);
+  bad({ label: 'Door' }, /unsupported field/);
+  bad({ title: 'x' }, /unsupported field/);
+  bad({ anchor: ground(1, 1) }, /unsupported field/);
+  bad({ end: ok.start }, /same point/);
+  bad({ end: { ...ok.start, junk: 1 } }, /same point/);
+  assert.match(A.validateArrowRecord(JSON.parse('{"__proto__": {"x": 1}, "id": "p", "type": "arrow", "schemaVersion": 1}')) || '', /unsupported field/, 'a __proto__ key is just an unknown key');
+  assert.match(A.validateArrowRecord(null), /object/);
+  // Callouts: the V1A validator is unchanged and still refuses an arrow as "not a callout".
+  assert.match(A.validateCalloutRecord(ok), /type/);
+  assert.match(A.validateArrowRecord(callout('c')), /type/);
+});
+
+test('lenient normalization keeps a valid arrow, wraps every unreadable one verbatim and never converts a wrapper', () => {
+  const good = arrow('good', onCargo('inst-1'), FLOOR_ANCHOR);
+  const malformed = { ...arrow('bad'), width: 'huge' };
+  const extra = { ...arrow('extra'), label: 'Door', note: { nested: true } };
+  const newer = { ...arrow('newer'), schemaVersion: 9 };
+  const sameEnds = { ...arrow('same'), end: ground(5, 5) };
+  const legacy = { id: 'arrow-1', type: 'arrow', schemaVersion: 1 };
+  const draw = { id: 'drw', type: 'draw', schemaVersion: 1, points: [1, 2] };
+  const list = [good, malformed, extra, newer, sameEnds, legacy, draw, callout('c')];
+  const frozen = JSON.stringify(list);
+  const out = A.normalizeAnnotations(list);
+  assert.equal(JSON.stringify(list), frozen, 'the stored input is not mutated');
+  assert.equal(out.length, list.length, 'nothing is dropped');
+  assert.deepEqual(out[0], good);
+  assert.deepEqual(out.slice(1, 7).map(r => r.type), Array(6).fill(A.ANNOTATION_TYPE_UNREADABLE));
+  assert.deepEqual([malformed, extra, newer, sameEnds, legacy, draw].map((original, i) => out[i + 1].original), [malformed, extra, newer, sameEnds, legacy, draw],
+    'every original is preserved verbatim, including an unknown key');
+  assert.equal(out[2].original.note.nested, true);
+  assert.equal(out[1].reason, 'The saved annotation could not be read.', 'a malformed arrow is damaged, not "from a newer version"');
+  assert.equal(out[2].reason, 'The saved annotation could not be read.');
+  assert.equal(out[3].reason, 'Saved by a newer version of the app.', 'a later schemaVersion is');
+  assert.equal(out[6].reason, 'Saved by a newer version of the app.', 'draw stays a future type until V1B.2');
+  assert.equal(out[7].type, A.ANNOTATION_TYPE_CALLOUT);
+  assert.equal(new Set(out.map(r => r.id)).size, out.length);
+  assert.equal(A.normalizeAnnotations(out), out, 'idempotent');
+  assert.deepEqual(A.normalizeAnnotations(JSON.parse(JSON.stringify(out))), out);
+  // Arrow and callout share one ID space.
+  const twin = A.normalizeAnnotations([callout('same-id'), arrow('same-id')]);
+  assert.deepEqual([twin[0].type, twin[1].type, twin[1].reason], ['callout', 'unreadable', 'Duplicate annotation ID in this Load Plan.']);
+  assert.deepEqual(twin[1].original, arrow('same-id'));
+});
+
+test('an unreadable wrapper stays inert even when its original is a valid arrow with a unique current holder', () => {
+  const inner = arrow('inner', onCargo('inst-1'), FLOOR_ANCHOR);
+  const wrapper = { id: 'w', type: 'unreadable', schemaVersion: 1, reason: 'Saved by a newer version of the app.', original: inner };
+  const ctx = context();
+  assert.equal(A.resolveAnnotation(A.normalizeAnnotations([wrapper])[0], ctx).status, 'unresolved', 'the wrapped arrow is not drawable');
+  assert.equal(A.resolveAnnotation(inner, ctx).status, 'valid', 'control: the same arrow outside a wrapper resolves');
+  const normalized = A.normalizeAnnotations([wrapper]);
+  assert.deepEqual(normalized, [wrapper], 'not converted');
+  assert.deepEqual(A.validateAnnotationCollection([wrapper]).annotations, [wrapper], 'import and restore accept it verbatim');
+  const identity = M.canonicalizeInstanceIds(['inst-1'], () => 'minted');
+  assert.deepEqual(A.carryAnnotationsThroughIdentity([wrapper], identity), [wrapper], 'identity decisions never reach inside a wrapper');
+  assert.deepEqual(A.remapAnnotationInstanceIds([wrapper], new Map([['inst-1', 'other']])), [wrapper], 'nor does a duplicate or import remap');
+  const contested = M.canonicalizeInstanceIds(['inst-1', ' inst-1 '], () => 'minted', [true, false]);
+  assert.deepEqual(A.carryAnnotationsThroughIdentity([wrapper], contested), [wrapper], 'a contested key does not re-wrap or unwrap it either');
+  // A wrapper whose original is a callout is just as inert.
+  const calloutWrapper = { id: 'cw', type: 'unreadable', schemaVersion: 1, reason: 'x', original: callout('inner-c', onCargo('inst-1')) };
+  assert.deepEqual(A.normalizeAnnotations([calloutWrapper]), [calloutWrapper]);
+});
+
+test('strict validation accepts arrows and wrappers, rejects anything unreadable, draw or unknown, and shares the 200 cap', () => {
+  const good = arrow('g', onCargo('inst-1'), ground(40, 5));
+  const dangling = arrow('d', onCargo('gone'), FLOOR_ANCHOR);
+  const wrapper = A.normalizeAnnotations([{ id: 'x' }])[0];
+  const mixed = A.validateAnnotationCollection([callout('c'), good, dangling, wrapper]);
+  assert.equal(mixed.ok, true, 'a reference to missing cargo is valid, resolved as Unresolved later');
+  assert.deepEqual(mixed.annotations, [callout('c'), good, dangling, wrapper]);
+  const err = entry => A.validateAnnotationCollection([callout('c'), entry]).error || '';
+  assert.match(err({ ...good, width: 'huge' }), /annotations\[1\] width is invalid/);
+  assert.match(err({ ...good, label: 'x' }), /annotations\[1\] record has an unsupported field/);
+  assert.match(err({ ...good, schemaVersion: 2 }), /annotations\[1\] schemaVersion/);
+  assert.match(err({ ...good, end: good.start }), /annotations\[1\] start and end are the same point/);
+  assert.match(err({ id: 'drw', type: 'draw', schemaVersion: 1, points: [] }), /annotations\[1\] type is not supported/, 'draw is not accepted until V1B.2');
+  assert.match(A.validateAnnotationCollection([callout('c'), { ...good, id: 'c' }]).error, /duplicate annotation id "c"/);
+  const callouts = n => Array.from({ length: n }, (_, i) => callout(`c${i}`, ground(i, 1)));
+  assert.equal(A.validateAnnotationCollection([...callouts(199), good]).annotations.length, 200, 'callouts and arrows share one cap');
+  assert.match(A.validateAnnotationCollection([...callouts(200), good]).error, /too many annotations \(201; maximum 200\)/);
+  assert.match(A.validateAnnotationCollection([good, ...callouts(199), wrapper]).error, /too many annotations/, 'recovery records count too');
+});
+
+test('editing an arrow changes only presentation; moving an endpoint changes only that endpoint', () => {
+  const base = arrow('e', onCargo('inst-1'), ground(40, 5));
+  const edited = A.editArrowRecord(base, { color: '#00FF7F', width: 'thin', hidden: true, id: 'hijack', start: FLOOR_ANCHOR, type: 'callout' }, 5000);
+  assert.deepEqual([edited.color, edited.width, edited.hidden], ['#00ff7f', 'thin', true]);
+  assert.deepEqual([edited.id, edited.type, edited.createdAt, edited.updatedAt], ['e', 'arrow', 1000, 5000]);
+  assert.deepEqual([edited.start, edited.end], [base.start, base.end], 'unknown patch keys (id, start, type) are ignored');
+  assert.equal(A.editArrowRecord(base, { width: 'huge' }, 5000), null);
+  assert.equal(A.editArrowRecord(base, { color: 'url(x)' }, 5000), null);
+  assert.equal(A.editArrowRecord(base, { color: 'violet' }, 5000).color, 'violet');
+  assert.equal(A.editArrowRecord(base, { width: 'bold' }, NaN), null);
+  assert.equal(A.editArrowRecord(callout('c'), { width: 'bold' }, 5000), null, 'only an arrow can be edited as one');
+  assert.equal(A.editArrowRecord(base, null, 5000), null);
+
+  const moved = A.replaceArrowEndpoint(base, 'end', FLOOR_ANCHOR, 7000);
+  assert.deepEqual([moved.start, moved.end], [base.start, FLOOR_ANCHOR]);
+  assert.deepEqual([moved.color, moved.width, moved.id, moved.createdAt, moved.updatedAt], [base.color, base.width, 'e', 1000, 7000]);
+  assert.deepEqual(A.replaceArrowEndpoint(base, 'start', ground(9, 9), 7000).end, base.end, 'the other end is untouched');
+  assert.equal(A.replaceArrowEndpoint(base, 'middle', FLOOR_ANCHOR, 7000), null);
+  assert.equal(A.replaceArrowEndpoint(base, 'end', { kind: 'space', surface: 'sky', position: { x: 0, y: 0, z: 0 } }, 7000), null);
+  assert.equal(A.replaceArrowEndpoint(base, 'end', { ...onCargo('inst-1'), local: { x: 0, y: 0, z: 0 } }, 7000), null, 'a point off the cargo surface is refused');
+  assert.equal(A.replaceArrowEndpoint(base, 'end', base.start, 7000), null, 'both ends cannot name the same point');
+  assert.equal(A.replaceArrowEndpoint(callout('c'), 'end', FLOOR_ANCHOR, 7000), null);
+  assert.equal(A.replaceArrowEndpoint(base, 'end', FLOOR_ANCHOR, NaN), null);
+});
+
+test('arrow resolution is the worst of its two ends and carries positions only when both are Valid', () => {
+  const resolve = (record, overrides) => A.resolveAnnotation(record, context(overrides));
+  const ok = resolve(arrow('a', onCargo('inst-1'), ground(10, 20)));
+  assert.deepEqual([ok.status, ok.reason, ok.point, ok.start, ok.end], ['valid', null, null, { x: 84, y: 102, z: 3 }, { x: 10, y: 0, z: 20 }]);
+  assert.deepEqual([ok.startStatus, ok.endStatus, ok.startReason, ok.endReason], ['valid', 'valid', null, null]);
+  assert.equal(resolve(arrow('a', onCargo('inst-1'), FLOOR_ANCHOR)).status, 'valid', 'cargo to floor');
+  const surface = M.buildSpaceAnchor({ surface: 'ground', point: { x: 3, y: 0, z: 3 } });
+  assert.equal(resolve(arrow('a', surface, onCargo('inst-1'))).status, 'valid', 'space to cargo');
+
+  const missing = resolve(arrow('a', onCargo('inst-1'), ground(10, 20)), { getInstance: () => null });
+  assert.deepEqual([missing.status, missing.reason, missing.start, missing.end], ['unresolved', 'cargo-missing', null, null], 'no half arrow');
+  assert.deepEqual([missing.startStatus, missing.startReason, missing.endStatus, missing.endReason], ['unresolved', 'cargo-missing', 'valid', null], 'the broken end is named');
+  const resized = resolve(arrow('a', ground(10, 20), onCargo('inst-1')), { getCase: () => ({ ...CASE, dimensions: { ...CASE.dimensions, length: 60 } }) });
+  assert.deepEqual([resized.status, resized.reason, resized.start, resized.endStatus, resized.endReason], ['needs-review', 'case-changed', null, 'needs-review', 'case-changed']);
+  const bothWays = resolve(arrow('a', onCargo('inst-1'), onCargo('inst-2')), {
+    getInstance: id => (id === 'inst-1' ? instance() : null), getCase: () => ({ ...CASE, dimensions: { ...CASE.dimensions, length: 60 } }),
+  });
+  assert.deepEqual([bothWays.status, bothWays.startStatus, bothWays.endStatus, bothWays.reason], ['unresolved', 'needs-review', 'unresolved', 'cargo-missing'], 'Unresolved dominates Needs Review');
+  const ambiguous = resolve(arrow('a', onCargo('inst-1'), ground(10, 20)), { isInstanceAmbiguous: () => true });
+  assert.deepEqual([ambiguous.status, ambiguous.reason], ['unresolved', 'cargo-ambiguous']);
+  const noFloor = resolve(arrow('a', ground(10, 20), FLOOR_ANCHOR), { floors: [] });
+  assert.deepEqual([noFloor.status, noFloor.reason, noFloor.endReason], ['unresolved', 'floor-missing', 'floor-missing']);
+  assert.deepEqual(A.resolveAnnotationList([arrow('a'), callout('c'), { id: 'junk' }], context()).map(r => r.status), ['valid', 'valid', 'unresolved']);
+  assert.deepEqual(A.resolveAnnotation(callout('c'), context()).point, { x: 5, y: 0, z: 5 }, 'a callout resolves exactly as before');
+});
+
+test('each arrow end follows its own cargo through remapping; an unmapped end is never guessed', () => {
+  const both = arrow('both', onCargo(' old-1 '), onCargo('old-2'));
+  const mixed = arrow('mixed', onCargo('old-1'), FLOOR_ANCHOR);
+  const space = arrow('space', ground(1, 1), onCargo(' old-2 '));
+  const partial = arrow('partial', onCargo('old-1'), onCargo('stranger'));
+  const map = new Map([['old-1', 'new-1'], ['old-2', 'new-2']]);
+  const out = A.remapAnnotationInstanceIds([both, mixed, space, partial, callout('c', onCargo('old-1'))], map);
+  assert.deepEqual([out[0].start.instanceId, out[0].end.instanceId], ['new-1', 'new-2'], 'both ends, independently');
+  assert.deepEqual([out[1].start.instanceId, out[1].end], ['new-1', FLOOR_ANCHOR], 'cargo to floor: the floor end is untouched');
+  assert.deepEqual([out[2].start, out[2].end.instanceId], [ground(1, 1), 'new-2'], 'space to cargo');
+  assert.deepEqual([out[3].start.instanceId, out[3].end.instanceId], ['new-1', 'stranger'], 'an end the map does not know stays exactly as it is');
+  assert.equal(out[4].anchor.instanceId, 'new-1', 'callouts remap as before');
+  assert.deepEqual(out[0].start.local, both.start.local, 'only the instance ID changes');
+  const unchanged = [mixed, space];
+  assert.equal(A.remapAnnotationInstanceIds(unchanged, new Map()), A.normalizeAnnotations(unchanged), 'nothing changed: the normalized list itself is returned');
+  const swapped = A.remapAnnotationInstanceIds([both], new Map([['old-1', 'old-2'], ['old-2', 'old-1']]))[0];
+  assert.deepEqual([swapped.start.instanceId, swapped.end.instanceId], ['old-2', 'old-1'], 'a swap is applied once, never chained');
+});
+
+test('an arrow with either end on a contested ID is withheld whole and verbatim; ambiguous and missing cargo stay arrows', () => {
+  const identity = M.canonicalizeInstanceIds(['cargo', ' cargo ', 'other'], () => 'minted', [true, false, true]);
+  assert.deepEqual([...identity.contestedKeys], ['cargo']);
+  const carryIdentity = { idMap: new Map([['other', 'other-2']]), contestedKeys: identity.contestedKeys };
+  const raw = [
+    arrow('start-contested', onCargo(' cargo '), ground(40, 5)),
+    arrow('end-contested', ground(40, 5), onCargo('cargo')),
+    arrow('half-remap', onCargo('other'), onCargo(' cargo ')),
+    arrow('fine', onCargo('other'), ground(40, 5)),
+    arrow('dangling', onCargo('elsewhere'), FLOOR_ANCHOR),
+  ];
+  const carried = A.carryAnnotationsThroughIdentity(raw, carryIdentity);
+  assert.deepEqual(carried.slice(0, 3).map(r => r.type), Array(3).fill(A.ANNOTATION_TYPE_UNREADABLE));
+  assert.deepEqual(carried.slice(0, 3).map(r => r.original), raw.slice(0, 3), 'the pre-remap record is preserved, including the end that did map');
+  assert.equal(carried[2].original.start.instanceId, 'other', 'the end that would have been remapped was not');
+  assert.match(carried[0].reason, /shared its ID with another cargo item/);
+  assert.equal(carried[3].type, A.ANNOTATION_TYPE_ARROW);
+  assert.equal(carried[3].start.instanceId, 'other-2', 'an unaffected arrow still follows the map');
+  assert.equal(carried[4].start.instanceId, 'elsewhere', 'a dangling reference is left as it is');
+  assert.equal(new Set(carried.map(r => r.id)).size, carried.length);
+  assert.deepEqual(A.carryAnnotationsThroughIdentity(carried, carryIdentity), carried, 'idempotent');
+  const clean = M.canonicalizeInstanceIds(['a', 'b'], () => 'minted');
+  assert.equal(A.carryAnnotationsThroughIdentity(raw, clean), A.remapAnnotationInstanceIds(raw, clean.idMap), 'no contested key: the plain remap');
+  // Survivors that share an ID are neither mapped nor contested: the arrow is kept and resolves as ambiguous.
+  const shared = M.canonicalizeInstanceIds(['dup', 'dup'], () => 'minted');
+  assert.equal(shared.idMap.size, 0);
+  assert.equal(shared.contestedKeys.size, 0);
+  const kept = A.carryAnnotationsThroughIdentity([arrow('amb', onCargo('dup'), ground(40, 5))], shared)[0];
+  assert.equal(kept.type, A.ANNOTATION_TYPE_ARROW);
+  assert.deepEqual(A.resolveAnnotation(kept, context({ isInstanceAmbiguous: () => true })).reason, 'cargo-ambiguous');
+  // Missing cargo is derived, never a reason to wrap or reassign.
+  assert.equal(A.resolveAnnotation(carried[4], context({ getInstance: () => null })).startReason, 'cargo-missing');
+});
+
+test('an arrow may be written only against ends that resolve and, when both do, at least half an inch apart', () => {
+  const problem = (record, overrides, moved) => A.arrowPlacementProblem(record, context(overrides), moved);
+  assert.equal(A.MIN_ARROW_LENGTH_INCHES, 0.5);
+  assert.equal(problem(arrow('a', ground(5, 5), ground(40, 5))), null);
+  assert.equal(problem(arrow('a', ground(5, 5), ground(5.5, 5))), null, 'exactly half an inch is long enough');
+  assert.equal(problem(arrow('a', ground(5, 5), ground(5.4, 5))), 'too-short');
+  assert.equal(problem(arrow('a', ground(5, 5), ground(5, 5.49))), 'too-short');
+  const nearCargo = M.buildSpaceAnchor({ surface: 'free', point: { x: 84, y: 102.3, z: 3 } });
+  assert.equal(problem(arrow('a', onCargo('inst-1'), nearCargo)), 'too-short', 'measured between the resolved points, whatever the anchor kinds');
+  assert.equal(problem(arrow('a', onCargo('inst-1'), ground(10, 20)), { getInstance: () => null }), 'unresolved');
+  assert.equal(problem(arrow('a', onCargo('inst-1'), ground(10, 20)), { isInstanceAmbiguous: () => true }), 'unresolved');
+  assert.equal(problem(arrow('a', ground(10, 20), onCargo('inst-1')), { getCase: () => ({ ...CASE, shape: 'cylinder' }) }), 'unresolved', 'Needs Review is refused too');
+  assert.equal(problem(arrow('a', ground(10, 20), FLOOR_ANCHOR), { floors: [] }), 'unresolved');
+  // Moving one end: that end must resolve; a broken other end only means the length cannot be checked.
+  const broken = arrow('m', onCargo('inst-1'), ground(40, 5));
+  const gone = { getInstance: () => null };
+  assert.equal(problem(arrow('m', ground(9, 9), ground(40, 5)), gone, 'start'), null);
+  assert.equal(problem(broken, gone, 'start'), 'unresolved');
+  assert.equal(problem(broken, gone, 'end'), null, 'repairing the healthy end of a broken arrow is allowed');
+  assert.equal(problem(arrow('m', ground(9, 9), ground(9.2, 9)), {}, 'end'), 'too-short');
+  assert.equal(problem(arrow('m', ground(9, 9), onCargo('inst-1')), gone, 'start'), null, 'the broken end is not the one being placed');
 });
 
 // ============================================================================
@@ -615,6 +869,51 @@ test('the desktop panel stays clear of the AutoPack Results card wherever either
   assert.deepEqual(crammed, { dx: 0, dy: 0, maxHeight: null, clear: false });
 });
 
+test('the desktop panel has no cliff above AutoPack Results: short of its preferred minimum it keeps giving up height down to a floor, and only below the floor is it left where it is', () => {
+  const view = { width: 800, height: 650 };
+  const I = L.PANEL_REGION_INSETS;
+  const panel = { x: view.width - I.right - 300, y: I.top, w: 300, h: 436 };
+  assert.ok(L.PANEL_FLOOR_HEIGHT < L.MIN_PANEL_HEIGHT, 'a floor under the preferred minimum');
+  // A card across the whole region, `room` px below the panel's top plus the gap it must keep (so there is no spot beside or
+  // below it): the panel can be exactly `room` tall, docked where it is.
+  const withRoom = room => L.fitPanelClear({ panel, blockers: [{ x: 0, y: panel.y + room + L.OBSTACLE_GAP, w: view.width, h: 600 }], viewport: view });
+  let previous = Infinity;
+  for (const room of [300, 260, 213, 201, 200, 199, 198, 180, 160, 151, 150]) {
+    const fit = withRoom(room);
+    assert.deepEqual([fit.clear, fit.dx, fit.dy, fit.maxHeight], [true, 0, 0, room], `${room} px of room: it stays docked and is exactly as tall as the room`);
+    assert.ok(fit.maxHeight <= previous, 'never taller as the room shrinks');
+    previous = fit.maxHeight;
+  }
+  assert.deepEqual(withRoom(L.PANEL_FLOOR_HEIGHT - 1), { dx: 0, dy: 0, maxHeight: null, clear: false }, 'below the floor nothing useful fits: the caller leaves it alone');
+  // The preferred minimum still wins where it can: a card over the header moves the panel whole rather than squeezing it.
+  const overHeader = { x: 300, y: 20, w: 420, h: 237 };
+  const moved = L.fitPanelClear({ panel, blockers: [overHeader], viewport: view });
+  assert.ok(moved.clear && (moved.maxHeight === null || moved.maxHeight >= L.MIN_PANEL_HEIGHT), 'moved to a spot with at least the preferred minimum');
+  // The floor is only a fallback: with the floor raised to the minimum the old cliff is back.
+  assert.equal(L.fitPanelClear({ panel, blockers: [{ x: 0, y: panel.y + 198 + L.OBSTACLE_GAP, w: view.width, h: 600 }], viewport: view, floorHeight: L.MIN_PANEL_HEIGHT }).clear, false);
+});
+
+test('a height-limited panel scrolls as a whole instead of pinning controls over its rows', () => {
+  const head = 43;
+  const arrowFooter = 104;
+  const flows = input => L.panelBodyFlows({ headHeight: head, ...input });
+  // Everything fits: nothing scrolls, so the choice is moot.
+  assert.equal(flows({ panelHeight: 300, contentHeight: 300, footerHeight: arrowFooter }), false);
+  assert.equal(flows({ panelHeight: 150, contentHeight: 151 }), false, 'a 1 px overflow is a rounding difference, not a scroll');
+  // With the look controls showing, they stay pinned only while at least PANEL_PIN_MIN_SCROLL px of scrolling room remains beside them.
+  const pinnedAt = height => !flows({ panelHeight: height, contentHeight: 520, footerHeight: arrowFooter });
+  const smallestPinned = [...Array(400).keys()].map(n => 150 + n).find(pinnedAt);
+  assert.equal(smallestPinned, head + arrowFooter + L.PANEL_PIN_MIN_SCROLL, 'pinned from exactly the height that leaves the minimum scrolling room');
+  assert.ok([smallestPinned, smallestPinned + 100, 520].every(pinnedAt) && ![smallestPinned - 1, 213, 198, 150].some(pinnedAt), 'monotonic: no height pins, un-pins and pins again');
+  // Without them, the fixed tool/Show/Callouts rows need the preferred minimum to leave a list: below it everything scrolls.
+  assert.equal(flows({ panelHeight: L.MIN_PANEL_HEIGHT, contentHeight: 520 }), false);
+  assert.equal(flows({ panelHeight: L.MIN_PANEL_HEIGHT - 1, contentHeight: 520 }), true);
+  assert.equal(flows({ panelHeight: L.PANEL_FLOOR_HEIGHT, contentHeight: 520 }), true);
+  // Unusable measurements never switch layouts.
+  assert.equal(flows({ panelHeight: NaN, contentHeight: 520, footerHeight: arrowFooter }), false);
+  assert.equal(flows({ panelHeight: 100, contentHeight: undefined }), false);
+});
+
 test('in a crowded view a label is dropped rather than covering another label or marker; the marker itself is never dropped', () => {
   const pinAt = (id, x, y) => ({ id, x: x - 12, y: y - 12, w: 24, h: 24 });
   const label = (id, x, y, text = 'FRAGILE') => ({ id, marker: { x, y }, text });
@@ -651,4 +950,127 @@ test('the leader line joins marker and card, starts clear of the marker and vani
   assert.equal(L.leaderLine(marker, { x: 60, y: 60, w: 208, h: 70 }), null, 'a card over the marker needs none either');
   assert.equal(L.estimateCardHeight(null), 58);
   assert.ok(L.estimateCardHeight('x'.repeat(140)) > L.estimateCardHeight('x'.repeat(10)));
+});
+
+// ============================================================================
+// SECTION: ARROW GEOMETRY (screen space, pure)
+// ============================================================================
+const ARROW_VIEW = { width: 800, height: 600 };
+const closeTo = (actual, expected, tolerance = 0.06) => Math.abs(actual - expected) <= tolerance;
+// Where the head's base sits (the midpoint of its two back corners) and how wide the base is.
+const headBase = shape => ({ x: (shape.head[1].x + shape.head[2].x) / 2, y: (shape.head[1].y + shape.head[2].y) / 2, span: Math.hypot(shape.head[1].x - shape.head[2].x, shape.head[1].y - shape.head[2].y) });
+
+test('near-plane clipping keeps the part of an arrow in front of the camera, flags the cut end and refuses what it cannot project', () => {
+  const NEAR = -1; // camera space looks down -Z: in front is z <= NEAR
+  const a = { x: 0, y: 0, z: -5 };
+  const b = { x: 4, y: 2, z: -9 };
+  const both = L.clipSegmentToNear(a, b, NEAR);
+  assert.deepEqual(both, { a, b, aClipped: false, bClipped: false }, 'both ends in front: nothing is cut');
+  assert.notEqual(both.a, a, 'the result is a copy, never the caller\'s point');
+  assert.equal(L.clipSegmentToNear({ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 3 }, NEAR), null, 'both ends behind the plane: nothing to draw');
+  // Tail behind, head in front: the tail is cut where the segment crosses the plane (t = 0.2 here).
+  const tail = L.clipSegmentToNear({ x: 10, y: 0, z: 1 }, { x: 0, y: 5, z: -9 }, NEAR);
+  assert.deepEqual([tail.aClipped, tail.bClipped], [true, false], 'the tail was cut');
+  assert.deepEqual(tail.b, { x: 0, y: 5, z: -9 }, 'the head end is untouched');
+  assert.ok(closeTo(tail.a.x, 8, 1e-9) && closeTo(tail.a.y, 1, 1e-9) && tail.a.z === NEAR, 'cut on the plane, along the original line');
+  // Head behind, tail in front: the mirror case cuts the head and lands on the same point.
+  const head = L.clipSegmentToNear({ x: 0, y: 5, z: -9 }, { x: 10, y: 0, z: 1 }, NEAR);
+  assert.deepEqual([head.aClipped, head.bClipped], [false, true], 'the head was cut');
+  assert.ok(closeTo(head.b.x, 8, 1e-9) && closeTo(head.b.y, 1, 1e-9) && head.b.z === NEAR);
+  // An end exactly on the plane counts as in front; the other end is then cut onto it.
+  const onPlane = L.clipSegmentToNear({ x: 3, y: 4, z: NEAR }, { x: 0, y: 0, z: 3 }, NEAR);
+  assert.deepEqual([onPlane.aClipped, onPlane.bClipped, onPlane.b], [false, true, { x: 3, y: 4, z: NEAR }]);
+  // Anything that is not a finite point or plane is refused, never half-clipped.
+  for (const [p, q, near] of [
+    [{ x: NaN, y: 0, z: -5 }, b, NEAR], [a, { x: 0, y: Infinity, z: -5 }, NEAR], [a, { x: 0, y: 0, z: undefined }, NEAR],
+    [null, b, NEAR], [a, undefined, NEAR], [a, b, NaN], [a, b, undefined],
+  ]) assert.equal(L.clipSegmentToNear(p, q, near), null);
+});
+
+test('an arrow is a shaft and a head that points at the head end, scales down on short arrows and is shaft-only where its head end is not a real point', () => {
+  const horizontal = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, width: 'thin', viewport: ARROW_VIEW });
+  assert.deepEqual(horizontal, {
+    shaft: { x1: 100, y1: 300, x2: 389.8, y2: 300 },
+    head: [{ x: 400, y: 300 }, { x: 388, y: 305 }, { x: 388, y: 295 }],
+    tip: { x: 400, y: 300 }, length: 300, shaftWidth: 2,
+  });
+  // Every width keeps its own shaft stroke and head size, in every direction: the tip is the head end and the base lies toward the tail.
+  for (const width of ['thin', 'regular', 'bold']) {
+    for (const [tail, head] of [[{ x: 100, y: 300 }, { x: 500, y: 300 }], [{ x: 500, y: 300 }, { x: 100, y: 300 }], [{ x: 100, y: 100 }, { x: 400, y: 500 }], [{ x: 400, y: 500 }, { x: 100, y: 100 }], [{ x: 300, y: 500 }, { x: 300, y: 80 }]]) {
+      const shape = L.arrowShape({ tail, head, width, viewport: ARROW_VIEW });
+      const length = Math.hypot(head.x - tail.x, head.y - tail.y);
+      const base = headBase(shape);
+      const size = L.ARROW_HEAD_PX[width];
+      assert.equal(shape.shaftWidth, L.ARROW_SHAFT_PX[width]);
+      assert.deepEqual(shape.tip, head, `${width}: the tip is the head end`);
+      assert.ok(closeTo(Math.hypot(head.x - base.x, head.y - base.y), size.length, 0.1) && closeTo(base.span, size.width, 0.1), `${width}: full-size head`);
+      // The base lies on the tail side of the tip: moving from the tip toward the base moves toward the tail.
+      const toTail = { x: (tail.x - head.x) / length, y: (tail.y - head.y) / length };
+      assert.ok(closeTo((base.x - head.x) * toTail.x + (base.y - head.y) * toTail.y, size.length, 0.1), `${width}: the head points away from the tail`);
+      assert.ok(closeTo(Math.hypot(shape.shaft.x2 - head.x, shape.shaft.y2 - head.y), size.length * 0.85, 0.2), `${width}: the shaft ends a little inside the head`);
+    }
+  }
+  assert.equal(L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, width: 'huge', viewport: ARROW_VIEW }).shaftWidth, L.ARROW_SHAFT_PX.regular, 'an unknown width falls back to regular');
+
+  // Short arrows: nothing under the minimum length; above it the head shrinks so it never takes more than 60% of the arrow.
+  const at = length => L.arrowShape({ tail: { x: 100, y: 100 }, head: { x: 100 + length, y: 100 }, width: 'regular', viewport: ARROW_VIEW });
+  assert.equal(at(L.ARROW_MIN_SCREEN_PX - 0.01), null, 'just under the minimum length is not drawn');
+  assert.equal(at(0), null, 'a zero-length arrow is not drawn');
+  for (const length of [12, 15, 20, 24.9]) {
+    const base = headBase(at(length));
+    assert.ok(Math.hypot(100 + length - base.x, 100 - base.y) <= length * 0.6 + 0.1, `${length}px: the head is at most 60% of the arrow`);
+  }
+  assert.ok(closeTo(Math.hypot(125 - headBase(at(25)).x, 100 - headBase(at(25)).y), 15, 0.1), 'at 25px the head is full size');
+
+  // A head end cut by the near plane, or beyond the viewport margin, leaves a shaft only: no head, no tip.
+  const cut = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, viewport: ARROW_VIEW, headClipped: true });
+  assert.deepEqual([cut.head, cut.tip, cut.shaft], [null, null, { x1: 100, y1: 300, x2: 400, y2: 300 }]);
+  const far = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 900, y: 300 }, viewport: ARROW_VIEW });
+  assert.deepEqual([far.head, far.tip, far.shaft.x2], [null, null, 830], 'a head beyond the margin is cut at the margin edge');
+  const edge = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 820, y: 300 }, viewport: ARROW_VIEW });
+  assert.deepEqual(edge.tip, { x: 820, y: 300 }, 'a head half outside the viewport but inside the margin is drawn whole');
+});
+
+test('an arrow outside the viewport is not drawn, one crossing its edge is cut there, and no input ever yields an invalid path', () => {
+  const shape = (tail, head, extra = {}) => L.arrowShape({ tail, head, width: 'regular', viewport: ARROW_VIEW, ...extra });
+  assert.equal(shape({ x: -200, y: -200 }, { x: -100, y: -100 }), null, 'entirely off the top-left');
+  assert.equal(shape({ x: 100, y: -100 }, { x: 500, y: -100 }), null, 'entirely above');
+  assert.equal(shape({ x: 900, y: 100 }, { x: 900, y: 500 }), null, 'entirely to the right of the margin');
+  assert.equal(shape({ x: -60, y: 300 }, { x: -27, y: 300 }), null, 'only 3 px of it is inside the margin: below the visible minimum');
+  const crossing = shape({ x: -100, y: 300 }, { x: 200, y: 300 });
+  assert.deepEqual([crossing.shaft.x1, crossing.shaft.y1, crossing.tip], [-30, 300, { x: 200, y: 300 }], 'the tail end is cut at the margin; the head is real and whole');
+  const through = shape({ x: -200, y: 300 }, { x: 1000, y: 300 });
+  assert.deepEqual([through.shaft.x1, through.shaft.x2, through.head], [-30, 830, null], 'crossing the whole viewport: both ends cut, shaft only');
+
+  // Not finite, missing or degenerate input draws nothing.
+  const good = { tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, viewport: ARROW_VIEW };
+  for (const bad of [
+    { tail: { x: NaN, y: 0 } }, { head: { x: 0, y: Infinity } }, { tail: null }, { head: undefined }, { viewport: undefined },
+    { viewport: { width: NaN, height: 600 } }, { viewport: { width: 800, height: -Infinity } }, { head: { x: 100, y: 300 } },
+  ]) assert.equal(L.arrowShape({ ...good, ...bad }), null);
+  assert.deepEqual(L.arrowPathData(null), { shaft: '', head: '' });
+  assert.deepEqual(L.arrowPathData(undefined), { shaft: '', head: '' });
+  const full = L.arrowPathData(L.arrowShape({ ...good, width: 'thin' }));
+  assert.deepEqual(full, { shaft: 'M100 300L389.8 300', head: 'M400 300L388 305L388 295Z' }, 'shaft and head are separate, closed paths');
+  assert.deepEqual(L.arrowPathData(L.arrowShape({ ...good, headClipped: true })), { shaft: 'M100 300L400 300', head: '' }, 'a shaft-only arrow has no head path');
+
+  // A sweep through ordinary, edge and absurd screen coordinates: whatever is drawn is finite and stays near the viewport.
+  const ordinates = [0, 1, 400, 799, 800, -29, -31, 1e6, -1e6, 1e12, -1e12, 1e308, -1e308]; // the last pair overflows a difference to Infinity
+  const SLACK = 60; // the 30 px margin plus the largest head
+  let drawn = 0;
+  for (const tx of ordinates) for (const ty of ordinates) for (const hx of ordinates) for (const hy of ordinates) {
+    const result = shape({ x: tx, y: ty }, { x: hx, y: hy });
+    const paths = L.arrowPathData(result);
+    assert.equal(/NaN|Infinity|undefined/.test(paths.shaft + paths.head), false, `no invalid path for ${tx},${ty} -> ${hx},${hy}`);
+    if (!result) { assert.deepEqual(paths, { shaft: '', head: '' }); continue; }
+    drawn += 1;
+    const points = [[result.shaft.x1, result.shaft.y1], [result.shaft.x2, result.shaft.y2], ...(result.head || []).map(p => [p.x, p.y])];
+    for (const [x, y] of points) {
+      assert.ok(Number.isFinite(x) && Number.isFinite(y), 'finite coordinates');
+      assert.ok(x >= -SLACK && x <= ARROW_VIEW.width + SLACK && y >= -SLACK && y <= ARROW_VIEW.height + SLACK, `inside the viewport and margin: ${x},${y}`);
+    }
+    assert.equal(Boolean(result.head), Boolean(result.tip), 'a head and its tip come together');
+    assert.equal(Boolean(result.head), paths.head !== '');
+  }
+  assert.ok(drawn > 1000, 'the sweep draws plenty of arrows, so the checks above are not vacuous');
 });

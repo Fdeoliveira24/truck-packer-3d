@@ -2,7 +2,8 @@
  * @file annotation-layout.js
  * @description Pure screen-space layout for Annotations V1 (no THREE, no DOM): where a callout card sits
  *   relative to its marker, viewport clamping, the stored-offset round trip, the automatic placement used
- *   until a card is dragged, the leader line, and the card budget.
+ *   until a card is dragged, the leader line, and the card budget. Directional arrows live at the end of the
+ *   file: near-plane clipping in camera space and the bounded 2D shape (shaft and head) of one arrow.
  *
  *   Everything here works in CSS pixels inside the viewport overlay. The card's position is
  *   `marker + offset`, so it follows the marker through orbit, zoom and pan; a stored offset is never
@@ -271,6 +272,13 @@ export function fitEditorClear({ rect, viewport, panel = [], status = [], result
 /** Smallest height worth giving the desktop panel: its header, tool and view rows and part of one callout row. */
 export const MIN_PANEL_HEIGHT = 200;
 /**
+ * Where a panel that cannot have MIN_PANEL_HEIGHT still gives up height rather than being left under Results: its header
+ * and tool row with a little of what scrolls beneath them. Below this nothing useful fits and it stays where it is.
+ */
+export const PANEL_FLOOR_HEIGHT = 150;
+/** Scrolling room that must remain beside the arrow look controls for them to stay pinned (else they scroll with the rows). */
+export const PANEL_PIN_MIN_SCROLL = 150;
+/**
  * Where the desktop panel may sit: below the viewport toolbar and left of the viewport controls (px from each edge).
  * The left and bottom insets are the margin the panel's own drag keeps from the viewport edge.
  */
@@ -281,16 +289,17 @@ export const PANEL_REGION_INSETS = Object.freeze({ left: 10, top: 64, right: 58,
  * either of them. Like the editor card, the panel stays put when nothing is in the way. A card over its lower part
  * leaves it docked and limits its height (the list scrolls); otherwise it moves to the nearest clear spot inside its
  * region, and when no full-size spot exists it keeps its width and gives up height (its list scrolls, its header and
- * tools never move off the panel). Display only: the owner's dragged position is never touched, so the panel returns
- * when Results moves away. `clear` is false only when even a minimum-height panel has nowhere to go; the caller then
- * leaves it where it is.
+ * tools never move off the panel). Where not even `minHeight` is available it keeps giving up height down to `floorHeight`
+ * (its whole body scrolls under the header), so a few pixels of room never leave it under the card. Display only: the
+ * owner's dragged position is never touched, so the panel returns when Results moves away. `clear` is false only when even
+ * a floor-height panel has nowhere to go; the caller then leaves it where it is.
  * @param {{ panel: {x:number,y:number,w:number,h:number}, blockers?: Array<{x:number,y:number,w:number,h:number}>,
  *   viewport: {width:number,height:number}, insets?: {left:number,top:number,right:number,bottom:number},
- *   gap?: number, minHeight?: number }} input `panel` is where the panel would sit at its natural height.
+ *   gap?: number, minHeight?: number, floorHeight?: number }} input `panel` is where the panel would sit at its natural height.
  * @returns {{ dx: number, dy: number, maxHeight: number|null, clear: boolean }} the shift to apply and the height limit
  *   (null when the natural height fits).
  */
-export function fitPanelClear({ panel, blockers = [], viewport, insets = PANEL_REGION_INSETS, gap = OBSTACLE_GAP, minHeight = MIN_PANEL_HEIGHT }) {
+export function fitPanelClear({ panel, blockers = [], viewport, insets = PANEL_REGION_INSETS, gap = OBSTACLE_GAP, minHeight = MIN_PANEL_HEIGHT, floorHeight = PANEL_FLOOR_HEIGHT }) {
   const region = { x: insets.left, y: insets.top, w: viewport.width - insets.left - insets.right, h: viewport.height - insets.top - insets.bottom };
   const stay = clear => ({ dx: 0, dy: 0, maxHeight: null, clear });
   if (!isRect(panel) || !(region.w > 0) || !(region.h > 0)) return stay(false);
@@ -299,21 +308,43 @@ export function fitPanelClear({ panel, blockers = [], viewport, insets = PANEL_R
   const at = local(panel);
   const hits = rect => solid.some(blocker => overlapArea(rect, inflate(blocker, gap)) > 0);
   if (!hits(at)) return stay(true);
-  // A card over the panel's lower part: the panel stays where it is docked and its list scrolls above the card.
-  let limit = Infinity;
-  for (const blocker of solid) {
-    if (blocker.y > at.y && blocker.x < at.x + at.w && blocker.x + blocker.w > at.x) limit = Math.min(limit, blocker.y - gap - at.y);
-  }
-  if (limit >= minHeight && limit < at.h && !hits({ ...at, h: limit })) return { dx: 0, dy: 0, maxHeight: Math.floor(limit), clear: true };
-  // Anywhere else (over the header, beside it): the nearest clear spot, whole, or the tallest stretch there is.
-  const fit = clearOfBlockers(at, solid, { width: region.w, height: region.h }, { margin: 0, gap, minHeight });
-  if (!fit.clear) return stay(false);
-  return {
-    dx: Math.round(fit.x + region.x - panel.x),
-    dy: Math.round(fit.y + region.y - panel.y),
-    maxHeight: fit.shrunk ? Math.floor(fit.h) : null,
-    clear: true,
+  // The tallest the panel can be, down to `floor`: docked where it is with its list scrolling above the card, or shifted
+  // to the nearest clear spot (whole, or giving up height there). null when even `floor` has nowhere to go.
+  const fitAbove = floor => {
+    // A card over the panel's lower part: the panel stays where it is docked and its list scrolls above the card.
+    let limit = Infinity;
+    for (const blocker of solid) {
+      if (blocker.y > at.y && blocker.x < at.x + at.w && blocker.x + blocker.w > at.x) limit = Math.min(limit, blocker.y - gap - at.y);
+    }
+    if (limit >= floor && limit < at.h && !hits({ ...at, h: limit })) return { dx: 0, dy: 0, maxHeight: Math.floor(limit), clear: true };
+    // Anywhere else (over the header, beside it): the nearest clear spot, whole, or the tallest stretch there is.
+    const fit = clearOfBlockers(at, solid, { width: region.w, height: region.h }, { margin: 0, gap, minHeight: floor });
+    if (!fit.clear) return null;
+    return {
+      dx: Math.round(fit.x + region.x - panel.x),
+      dy: Math.round(fit.y + region.y - panel.y),
+      maxHeight: fit.shrunk ? Math.floor(fit.h) : null,
+      clear: true,
+    };
   };
+  // The preferred minimum first (the layout V1A settled), then down to the floor: a few pixels short of the preferred
+  // minimum must not leave the panel under the card, so there is no cliff where the room above Results runs out.
+  return fitAbove(minHeight) || (floorHeight < minHeight ? fitAbove(floorHeight) : null) || stay(false);
+}
+
+/**
+ * Whether the panel body scrolls as a whole (everything below the header, the arrow look controls included) instead of
+ * keeping its rows fixed and scrolling only the list. A panel limited in height (beside Results, in a small window, as the
+ * narrow sheet) must never lose its tool, Show or list rows to controls that stay put: where the pinned look controls would
+ * leave less than `minScroll` of scrolling room, or the fixed rows would leave no list, everything scrolls together.
+ * @param {{ panelHeight: number, contentHeight: number, headHeight: number, footerHeight?: number, minHeight?: number, minScroll?: number }} input
+ *   `contentHeight` is the panel's height with nothing scrolling; `footerHeight` is the arrow look controls' (0 when hidden).
+ * @returns {boolean}
+ */
+export function panelBodyFlows({ panelHeight, contentHeight, headHeight, footerHeight = 0, minHeight = MIN_PANEL_HEIGHT, minScroll = PANEL_PIN_MIN_SCROLL }) {
+  if (![panelHeight, contentHeight, headHeight, footerHeight].every(finite)) return false;
+  if (!(contentHeight > panelHeight + 1)) return false; // everything fits: there is nothing to scroll
+  return footerHeight > 0 ? panelHeight - headHeight - footerHeight < minScroll : panelHeight < minHeight;
 }
 
 const LABEL_HEIGHT = 20;
@@ -369,3 +400,148 @@ export function leaderLine(marker, rect) {
     y2,
   };
 }
+
+// ============================================================================
+// Directional arrows (screen space only; no THREE, no DOM)
+// ============================================================================
+/** Stroke width (px) of the shaft per stored width name. Constant on screen: it never scales with zoom. */
+export const ARROW_SHAFT_PX = Object.freeze({ thin: 2, regular: 3, bold: 5 });
+/** Arrowhead length and full width (px) per stored width name. */
+export const ARROW_HEAD_PX = Object.freeze({ thin: Object.freeze({ length: 12, width: 10 }), regular: Object.freeze({ length: 15, width: 12 }), bold: Object.freeze({ length: 21, width: 17 }) });
+/** An arrow whose projected length (tail to head) is below this is not drawn: it would be little more than a head. */
+export const ARROW_MIN_SCREEN_PX = 12;
+/** A visible stretch shorter than this is not drawn either (the rest of the arrow is off screen). */
+export const ARROW_MIN_VISIBLE_PX = 6;
+/** How far past the viewport edge an arrow end may sit and still count as on screen (so a head half-outside is still drawn whole). */
+export const ARROW_OFFSCREEN_MARGIN_PX = 30;
+const ARROW_HEAD_SHAFT_OVERLAP = 0.85;
+const ARROW_HEAD_MAX_FRACTION = 0.6;
+
+/**
+ * Clip a segment given in camera space (looking down -Z) to the near plane. A perspective camera cannot project a
+ * point at or behind its near plane, so the part of the segment in front is kept and the end that was cut is flagged.
+ * Linear interpolation is exact in camera space (the view transform is affine). Orthographic cameras need no clip.
+ * @param {{x:number,y:number,z:number}} a
+ * @param {{x:number,y:number,z:number}} b
+ * @param {number} nearZ the largest (closest to zero) camera-space Z that may be projected, e.g. -(near + epsilon)
+ * @returns {{ a: {x:number,y:number,z:number}, b: {x:number,y:number,z:number}, aClipped: boolean, bClipped: boolean } | null}
+ *   null when no part of the segment is in front of the camera or a coordinate is not finite
+ */
+export function clipSegmentToNear(a, b, nearZ) {
+  const ok = point => Boolean(point) && finite(point.x) && finite(point.y) && finite(point.z);
+  if (!ok(a) || !ok(b) || !finite(nearZ)) return null;
+  const aIn = a.z <= nearZ;
+  const bIn = b.z <= nearZ;
+  if (!aIn && !bIn) return null;
+  if (aIn && bIn) return { a: { ...a }, b: { ...b }, aClipped: false, bClipped: false };
+  // Exactly one end is in front: cut the other where the segment crosses the plane.
+  const t = (nearZ - a.z) / (b.z - a.z);
+  const cut = { x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t, z: nearZ };
+  if (!ok(cut)) return null;
+  return aIn
+    ? { a: { ...a }, b: cut, aClipped: false, bClipped: true }
+    : { a: cut, b: { ...b }, aClipped: true, bClipped: false };
+}
+
+/**
+ * Liang-Barsky: the parameter range [t0, t1] of the segment that lies inside `rect`, or null when none does.
+ */
+function clipParams(x1, y1, x2, y2, rect) {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  let t0 = 0;
+  let t1 = 1;
+  const edges = [[-dx, x1 - rect.x], [dx, rect.x + rect.w - x1], [-dy, y1 - rect.y], [dy, rect.y + rect.h - y1]];
+  for (const [p, q] of edges) {
+    if (p === 0) {
+      if (q < 0) return null;
+    } else {
+      const r = q / p;
+      if (p < 0) {
+        if (r > t1) return null;
+        if (r > t0) t0 = r;
+      } else {
+        if (r < t0) return null;
+        if (r < t1) t1 = r;
+      }
+    }
+  }
+  return t0 < t1 ? { t0, t1 } : null;
+}
+
+const round1 = value => Math.round(value * 10) / 10;
+
+/**
+ * The 2D shape of one arrow from its projected end points: a shaft from the tail to the base of a solid head
+ * at the head end. Everything is bounded to the viewport (plus a margin), so a near-plane clip or a huge zoom
+ * can never produce coordinates the SVG cannot render. Returns null (draw nothing) when:
+ * - a coordinate is not finite;
+ * - the full projected length is below ARROW_MIN_SCREEN_PX (too short to read as an arrow);
+ * - no part of it is inside the viewport, or the visible stretch is below ARROW_MIN_VISIBLE_PX.
+ * The head is drawn only when the head end is a real point (not cut by the near plane) inside the viewport margin
+ * and the arrow is long enough to carry it; otherwise the arrow is shaft only. A head never exceeds 60% of the length.
+ * @param {{ tail: {x:number,y:number}, head: {x:number,y:number}, width: 'thin'|'regular'|'bold', viewport: {width:number,height:number},
+ *   headClipped?: boolean, margin?: number }} input
+ * @returns {{ shaft: {x1:number,y1:number,x2:number,y2:number}, head: Array<{x:number,y:number}> | null,
+ *   tip: {x:number,y:number} | null, length: number, shaftWidth: number } | null}
+ */
+export function arrowShape({ tail, head, width = 'regular', viewport, headClipped = false, margin = ARROW_OFFSCREEN_MARGIN_PX }) {
+  if (!tail || !head || !viewport) return null;
+  if (![tail.x, tail.y, head.x, head.y, viewport.width, viewport.height].every(finite)) return null;
+  const length = Math.hypot(head.x - tail.x, head.y - tail.y);
+  if (!(length >= ARROW_MIN_SCREEN_PX)) return null;
+  const rect = { x: -margin, y: -margin, w: viewport.width + margin * 2, h: viewport.height + margin * 2 };
+  const span = clipParams(tail.x, tail.y, head.x, head.y, rect);
+  if (!span) return null;
+  if ((span.t1 - span.t0) * length < ARROW_MIN_VISIBLE_PX) return null;
+  const ux = (head.x - tail.x) / length;
+  const uy = (head.y - tail.y) / length;
+  const shaftWidth = ARROW_SHAFT_PX[width] || ARROW_SHAFT_PX.regular;
+  const size = ARROW_HEAD_PX[width] || ARROW_HEAD_PX.regular;
+  const headWhole = !headClipped && span.t1 === 1;
+  const startX = tail.x + (head.x - tail.x) * span.t0;
+  const startY = tail.y + (head.y - tail.y) * span.t0;
+  if (!headWhole) {
+    // Shaft only: the visible part of the line, the head end being off screen or cut by the near plane.
+    const endX = tail.x + (head.x - tail.x) * span.t1;
+    const endY = tail.y + (head.y - tail.y) * span.t1;
+    if (![startX, startY, endX, endY].every(finite)) return null;
+    return { shaft: { x1: round1(startX), y1: round1(startY), x2: round1(endX), y2: round1(endY) }, head: null, tip: null, length, shaftWidth };
+  }
+  // A short arrow carries a smaller head, never a head longer than most of itself.
+  const scale = Math.min(1, (length * ARROW_HEAD_MAX_FRACTION) / size.length);
+  const headLength = size.length * scale;
+  const halfWidth = (size.width * scale) / 2;
+  const baseX = head.x - ux * headLength;
+  const baseY = head.y - uy * headLength;
+  const polygon = [
+    { x: head.x, y: head.y },
+    { x: baseX - uy * halfWidth, y: baseY + ux * halfWidth },
+    { x: baseX + uy * halfWidth, y: baseY - ux * halfWidth },
+  ];
+  // The shaft ends a little inside the head so the two never show a seam; a tail end that is off screen is cut at the edge.
+  const shaftEndX = head.x - ux * headLength * ARROW_HEAD_SHAFT_OVERLAP;
+  const shaftEndY = head.y - uy * headLength * ARROW_HEAD_SHAFT_OVERLAP;
+  const coordinates = [startX, startY, shaftEndX, shaftEndY, ...polygon.flatMap(point => [point.x, point.y])];
+  if (!coordinates.every(finite)) return null;
+  return {
+    shaft: { x1: round1(startX), y1: round1(startY), x2: round1(shaftEndX), y2: round1(shaftEndY) },
+    head: polygon.map(point => ({ x: round1(point.x), y: round1(point.y) })),
+    tip: { x: round1(head.x), y: round1(head.y) },
+    length,
+    shaftWidth,
+  };
+}
+
+/** SVG path data for a shape returned by `arrowShape`: the shaft line and the head triangle as two separate paths. */
+export function arrowPathData(shape) {
+  if (!shape) return { shaft: '', head: '' };
+  const { shaft, head } = shape;
+  return {
+    shaft: `M${shaft.x1} ${shaft.y1}L${shaft.x2} ${shaft.y2}`,
+    head: head ? `M${head[0].x} ${head[0].y}L${head[1].x} ${head[1].y}L${head[2].x} ${head[2].y}Z` : '',
+  };
+}
+
+/** Where along an arrow (0 = tail, 1 = head) occlusion is sampled: the two ends and the middle. */
+export const ARROW_SAMPLE_FRACTIONS = Object.freeze([0, 0.5, 1]);

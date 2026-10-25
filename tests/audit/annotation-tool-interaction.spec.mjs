@@ -78,7 +78,7 @@ StateStore.init({
   currentScreen: 'editor', currentPackId: packId, selectedInstanceIds: [], caseLibrary: cases,
   packLibrary: [{ id: packId, title: 'Fixture', truck: { length: 636, width: 102, height: 110, shapeMode: 'rect' },
     cases: [packed('cargo-a', cases[0], 70, -20), packed('cargo-b', cases[1], 300, 20)], groups: [], createdAt: 1, lastEdited: 1 }],
-  folderLibrary: [], preferences: Defaults.defaultPreferences,
+  folderLibrary: [], preferences: { ...Defaults.defaultPreferences, ...(window.__TEST_PREFERENCES || {}) },
 });
 
 let SceneManager = null;
@@ -88,7 +88,7 @@ SceneManager = createSceneRuntime({ Utils, UIComponents, PreferencesManager, Tra
 const CaseScene = createCaseScene({ SceneManager, CaseLibrary, CategoryService, PackLibrary, StateStore, TrailerGeometry, Utils, PreferencesManager });
 const OperationLifecycle = createOperationLifecycle();
 const MeasurementTool = createMeasurementTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, PreferencesManager, UIComponents, OperationLifecycle });
-const AnnotationTool = createAnnotationTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, UIComponents, OperationLifecycle });
+const AnnotationTool = createAnnotationTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, PreferencesManager, UIComponents, OperationLifecycle });
 const InteractionManager = createInteractionManager({ SceneManager, CaseScene, StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, OperationLifecycle, MeasurementTool, AnnotationTool });
 const ExportService = { captureScreenshot() {}, generatePDF() {}, capturePackPreview: () => false, clearPackPreview: () => false };
 window.__TP3D_BILLING = { getBillingState: () => ({ ok: true, orgId: '' }) };
@@ -134,7 +134,7 @@ EditorUI.render();
 const canvas = () => SceneManager.getRenderer().domElement;
 const livePack = () => PackLibrary.getById(packId);
 window.probe = {
-  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, CaseLibrary, InteractionManager, MeasurementTool, AnnotationTool, EditorUI, M, A, UIComponents,
+  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, CaseLibrary, InteractionManager, MeasurementTool, AnnotationTool, EditorUI, PreferencesManager, M, A, UIComponents,
   annotations: () => PackLibrary.getAnnotations(packId),
   resolved: () => PackLibrary.resolveAnnotations(packId),
   hint: () => { const el = document.querySelector('.tp3d-annot-panel__hint'); return el ? el.textContent : ''; },
@@ -176,9 +176,11 @@ const CONTENT_TYPES = {
 };
 const SERVED = ['/src/', '/styles/', '/vendor/', '/media/', '/node_modules/three/'];
 
-async function openEditor(browser, viewport = { width: 1400, height: 900 }) {
+async function openEditor(browser, viewport = { width: 1400, height: 900 }, { preferences = null } = {}) {
   const page = await browser.newPage({ viewport });
   page.setDefaultTimeout(30000);
+  // Preferences as they would have been stored before this boot (a "reload" with a saved choice).
+  if (preferences) await page.addInitScript(stored => { window.__TEST_PREFERENCES = stored; }, preferences);
   const errors = [];
   page.on('pageerror', error => errors.push(`${error.message}\n${error.stack}`));
   await page.route('**/*', async route => {
@@ -308,7 +310,7 @@ test('the Annotations control is the first button of the stack and opens a compa
   assert.equal(panel.title, 'Annotations');
   assert.equal(panel.badgeShown, false, 'no count badge while there are no annotations');
   assert.deepEqual(panel.tools.map(t => t.tool), ['callout', 'arrow', 'draw']);
-  assert.deepEqual(panel.tools.map(t => t.disabled), [false, true, true], 'Arrow and Draw are clearly unavailable');
+  assert.deepEqual(panel.tools.map(t => t.disabled), [false, false, true], 'Callout and Arrow are available; Draw is clearly unavailable');
   assert.deepEqual(panel.show, [['All', 'true'], ['Selected', 'false'], ['Off', 'false']]);
   assert.deepEqual(panel.display, [['Markers', 'true'], ['Labels', 'false'], ['Cards', 'false']]);
   assert.equal(panel.empty, true);
@@ -1327,6 +1329,23 @@ const unobstructed = (page, selector) => page.evaluate(sel => {
   return true;
 }, selector);
 const boxOf = (page, selector) => page.evaluate(sel => window.probe.box(sel), selector);
+// Toasts are transient (about 3 s) and paint above the editor, so on a slow runner one can still be up when a reachability check
+// runs. Wait for them to expire (no sleeps, nothing removed or hidden). One that never goes away is a finding: fail with its
+// text and box, never pass over it. A toast that was waited out is named in the test's diagnostics.
+const toastsOnScreen = page => page.evaluate(() => [...document.querySelectorAll('#toast-container .toast')].map(el => {
+  const r = el.getBoundingClientRect();
+  return { text: el.textContent.trim().replace(/\s+/g, ' ').slice(0, 120), box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] };
+}));
+const quietToasts = async (page, message, t) => {
+  const seen = await toastsOnScreen(page);
+  if (!seen.length) return;
+  t.diagnostic(`${message}: waited for ${seen.length} toast(s) to expire: ${JSON.stringify(seen)}`);
+  try {
+    await page.waitForFunction(() => !document.querySelector('#toast-container .toast'), null, { timeout: 15000 });
+  } catch {
+    assert.fail(`${message}: a toast is still on screen after 15 s: ${JSON.stringify(await toastsOnScreen(page))}`);
+  }
+};
 // Two animation frames: the overlays redraw on their own frame loops, so a state change is settled only after one.
 const frames = (page, n = 2) => page.evaluate(count => new Promise(resolve => {
   const step = left => (left <= 0 ? resolve() : window.requestAnimationFrame(() => step(left - 1)));
@@ -1917,7 +1936,11 @@ test('N01: the panel yields to an open editor only while they share space: an ed
   const cargo0 = await page.evaluate(() => window.probe.casesJson());
   const panelVisible = () => page.evaluate(sel => getComputedStyle(document.querySelector(sel)).visibility === 'visible', PANEL);
   const sweep = async message => {
-    assert.deepEqual(await editorControls(page), REACHABLE, `${message}: Title, Save and Cancel are reachable`);
+    await quietToasts(page, message, t);
+    const controls = await editorControls(page);
+    // A failure names what covers the control; the toasts on screen at that moment (text and box) are added to it.
+    const toasts = JSON.stringify(controls) === JSON.stringify(REACHABLE) ? '' : ` (toasts on screen: ${JSON.stringify(await toastsOnScreen(page))})`;
+    assert.deepEqual(controls, REACHABLE, `${message}: Title, Save and Cancel are reachable${toasts}`);
     assert.equal(await unobstructed(page, SAVE), true, `${message}: Save is clear along its whole width`);
     assert.equal(await unobstructed(page, CANCEL), true, `${message}: Cancel is clear along its whole width`);
   };
@@ -2407,7 +2430,8 @@ test('the panel and its callouts work from the keyboard, and a callout is named 
   await page.focus('.tp3d-annot-seg__btn[data-tool="callout"]');
   await page.keyboard.press('Enter');
   assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="callout"]', 'aria-pressed'), 'true');
-  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-label'), 'Arrow (not available yet)');
+  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="draw"]', 'aria-label'), 'Draw (not available yet)');
+  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-label'), null, 'Arrow is a real, named tool now');
   assert.deepEqual(errors, []);
 });
 
@@ -2588,4 +2612,1351 @@ test('on a narrow viewport the panel is a bottom sheet clear of the controls and
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => getComputedStyle(document.getElementById('editor-annotation-panel')).display !== 'none');
   assert.deepEqual(errors, []);
+});
+
+// ============================================================================
+// Annotations V1B.1: directional arrows. A shaft and a solid head drawn as SVG in the same overlay (never a scene
+// object), placed with two clicks (tail, then head), moved one end at a time by two end handles.
+// ============================================================================
+const armArrow = async page => {
+  await page.click('.tp3d-annot-seg__btn[data-tool="arrow"]');
+  await page.waitForFunction(() => /arrow tail/i.test(window.probe.hint()));
+};
+const tailShown = page => page.evaluate(() => {
+  const dot = document.querySelector('.tp3d-annot-arrow__tail');
+  return Boolean(dot) && dot.style.display !== 'none';
+});
+// The camera keeps easing for a moment after a drag: wait until it has been still for several frames, so the same
+// pixel picks the same scene point again.
+const cameraSettled = page => page.evaluate(() => new Promise(resolve => {
+  let last = window.probe.camera();
+  let still = 0;
+  const step = () => {
+    const now = window.probe.camera();
+    still = now === last ? still + 1 : 0;
+    last = now;
+    if (still >= 12) resolve();
+    else window.requestAnimationFrame(step);
+  };
+  window.requestAnimationFrame(step);
+}));
+// A drag that orbits the camera: press, move well past the click threshold, release, then let the camera settle.
+const orbit = async (page, from, dx = 40, dy = 0) => {
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x + dx, from.y + dy, { steps: 6 });
+  await page.mouse.up();
+  await cameraSettled(page);
+};
+// Only arrows that actually have a shape: a hidden or unresolved arrow keeps an empty group.
+const arrowGraphics = page => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview)')]
+  .filter(group => group.querySelector('.tp3d-annot-arrow__shaft').getAttribute('d'))
+  .map(group => ({
+    id: group.dataset.annotId,
+    occluded: group.classList.contains('is-occluded'),
+    selected: group.classList.contains('is-selected'),
+    head: Boolean(group.querySelector('.tp3d-annot-arrow__head').getAttribute('d')),
+  })));
+// An arrow saved through the real writer (not the creation UI). Each end is `[x, z]` on the ground or `{ cargo, local }`.
+const seedArrow = (page, from, to, extra = {}) => page.evaluate(({ from, to, extra }) => {
+  const { M, PackLibrary, CaseLibrary } = window.probe;
+  const pack = PackLibrary.getById('fixture-pack');
+  const anchorOf = spec => {
+    if (Array.isArray(spec)) return M.buildSpaceAnchor({ surface: 'ground', point: { x: spec[0], y: 0, z: spec[1] } });
+    const inst = pack.cases.find(c => c.id === spec.cargo);
+    return M.buildCargoAnchor({ instanceId: inst.id, local: spec.local, caseData: CaseLibrary.getById(inst.caseId) });
+  };
+  const outcome = PackLibrary.addArrow('fixture-pack', { start: anchorOf(from), end: anchorOf(to), ...extra });
+  if (!outcome.ok) throw new Error(`arrow seed failed: ${outcome.reason}`);
+  return outcome.annotation;
+}, { from, to, extra });
+const gripsShown = page => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-handle:not([hidden])')].map(el => ({ end: el.dataset.end, label: el.getAttribute('aria-label'), tag: el.tagName })));
+const gripCentre = (page, end) => page.evaluate(which => {
+  const el = document.querySelector(`.tp3d-annot-handle[data-end="${which}"]:not([hidden])`);
+  if (!el) return null;
+  const r = el.getBoundingClientRect();
+  return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+}, end);
+const rowOf = (page, index) => page.evaluate(i => {
+  const el = document.querySelectorAll('.tp3d-annot-row')[i];
+  const ends = [...el.querySelectorAll('.tp3d-annot-row__end')].filter(line => !line.hidden).map(line => ({ text: line.firstChild.textContent, button: line.querySelector('button').textContent }));
+  return {
+    name: el.querySelector('.tp3d-annot-row__name').textContent, sub: el.querySelector('.tp3d-annot-row__sub').textContent,
+    selected: el.classList.contains('is-selected'), flagged: el.querySelector('.tp3d-annot-row__badge').classList.contains('is-flagged'),
+    issueShown: !el.querySelector('.tp3d-annot-row__issue').hidden, ends, selectDisabled: el.querySelector('.tp3d-annot-row__select').disabled,
+  };
+}, index);
+const endButton = (id, end) => `.tp3d-annot-row[data-annot-id="${id}"] .tp3d-annot-row__end button[data-end="${end}"]`;
+const near = (a, b, tolerance) => Math.abs(a - b) <= tolerance;
+
+test('creating an arrow: two clicks save exactly one record, orbiting never creates or cancels one, a head too close writes nothing, and the tool stays armed', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const before = await page.evaluate(() => ({ cases: window.probe.casesJson(), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited }));
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].map(b => b.disabled)), [false, false, true], 'Arrow is available, Draw is not');
+  await armArrow(page);
+  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed'), 'true');
+  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New arrows look', 'the look controls are for the next arrow while none is selected');
+
+  // A drag that orbits the camera is not a click: it places nothing.
+  const cameraBefore = await page.evaluate(() => window.probe.camera());
+  await orbit(page, await freePoint(page, [GROUND_A, GROUND_B]));
+  assert.notEqual(await page.evaluate(() => window.probe.camera()), cameraBefore, 'the camera orbited');
+  assert.equal(await tailShown(page), false, 'a camera drag never places a tail');
+  assert.equal(await count(page), 0);
+  assert.match(await page.evaluate(() => window.probe.hint()), /arrow tail/i);
+
+  // First click: the tail exists on screen only.
+  const tailAt = await freePoint(page, [GROUND_A]);
+  await click(page, tailAt);
+  await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+  assert.equal(await tailShown(page), true, 'a dot marks the tail');
+  assert.equal(await count(page), 0, 'nothing is stored after the first click');
+  assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), before.edited);
+
+  // A head on top of the tail (the same pixel) is refused: nothing is written and the tail stays for another try.
+  await click(page, tailAt);
+  await page.waitForFunction(() => /too close to the tail/i.test(window.probe.hint()));
+  assert.equal(await count(page), 0, 'no partial or zero-length record');
+  assert.equal(await tailShown(page), true);
+
+  // Orbiting between the clicks keeps the pending tail on the scene point it was placed on.
+  await orbit(page, await freePoint(page, [GROUND_B]));
+  assert.equal(await tailShown(page), true, 'a camera drag never cancels the pending arrow');
+  assert.equal(await count(page), 0);
+  assert.match(await page.evaluate(() => window.probe.hint()), /arrow should point|too close/i);
+
+  // The head: exactly one record, the tool stays armed, the new arrow is selected and drawn.
+  await click(page, await freePoint(page, [GROUND_B]));
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  const [saved] = await page.evaluate(() => window.probe.annotations());
+  assert.deepEqual([saved.type, saved.schemaVersion, saved.color, saved.width, saved.hidden], ['arrow', 1, 'ink', 'regular', false]);
+  assert.deepEqual([saved.start.kind, saved.start.surface, saved.end.kind, saved.end.surface], ['space', 'ground', 'space', 'ground']);
+  assert.ok(near(saved.start.position.x, GROUND_A[0], 1.5) && near(saved.start.position.z, GROUND_A[2], 1.5), 'the tail is where the first click was');
+  assert.ok(near(saved.end.position.x, GROUND_B[0], 1.5) && near(saved.end.position.z, GROUND_B[2], 1.5), 'the head is where the second click was');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is never moved');
+  assert.ok(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited) > before.edited, 'lastEdited is updated');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'no cargo Undo step was created');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'cargo selection is untouched');
+  assert.equal(await tailShown(page), false);
+  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed'), 'true', 'the tool stays armed for the next arrow');
+  assert.match(await page.evaluate(() => window.probe.hint()), /Arrow saved/);
+  // The saved arrow is drawn but not selected: the next click starts another one, and nothing offers its handles yet.
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  assert.deepEqual((await arrowGraphics(page)).map(({ occluded, selected, head }) => ({ occluded, selected, head })), [{ occluded: false, selected: false, head: true }]);
+  assert.deepEqual(await gripsShown(page), [], 'no end handles while a tool owns the scene');
+  const row = await rowOf(page, 0);
+  assert.deepEqual([row.name, row.sub, row.selected, row.flagged], ['Arrow 1', 'Ground → Ground', false, false], 'the row is named, numbered and says where it is attached');
+  assert.equal(await page.locator('.tp3d-annot-panel__count').textContent(), '1');
+  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New arrows look', 'with no arrow selected the look controls are for the next arrows');
+  const stored = () => page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const edited = () => page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  const placeArrow = async (from, to) => {
+    const count = await page.evaluate(() => window.probe.annotations().length);
+    await click(page, await freePoint(page, [from]));
+    await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+    await click(page, await freePoint(page, [to]));
+    await page.waitForFunction(n => window.probe.annotations().length === n + 1, count);
+    assert.equal(await page.evaluate(() => window.probe.annotations().length), count + 1, 'exactly one record per arrow');
+    return page.evaluate(() => window.probe.annotations().at(-1));
+  };
+  const selectedRows = () => page.evaluate(() => document.querySelectorAll('.tp3d-annot-row.is-selected').length);
+
+  // With none selected, the look sets what the next arrows start with: it writes nothing, and every new arrow gets it.
+  const beforeDefaults = { json: await stored(), edited: await edited() };
+  await page.click('.tp3d-annot-panel__arrow .tp3d-annot-swatch[data-color="red"]');
+  await page.click('.tp3d-annot-seg--width .tp3d-annot-seg__btn[data-width="bold"]');
+  await frames(page, 3);
+  assert.deepEqual({ json: await stored(), edited: await edited() }, beforeDefaults, 'choosing defaults writes nothing');
+  const second = await placeArrow(GROUND_B, GROUND_A);
+  assert.deepEqual([second.color, second.width], ['red', 'bold'], 'the next arrow starts with the defaults just chosen');
+  assert.ok(near(second.start.position.x, GROUND_B[0], 1.5) && near(second.end.position.x, GROUND_A[0], 1.5), 'tail first, head second');
+  assert.deepEqual((await page.evaluate(() => window.probe.annotations()))[0], saved, 'the first arrow is untouched');
+  assert.deepEqual([await selectedRows(), (await rowOf(page, 1)).name, await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed')], [0, 'Arrow 2', 'true'], 'saving again selects nothing and keeps the tool armed');
+  const third = await placeArrow(GROUND_A, GROUND_B);
+  assert.deepEqual([third.color, third.width], ['red', 'bold'], 'repeated creation keeps the defaults');
+
+  // A selected arrow is edited on its own: one record changes, the others and the defaults do not.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow 1 look');
+  const beforeEdit = await page.evaluate(() => window.probe.annotations());
+  await page.click('.tp3d-annot-panel__arrow .tp3d-annot-swatch[data-color="blue"]');
+  await page.click('.tp3d-annot-seg--width .tp3d-annot-seg__btn[data-width="thin"]');
+  await page.waitForFunction(() => window.probe.annotations()[0].color === 'blue' && window.probe.annotations()[0].width === 'thin');
+  const afterEdit = await page.evaluate(() => window.probe.annotations());
+  assert.deepEqual([afterEdit[0].id, afterEdit[0].start, afterEdit[0].end, afterEdit[0].createdAt], [saved.id, saved.start, saved.end, saved.createdAt], 'only the look changed; the ends are untouched');
+  assert.deepEqual(afterEdit.slice(1), beforeEdit.slice(1), 'no other arrow is written');
+  assert.equal(afterEdit.length, 3, 'editing never adds or removes a record');
+  const fourth = await placeArrow(GROUND_B, GROUND_A);
+  assert.deepEqual([fourth.color, fourth.width], ['red', 'bold'], 'editing an arrow did not change what new arrows start with');
+  assert.equal(await selectedRows(), 0, 'starting an arrow ends the selection');
+  assert.deepEqual((await page.evaluate(() => window.probe.annotations())).slice(0, 3).map(({ color, width }) => [color, width]), [['blue', 'thin'], ['red', 'bold'], ['red', 'bold']]);
+
+  // A custom color is one more color: stored as #rrggbb, drawn with it, and again only for the arrow being edited.
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow 2 look');
+  await page.fill('.tp3d-annot-panel__arrow .tp3d-annot-swatch__input', '#12ab34');
+  await page.waitForFunction(() => window.probe.annotations()[1].color === '#12ab34');
+  await frames(page, 3);
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-arrow.is-selected .tp3d-annot-arrow__shaft')).stroke), 'rgb(18, 171, 52)');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-arrow.is-selected .tp3d-annot-arrow__shaft')).strokeWidth), '5px', 'bold is a constant 5 screen pixels');
+  const fifth = await placeArrow(GROUND_A, GROUND_B);
+  assert.deepEqual([fifth.color, fifth.width], ['red', 'bold'], 'a custom color on one arrow is not a new default');
+  assert.deepEqual(errors, []);
+});
+
+test('an arrow joins two surfaces, follows cargo that moves, and its end handles move one end at a time: Escape and a refused drop change nothing', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const saved = await seedArrow(page, TOP_OF_A, GROUND_B.length ? [GROUND_B[0], GROUND_B[2]] : [0, 0]);
+  assert.equal(saved.start.kind, 'cargo');
+  assert.equal(saved.start.instanceId, 'cargo-a', 'the instance ID, never the Case ID');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length >= 1);
+  assert.match((await rowOf(page, 0)).sub, /^.+ → Ground$/, 'the row says where each end is attached');
+
+  // The tail sits on the picked point of the cargo's top, and follows the cargo when it moves; the record never changes.
+  const layerOrigin = () => page.evaluate(() => { const r = document.getElementById('editor-annotation-layer').getBoundingClientRect(); return { x: r.left, y: r.top }; });
+  const tailOnScreen = () => page.evaluate(() => { const n = document.querySelector('.tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft').getAttribute('d').match(/-?\d+(\.\d+)?/g).map(Number); return { x: n[0], y: n[1] }; });
+  const expectedTail = async () => {
+    const at = await page.evaluate(() => { const [r] = window.probe.resolved(); return window.probe.screenOf(r.start.x, r.start.y, r.start.z); });
+    const origin = await layerOrigin();
+    return { x: at.x - origin.x, y: at.y - origin.y };
+  };
+  const first = await tailOnScreen();
+  const expected = await expectedTail();
+  assert.ok(near(first.x, expected.x, 2.5) && near(first.y, expected.y, 2.5), 'the tail is on the picked surface point');
+  const record = JSON.stringify(await page.evaluate(() => window.probe.annotations()));
+  await page.evaluate(() => {
+    const inst = window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+    window.probe.PackLibrary.updateInstance('fixture-pack', 'cargo-a', {
+      transform: { ...inst.transform, position: { ...inst.transform.position, x: inst.transform.position.x + 120, z: inst.transform.position.z + 20 } },
+    });
+  });
+  await page.waitForFunction(old => {
+    const n = document.querySelector('.tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft').getAttribute('d').match(/-?\d+(\.\d+)?/g).map(Number);
+    return Math.abs(n[0] - old.x) > 20;
+  }, first);
+  const moved = await tailOnScreen();
+  const expectedMoved = await expectedTail();
+  assert.ok(near(moved.x, expectedMoved.x, 2.5) && near(moved.y, expectedMoved.y, 2.5), 'after the cargo moved the tail is on the same spot of the cargo');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.annotations())), record, 'the stored arrow is unchanged by cargo movement');
+
+  // Select it from the list: two named, focusable end handles appear and the cargo stays unselected.
+  await page.click('.tp3d-annot-row .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length === 2);
+  assert.deepEqual(await gripsShown(page), [
+    { end: 'start', label: 'Arrow 1 tail handle. Drag it, or press Enter and click the scene.', tag: 'BUTTON' },
+    { end: 'end', label: 'Arrow 1 head handle. Drag it, or press Enter and click the scene.', tag: 'BUTTON' },
+  ]);
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), []);
+  const before = await page.evaluate(() => ({ cases: window.probe.casesJson(), camera: window.probe.camera(), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited, json: JSON.stringify(window.probe.annotations()) }));
+  const head = await gripCentre(page, 'end');
+  const drag = async (to, { escape = false } = {}) => {
+    await page.mouse.move(head.x, head.y);
+    await page.mouse.down();
+    await page.mouse.move((head.x + to.x) / 2, (head.y + to.y) / 2, { steps: 4 });
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    if (escape) await page.keyboard.press('Escape');
+    await page.mouse.up();
+  };
+
+  // Escape mid-drag, and a drop that is refused: the head stays where it was and nothing is written.
+  await drag(await page.evaluate(() => window.probe.cargoPoint('cargo-b')), { escape: true });
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), before.json, 'Escape restores the end');
+  await page.evaluate(() => { window.__hold = window.probe.InteractionManager.hasProvisionalPose; window.probe.InteractionManager.hasProvisionalPose = () => true; });
+  await drag(await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), before.json, 'a refused drop leaves it where it was');
+  assert.match(await page.evaluate(() => window.probe.hint()), /held case/i, 'and says why');
+  await page.evaluate(() => { window.probe.InteractionManager.hasProvisionalPose = window.__hold; });
+  assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), before.edited, 'neither wrote anything');
+
+  // A drop on other cargo moves the head only: same arrow, same tail, cargo untouched, no cargo Undo step.
+  await drag(await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
+  await page.waitForFunction(() => window.probe.annotations()[0].end.kind === 'cargo');
+  const [after] = await page.evaluate(() => window.probe.annotations());
+  const [original] = JSON.parse(before.json);
+  assert.equal(after.end.instanceId, 'cargo-b');
+  assert.deepEqual([after.id, after.start, after.color, after.width, after.createdAt], [original.id, original.start, original.color, original.width, original.createdAt], 'only the head moved');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo never moves');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'and is never selected');
+  assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'a handle drag never orbits');
+  // The only Undo step is this test's own cargo move; the handle drag added none, and Undo leaves the arrow as moved.
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'the cargo move above is the one step');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a handle drag is not a cargo Undo step');
+  assert.equal((await page.evaluate(() => window.probe.annotations()))[0].end.instanceId, 'cargo-b', 'Undo never takes back an arrow edit');
+  assert.match(await page.evaluate(() => window.probe.hint()), /Arrow head moved/);
+  assert.equal((await arrowGraphics(page)).length, 1);
+  assert.equal((await gripsShown(page)).length, 2, 'the arrow stays selected');
+
+  // The keyboard route: Enter on a handle waits for a click on the scene, which sets that end. (A click right after
+  // a drag is deliberately swallowed for one tick, so let that tick pass: timers of equal delay fire in order.)
+  await page.evaluate(() => new Promise(resolve => window.setTimeout(resolve, 0)));
+  await page.focus('.tp3d-annot-handle[data-end="start"]');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => /set the arrow tail/i.test(window.probe.hint()));
+  await click(page, await freePoint(page, [GROUND_A]));
+  await page.waitForFunction(() => window.probe.annotations()[0].start.kind === 'space');
+  assert.equal((await page.evaluate(() => window.probe.annotations()))[0].end.instanceId, 'cargo-b', 'the head is untouched');
+  assert.deepEqual(errors, []);
+});
+
+test('Valid, Needs Review and Unresolved arrows: only a Valid one is drawn, each broken end is explained on its own, and Re-attach repairs one end at a time', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const ids = [
+    (await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]])).id,
+    (await seedArrow(page, TOP_OF_B, [520, 10])).id,
+    (await seedArrow(page, { cargo: 'cargo-a', local: { x: -10, y: 16, z: 0 } }, { cargo: 'cargo-a', local: { x: 10, y: 16, z: 0 } })).id,
+  ];
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 3);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 3);
+  const stored = JSON.stringify(await page.evaluate(() => window.probe.annotations()));
+  assert.deepEqual((await arrowGraphics(page)).map(g => g.id).sort(), [...ids].sort(), 'all three are Valid and drawn');
+
+  // A Case size change asks for review of the arrow on that Case: nothing is drawn or relocated, and the record is untouched.
+  await page.evaluate(() => {
+    const { StateStore } = window.probe;
+    const caseId = window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-b').caseId;
+    StateStore.set({ caseLibrary: StateStore.get('caseLibrary').map(c => (c.id === caseId ? { ...c, dimensions: { ...c.dimensions, length: c.dimensions.length + 6 } } : c)) }, { skipHistory: true });
+  });
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 2);
+  const review = await rowOf(page, 1);
+  assert.equal(review.sub, 'Needs review');
+  assert.equal(review.flagged, true, 'a dashed ring, never a placed glyph');
+  assert.deepEqual(review.ends.map(e => [e.button, /size or shape changed/i.test(e.text)]), [['Re-attach tail', true]], 'only the tail needs attention, with its own reason and action');
+  assert.match(review.ends[0].text, /^Tail: /);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'nothing is rewritten or relocated');
+
+  // Deleting the cargo both ends sit on leaves that arrow Unresolved, with a reason for each end and a Re-attach for each.
+  await page.evaluate(() => window.probe.PackLibrary.removeInstances('fixture-pack', ['cargo-a']));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  const gone = await rowOf(page, 2);
+  assert.equal(gone.sub, 'Unresolved');
+  assert.deepEqual(gone.ends.map(e => e.button), ['Re-attach tail', 'Re-attach head']);
+  assert.ok(gone.ends.every(e => /no longer in this Load Plan/.test(e.text)));
+  assert.equal(await count(page), 3, 'editing cargo never deletes an annotation');
+  assert.deepEqual((await arrowGraphics(page)).map(g => g.id), [ids[0]], 'no partial or invalid arrow is drawn');
+
+  // Re-attach the tail: Escape cancels without writing; a click on a surface moves only that end.
+  const edited = await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  await page.click(endButton(ids[2], 'start'));
+  await page.waitForFunction(() => /set the arrow tail/i.test(window.probe.hint()));
+  await page.focus('#viewport');
+  await page.keyboard.press('Escape');
+  assert.doesNotMatch(await page.evaluate(() => window.probe.hint()), /set the arrow tail/i);
+  assert.equal(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited), edited, 'a cancelled re-attach writes nothing');
+  await page.click(endButton(ids[2], 'start'));
+  await page.waitForFunction(() => /set the arrow tail/i.test(window.probe.hint()));
+  await click(page, await freePoint(page, [GROUND_A]));
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).start.kind === 'space', ids[2]);
+  assert.deepEqual((await rowOf(page, 2)).ends.map(e => e.button), ['Re-attach head'], 'the repaired end is no longer listed');
+  assert.equal((await rowOf(page, 2)).sub, 'Unresolved', 'the arrow stays broken until both ends resolve');
+  assert.equal((await arrowGraphics(page)).length, 1, 'and is still not drawn');
+  await page.click(endButton(ids[2], 'end'));
+  await page.waitForFunction(() => /set the arrow head/i.test(window.probe.hint()));
+  await click(page, await freePoint(page, [GROUND_B]));
+  await page.waitForFunction(id => window.probe.resolved().find(r => r.id === id).status === 'valid', ids[2]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 2);
+  const [, , repaired] = await page.evaluate(() => window.probe.annotations());
+  assert.equal(repaired.id, ids[2], 'the same arrow, repaired');
+  assert.deepEqual([repaired.start.kind, repaired.end.kind], ['space', 'space']);
+  assert.deepEqual(errors, []);
+});
+
+test('an unfinished arrow is dropped without writing by Escape (one owner per press), closing the panel, Show Off, Measurement Mode, an operation, a preview, a cargo move, a pointer cancel and a Load Plan change', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const edited = () => page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  const before = await edited();
+  const armed = () => page.evaluate(() => document.querySelector('.tp3d-annot-seg__btn[data-tool="arrow"]').getAttribute('aria-pressed') === 'true');
+  const startArrow = async (at = GROUND_A) => {
+    if (!(await armed())) await armArrow(page);
+    await click(page, at.length === 3 ? await freePoint(page, [at]) : at);
+    await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+    assert.equal(await tailShown(page), true);
+  };
+  const nothingWritten = async message => {
+    await page.waitForFunction(() => { const dot = document.querySelector('.tp3d-annot-arrow__tail'); return !dot || dot.style.display === 'none'; });
+    assert.equal(await tailShown(page), false, `${message}: the tail is gone`);
+    assert.equal(await count(page), 0, `${message}: nothing was stored`);
+    assert.equal(await edited(), before, `${message}: the Load Plan was not edited`);
+  };
+
+  // Escape: the unfinished arrow first, then the armed tool (one owner per press).
+  await startArrow();
+  assert.equal(await escapeConsumed(page), true);
+  await page.waitForFunction(() => !/arrow should point/i.test(window.probe.hint()));
+  await nothingWritten('Escape');
+  assert.equal(await armed(), true, 'the first Escape ends only the unfinished arrow');
+  assert.equal(await escapeConsumed(page), true);
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-seg__btn[data-tool="arrow"]').getAttribute('aria-pressed') === 'false');
+  assert.equal(await escapeConsumed(page), false, 'with nothing left to close the Editor handles Escape');
+
+  // Switching tool, closing the panel and Show Off.
+  await startArrow();
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await nothingWritten('switching tool');
+  await armArrow(page);
+  await startArrow();
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => document.getElementById('editor-annotation-panel').hidden);
+  await nothingWritten('closing the panel');
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
+  await startArrow();
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("Off")');
+  await page.waitForFunction(() => /hidden in the view/i.test(window.probe.hint()));
+  await nothingWritten('Show Off');
+  assert.equal(await armed(), false, 'Show Off also disarms the tool');
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("All")');
+
+  // An operation that owns the Editor, a transient preview, and Measurement Mode.
+  await startArrow();
+  await page.evaluate(() => { window.__op = window.probe.OperationLifecycle.beginOperation('autopacking'); });
+  await page.waitForFunction(() => /paused during AutoPack/.test(window.probe.hint()));
+  await nothingWritten('AutoPack');
+  await page.evaluate(() => window.probe.OperationLifecycle.finishOperation(window.__op));
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  await startArrow();
+  await page.evaluate(() => { window.__preview = window.probe.CaseScene.isTransientPreview; window.probe.CaseScene.isTransientPreview = () => true; });
+  await page.waitForFunction(() => /paused during AutoPack preview/.test(window.probe.hint()));
+  await nothingWritten('an AutoPack preview');
+  await page.evaluate(() => { window.probe.CaseScene.isTransientPreview = window.__preview; });
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  await startArrow();
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+  await page.waitForFunction(() => { const dot = document.querySelector('.tp3d-annot-arrow__tail'); return !dot || dot.style.display === 'none'; });
+  assert.equal(await tailShown(page), false, 'Measurement Mode takes the scene: the tail is gone');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
+  await nothingWritten('Measurement Mode');
+
+  // A cargo pose change under the tail, and a pointer interaction that is cancelled.
+  await armArrow(page);
+  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
+  await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+  await page.evaluate(() => {
+    const inst = window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+    window.probe.PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, x: inst.transform.position.x + 30 } } });
+  });
+  await page.waitForFunction(() => /cargo changed/i.test(window.probe.hint()));
+  assert.equal(await tailShown(page), false, 'cargo moved under the tail');
+  assert.equal(await count(page), 0);
+  const moved = await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
+  await startArrow(GROUND_A);
+  const at = await freePoint(page, [GROUND_B]);
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await page.evaluate(() => document.querySelector('#viewport canvas').dispatchEvent(new PointerEvent('pointercancel', { bubbles: true, pointerId: 1 })));
+  await page.mouse.up();
+  await page.waitForFunction(() => /Placement cancelled/.test(window.probe.hint()));
+  assert.equal(await tailShown(page), false, 'a cancelled pointer interaction drops the unfinished arrow');
+  assert.equal(await count(page), 0);
+  assert.equal(await edited(), moved);
+
+  // A Load Plan change ends the session: nothing from the old one lingers.
+  await startArrow();
+  await page.evaluate(() => window.probe.StateStore.replace(window.probe.StateStore.snapshot()));
+  await page.waitForFunction(() => document.getElementById('editor-annotation-panel').hidden);
+  assert.equal(await tailShown(page), false);
+  assert.equal(await count(page), 0);
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), false);
+  assert.deepEqual(errors, []);
+});
+
+test('an arrow hidden by cargo is dashed with a hollow head even when selected; a clear one is solid, and it is measured before it is first drawn', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // A clear ground arrow, and one whose middle runs under cargo-a (seen only through the cargo that stands on it).
+  const clear = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  const hidden = await seedArrow(page, [20, -20], [120, -20]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 2);
+  const byId = async () => Object.fromEntries((await arrowGraphics(page)).map(g => [g.id, g]));
+  let state = await byId();
+  assert.equal(state[clear.id].occluded, false, 'nothing in front of it');
+  assert.equal(state[hidden.id].occluded, true, 'part of it is behind cargo');
+  const look = id => page.evaluate(arrowId => {
+    const group = document.querySelector(`.tp3d-annot-arrow[data-annot-id="${arrowId}"]`);
+    return { shaftDash: getComputedStyle(group.querySelector('.tp3d-annot-arrow__shaft')).strokeDasharray, headDash: getComputedStyle(group.querySelector('.tp3d-annot-arrow__head')).strokeDasharray };
+  }, id);
+  assert.deepEqual(await look(clear.id), { shaftDash: 'none', headDash: 'none' });
+  assert.notEqual((await look(hidden.id)).shaftDash, 'none', 'a dashed shaft');
+  assert.notEqual((await look(hidden.id)).headDash, 'none', 'and a hollow, dashed head');
+
+  // Selecting it changes the halo and shows the handles, and never makes it look unobstructed.
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow.is-selected').length === 1);
+  state = await byId();
+  assert.deepEqual([state[hidden.id].selected, state[hidden.id].occluded], [true, true], 'selected and still marked as hidden');
+  assert.notEqual((await look(hidden.id)).shaftDash, 'none');
+  assert.equal((await gripsShown(page)).length, 2);
+  // When the cargo moves off it, the arrow is in the clear again: the state follows the scene and nothing is stored.
+  const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  await page.evaluate(() => {
+    const inst = window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+    window.probe.PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, z: inst.transform.position.z + 200 } } });
+  });
+  await page.waitForFunction(id => !document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-occluded'), hidden.id);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'occlusion is derived, never saved');
+  assert.deepEqual(errors, []);
+});
+
+test('a selected arrow stays one slim arrow: every width keeps its stroke with at most a hairline edge, a hidden one stays one dashed arrow, and the end grips never cover the arrowhead', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // One clear ground arrow per width, and one whose middle runs under cargo-a.
+  const arrows = [
+    await seedArrow(page, [100, 62], [260, 66], { color: 'blue', width: 'thin' }),
+    await seedArrow(page, [100, 76], [260, 80], { color: 'green', width: 'regular' }),
+    await seedArrow(page, [100, 90], [260, 94], { color: 'red', width: 'bold' }),
+    await seedArrow(page, [20, -20], [120, -20], { color: 'violet', width: 'regular' }),
+  ];
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 4);
+  const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const looks = id => page.evaluate(arrowId => {
+    const group = document.querySelector(`.tp3d-annot-arrow[data-annot-id="${arrowId}"]`);
+    const css = selector => getComputedStyle(group.querySelector(selector));
+    const accentProbe = document.createElement('i');
+    accentProbe.style.color = 'var(--accent-primary)';
+    document.body.append(accentProbe);
+    const accent = getComputedStyle(accentProbe).color;
+    accentProbe.remove();
+    const read = selector => ({ stroke: css(selector).stroke, width: parseFloat(css(selector).strokeWidth), dash: css(selector).strokeDasharray });
+    return { accent, shaft: read('.tp3d-annot-arrow__shaft'), under: read('.tp3d-annot-arrow__under'), underHead: read('.tp3d-annot-arrow__under-head'), head: read('.tp3d-annot-arrow__head') };
+  }, id);
+  const gripRing = end => page.evaluate(which => {
+    const el = document.querySelector(`.tp3d-annot-handle[data-end="${which}"]:not([hidden])`);
+    const ring = getComputedStyle(el, '::before');
+    return { diameter: parseFloat(ring.width), fill: ring.backgroundColor };
+  }, end);
+  const select = async index => {
+    await page.click(`.tp3d-annot-row:nth-child(${index + 1}) .tp3d-annot-row__select`);
+    await page.waitForFunction(id => document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-selected'), arrows[index].id);
+    await frames(page, 3);
+  };
+  const SHAFT = { thin: 2, regular: 3, bold: 5 };
+  const unselected = [];
+  for (const arrow of arrows) unselected.push(await looks(arrow.id));
+
+  for (const [index, width] of ['thin', 'regular', 'bold'].entries()) {
+    await select(index);
+    const own = await looks(arrows[index].id);
+    assert.equal(own.shaft.width, SHAFT[width], `${width}: the selected shaft keeps its preset width`);
+    assert.equal(own.shaft.stroke, unselected[index].shaft.stroke, `${width}: the authored color is untouched by selection`);
+    assert.notEqual(own.shaft.stroke, own.accent, `${width}: the shaft is never recolored to the selection color`);
+    assert.equal(unselected[index].under.width, SHAFT[width] + 4, `${width}: an unselected arrow keeps a neutral halo`);
+    assert.notEqual(unselected[index].under.stroke, own.accent);
+    // The selection edge is a hairline: one pixel a side, never wider than the neutral halo it replaces.
+    assert.equal(own.under.stroke, own.accent, `${width}: the edge uses the selection color`);
+    assert.equal(own.under.width, SHAFT[width] + 2, `${width}: one pixel a side, so a selected Thin arrow is still thin`);
+    assert.equal(own.underHead.width, 2, `${width}: the head edge is a hairline too`);
+    assert.equal(own.under.dash, 'none');
+    // Every other arrow is left exactly as it was.
+    for (const other of arrows.filter((_, i) => i !== index)) {
+      const now = await looks(other.id);
+      const was = unselected[arrows.indexOf(other)];
+      assert.deepEqual([now.under.width, now.under.stroke, now.shaft.width], [was.under.width, was.under.stroke, was.shaft.width], 'an unselected arrow does not change');
+    }
+    // The grips: a filled tail ring and a hollow head ring no larger than the smallest arrowhead, so direction stays readable.
+    assert.equal((await gripsShown(page)).length, 2, `${width}: both end grips`);
+    const [tail, head] = [await gripRing('start'), await gripRing('end')];
+    assert.ok(head.diameter <= 12 && tail.diameter <= 12, `${width}: grips are no larger than the smallest arrowhead (12 px)`);
+    assert.equal(head.fill, 'rgba(0, 0, 0, 0)', `${width}: the head grip is hollow, so the arrowhead shows through it`);
+    assert.notEqual(tail.fill, 'rgba(0, 0, 0, 0)', `${width}: the tail grip is filled`);
+  }
+
+  // Hidden by cargo and selected: one dashed arrow. The halo follows the shaft's dashes in the same neutral tone as before
+  // selection, so no continuous line (and no solid orange sheath) shows through the gaps.
+  await select(3);
+  const hidden = await looks(arrows[3].id);
+  assert.equal((await arrowGraphics(page)).find(g => g.id === arrows[3].id).occluded, true, 'it is behind cargo');
+  assert.notEqual(hidden.shaft.dash, 'none', 'a dashed shaft');
+  assert.equal(hidden.under.dash, hidden.shaft.dash, 'the halo is dashed with the same pattern, on the same path');
+  assert.notEqual(hidden.under.stroke, hidden.accent, 'no orange sheath behind the dashes');
+  assert.notEqual(hidden.underHead.stroke, hidden.accent, 'nor around the hollow head');
+  assert.equal(hidden.under.width, SHAFT.regular + 4, 'the halo is as wide as an unselected one');
+  assert.notEqual(hidden.head.dash, 'none', 'the head stays hollow and dashed');
+  assert.equal((await gripsShown(page)).length, 2, 'the grips and the list row still mark the selection');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-row.is-selected').length), 1);
+
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'styling never writes a record');
+  assert.deepEqual(errors, []);
+});
+test('occlusion follows the synchronized scene: cargo moved off or onto a ground arrow or marker re-measures it, also when the meshes synchronize after the first measurement, and an unchanged scene is never re-measured', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // An arrow whose middle runs under cargo-a, and a callout on the ground under cargo-b (each seen only through that cargo).
+  const arrow = await seedArrow(page, [20, -20], [120, -20]);
+  await seed(page, [{ title: 'Under the case', ground: [300, 20] }]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1 && document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1);
+  // Count every occlusion measurement (each reads the scene's raycast meshes) and note when the last one ran.
+  await page.evaluate(() => {
+    const { CaseScene } = window.probe;
+    const real = CaseScene.getRaycastMeshes.bind(CaseScene);
+    window.__rays = 0;
+    window.__rayAt = performance.now();
+    CaseScene.getRaycastMeshes = () => { window.__rays += 1; window.__rayAt = performance.now(); return real(); };
+  });
+  const looks = () => page.evaluate(id => ({
+    arrow: document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-occluded'),
+    marker: document.querySelector('.tp3d-annot-pin:not(.is-draft)').classList.contains('is-hollow'),
+  }), arrow.id);
+  const becomes = async (expected, label) => {
+    await page.waitForFunction(([id, want]) => {
+      const a = document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-occluded');
+      const m = document.querySelector('.tp3d-annot-pin:not(.is-draft)').classList.contains('is-hollow');
+      return a === want.arrow && m === want.marker;
+    }, [arrow.id, expected]);
+    assert.deepEqual(await looks(), expected, label);
+  };
+  // No measurement has run for a moment: the next change meets a refresh that is due, which is the ordinary case. One
+  // cargo moves per step, as in a single Load Plan edit (a second change right behind it would re-measure by itself).
+  const quiet = () => page.waitForFunction(() => performance.now() - window.__rayAt > 150);
+  const moveCargo = (id, delta) => page.evaluate(([cargo, by]) => {
+    const { PackLibrary } = window.probe;
+    const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === cargo);
+    PackLibrary.updateInstance('fixture-pack', cargo, { transform: { ...inst.transform, position: { ...inst.transform.position, z: inst.transform.position.z + by } } });
+  }, [id, delta]);
+  const rays = () => page.evaluate(() => window.__rays);
+  const sceneZ = id => page.evaluate(cargo => window.probe.CaseScene.getObject(cargo).position.z, id);
+  const committedZ = id => page.evaluate(cargo => window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === cargo).transform.position.z, id);
+  await becomes({ arrow: true, marker: true }, 'both start behind cargo');
+  const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const camera = await page.evaluate(() => window.probe.camera());
+
+  // 1. The ordinary Editor path, both ways: a Load Plan edit moves one cargo (no drag) and the view never moves.
+  await quiet();
+  await moveCargo('cargo-a', 200);
+  await becomes({ arrow: false, marker: true }, 'cargo-a moved off the arrow: only the arrow is in the clear');
+  await quiet();
+  await moveCargo('cargo-b', 200);
+  await becomes({ arrow: false, marker: false }, 'cargo-b moved off the marker: both are in the clear');
+  await quiet();
+  await moveCargo('cargo-a', -200);
+  await becomes({ arrow: true, marker: false }, 'cargo-a moved back onto the arrow');
+  await quiet();
+  await moveCargo('cargo-b', -200);
+  await becomes({ arrow: true, marker: true }, 'cargo-b moved back onto the marker');
+
+  // 2. The meshes synchronize AFTER the tool measured: the scene sync is held, the change is measured against the old layout,
+  //    then the sync completes and the new layout is measured from the synchronized scene with no camera move.
+  for (const [id, hiddenAfter] of [['cargo-a', { arrow: false, marker: true }], ['cargo-b', { arrow: false, marker: false }]]) {
+    await quiet();
+    await page.evaluate(() => {
+      const { CaseScene } = window.probe;
+      window.__realSync = CaseScene.sync;
+      CaseScene.sync = () => {}; // the Editor's render reaches the tool, but the scene does not synchronize yet
+    });
+    const before = await rays();
+    const heldZ = await sceneZ(id);
+    await moveCargo(id, 200);
+    await page.waitForFunction(count => window.__rays > count, before);
+    await quiet();
+    assert.equal(await sceneZ(id), heldZ, `${id}: the scene still holds the old layout`);
+    assert.notEqual(await committedZ(id), heldZ, `${id}: while the committed layout has moved`);
+    assert.notDeepEqual(await looks(), hiddenAfter, `${id}: measured against the old layout while the scene had not synchronized`);
+    await page.evaluate(() => {
+      const { CaseScene, PackLibrary } = window.probe;
+      CaseScene.sync = window.__realSync;
+      CaseScene.sync(PackLibrary.getById('fixture-pack'));
+    });
+    await becomes(hiddenAfter, `${id}: the completed sync re-measures the new layout`);
+    assert.notEqual(await sceneZ(id), heldZ, `${id}: the scene now shows the committed layout`);
+  }
+  assert.equal(await page.evaluate(() => window.probe.camera()), camera, 'no camera move was needed');
+
+  // 3. An unchanged scene is never re-measured: re-syncing the same layout, and frames passing, run no more rays.
+  await quiet();
+  const settledRays = await rays();
+  const revision = await page.evaluate(() => window.probe.CaseScene.getGeometryRevision());
+  await page.evaluate(() => window.probe.CaseScene.sync(window.probe.PackLibrary.getById('fixture-pack')));
+  await frames(page, 12);
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.getGeometryRevision()), revision, 'syncing the same layout is not a change');
+  assert.equal(await rays(), settledRays, 'nothing moved, so nothing was measured again');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'occlusion is derived, never saved');
+  assert.deepEqual(errors, []);
+});
+
+test('arrows and a saved measurement are on screen together; while Measurement Mode owns the scene the arrows stay drawn but take no input', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const arrow = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.evaluate(() => {
+    const { M, PackLibrary } = window.probe;
+    const at = (x, z) => M.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z } });
+    if (!PackLibrary.addMeasurement('fixture-pack', { start: at(100, 90), end: at(260, 100) }).ok) throw new Error('measurement seed failed');
+  });
+  const drawnLines = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(g => g.style.display !== 'none').length);
+  await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].some(g => g.style.display !== 'none'));
+  await page.click('.tp3d-annot-row .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length === 2);
+  const saved = () => page.evaluate(() => JSON.stringify([window.probe.annotations(), window.probe.PackLibrary.getMeasurements('fixture-pack'), window.probe.casesJson()]));
+  const before = await saved();
+  assert.deepEqual([(await arrowGraphics(page)).length, await drawnLines()], [1, 1], 'the arrow and the saved line are drawn together');
+  const stacking = await page.evaluate(() => ({ lines: Number(getComputedStyle(document.getElementById('editor-measure-labels')).zIndex), annotations: Number(getComputedStyle(document.querySelector('.tp3d-annot-layer')).zIndex) }));
+  assert.ok(stacking.lines < stacking.annotations, 'the saved line is drawn beneath the arrow layer');
+
+  // Measurement Mode takes the scene: the arrow stays drawn as a view, its handles take no input, Delete and Escape are the ruler's.
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+  await frames(page, 3);
+  assert.deepEqual([(await arrowGraphics(page)).length, await drawnLines()], [1, 1], 'both stay drawn while the ruler is on');
+  assert.deepEqual(await page.evaluate(() => ({ viewOnly: document.querySelector('.tp3d-annot-layer').classList.contains('is-view-only'), inert: document.querySelector('.tp3d-annot-layer').inert })), { viewOnly: true, inert: true });
+  assert.deepEqual(await gripsShown(page), [], 'no handle is offered while another tool owns the scene');
+  await page.keyboard.press('Delete');
+  await frames(page, 3);
+  assert.equal(await count(page), 1, 'Delete never removes the arrow while the ruler owns the scene');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
+  assert.equal(await saved(), before, 'neither tool wrote anything');
+  await page.waitForFunction(() => !document.querySelector('.tp3d-annot-layer').classList.contains('is-view-only'));
+  assert.equal((await arrowGraphics(page))[0].id, arrow.id);
+  assert.deepEqual(errors, []);
+});
+
+test('arrows are DOM and SVG above the canvas: no scene objects are added, the canvas pixels are unchanged, and unreadable recovery records stay inert', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const base = await page.evaluate(() => ({ pixels: window.probe.canvasData(), objects: window.probe.sceneObjectCount() }));
+  const first = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]], { color: 'blue', width: 'thin' });
+  await seedArrow(page, TOP_OF_B, TOP_OF_A, { color: 'green', width: 'bold' });
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 2);
+  const drawn = await page.evaluate(() => ({ pixels: window.probe.canvasData(), objects: window.probe.sceneObjectCount() }));
+  assert.equal(drawn.objects, base.objects, 'no scene object is added');
+  assert.equal(drawn.pixels, base.pixels, 'arrows never reach the canvas pixels (and so never a Screenshot, PDF view or thumbnail)');
+  assert.deepEqual(await page.evaluate(() => ({
+    insideViewport: Boolean(document.querySelector('#viewport .tp3d-annot-arrow, #viewport .tp3d-annot-handle')),
+    svgInLayer: document.getElementById('editor-annotation-layer').contains(document.querySelector('.tp3d-annot-svg .tp3d-annot-arrow')),
+    clickThrough: getComputedStyle(document.querySelector('.tp3d-annot-svg')).pointerEvents,
+    label: document.getElementById('editor-annotation-layer').getAttribute('aria-label'),
+  })), { insideViewport: false, svgInLayer: true, clickThrough: 'none', label: 'Annotations' });
+  assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-arrow[data-annot-id] .tp3d-annot-arrow__shaft')).strokeWidth), '2px', 'thin is a constant 2 screen pixels');
+
+  // A recovery record that merely wraps a perfectly valid arrow stays inert: not listed as an arrow, never drawn, never edited.
+  const original = JSON.parse(JSON.stringify(first));
+  await page.evaluate(({ original }) => {
+    const { StateStore, PackLibrary } = window.probe;
+    PackLibrary.deleteAnnotation('fixture-pack', original.id);
+    const pack = PackLibrary.getById('fixture-pack');
+    StateStore.set({ packLibrary: StateStore.get('packLibrary').map(p => (p.id === pack.id ? { ...p, annotations: [{ id: 'wrapped', type: 'unreadable', schemaVersion: 1, reason: 'Saved by a newer version of the app.', original }, ...p.annotations] } : p)) }, { skipHistory: true });
+  }, { original });
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 2);
+  const wrapper = await rowOf(page, 0);
+  assert.deepEqual([wrapper.name, wrapper.selectDisabled, wrapper.flagged], ['Unreadable annotation', true, true]);
+  assert.equal((await arrowGraphics(page)).length, 1, 'only the real arrow is drawn');
+  await seedArrow(page, [GROUND_B[0], GROUND_B[2]], [GROUND_A[0], GROUND_A[2]]);
+  assert.deepEqual((await page.evaluate(() => window.probe.annotations())).find(r => r.id === 'wrapped').original, original, 'writing an arrow keeps the wrapped original verbatim');
+  assert.deepEqual(errors, []);
+});
+
+test('real AutoPack: arrows are clean while it runs, and on the applied layout they are drawn and editable beside Results, which never changes', { timeout: 480000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const arrow = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.evaluate(() => {
+    const { M, PackLibrary } = window.probe;
+    const at = (x, z) => M.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z } });
+    if (!PackLibrary.addMeasurement('fixture-pack', { start: at(100, 90), end: at(260, 100) }).ok) throw new Error('measurement seed failed');
+  });
+  await page.click('.tp3d-annot-row .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length === 2);
+  const segments = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(g => g.style.display !== 'none').length);
+  await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].some(g => g.style.display !== 'none'));
+  const records = () => page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const before = await records();
+  await page.evaluate(() => {
+    window.__samples = [];
+    const tick = () => window.requestAnimationFrame(() => window.setTimeout(() => {
+      window.__samples.push({
+        busy: window.probe.OperationLifecycle.isBusy(),
+        drawn: [...document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft, .tp3d-annot-svg .tp3d-annot-arrow__head')].filter(el => el.getAttribute('d')).length
+          + document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length,
+      });
+      tick();
+    }, 0));
+    tick();
+  });
+  await page.click('#btn-autopack');
+  await page.waitForFunction(() => window.probe.OperationLifecycle.isBusy());
+  await page.waitForFunction(() => /paused during AutoPack/.test(window.probe.hint()));
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults') && !window.probe.OperationLifecycle.isBusy(), null, { timeout: 120000 });
+  assert.equal(await records(), before, 'AutoPack never rewrote an arrow');
+  const samples = await page.evaluate(() => window.__samples);
+  assert.ok(samples.some(s => s.busy), 'the run was observed');
+  assert.equal(samples.filter(s => s.busy && s.drawn > 0).length, 0, 'no arrow, head or handle is ever drawn while AutoPack runs');
+
+  // Results open over the committed layout: the arrow, its handles and the saved measurement are back; editing is available.
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false, 'the committed layout is displayed');
+  await page.waitForFunction(id => document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"] .tp3d-annot-arrow__shaft`).getAttribute('d'), arrow.id);
+  assert.equal(await segments(), 1, 'the saved measurement is back too');
+  // AutoPack replaces the cargo selection, which also ends an annotation selection (as it does for a callout):
+  // picking the arrow from the list offers its handles again beside Results.
+  assert.equal((await rowOf(page, 0)).selected, false);
+  await page.click('.tp3d-annot-row .tp3d-annot-row__select');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length === 2);
+  assert.deepEqual(await page.evaluate(() => [document.querySelector('.tp3d-annot-seg__btn[data-tool="arrow"]').disabled, document.querySelector('.tp3d-annot-row__eye').disabled]), [false, false], 'creating and editing are available with Results open');
+  const results = await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults')));
+  const cargo = await page.evaluate(() => window.probe.casesJson());
+  const pill = () => page.evaluate(() => Boolean(document.querySelector('.tp3d-autopack-results__current-pill')));
+  const wasApplied = await pill();
+  const untouched = async message => {
+    assert.equal(await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults'))), results, `${message}: AutoPack Results state is unchanged`);
+    assert.equal(await page.evaluate(() => window.probe.casesJson()), cargo, `${message}: cargo is unchanged`);
+    assert.equal(await page.evaluate(() => window.probe.CaseScene.isTransientPreview()), false, `${message}: still the committed layout`);
+    assert.equal(await pill(), wasApplied, `${message}: the Applied marker is as it was`);
+  };
+  await page.click('.tp3d-annot-panel__arrow .tp3d-annot-swatch[data-color="violet"]');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).color === 'violet', arrow.id);
+  await untouched('editing an arrow');
+  await page.click('.tp3d-annot-row .tp3d-annot-row__eye');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).hidden === true, arrow.id);
+  await frames(page, 3);
+  assert.equal((await arrowGraphics(page)).length, 0, 'Hide takes it off the view');
+  await page.click('.tp3d-annot-row .tp3d-annot-row__eye');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).hidden === false, arrow.id);
+  await untouched('hiding and showing an arrow');
+  await armArrow(page);
+  const tail = await freePoint(page, [[300, 0, 70], [200, 0, 40], GROUND_A]);
+  const head = await freePoint(page, [[420, 0, 80], [480, 0, 60], GROUND_B]);
+  await click(page, tail);
+  await click(page, head);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  await untouched('placing an arrow');
+  assert.deepEqual(errors, []);
+});
+
+test('the arrow look controls never push the rows out of reach beside Results: the panel stays clear, every row and control is reachable by scrolling, and it grows back when Results moves away', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'Callout 1', ground: [100, 10] }, { title: 'Callout 2', ground: [140, 10] }]);
+  for (const [from, to] of [[[60, -20], [180, -20]], [[10, -30], [10, 40]], [[250, -30], [330, 10]], [[300, 30], [420, 30]]]) await seedArrow(page, from, to);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 6);
+  const panel = () => boxOf(page, '#editor-annotation-panel');
+  // Every button the panel has, once scrolled into view (the rows scroll, and so does the body while the look controls show), takes the click.
+  const unreachable = () => page.evaluate(() => [...document.querySelectorAll('#editor-annotation-panel button')].filter(button => {
+    const r = button.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }).filter(button => {
+    button.scrollIntoView({ block: 'nearest' });
+    const r = button.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !(top && (top === button || button.contains(top)));
+  }).map(button => button.getAttribute('aria-label') || button.textContent.trim()));
+  // A stand-in for the Results card (the panel reads its rectangle from the DOM), below the panel.
+  const placeCard = ({ x, y, w = 420, h = 236 }) => page.evaluate(([left, top, width, height]) => {
+    const host = document.querySelector('.canvas-wrap');
+    const origin = host.getBoundingClientRect();
+    let stand = document.querySelector('[data-role="autopack-results-panel"]');
+    if (!stand) {
+      stand = document.createElement('section');
+      stand.setAttribute('data-role', 'autopack-results-panel');
+      stand.style.cssText = 'position:absolute;z-index:12;background:#fff;border:1px solid #888;box-sizing:border-box';
+      host.appendChild(stand);
+    }
+    Object.assign(stand.style, { left: `${left - origin.left}px`, top: `${top - origin.top}px`, width: `${width}px`, height: `${height}px` });
+  }, [x, y, w, h]);
+  const removeCard = () => page.evaluate(() => document.querySelector('[data-role="autopack-results-panel"]')?.remove());
+  const lookShown = () => page.evaluate(() => { const el = document.querySelector('.tp3d-annot-panel__arrow'); return Boolean(el) && !el.hidden; });
+  const check = async label => {
+    const shown = await panel();
+    const stand = await boxOf(page, '[data-role="autopack-results-panel"]');
+    assert.equal(overlaps(shown, stand), false, `${label}: the panel does not touch Results`);
+    assert.deepEqual(await unreachable(), [], `${label}: every row and control can be reached`);
+    assert.ok(await lookShown(), `${label}: the arrow look controls are showing`);
+  };
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select');
+  await page.waitForFunction(() => !document.querySelector('.tp3d-annot-panel__arrow')?.hidden);
+  await frames(page, 4);
+  const full = await panel();
+  assert.deepEqual(await unreachable(), [], 'no Results: everything is reachable');
+
+  // Results below the panel's top part: the panel gives up height, the rows and the look controls scroll together.
+  await placeCard({ x: full.x - 120, y: full.y + 230 });
+  await frames(page, 8);
+  const limited = await panel();
+  assert.ok(limited.h < full.h, 'the panel gives up height instead of running under Results');
+  await check('arrow selected');
+
+  // The same with only the Arrow tool armed (the look controls are for the next arrow).
+  await page.evaluate(() => window.probe.AnnotationTool.isActive());
+  await page.focus('#viewport');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row.is-selected').length === 0);
+  await armArrow(page);
+  await frames(page, 8);
+  await check('arrow tool armed');
+
+  // Results away: the panel returns to exactly its full size (a limited panel can grow back).
+  await removeCard();
+  await frames(page, 8);
+  assert.ok(near((await panel()).h, full.h, 1), 'the panel is back to its full height');
+  assert.deepEqual(errors, []);
+});
+
+test('beside expanded Results the panel never runs under the card and never loses its rows to the look controls: at 1100x620 (also with the Outdated header), at every height down to its floor and compact, Show, the tools, every row, Re-attach and the look controls stay reachable', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1100, height: 620 });
+  // Two callouts, three Valid arrows and an arrow whose tail sat on cargo that is now gone (Unresolved, with Re-attach).
+  await seed(page, [{ title: 'Callout 1', ground: [100, 10] }, { title: 'Callout 2', ground: [140, 10] }]);
+  for (const [from, to] of [[[60, -20], [180, -20]], [[10, -30], [10, 40]], [[250, -30], [330, 10]]]) await seedArrow(page, from, to);
+  const broken = await seedArrow(page, TOP_OF_B, [520, 10]);
+  await page.evaluate(() => window.probe.PackLibrary.removeInstances('fixture-pack', ['cargo-b']));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 6);
+  const panel = () => boxOf(page, '#editor-annotation-panel');
+  const card = () => boxOf(page, '[data-role="autopack-results-panel"]');
+  const flows = () => page.evaluate(() => document.querySelector('#editor-annotation-panel .tp3d-annot-panel__body').classList.contains('is-flow'));
+  // A stand-in for the Results card (the panel reads its rectangle from the DOM), placed in viewport coordinates.
+  const placeCard = ({ x, y, w = 420, h = 237 }) => page.evaluate(([left, top, width, height]) => {
+    const host = document.querySelector('.canvas-wrap');
+    const origin = host.getBoundingClientRect();
+    let stand = document.querySelector('[data-role="autopack-results-panel"]');
+    if (!stand) {
+      stand = document.createElement('section');
+      stand.setAttribute('data-role', 'autopack-results-panel');
+      stand.style.cssText = 'position:absolute;z-index:12;background:#fff;border:1px solid #888;box-sizing:border-box';
+      host.appendChild(stand);
+      // The Editor's own render drops a Results card it did not create when a row is selected: put the stand-in back in
+      // the same task, so it stays where the real card would stay through every click below.
+      window.__standInObserver = new MutationObserver(() => { if (!stand.isConnected) host.appendChild(stand); });
+      window.__standInObserver.observe(host, { childList: true });
+    }
+    Object.assign(stand.style, { left: `${left - origin.left}px`, top: `${top - origin.top}px`, width: `${width}px`, height: `${height}px` });
+  }, [x, y, w, h]);
+  const removeCard = () => page.evaluate(() => {
+    if (window.__standInObserver) window.__standInObserver.disconnect();
+    window.__standInObserver = null;
+    document.querySelector('[data-role="autopack-results-panel"]')?.remove();
+  });
+  // Every visible button the panel has, once scrolled into view, takes the click (nothing is drawn over it).
+  const unreachable = () => page.evaluate(() => [...document.querySelectorAll('#editor-annotation-panel button')].filter(button => {
+    const r = button.getBoundingClientRect();
+    return r.width > 0 && r.height > 0;
+  }).filter(button => {
+    button.scrollIntoView({ block: 'nearest' });
+    const r = button.getBoundingClientRect();
+    const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+    return !(top && (top === button || button.contains(top)));
+  }).map(button => button.getAttribute('aria-label') || button.textContent.trim()));
+  const inventory = () => page.evaluate(() => {
+    const visible = el => el.getClientRects().length > 0;
+    const root = document.getElementById('editor-annotation-panel');
+    return {
+      show: [...root.querySelectorAll('.tp3d-annot-seg--show .tp3d-annot-seg__btn')].filter(visible).length,
+      tools: [...root.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].filter(visible).length,
+      rows: [...root.querySelectorAll('.tp3d-annot-row__select')].filter(visible).length,
+      reattach: [...root.querySelectorAll('button')].filter(b => /^Re-attach/.test(b.textContent.trim()) && visible(b)).length,
+      look: [...root.querySelectorAll('.tp3d-annot-panel__arrow .tp3d-annot-seg__btn, .tp3d-annot-panel__arrow .tp3d-annot-swatch')].filter(visible).length,
+    };
+  });
+  // At the top of the body, with no scrolling: do the tool and Show buttons (and the first row) take a click, or does a pinned
+  // footer sit over them?
+  const hittableAtTop = () => page.evaluate(() => {
+    document.querySelector('#editor-annotation-panel .tp3d-annot-panel__body').scrollTop = 0;
+    const hit = selector => {
+      const el = document.querySelector(`#editor-annotation-panel ${selector}`);
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const top = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return Boolean(top && (top === el || el.contains(top)));
+    };
+    return { tools: hit('.tp3d-annot-seg--tools .tp3d-annot-seg__btn'), show: hit('.tp3d-annot-seg--show .tp3d-annot-seg__btn'), row: hit('.tp3d-annot-row__select') };
+  });
+  const assertUsable = async (label, { look = true, rowAtTop = true } = {}) => {
+    const shown = await panel();
+    const stand = await card();
+    assert.equal(overlaps(shown, stand), false, `${label}: the panel does not touch Results`);
+    const top = await hittableAtTop();
+    assert.deepEqual([top.tools, top.show], [true, true], `${label}: the tool and Show buttons are in reach without scrolling`);
+    if (rowAtTop) assert.equal(top.row, true, `${label}: so is the first row`);
+    assert.deepEqual(await unreachable(), [], `${label}: every control it has can be reached`);
+    const have = await inventory();
+    assert.deepEqual([have.show, have.tools, have.rows, have.reattach > 0, look ? have.look > 0 : true], [3, 3, 6, true, true], `${label}: Show, the tools, every row, Re-attach and the look controls are all there`);
+  };
+
+  // An arrow is selected, so its look controls are showing. With no card the panel is at its full size and pins them.
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select');
+  await page.waitForFunction(() => !document.querySelector('.tp3d-annot-panel__arrow')?.hidden);
+  await frames(page, 6);
+  const full = await panel();
+  assert.equal(await flows(), false, 'room enough: the look controls stay pinned under the scrolling rows');
+  assert.deepEqual(await unreachable(), [], 'no Results: everything is reachable');
+
+  // 1. Normal expanded Results at 1100x620 (the geometry of the real card): 213 px above it.
+  await placeCard({ x: full.x - 129, y: full.y + 219, h: 237 });
+  await frames(page, 8);
+  const normal = await panel();
+  assert.ok(near(normal.h, 213, 1.5) && normal.y === full.y, 'it gives up height and keeps its place');
+  assert.equal(await flows(), true, 'too short for pinned controls: everything scrolls under the header');
+  await assertUsable('normal Results');
+
+  // 2. The Outdated header makes the card taller: 198 px above it, two short of the preferred minimum. No cliff.
+  await placeCard({ x: full.x - 129, y: full.y + 204, h: 252 });
+  await frames(page, 8);
+  const outdated = await panel();
+  const outdatedCard = await card();
+  assert.ok(near(outdated.h, 198, 1.5) && outdated.y === full.y, 'still docked above the card, a little shorter');
+  await assertUsable('Outdated Results');
+  // Show, selecting a row and Re-attach take real clicks (they are scrolled to and must not be covered).
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("Selected")');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-seg--show .tp3d-annot-seg__btn[aria-pressed="true"]').textContent.trim() === 'Selected');
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("All")');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-seg--show .tp3d-annot-seg__btn[aria-pressed="true"]').textContent.trim() === 'All');
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select >> nth=1');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row.is-selected').length === 1);
+  await page.click(endButton(broken.id, 'start'));
+  await page.waitForFunction(() => /set the arrow tail/i.test(window.probe.hint()));
+  await page.focus('#viewport');
+  await page.keyboard.press('Escape');
+  assert.doesNotMatch(await page.evaluate(() => window.probe.hint()), /set the arrow tail/i, 'Re-attach was reachable and Escape cancels it');
+  assert.deepEqual(await card(), outdatedCard, 'Results never moved');
+  await page.waitForFunction(() => window.probe.hint() === ''); // the status line is gone: the rows sit where they settle
+
+  // 3. Every height from plenty of room down to the floor: the panel is exactly as tall as the room, never under the card.
+  for (const room of [260, 236, 213, 200, 199, 198, 190, 175, 160, 150]) {
+    await placeCard({ x: full.x - 129, y: full.y + room + 6, h: 237 });
+    await frames(page, 6);
+    const shown = await panel();
+    assert.ok(near(shown.h, Math.min(full.h, room), 1.5), `${room} px of room: the panel is ${Math.round(shown.h)} px (the room, not a cliff)`);
+    await assertUsable(`${room} px of room`, { rowAtTop: room >= 198 });
+  }
+  // Below the floor nothing useful fits: V1A's rule applies (the panel is left where it is and the card stays on top).
+  await placeCard({ x: full.x - 129, y: full.y + 140 + 6, h: 237 });
+  await frames(page, 6);
+  assert.ok(near((await panel()).h, full.h, 1), 'under the floor the panel is not squeezed into a sliver');
+
+  // 4. The owner's dragged place is a preference: the fit is temporary and ends when Results moves away.
+  await removeCard();
+  await frames(page, 6);
+  const home = await panel();
+  assert.deepEqual([home.x, home.y, home.h], [full.x, full.y, full.h], 'with Results gone the panel is back exactly');
+  assert.equal(await flows(), false, 'and its look controls are pinned again');
+  const grip = () => page.evaluate(() => { const r = document.querySelector('#editor-annotation-panel .tp3d-annot-grip').getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2 }; });
+  const from = await grip();
+  await page.mouse.move(from.x, from.y);
+  await page.mouse.down();
+  await page.mouse.move(from.x - 120, from.y - 20, { steps: 6 });
+  await page.mouse.up();
+  await frames(page, 6);
+  const dropped = await panel();
+  assert.ok(dropped.x < full.x - 80, 'the owner moved the panel');
+  await placeCard({ x: dropped.x - 129, y: dropped.y + 204, h: 252 });
+  await frames(page, 8);
+  assert.ok(near((await panel()).h, 198, 1.5), 'the dragged panel is fitted above the card too');
+  await assertUsable('dragged panel beside Outdated Results');
+  await removeCard();
+  await frames(page, 6);
+  const back = await panel();
+  assert.deepEqual([back.x, back.y, back.h], [dropped.x, dropped.y, dropped.h], 'with Results gone it returns to where the owner dropped it');
+
+  // 5. Compact: the bottom sheet rides above the card and scrolls as a whole.
+  await page.setViewportSize({ width: 500, height: 740 });
+  await frames(page, 8);
+  const wrap = await boxOf(page, '.canvas-wrap');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').classList.contains('is-compact')), true);
+  await placeCard({ x: wrap.x + 60, y: wrap.b - 280, w: 380, h: 250 });
+  await frames(page, 10);
+  assert.equal(await flows(), true, 'compact: the sheet scrolls as a whole');
+  await assertUsable('compact');
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 6, 'nothing was written');
+  assert.deepEqual(errors, []);
+});
+
+// ============================================================================
+// Settings > Show Annotations: a visibility switch like Show Camera Controls, Show Zoom Controls and Show
+// Measurement Tool. Off hides the button and every graphic and ends whatever was unfinished; the records
+// (and their own hidden flags) are never touched; On draws them again from those records.
+// ============================================================================
+// The same PreferencesManager.set the Settings overlay's Save changes calls.
+const setShowAnnotations = (page, show) => page.evaluate(value => {
+  const { PreferencesManager } = window.probe;
+  PreferencesManager.set({ ...PreferencesManager.get(), showAnnotations: value });
+}, show);
+const annotationsButtonShown = page => page.evaluate(() => {
+  const button = document.getElementById('btn-editor-annotations');
+  return !button.hidden && getComputedStyle(button).display !== 'none';
+});
+const layerGraphics = page => page.evaluate(() => {
+  const shown = selector => [...document.querySelectorAll(selector)].filter(el => !el.hidden).length;
+  return {
+    hidden: document.getElementById('editor-annotation-layer').hidden,
+    pins: shown('.tp3d-annot-pin:not(.is-draft)'),
+    cards: shown('.tp3d-annot-card'),
+    arrows: document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft[d]:not([d=""])').length,
+    grips: shown('.tp3d-annot-handle'),
+  };
+});
+const annotationState = page => page.evaluate(() => ({
+  json: JSON.stringify(window.probe.annotations()),
+  edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited,
+  cases: window.probe.casesJson(),
+  camera: window.probe.camera(),
+}));
+const nothingUnderway = page => page.evaluate(() => {
+  const tool = window.probe.AnnotationTool;
+  return !tool.isActive() && !tool.hasDraft() && tool.selectedId() === null;
+});
+
+test('Show Annotations Off hides the button and every saved callout and arrow, ends each unfinished gesture without writing and keeps every record; On draws them again from the unchanged records, with no gesture or selection brought back', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const [, hiddenOne] = await seed(page, [{ title: 'Kept', ...TOP_OF_B }, { title: 'Hidden one', ground: [200, -30] }]);
+  const arrow = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.evaluate(id => {
+    if (!window.probe.PackLibrary.updateCallout('fixture-pack', id, { hidden: true }).ok) throw new Error('hide failed');
+  }, hiddenOne.id);
+  const drawnAsSaved = () => page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1 &&
+    document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  await drawnAsSaved();
+  await cameraSettled(page);
+  const base = await annotationState(page);
+  assert.equal(JSON.parse(base.json).length, 3);
+  assert.equal(JSON.parse(base.json)[1].hidden, true, 'one callout carries its own Hide');
+
+  const expectOff = async label => {
+    assert.equal(await annotationsButtonShown(page), false, `${label}: the button is gone`);
+    assert.deepEqual(await layerGraphics(page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 }, `${label}: no callout, card, arrow or end handle is drawn`);
+    assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true, `${label}: the panel is closed`);
+    assert.equal(await nothingUnderway(page), true, `${label}: no armed tool, re-attach, editor or selection is left`);
+    assert.equal(await tailShown(page), false, `${label}: no arrow tail is left`);
+    assert.equal(await editorClosed(page), true, `${label}: no editor card is left`);
+    assert.deepEqual(await annotationState(page), base, `${label}: nothing was written and the view did not move`);
+  };
+  // Back On: drawn from the saved records and each one's own Hide; the panel stays closed and nothing resumes.
+  const turnOnAndReopen = async label => {
+    await setShowAnnotations(page, true);
+    await drawnAsSaved();
+    assert.equal(await annotationsButtonShown(page), true, `${label}: the button is back`);
+    assert.equal(await page.getAttribute('#btn-editor-annotations', 'aria-pressed'), 'false');
+    assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true, `${label}: the panel is not reopened for the owner`);
+    assert.equal(await nothingUnderway(page), true, `${label}: no gesture or selection comes back`);
+    assert.deepEqual(await livePins(page), ['1'], `${label}: only the callout without its own Hide is drawn`);
+    assert.deepEqual(await annotationState(page), base, `${label}: the records are exactly as saved`);
+    await page.click('#btn-editor-annotations');
+    await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+    assert.deepEqual(
+      await page.evaluate(() => ['callout', 'arrow'].map(tool => document.querySelector(`.tp3d-annot-seg__btn[data-tool="${tool}"]`).getAttribute('aria-pressed'))),
+      ['false', 'false'], `${label}: no tool is armed again`
+    );
+  };
+
+  // 1. An unsaved callout in its editor card.
+  const groundFree = await freePoint(page, [[150, 0, -10], [470, 0, -5], [380, 0, 60]]);
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await page.waitForFunction(() => /place a callout/i.test(window.probe.hint()));
+  await click(page, groundFree);
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Unsaved');
+  await setShowAnnotations(page, false);
+  await expectOff('an unsaved callout');
+  await turnOnAndReopen('an unsaved callout');
+
+  // 2. The first click of a new arrow.
+  await armArrow(page);
+  await click(page, await freePoint(page, [[150, 0, -10], [470, 0, -5], [380, 0, 60]]));
+  await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+  assert.equal(await tailShown(page), true);
+  await setShowAnnotations(page, false);
+  await expectOff('an unfinished arrow');
+  await turnOnAndReopen('an unfinished arrow');
+
+  // 3. A pending Re-attach of an arrow end (a click on its end handle), with the arrow selected.
+  await page.click(`.tp3d-annot-row[data-annot-id="${arrow.id}"] .tp3d-annot-row__select`);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length === 2);
+  const grip = await gripCentre(page, 'end');
+  await click(page, grip);
+  await page.waitForFunction(() => window.probe.AnnotationTool.isActive());
+  await setShowAnnotations(page, false);
+  await expectOff('a pending re-attach');
+  await turnOnAndReopen('a pending re-attach');
+
+  // 4. A marker drag still in progress (the button is still held down), then the release after Off.
+  const marker = await pinCentreOf(page);
+  await page.mouse.move(marker.x, marker.y);
+  await page.mouse.down();
+  await page.mouse.move(marker.x + 40, marker.y + 25, { steps: 4 });
+  await page.mouse.move(marker.x + 80, marker.y + 50, { steps: 4 });
+  await page.waitForFunction(() => { const ring = document.querySelector('.tp3d-annot-svg__ghost'); return Boolean(ring) && ring.style.display !== 'none'; });
+  await setShowAnnotations(page, false);
+  await page.mouse.up();
+  await expectOff('a marker drag');
+  await turnOnAndReopen('a marker drag');
+
+  // 5. A selected annotation is deselected, never restored by turning the setting back On.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-card.is-selected');
+  await setShowAnnotations(page, false);
+  await expectOff('a selection');
+  await turnOnAndReopen('a selection');
+
+  // While Off nothing answers: the marker's old position is just the 3D view, and the tool cannot be opened.
+  await setShowAnnotations(page, false);
+  assert.equal(await escapeConsumed(page), false, 'Escape belongs to the Editor again');
+  await click(page, marker);
+  assert.equal(await nothingUnderway(page), true, 'a click where the marker was selects no annotation');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-b'], 'it reaches the 3D view and selects the cargo under it');
+  await page.evaluate(() => window.probe.InteractionManager.setSelection([]));
+  assert.deepEqual(await page.evaluate(() => [window.probe.AnnotationTool.openPanel(), window.probe.AnnotationTool.togglePanel()]), [false, false], 'the panel cannot be opened');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true);
+  const stack = await page.locator('#editor-zoom-controls > button:not([hidden])').evaluateAll(buttons => buttons.map(b => b.id));
+  assert.deepEqual(stack, ['btn-editor-measure', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out'], 'the other controls keep their order and their own preferences');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('btn-editor-measure')).borderTopWidth), '0px', 'the first visible button carries no stray separator');
+  await expectOff('while Off');
+
+  // The view mode is independent: Show Off set before the setting went Off is still Off afterwards.
+  await setShowAnnotations(page, true);
+  await drawnAsSaved();
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+  await showButton(page, 'Off').click();
+  await page.waitForFunction(() => /hidden in the view/i.test(window.probe.hint()));
+  await setShowAnnotations(page, false);
+  await setShowAnnotations(page, true);
+  assert.deepEqual(await layerGraphics(page), { hidden: false, pins: 0, cards: 0, arrows: 0, grips: 0 }, 'the Show Off view mode is kept: nothing is drawn');
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+  await showButton(page, 'All').click();
+  await drawnAsSaved();
+
+  // Ordinary use resumes: a callout is placed and saved the usual way, as exactly one record.
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await page.waitForFunction(() => /place a callout/i.test(window.probe.hint()));
+  const saved = await addCallout(page, await freePoint(page, [[150, 0, -10], [470, 0, -5], [380, 0, 60]]), 'After re-enable');
+  assert.equal(saved.title, 'After re-enable');
+  assert.equal(await count(page), 4);
+  assert.equal(JSON.parse(base.json)[1].hidden, true);
+  assert.equal(await page.evaluate(() => window.probe.annotations()[1].hidden), true, 'the callout that was hidden by its owner is still hidden');
+  assert.deepEqual(errors, []);
+});
+
+test('Show Annotations is a visibility-only change: no Editor render, scene sync, theme refresh, camera or selection change; it follows the other three switches in the group; a saved Off holds after a workspace replacement and a fresh start', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openEditor(browser);
+  await cameraSettled(page);
+  await seed(page, [{ title: 'Kept', ...TOP_OF_B }]);
+  await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1 &&
+    document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  await cameraSettled(page);
+  const base = await annotationState(page);
+
+  // Count every heavy Editor path, and record which store keys each preference write touches.
+  await page.evaluate(() => {
+    const { EditorUI, CaseScene, SceneManager, StateStore } = window.probe;
+    const spy = { render: 0, sync: 0, theme: 0, writes: [], results: StateStore.get('autoPackResults') };
+    for (const [owner, name, key] of [[EditorUI, 'render', 'render'], [CaseScene, 'sync', 'sync'], [SceneManager, 'refreshTheme', 'theme']]) {
+      const original = owner[name];
+      owner[name] = (...args) => { spy[key] += 1; return original.apply(owner, args); };
+    }
+    StateStore.subscribe((changes, _state, notification) => spy.writes.push({ keys: Object.keys(changes).sort().join(','), route: notification?.type ?? null }));
+    window.__spy = spy;
+  });
+  const spyNow = () => page.evaluate(() => ({ render: window.__spy.render, sync: window.__spy.sync, theme: window.__spy.theme, writes: window.__spy.writes.slice() }));
+  const scene = () => page.evaluate(() => ({ objects: window.probe.sceneObjectCount(), selection: window.probe.selection(), camera: window.probe.camera() }));
+  const sceneBefore = await scene();
+
+  await setShowAnnotations(page, false);
+  assert.equal(await annotationsButtonShown(page), false);
+  assert.deepEqual((await layerGraphics(page)).arrows + (await layerGraphics(page)).pins, 0, 'every saved callout and arrow is off the view');
+  await setShowAnnotations(page, true);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1);
+  const light = await spyNow();
+  assert.deepEqual([light.render, light.sync, light.theme], [0, 0, 0], 'no Editor render, no scene sync and no theme refresh');
+  assert.deepEqual(light.writes, [
+    { keys: 'preferences', route: 'viewport-controls-preference' },
+    { keys: 'preferences', route: 'viewport-controls-preference' },
+  ], 'only the preference changed, on the lightweight route: no Pack, cargo, selection or AutoPack Results state');
+  assert.deepEqual(await scene(), sceneBefore, 'scene objects, selection and camera are untouched');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.get('autoPackResults') === window.__spy.results), true, 'AutoPack Results state is the same object');
+  assert.deepEqual(await annotationState(page), base, 'no record, Load Plan timestamp or cargo changed');
+
+  // Saved together with another preference it takes the ordinary route and still ends up applied.
+  await page.evaluate(() => {
+    const { PreferencesManager } = window.probe;
+    PreferencesManager.set({ ...PreferencesManager.get(), showAnnotations: false, labelFontSize: 16 });
+  });
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').hidden);
+  assert.ok((await spyNow()).render > 0, 'a mixed save renders the Editor');
+  assert.equal(await annotationsButtonShown(page), false, 'and Annotations is still hidden by it');
+  assert.deepEqual(await layerGraphics(page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 });
+  await page.evaluate(() => {
+    const { PreferencesManager } = window.probe;
+    PreferencesManager.set({ ...PreferencesManager.get(), showAnnotations: true, labelFontSize: 12 });
+  });
+  await page.waitForFunction(() => !document.getElementById('btn-editor-annotations').hidden &&
+    document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1);
+
+  // The four switches are independent, and the floating group stays only while one is On.
+  const setPref = (key, value) => page.evaluate(([name, on]) => {
+    const { PreferencesManager } = window.probe;
+    PreferencesManager.set({ ...PreferencesManager.get(), [name]: on });
+  }, [key, value]);
+  const groupShown = () => page.evaluate(() => getComputedStyle(document.getElementById('editor-zoom-controls')).display !== 'none');
+  const visibleButtons = () => page.locator('#editor-zoom-controls > button:not([hidden])').evaluateAll(buttons => buttons.map(b => b.id));
+  await setPref('showMeasurementTool', false);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out'], 'the ruler alone is hidden');
+  await setPref('showCameraControls', false);
+  await setPref('showZoomControls', false);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations']);
+  assert.equal(await groupShown(), true, 'Annotations alone keeps the group');
+  await setPref('showAnnotations', false);
+  assert.deepEqual(await visibleButtons(), []);
+  assert.equal(await groupShown(), false, 'all four Off: the group disappears and leaves no empty frame');
+  await setPref('showAnnotations', true);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations'], 'turning Annotations back On brings the group back with only that button');
+  assert.equal(await groupShown(), true);
+  assert.equal(await page.evaluate(() => window.probe.PreferencesManager.get().showMeasurementTool), false, 'the other switches were not touched');
+  await setPref('showMeasurementTool', true);
+  await setPref('showCameraControls', true);
+  await setPref('showZoomControls', true);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations', 'btn-editor-measure', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out']);
+
+  // Hiding the button while it holds keyboard focus hands focus back to the 3D view.
+  await page.focus('#btn-editor-annotations');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-editor-annotations');
+  await setPref('showAnnotations', false);
+  assert.equal(await page.evaluate(() => { const active = document.activeElement; return active.isConnected && active.id !== 'btn-editor-annotations' && active !== document.body; }), true, 'focus did not fall into the page background');
+  assert.equal(await page.evaluate(() => Boolean(document.activeElement.closest('#viewport'))), true, 'it returned to the 3D view');
+
+  // A workspace replacement (a restore or import) keeps the saved Off.
+  await page.evaluate(() => window.probe.StateStore.replace(window.probe.StateStore.snapshot()));
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').hidden);
+  assert.deepEqual(await layerGraphics(page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 });
+  assert.equal(await page.evaluate(() => window.probe.PreferencesManager.get().showAnnotations), false);
+  assert.equal(await count(page), 2, 'the saved callout and arrow are still stored');
+  assert.deepEqual(errors, []);
+
+  // A fresh start with Off already stored: no button and no graphics from the first paint; On draws what was saved.
+  const reloaded = await openEditor(browser, undefined, { preferences: { showAnnotations: false } });
+  await cameraSettled(reloaded.page);
+  assert.equal(await annotationsButtonShown(reloaded.page), false, 'a saved Off is still Off after reload');
+  await seed(reloaded.page, [{ title: 'Saved earlier', ...TOP_OF_B }]);
+  await seedArrow(reloaded.page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await frames(reloaded.page, 4);
+  assert.deepEqual(await layerGraphics(reloaded.page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 }, 'saved records are not drawn while Off');
+  assert.equal(await count(reloaded.page), 2);
+  await setShowAnnotations(reloaded.page, true);
+  await reloaded.page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1 &&
+    document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  assert.equal(await annotationsButtonShown(reloaded.page), true);
+  assert.deepEqual(reloaded.errors, []);
 });

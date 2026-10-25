@@ -1,8 +1,8 @@
 name: Quality Gate
 
-# Fast PR gate, about 4-5 minutes on a hosted runner: ESLint, Stylelint and HTML validation, typecheck, the full
-# Node regression lane, a small set of critical real-Chromium smoke tests, the production build, the production
-# dependency audit and a patch whitespace check. One job, no matrix: compute is billed per minute.
+# Fast PR gate, a few minutes on a hosted runner (see the job timeout below): ESLint, Stylelint and HTML validation,
+# typecheck, the full Node regression lane, a small set of critical real-Chromium smoke tests, the production build,
+# the production dependency audit and a patch whitespace check. One job, no matrix: compute is billed per minute.
 #
 # The complete Chromium regression suite is deliberately NOT run here (about 25 minutes on a hosted runner). Run it
 # locally before a major release or after a substantial high-risk change:
@@ -28,8 +28,10 @@ concurrency:
 jobs:
   quality-gate:
     runs-on: ubuntu-latest
-    # Fail-safe only: the measured run is about 4-5 minutes, so a run past 10 means something is stuck.
-    timeout-minutes: 10
+    # Fail-safe only, not an expected runtime. This is one sequential job (no matrix, no parallel browser runs), and
+    # hosted-runner browser execution has become variable: the smoke lane took about 5.5 minutes on one recent run and
+    # more than 9 on another. Fifteen minutes bounds a stuck run. The complete Chromium regression suite stays excluded.
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4

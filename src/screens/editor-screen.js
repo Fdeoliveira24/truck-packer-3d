@@ -1018,11 +1018,15 @@ export function createCaseScene({
 
     let syncedPack = null;
     let syncedTransientPreview = false;
+    // Counts the syncs that changed what stands in the scene (cargo added, removed, resized, moved, rotated or hidden), so a
+    // reader that measured the layout earlier (the annotation overlay's occlusion) knows when to measure it again.
+    let geometryRevision = 0;
 
     function clear() {
       syncedPack = null;
       const scene = SceneManager.getScene();
       if (!scene) return;
+      if (instances.size) geometryRevision += 1;
       instances.forEach(group => disposeGroup(scene, group));
       instances.clear();
       edgesCache.forEach(entry => entry.geometry.dispose());
@@ -1052,6 +1056,7 @@ export function createCaseScene({
       collisionIds.clear();
 
       const keep = new Set();
+      let geometryChanged = false;
       (pack.cases || []).forEach(inst => {
         const caseData = CaseLibrary.getById(inst.caseId);
         if (!caseData) return;
@@ -1064,11 +1069,18 @@ export function createCaseScene({
           const group = createInstanceGroup(inst, caseData);
           instances.set(inst.id, group);
           scene.add(group);
+          geometryChanged = true;
         }
 
         const group = instances.get(inst.id);
+        const { x: px, y: py, z: pz } = group.position;
+        const { x: rx, y: ry, z: rz } = group.rotation;
+        const wasHidden = group.userData.hidden === true;
         applyTransform(group, inst);
         applyHidden(group, inst.hidden);
+        if (px !== group.position.x || py !== group.position.y || pz !== group.position.z ||
+            rx !== group.rotation.x || ry !== group.rotation.y || rz !== group.rotation.z ||
+            wasHidden !== (group.userData.hidden === true)) geometryChanged = true;
       });
 
       // Remove old
@@ -1076,6 +1088,7 @@ export function createCaseScene({
         if (keep.has(id)) return;
         disposeGroup(scene, instances.get(id));
         instances.delete(id);
+        geometryChanged = true;
       });
 
       recomputeVisualStates();
@@ -1083,6 +1096,7 @@ export function createCaseScene({
       if (pendingPoseWatcher) pendingPoseWatcher();
       syncedPack = pack;
       syncedTransientPreview = Boolean(transientPreview);
+      if (geometryChanged) geometryRevision += 1;
     }
 
     function buildSignature(inst, caseData) {
@@ -2124,6 +2138,7 @@ export function createCaseScene({
       clear,
       sync,
       getSyncedPack: () => syncedPack,
+      getGeometryRevision: () => geometryRevision,
       isTransientPreview: () => syncedTransientPreview,
       matchesCommittedPoses,
       beginExportCapture,
@@ -5302,6 +5317,7 @@ export function createEditorScreen({
           }
           if (InteractionManager && typeof InteractionManager.resetHover === 'function') InteractionManager.resetHover();
         });
+        AnnotationTool.syncVisibility();
       }
       if (btnView) {
         btnView.addEventListener('click', ev => {
@@ -5472,17 +5488,24 @@ export function createEditorScreen({
       if (pendingViewSave) queueMicrotask(() => persistSettledView());
     }
 
-    // Measurement Tool, Camera Views, Zoom In and Zoom Out are shown or hidden independently by
-    // their Settings preferences; the floating group hides only when none remain. This is
-    // visibility only: it never renders the Editor or touches the scene, camera or Pack. Hiding
-    // the ruler while Measurement Mode is active exits the mode and cancels an unfinished point;
-    // saved measurements are untouched.
+    // Annotations, Measurement Tool, Camera Views, Zoom In and Zoom Out are shown or hidden
+    // independently by their Settings preferences; the floating group hides only when none remain.
+    // This is visibility only: it never renders the Editor or touches the scene, camera or Pack.
+    // Hiding the ruler while Measurement Mode is active exits the mode and cancels an unfinished
+    // point; hiding Annotations closes its panel, cancels any unfinished gesture without writing
+    // and takes the graphics off the view. Saved measurements and annotations are untouched.
     function syncViewportControls() {
       if (!zoomControlsEl) return;
       const prefs = PreferencesManager.get();
       const showCamera = prefs.showCameraControls !== false;
       const showZoom = prefs.showZoomControls !== false;
+      const showAnnotations = prefs.showAnnotations !== false;
       const showMeasure = prefs.showMeasurementTool !== false;
+      if (!showAnnotations && btnAnnotations && btnAnnotations.contains(document.activeElement)) {
+        viewportEl?.focus({ preventScroll: true });
+      }
+      if (AnnotationTool) AnnotationTool.syncVisibility();
+      else if (btnAnnotations) btnAnnotations.hidden = !showAnnotations;
       if (!showMeasure && btnMeasure && btnMeasure.contains(document.activeElement)) {
         viewportEl?.focus({ preventScroll: true });
       }
@@ -5501,7 +5524,7 @@ export function createEditorScreen({
       if (btnView) btnView.hidden = !showCamera;
       if (btnZoomIn) btnZoomIn.hidden = !showZoom;
       if (btnZoomOut) btnZoomOut.hidden = !showZoom;
-      zoomControlsEl.hidden = !(showMeasure || showCamera || showZoom || Boolean(btnAnnotations));
+      zoomControlsEl.hidden = !((Boolean(btnAnnotations) && showAnnotations) || showMeasure || showCamera || showZoom);
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene

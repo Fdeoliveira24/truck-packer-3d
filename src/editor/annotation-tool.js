@@ -177,6 +177,7 @@ export function createAnnotationTool({
   StateStore,
   UIComponents,
   OperationLifecycle = null,
+  PreferencesManager = null,
   doc = typeof document !== 'undefined' ? document : null,
 }) {
   // ==========================================================================
@@ -184,6 +185,7 @@ export function createAnnotationTool({
   // ==========================================================================
   let els = { button: null, panel: null, layer: null, viewport: null };
   let bound = false;
+  let toolShown = true; // Settings > Show Annotations (default On); a visibility switch only, never a data change
   let panelOpen = false;
   let tool = null; // 'callout' | 'arrow' while that tool is armed
   let reattachId = null; // a callout (or an arrow end) whose marker is waiting for a new surface
@@ -282,6 +284,8 @@ export function createAnnotationTool({
   function provisionalPoseActive() {
     return typeof els.hasProvisionalPose === 'function' && Boolean(els.hasProvisionalPose());
   }
+
+  const preferenceShown = () => !PreferencesManager || PreferencesManager.get().showAnnotations !== false;
 
   const recordById = id => records.find(record => record.id === id) || null;
   const resultById = id => {
@@ -622,7 +626,7 @@ export function createAnnotationTool({
 
   function openPanel() {
     if (panelOpen) return true;
-    if (!inEditor() || !currentPack() || !els.panel) return false;
+    if (!toolShown || !inEditor() || !currentPack() || !els.panel) return false;
     panelOpen = true;
     CaseScene.setHover(null);
     const entryFocus = doc ? doc.activeElement : null;
@@ -694,6 +698,31 @@ export function createAnnotationTool({
       return false;
     }
     return openPanel();
+  }
+
+  /**
+   * Show or hide the Annotations tool per Settings. Hiding it ends everything under way without writing (the
+   * panel, an armed tool, a pending arrow or re-attach, an unfinished drag, an unsaved editor), clears the
+   * selection and takes every callout and arrow off the view; saved records and their own hidden flags are never
+   * touched. Showing it again redraws them from the records and the current Show mode: no gesture returns and
+   * nothing is selected. Returns whether the tool is shown.
+   */
+  function syncVisibility() {
+    const show = preferenceShown();
+    const changed = show !== toolShown;
+    toolShown = show;
+    if (els.button) els.button.hidden = !show;
+    if (els.layer) els.layer.hidden = !show;
+    if (!show) {
+      closePanel();
+      selectedId = null;
+      visDirty = true;
+      disposeOverlay();
+      graphicsHidden = true;
+      return false;
+    }
+    if (changed) sync();
+    return true;
   }
 
   function setTool(key) {
@@ -1759,7 +1788,7 @@ export function createAnnotationTool({
   // ==========================================================================
   function attachLayerEvents(layer) {
     layer.addEventListener('pointerdown', ev => {
-      if (sceneOwnedElsewhere()) return;
+      if (!toolShown || sceneOwnedElsewhere()) return;
       keyboardModality = false;
       const grip = ev.target.closest && ev.target.closest('.tp3d-annot-handle');
       if (grip && layer.contains(grip)) {
@@ -1778,7 +1807,7 @@ export function createAnnotationTool({
       }
     });
     layer.addEventListener('click', ev => {
-      if (suppressClick || sceneOwnedElsewhere()) return;
+      if (suppressClick || !toolShown || sceneOwnedElsewhere()) return;
       const act = ev.target.closest && ev.target.closest('[data-act]');
       if (act && layer.contains(act)) {
         const id = act.closest('.tp3d-annot-card')?.dataset.annotId;
@@ -1830,7 +1859,7 @@ export function createAnnotationTool({
   }
 
   function onKeyDownCapture(ev) {
-    if (!bound || !inEditor()) return;
+    if (!bound || !toolShown || !inEditor()) return;
     if (ev.defaultPrevented) return;
     // Measurement Mode owns Escape, Delete and Undo while it is on; a selected callout never reacts to them.
     if (sceneOwnedElsewhere()) return;
@@ -2473,11 +2502,11 @@ export function createAnnotationTool({
   // ==========================================================================
   /** True while a scene tool (the armed Callout tool or a re-attach) owns primary pointer input on the canvas. */
   function isActive() {
-    return Boolean(tool || reattachId);
+    return toolShown && Boolean(tool || reattachId);
   }
 
   function wantsLoop() {
-    return bound && inEditor() && Boolean(currentPack()) &&
+    return bound && toolShown && inEditor() && Boolean(currentPack()) &&
       (panelOpen || draft || tool || reattachId || pinDrag || cardDrag || drawableIds.size > 0);
   }
 
@@ -3595,6 +3624,7 @@ export function createAnnotationTool({
     openPanel,
     closePanel,
     togglePanel,
+    syncVisibility,
     isPanelOpen: () => panelOpen,
     isActive,
     hasDraft: () => Boolean(draft),

@@ -249,6 +249,7 @@ export function normalizePreferences(prefs) {
   next.showBevels = next.showBevels !== false;
   next.showCameraControls = next.showCameraControls !== false;
   next.showZoomControls = next.showZoomControls !== false;
+  next.showAnnotations = next.showAnnotations !== false;
   next.showMeasurementTool = next.showMeasurementTool !== false;
   next.labelFontSize = CoreUtils.clamp(finiteNumber(next.labelFontSize, base.labelFontSize), 8, 24);
   next.hiddenCaseOpacity = CoreUtils.clamp(finiteNumber(next.hiddenCaseOpacity, base.hiddenCaseOpacity), 0, 1);

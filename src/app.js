@@ -1589,6 +1589,7 @@ const TP3D_BUILD_STAMP = Object.freeze({
       CaseLibrary,
       PackLibrary,
       StateStore,
+      PreferencesManager,
       UIComponents,
       OperationLifecycle,
     });

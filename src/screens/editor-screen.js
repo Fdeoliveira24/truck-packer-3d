@@ -5317,6 +5317,7 @@ export function createEditorScreen({
           }
           if (InteractionManager && typeof InteractionManager.resetHover === 'function') InteractionManager.resetHover();
         });
+        AnnotationTool.syncVisibility();
       }
       if (btnView) {
         btnView.addEventListener('click', ev => {
@@ -5487,17 +5488,24 @@ export function createEditorScreen({
       if (pendingViewSave) queueMicrotask(() => persistSettledView());
     }
 
-    // Measurement Tool, Camera Views, Zoom In and Zoom Out are shown or hidden independently by
-    // their Settings preferences; the floating group hides only when none remain. This is
-    // visibility only: it never renders the Editor or touches the scene, camera or Pack. Hiding
-    // the ruler while Measurement Mode is active exits the mode and cancels an unfinished point;
-    // saved measurements are untouched.
+    // Annotations, Measurement Tool, Camera Views, Zoom In and Zoom Out are shown or hidden
+    // independently by their Settings preferences; the floating group hides only when none remain.
+    // This is visibility only: it never renders the Editor or touches the scene, camera or Pack.
+    // Hiding the ruler while Measurement Mode is active exits the mode and cancels an unfinished
+    // point; hiding Annotations closes its panel, cancels any unfinished gesture without writing
+    // and takes the graphics off the view. Saved measurements and annotations are untouched.
     function syncViewportControls() {
       if (!zoomControlsEl) return;
       const prefs = PreferencesManager.get();
       const showCamera = prefs.showCameraControls !== false;
       const showZoom = prefs.showZoomControls !== false;
+      const showAnnotations = prefs.showAnnotations !== false;
       const showMeasure = prefs.showMeasurementTool !== false;
+      if (!showAnnotations && btnAnnotations && btnAnnotations.contains(document.activeElement)) {
+        viewportEl?.focus({ preventScroll: true });
+      }
+      if (AnnotationTool) AnnotationTool.syncVisibility();
+      else if (btnAnnotations) btnAnnotations.hidden = !showAnnotations;
       if (!showMeasure && btnMeasure && btnMeasure.contains(document.activeElement)) {
         viewportEl?.focus({ preventScroll: true });
       }
@@ -5516,7 +5524,7 @@ export function createEditorScreen({
       if (btnView) btnView.hidden = !showCamera;
       if (btnZoomIn) btnZoomIn.hidden = !showZoom;
       if (btnZoomOut) btnZoomOut.hidden = !showZoom;
-      zoomControlsEl.hidden = !(showMeasure || showCamera || showZoom || Boolean(btnAnnotations));
+      zoomControlsEl.hidden = !((Boolean(btnAnnotations) && showAnnotations) || showMeasure || showCamera || showZoom);
     }
 
     // Selection-only change. While a mutating operation owns the Editor the scene

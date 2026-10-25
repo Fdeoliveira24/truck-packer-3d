@@ -6,7 +6,8 @@ import * as THREE from 'three';
 import * as StateStore from '../../src/core/state-store.js';
 import * as PackLibrary from '../../src/services/pack-library.js';
 import * as PreferencesManager from '../../src/services/preferences-manager.js';
-import { editorViewSignature, normalizeEditorView, normalizePack } from '../../src/core/normalizer.js';
+import { editorViewSignature, normalizeEditorView, normalizePack, normalizePreferences } from '../../src/core/normalizer.js';
+import { defaultPreferences } from '../../src/core/defaults.js';
 import { projectPortablePack, projectPortableWorkspacePack } from '../../src/core/import-schema.js';
 
 const viewA = {
@@ -112,25 +113,29 @@ test('Editor zoom steps preserve target and direction in both projections and st
   assert.ok(changes > 2 && cancellations > 2);
 });
 
-test('Measurement, camera and zoom controls hide independently, dismiss an open menu and hand focus to the viewport', async () => {
+test('Annotations, Measurement, camera and zoom controls hide independently, dismiss an open menu and hand focus to the viewport', async () => {
   const source = await readFile(new URL('../../src/screens/editor-screen.js', import.meta.url), 'utf8');
   const start = source.indexOf('    function syncViewportControls() {');
   const end = source.indexOf('    // Selection-only change.', start);
   assert.ok(start >= 0 && end > start);
-  const build = (prefs, { active = null, menuOpen = false, ...options } = {}) => {
+  const build = (prefs, { active = null, menuOpen = false, withAnnotations = false, ...options } = {}) => {
     const control = () => { const el = { hidden: false }; el.contains = node => node === el; return el; };
     const state = { closes: 0, viewportFocuses: 0, menuOpen };
     const menuItem = {};
     const menu = { contains: node => node === menuItem };
-    const controls = { zoomControlsEl: control(), btnView: control(), btnZoomIn: control(), btnZoomOut: control(), btnMeasure: control() };
-    // The real tool owns the ruler button's visibility (Settings may also hide it while the mode is on).
+    // The real Editor always has an Annotations button; most cases here pin the Measurement / Camera / Zoom
+    // rules on their own, so the Annotations button is modelled only when a case asks for it.
+    const controls = {
+      zoomControlsEl: control(), btnView: control(), btnZoomIn: control(), btnZoomOut: control(), btnMeasure: control(),
+      btnAnnotations: withAnnotations ? control() : null,
+    };
+    // The real tools own their button's visibility (Settings may also hide one while its mode is on).
     const MeasurementTool = { calls: 0, syncVisibility() { this.calls++; controls.btnMeasure.hidden = prefs.showMeasurementTool === false; } };
+    const AnnotationTool = { calls: 0, syncVisibility() { this.calls++; controls.btnAnnotations.hidden = prefs.showAnnotations === false; } };
     const sandbox = {
       ...controls,
-      // The Annotations button is always present in the real Editor and keeps the group visible; this
-      // sandbox pins the independent Measurement / Camera / Zoom rules, so it models "no Annotations button".
-      btnAnnotations: null,
       MeasurementTool: options.withoutTool ? null : MeasurementTool,
+      AnnotationTool: withAnnotations && !options.withoutAnnotationTool ? AnnotationTool : null,
       PreferencesManager: { get: () => prefs },
       UIComponents: { closeAllDropdowns: () => { state.closes++; state.menuOpen = false; } },
       document: {
@@ -188,6 +193,74 @@ test('Measurement, camera and zoom controls hide independently, dismiss an open 
   zoomOnly.sandbox.syncViewportControls();
   assert.equal(zoomOnly.state.closes, 0, 'a zoom-only change leaves the Camera Views menu open');
   assert.equal(zoomOnly.state.viewportFocuses, 0, 'and does not take focus from the visible camera button');
+
+  // Annotations is a fourth independent control. The group hides only when all four are Off: the existing
+  // button is never counted just because the element exists.
+  for (const showAnnotations of [true, false]) {
+    for (const showMeasurementTool of [true, false]) {
+      for (const [showCameraControls, showZoomControls] of [[true, true], [true, false], [false, true], [false, false]]) {
+        const label = `annotations ${showAnnotations} / measure ${showMeasurementTool} / camera ${showCameraControls} / zoom ${showZoomControls}`;
+        const { sandbox, controls } = build({ showAnnotations, showMeasurementTool, showCameraControls, showZoomControls }, { withAnnotations: true });
+        sandbox.syncViewportControls();
+        assert.equal(controls.btnAnnotations.hidden, !showAnnotations, label);
+        assert.equal(controls.btnMeasure.hidden, !showMeasurementTool, label);
+        assert.equal(controls.btnView.hidden, !showCameraControls, label);
+        assert.equal(controls.btnZoomIn.hidden, !showZoomControls, label);
+        assert.equal(controls.btnZoomOut.hidden, !showZoomControls, label);
+        assert.equal(controls.zoomControlsEl.hidden, !showAnnotations && !showMeasurementTool && !showCameraControls && !showZoomControls,
+          `${label}: the group disappears only when none of the four remain`);
+      }
+    }
+  }
+
+  // Re-enabling Annotations alone brings the group back without enabling any other control.
+  const allOffPrefs = { showAnnotations: false, showMeasurementTool: false, showCameraControls: false, showZoomControls: false };
+  const allOff = build(allOffPrefs, { withAnnotations: true });
+  allOff.sandbox.syncViewportControls();
+  assert.equal(allOff.controls.zoomControlsEl.hidden, true, 'with all four Off no empty frame is left');
+  allOffPrefs.showAnnotations = true;
+  allOff.sandbox.syncViewportControls();
+  assert.deepEqual(
+    [allOff.controls.zoomControlsEl.hidden, allOff.controls.btnAnnotations.hidden, allOff.controls.btnMeasure.hidden, allOff.controls.btnView.hidden, allOff.controls.btnZoomIn.hidden, allOff.controls.btnZoomOut.hidden],
+    [false, false, true, true, true, true],
+    'turning Annotations back On shows the group with only the Annotations button'
+  );
+
+  // Without the tool object the Annotations button still follows the preference.
+  const noAnnotationTool = build({ showAnnotations: false }, { withAnnotations: true, withoutAnnotationTool: true });
+  noAnnotationTool.sandbox.syncViewportControls();
+  assert.equal(noAnnotationTool.controls.btnAnnotations.hidden, true);
+
+  const legacyAnnotations = build({}, { withAnnotations: true });
+  legacyAnnotations.sandbox.syncViewportControls();
+  assert.equal(legacyAnnotations.controls.btnAnnotations.hidden, false, 'a record without the field shows Annotations');
+  assert.equal(legacyAnnotations.controls.zoomControlsEl.hidden, false);
+  assert.equal(legacyAnnotations.sandbox.AnnotationTool.calls, 1, 'the tool is told to reconcile its own visibility on every sync');
+
+  // Hiding the Annotations button while it has focus hands focus to the viewport, like the ruler.
+  const focusedAnnotations = build({ showAnnotations: false }, { active: 'btnAnnotations', withAnnotations: true });
+  focusedAnnotations.sandbox.syncViewportControls();
+  assert.equal(focusedAnnotations.state.viewportFocuses, 1, 'a hidden focused Annotations button hands focus to the viewport');
+  assert.equal(focusedAnnotations.state.closes, 0, 'no Camera Views menu was open, so nothing is dismissed');
+  const shownAnnotations = build({ showAnnotations: true }, { active: 'btnAnnotations', withAnnotations: true });
+  shownAnnotations.sandbox.syncViewportControls();
+  assert.equal(shownAnnotations.state.viewportFocuses, 0, 'a visible Annotations button keeps focus');
+});
+
+test('showAnnotations defaults On for new and legacy records, only an explicit false turns it Off, and the choice survives a stored round trip', () => {
+  assert.equal(defaultPreferences.showAnnotations, true, 'a new workspace starts with Annotations shown');
+  for (const legacy of [undefined, null, {}, { showAnnotations: undefined }, { showAnnotations: null }]) {
+    assert.equal(normalizePreferences(legacy).showAnnotations, true, 'an older record without a usable value shows Annotations');
+  }
+  const off = normalizePreferences({ showAnnotations: false });
+  assert.equal(off.showAnnotations, false);
+  assert.deepEqual(
+    [off.showCameraControls, off.showZoomControls, off.showMeasurementTool], [true, true, true],
+    'the other visibility preferences are not touched'
+  );
+  assert.equal(normalizePreferences(JSON.parse(JSON.stringify(off))).showAnnotations, false,
+    'a stored, exported or recovered record keeps the choice');
+  assert.equal(normalizePreferences(JSON.parse(JSON.stringify(normalizePreferences({})))).showAnnotations, true);
 });
 
 test('Camera and zoom visibility saves take the lightweight route and every other preference change does not', () => {
@@ -203,12 +276,19 @@ test('Camera and zoom visibility saves take the lightweight route and every othe
     PreferencesManager.set({ ...current(), showCameraControls: false });
     PreferencesManager.set({ ...current(), showZoomControls: false });
     PreferencesManager.set({ ...current(), showCameraControls: true, showZoomControls: true });
-    assert.deepEqual(routes, Array(3).fill('viewport-controls-preference'),
-      'camera only, zoom only and both are visibility-only, so no Editor render is requested');
+    assert.equal(current().showAnnotations, true, 'a record without the Annotations field defaults to On');
+    PreferencesManager.set({ ...current(), showAnnotations: false });
+    assert.equal(current().showAnnotations, false);
+    PreferencesManager.set({ ...current(), showAnnotations: true, showCameraControls: false });
+    PreferencesManager.set({ ...current(), showCameraControls: true });
+    assert.deepEqual(routes, Array(6).fill('viewport-controls-preference'),
+      'camera only, zoom only, Annotations only and any mix of the visibility switches are visibility-only, so no Editor render is requested');
     PreferencesManager.set({ ...current(), showCameraControls: false, labelFontSize: 20 });
     PreferencesManager.set({ ...current(), camera: { ...current().camera, defaultView: 'orthographic' } });
-    assert.deepEqual(routes.slice(3), [null, null],
+    PreferencesManager.set({ ...current(), showAnnotations: false, theme: 'dark' });
+    assert.deepEqual(routes.slice(6), [null, null, null],
       'a visibility change saved with another preference, or a projection default change, uses the normal route');
+    assert.equal(current().showAnnotations, false, 'the Annotations change saved with another preference is kept');
     assert.equal(current().showCameraControls, false);
     assert.equal(current().labelFontSize, 20, 'the other preference saved with it is kept');
     assert.equal(current().showZoomControls, true, 'the other visibility preference is untouched');

@@ -78,7 +78,7 @@ StateStore.init({
   currentScreen: 'editor', currentPackId: packId, selectedInstanceIds: [], caseLibrary: cases,
   packLibrary: [{ id: packId, title: 'Fixture', truck: { length: 636, width: 102, height: 110, shapeMode: 'rect' },
     cases: [packed('cargo-a', cases[0], 70, -20), packed('cargo-b', cases[1], 300, 20)], groups: [], createdAt: 1, lastEdited: 1 }],
-  folderLibrary: [], preferences: Defaults.defaultPreferences,
+  folderLibrary: [], preferences: { ...Defaults.defaultPreferences, ...(window.__TEST_PREFERENCES || {}) },
 });
 
 let SceneManager = null;
@@ -88,7 +88,7 @@ SceneManager = createSceneRuntime({ Utils, UIComponents, PreferencesManager, Tra
 const CaseScene = createCaseScene({ SceneManager, CaseLibrary, CategoryService, PackLibrary, StateStore, TrailerGeometry, Utils, PreferencesManager });
 const OperationLifecycle = createOperationLifecycle();
 const MeasurementTool = createMeasurementTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, PreferencesManager, UIComponents, OperationLifecycle });
-const AnnotationTool = createAnnotationTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, UIComponents, OperationLifecycle });
+const AnnotationTool = createAnnotationTool({ SceneManager, CaseScene, CaseLibrary, PackLibrary, StateStore, PreferencesManager, UIComponents, OperationLifecycle });
 const InteractionManager = createInteractionManager({ SceneManager, CaseScene, StateStore, PackLibrary, CaseLibrary, PreferencesManager, UIComponents, OperationLifecycle, MeasurementTool, AnnotationTool });
 const ExportService = { captureScreenshot() {}, generatePDF() {}, capturePackPreview: () => false, clearPackPreview: () => false };
 window.__TP3D_BILLING = { getBillingState: () => ({ ok: true, orgId: '' }) };
@@ -134,7 +134,7 @@ EditorUI.render();
 const canvas = () => SceneManager.getRenderer().domElement;
 const livePack = () => PackLibrary.getById(packId);
 window.probe = {
-  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, CaseLibrary, InteractionManager, MeasurementTool, AnnotationTool, EditorUI, M, A, UIComponents,
+  StateStore, OperationLifecycle, SceneManager, CaseScene, PackLibrary, CaseLibrary, InteractionManager, MeasurementTool, AnnotationTool, EditorUI, PreferencesManager, M, A, UIComponents,
   annotations: () => PackLibrary.getAnnotations(packId),
   resolved: () => PackLibrary.resolveAnnotations(packId),
   hint: () => { const el = document.querySelector('.tp3d-annot-panel__hint'); return el ? el.textContent : ''; },
@@ -176,9 +176,11 @@ const CONTENT_TYPES = {
 };
 const SERVED = ['/src/', '/styles/', '/vendor/', '/media/', '/node_modules/three/'];
 
-async function openEditor(browser, viewport = { width: 1400, height: 900 }) {
+async function openEditor(browser, viewport = { width: 1400, height: 900 }, { preferences = null } = {}) {
   const page = await browser.newPage({ viewport });
   page.setDefaultTimeout(30000);
+  // Preferences as they would have been stored before this boot (a "reload" with a saved choice).
+  if (preferences) await page.addInitScript(stored => { window.__TEST_PREFERENCES = stored; }, preferences);
   const errors = [];
   page.on('pageerror', error => errors.push(`${error.message}\n${error.stack}`));
   await page.route('**/*', async route => {
@@ -3674,4 +3676,287 @@ test('beside expanded Results the panel never runs under the card and never lose
   await assertUsable('compact');
   assert.equal(await page.evaluate(() => window.probe.annotations().length), 6, 'nothing was written');
   assert.deepEqual(errors, []);
+});
+
+// ============================================================================
+// Settings > Show Annotations: a visibility switch like Show Camera Controls, Show Zoom Controls and Show
+// Measurement Tool. Off hides the button and every graphic and ends whatever was unfinished; the records
+// (and their own hidden flags) are never touched; On draws them again from those records.
+// ============================================================================
+// The same PreferencesManager.set the Settings overlay's Save changes calls.
+const setShowAnnotations = (page, show) => page.evaluate(value => {
+  const { PreferencesManager } = window.probe;
+  PreferencesManager.set({ ...PreferencesManager.get(), showAnnotations: value });
+}, show);
+const annotationsButtonShown = page => page.evaluate(() => {
+  const button = document.getElementById('btn-editor-annotations');
+  return !button.hidden && getComputedStyle(button).display !== 'none';
+});
+const layerGraphics = page => page.evaluate(() => {
+  const shown = selector => [...document.querySelectorAll(selector)].filter(el => !el.hidden).length;
+  return {
+    hidden: document.getElementById('editor-annotation-layer').hidden,
+    pins: shown('.tp3d-annot-pin:not(.is-draft)'),
+    cards: shown('.tp3d-annot-card'),
+    arrows: document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft[d]:not([d=""])').length,
+    grips: shown('.tp3d-annot-handle'),
+  };
+});
+const annotationState = page => page.evaluate(() => ({
+  json: JSON.stringify(window.probe.annotations()),
+  edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited,
+  cases: window.probe.casesJson(),
+  camera: window.probe.camera(),
+}));
+const nothingUnderway = page => page.evaluate(() => {
+  const tool = window.probe.AnnotationTool;
+  return !tool.isActive() && !tool.hasDraft() && tool.selectedId() === null;
+});
+
+test('Show Annotations Off hides the button and every saved callout and arrow, ends each unfinished gesture without writing and keeps every record; On draws them again from the unchanged records, with no gesture or selection brought back', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const [, hiddenOne] = await seed(page, [{ title: 'Kept', ...TOP_OF_B }, { title: 'Hidden one', ground: [200, -30] }]);
+  const arrow = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.evaluate(id => {
+    if (!window.probe.PackLibrary.updateCallout('fixture-pack', id, { hidden: true }).ok) throw new Error('hide failed');
+  }, hiddenOne.id);
+  const drawnAsSaved = () => page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1 &&
+    document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  await drawnAsSaved();
+  await cameraSettled(page);
+  const base = await annotationState(page);
+  assert.equal(JSON.parse(base.json).length, 3);
+  assert.equal(JSON.parse(base.json)[1].hidden, true, 'one callout carries its own Hide');
+
+  const expectOff = async label => {
+    assert.equal(await annotationsButtonShown(page), false, `${label}: the button is gone`);
+    assert.deepEqual(await layerGraphics(page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 }, `${label}: no callout, card, arrow or end handle is drawn`);
+    assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true, `${label}: the panel is closed`);
+    assert.equal(await nothingUnderway(page), true, `${label}: no armed tool, re-attach, editor or selection is left`);
+    assert.equal(await tailShown(page), false, `${label}: no arrow tail is left`);
+    assert.equal(await editorClosed(page), true, `${label}: no editor card is left`);
+    assert.deepEqual(await annotationState(page), base, `${label}: nothing was written and the view did not move`);
+  };
+  // Back On: drawn from the saved records and each one's own Hide; the panel stays closed and nothing resumes.
+  const turnOnAndReopen = async label => {
+    await setShowAnnotations(page, true);
+    await drawnAsSaved();
+    assert.equal(await annotationsButtonShown(page), true, `${label}: the button is back`);
+    assert.equal(await page.getAttribute('#btn-editor-annotations', 'aria-pressed'), 'false');
+    assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true, `${label}: the panel is not reopened for the owner`);
+    assert.equal(await nothingUnderway(page), true, `${label}: no gesture or selection comes back`);
+    assert.deepEqual(await livePins(page), ['1'], `${label}: only the callout without its own Hide is drawn`);
+    assert.deepEqual(await annotationState(page), base, `${label}: the records are exactly as saved`);
+    await page.click('#btn-editor-annotations');
+    await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+    assert.deepEqual(
+      await page.evaluate(() => ['callout', 'arrow'].map(tool => document.querySelector(`.tp3d-annot-seg__btn[data-tool="${tool}"]`).getAttribute('aria-pressed'))),
+      ['false', 'false'], `${label}: no tool is armed again`
+    );
+  };
+
+  // 1. An unsaved callout in its editor card.
+  const groundFree = await freePoint(page, [[150, 0, -10], [470, 0, -5], [380, 0, 60]]);
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await page.waitForFunction(() => /place a callout/i.test(window.probe.hint()));
+  await click(page, groundFree);
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Unsaved');
+  await setShowAnnotations(page, false);
+  await expectOff('an unsaved callout');
+  await turnOnAndReopen('an unsaved callout');
+
+  // 2. The first click of a new arrow.
+  await armArrow(page);
+  await click(page, await freePoint(page, [[150, 0, -10], [470, 0, -5], [380, 0, 60]]));
+  await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+  assert.equal(await tailShown(page), true);
+  await setShowAnnotations(page, false);
+  await expectOff('an unfinished arrow');
+  await turnOnAndReopen('an unfinished arrow');
+
+  // 3. A pending Re-attach of an arrow end (a click on its end handle), with the arrow selected.
+  await page.click(`.tp3d-annot-row[data-annot-id="${arrow.id}"] .tp3d-annot-row__select`);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length === 2);
+  const grip = await gripCentre(page, 'end');
+  await click(page, grip);
+  await page.waitForFunction(() => window.probe.AnnotationTool.isActive());
+  await setShowAnnotations(page, false);
+  await expectOff('a pending re-attach');
+  await turnOnAndReopen('a pending re-attach');
+
+  // 4. A marker drag still in progress (the button is still held down), then the release after Off.
+  const marker = await pinCentreOf(page);
+  await page.mouse.move(marker.x, marker.y);
+  await page.mouse.down();
+  await page.mouse.move(marker.x + 40, marker.y + 25, { steps: 4 });
+  await page.mouse.move(marker.x + 80, marker.y + 50, { steps: 4 });
+  await page.waitForFunction(() => { const ring = document.querySelector('.tp3d-annot-svg__ghost'); return Boolean(ring) && ring.style.display !== 'none'; });
+  await setShowAnnotations(page, false);
+  await page.mouse.up();
+  await expectOff('a marker drag');
+  await turnOnAndReopen('a marker drag');
+
+  // 5. A selected annotation is deselected, never restored by turning the setting back On.
+  await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-card.is-selected');
+  await setShowAnnotations(page, false);
+  await expectOff('a selection');
+  await turnOnAndReopen('a selection');
+
+  // While Off nothing answers: the marker's old position is just the 3D view, and the tool cannot be opened.
+  await setShowAnnotations(page, false);
+  assert.equal(await escapeConsumed(page), false, 'Escape belongs to the Editor again');
+  await click(page, marker);
+  assert.equal(await nothingUnderway(page), true, 'a click where the marker was selects no annotation');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-b'], 'it reaches the 3D view and selects the cargo under it');
+  await page.evaluate(() => window.probe.InteractionManager.setSelection([]));
+  assert.deepEqual(await page.evaluate(() => [window.probe.AnnotationTool.openPanel(), window.probe.AnnotationTool.togglePanel()]), [false, false], 'the panel cannot be opened');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true);
+  const stack = await page.locator('#editor-zoom-controls > button:not([hidden])').evaluateAll(buttons => buttons.map(b => b.id));
+  assert.deepEqual(stack, ['btn-editor-measure', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out'], 'the other controls keep their order and their own preferences');
+  assert.equal(await page.evaluate(() => getComputedStyle(document.getElementById('btn-editor-measure')).borderTopWidth), '0px', 'the first visible button carries no stray separator');
+  await expectOff('while Off');
+
+  // The view mode is independent: Show Off set before the setting went Off is still Off afterwards.
+  await setShowAnnotations(page, true);
+  await drawnAsSaved();
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+  await showButton(page, 'Off').click();
+  await page.waitForFunction(() => /hidden in the view/i.test(window.probe.hint()));
+  await setShowAnnotations(page, false);
+  await setShowAnnotations(page, true);
+  assert.deepEqual(await layerGraphics(page), { hidden: false, pins: 0, cards: 0, arrows: 0, grips: 0 }, 'the Show Off view mode is kept: nothing is drawn');
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+  await showButton(page, 'All').click();
+  await drawnAsSaved();
+
+  // Ordinary use resumes: a callout is placed and saved the usual way, as exactly one record.
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await page.waitForFunction(() => /place a callout/i.test(window.probe.hint()));
+  const saved = await addCallout(page, await freePoint(page, [[150, 0, -10], [470, 0, -5], [380, 0, 60]]), 'After re-enable');
+  assert.equal(saved.title, 'After re-enable');
+  assert.equal(await count(page), 4);
+  assert.equal(JSON.parse(base.json)[1].hidden, true);
+  assert.equal(await page.evaluate(() => window.probe.annotations()[1].hidden), true, 'the callout that was hidden by its owner is still hidden');
+  assert.deepEqual(errors, []);
+});
+
+test('Show Annotations is a visibility-only change: no Editor render, scene sync, theme refresh, camera or selection change; it follows the other three switches in the group; a saved Off holds after a workspace replacement and a fresh start', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openEditor(browser);
+  await cameraSettled(page);
+  await seed(page, [{ title: 'Kept', ...TOP_OF_B }]);
+  await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1 &&
+    document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  await cameraSettled(page);
+  const base = await annotationState(page);
+
+  // Count every heavy Editor path, and record which store keys each preference write touches.
+  await page.evaluate(() => {
+    const { EditorUI, CaseScene, SceneManager, StateStore } = window.probe;
+    const spy = { render: 0, sync: 0, theme: 0, writes: [], results: StateStore.get('autoPackResults') };
+    for (const [owner, name, key] of [[EditorUI, 'render', 'render'], [CaseScene, 'sync', 'sync'], [SceneManager, 'refreshTheme', 'theme']]) {
+      const original = owner[name];
+      owner[name] = (...args) => { spy[key] += 1; return original.apply(owner, args); };
+    }
+    StateStore.subscribe((changes, _state, notification) => spy.writes.push({ keys: Object.keys(changes).sort().join(','), route: notification?.type ?? null }));
+    window.__spy = spy;
+  });
+  const spyNow = () => page.evaluate(() => ({ render: window.__spy.render, sync: window.__spy.sync, theme: window.__spy.theme, writes: window.__spy.writes.slice() }));
+  const scene = () => page.evaluate(() => ({ objects: window.probe.sceneObjectCount(), selection: window.probe.selection(), camera: window.probe.camera() }));
+  const sceneBefore = await scene();
+
+  await setShowAnnotations(page, false);
+  assert.equal(await annotationsButtonShown(page), false);
+  assert.deepEqual((await layerGraphics(page)).arrows + (await layerGraphics(page)).pins, 0, 'every saved callout and arrow is off the view');
+  await setShowAnnotations(page, true);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1);
+  const light = await spyNow();
+  assert.deepEqual([light.render, light.sync, light.theme], [0, 0, 0], 'no Editor render, no scene sync and no theme refresh');
+  assert.deepEqual(light.writes, [
+    { keys: 'preferences', route: 'viewport-controls-preference' },
+    { keys: 'preferences', route: 'viewport-controls-preference' },
+  ], 'only the preference changed, on the lightweight route: no Pack, cargo, selection or AutoPack Results state');
+  assert.deepEqual(await scene(), sceneBefore, 'scene objects, selection and camera are untouched');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.get('autoPackResults') === window.__spy.results), true, 'AutoPack Results state is the same object');
+  assert.deepEqual(await annotationState(page), base, 'no record, Load Plan timestamp or cargo changed');
+
+  // Saved together with another preference it takes the ordinary route and still ends up applied.
+  await page.evaluate(() => {
+    const { PreferencesManager } = window.probe;
+    PreferencesManager.set({ ...PreferencesManager.get(), showAnnotations: false, labelFontSize: 16 });
+  });
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').hidden);
+  assert.ok((await spyNow()).render > 0, 'a mixed save renders the Editor');
+  assert.equal(await annotationsButtonShown(page), false, 'and Annotations is still hidden by it');
+  assert.deepEqual(await layerGraphics(page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 });
+  await page.evaluate(() => {
+    const { PreferencesManager } = window.probe;
+    PreferencesManager.set({ ...PreferencesManager.get(), showAnnotations: true, labelFontSize: 12 });
+  });
+  await page.waitForFunction(() => !document.getElementById('btn-editor-annotations').hidden &&
+    document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1);
+
+  // The four switches are independent, and the floating group stays only while one is On.
+  const setPref = (key, value) => page.evaluate(([name, on]) => {
+    const { PreferencesManager } = window.probe;
+    PreferencesManager.set({ ...PreferencesManager.get(), [name]: on });
+  }, [key, value]);
+  const groupShown = () => page.evaluate(() => getComputedStyle(document.getElementById('editor-zoom-controls')).display !== 'none');
+  const visibleButtons = () => page.locator('#editor-zoom-controls > button:not([hidden])').evaluateAll(buttons => buttons.map(b => b.id));
+  await setPref('showMeasurementTool', false);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out'], 'the ruler alone is hidden');
+  await setPref('showCameraControls', false);
+  await setPref('showZoomControls', false);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations']);
+  assert.equal(await groupShown(), true, 'Annotations alone keeps the group');
+  await setPref('showAnnotations', false);
+  assert.deepEqual(await visibleButtons(), []);
+  assert.equal(await groupShown(), false, 'all four Off: the group disappears and leaves no empty frame');
+  await setPref('showAnnotations', true);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations'], 'turning Annotations back On brings the group back with only that button');
+  assert.equal(await groupShown(), true);
+  assert.equal(await page.evaluate(() => window.probe.PreferencesManager.get().showMeasurementTool), false, 'the other switches were not touched');
+  await setPref('showMeasurementTool', true);
+  await setPref('showCameraControls', true);
+  await setPref('showZoomControls', true);
+  assert.deepEqual(await visibleButtons(), ['btn-editor-annotations', 'btn-editor-measure', 'btn-editor-view', 'btn-editor-zoom-in', 'btn-editor-zoom-out']);
+
+  // Hiding the button while it holds keyboard focus hands focus back to the 3D view.
+  await page.focus('#btn-editor-annotations');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-editor-annotations');
+  await setPref('showAnnotations', false);
+  assert.equal(await page.evaluate(() => { const active = document.activeElement; return active.isConnected && active.id !== 'btn-editor-annotations' && active !== document.body; }), true, 'focus did not fall into the page background');
+  assert.equal(await page.evaluate(() => Boolean(document.activeElement.closest('#viewport'))), true, 'it returned to the 3D view');
+
+  // A workspace replacement (a restore or import) keeps the saved Off.
+  await page.evaluate(() => window.probe.StateStore.replace(window.probe.StateStore.snapshot()));
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').hidden);
+  assert.deepEqual(await layerGraphics(page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 });
+  assert.equal(await page.evaluate(() => window.probe.PreferencesManager.get().showAnnotations), false);
+  assert.equal(await count(page), 2, 'the saved callout and arrow are still stored');
+  assert.deepEqual(errors, []);
+
+  // A fresh start with Off already stored: no button and no graphics from the first paint; On draws what was saved.
+  const reloaded = await openEditor(browser, undefined, { preferences: { showAnnotations: false } });
+  await cameraSettled(reloaded.page);
+  assert.equal(await annotationsButtonShown(reloaded.page), false, 'a saved Off is still Off after reload');
+  await seed(reloaded.page, [{ title: 'Saved earlier', ...TOP_OF_B }]);
+  await seedArrow(reloaded.page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await frames(reloaded.page, 4);
+  assert.deepEqual(await layerGraphics(reloaded.page), { hidden: true, pins: 0, cards: 0, arrows: 0, grips: 0 }, 'saved records are not drawn while Off');
+  assert.equal(await count(reloaded.page), 2);
+  await setShowAnnotations(reloaded.page, true);
+  await reloaded.page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 1 &&
+    document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
+  assert.equal(await annotationsButtonShown(reloaded.page), true);
+  assert.deepEqual(reloaded.errors, []);
 });

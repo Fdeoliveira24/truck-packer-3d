@@ -3089,7 +3089,7 @@ export function createSettingsOverlay({
     length, weight, theme, labelSize, hiddenOpacity, cameraProjection, applyCurrentProjection,
     currentCameraPackId, snappingEnabled, gridSize, screenshotResolution,
     pdfIncludeStats, showAutoPackLoadingOverlay, autoPackResultsStartView, showCameraControls, showZoomControls,
-    showMeasurementTool,
+    showAnnotations, showMeasurementTool,
   }) {
     const prev = PreferencesManager.get();
     const next = Utils.deepClone(prev);
@@ -3106,6 +3106,7 @@ export function createSettingsOverlay({
     next.showAutoPackLoadingOverlay = showAutoPackLoadingOverlay !== false;
     next.showCameraControls = showCameraControls !== false;
     next.showZoomControls = showZoomControls !== false;
+    next.showAnnotations = showAnnotations !== false;
     next.showMeasurementTool = showMeasurementTool !== false;
     next.autoPackResultsStartView = autoPackResultsStartView;
     const projectionChanged = next.camera.defaultView !== prev.camera.defaultView;
@@ -5233,6 +5234,15 @@ export function createSettingsOverlay({
       });
       prefsCard.appendChild(stackedRow('Show Zoom Controls', zoomVisibility.control));
 
+      const annotationsVisibility = createVisibilitySwitch({
+        role: 'annotations-visibility',
+        label: 'Show Annotations',
+        helperId: 'tp3d-prefs-annotations-help',
+        helperText: 'Show or hide the Annotations button and graphics in the 3D Editor. Saved callouts and arrows are kept either way.',
+        enabled: prefs.showAnnotations !== false,
+      });
+      prefsCard.appendChild(stackedRow('Show Annotations', annotationsVisibility.control));
+
       const measurementVisibility = createVisibilitySwitch({
         role: 'measurement-tool-visibility',
         label: 'Show Measurement Tool',
@@ -5390,6 +5400,7 @@ export function createSettingsOverlay({
           showAutoPackLoadingOverlay: autoPackLoading.dataset.value === 'on',
           showCameraControls: cameraVisibility.button.dataset.value === 'on',
           showZoomControls: zoomVisibility.button.dataset.value === 'on',
+          showAnnotations: annotationsVisibility.button.dataset.value === 'on',
           showMeasurementTool: measurementVisibility.button.dataset.value === 'on',
           autoPackResultsStartView: autoPackResultsStartView.value,
         })

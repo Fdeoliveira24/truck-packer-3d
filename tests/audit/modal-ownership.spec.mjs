@@ -1197,7 +1197,7 @@ test('Settings Preferences saves the AutoPack loading screen and Results startin
   settings.close();
 });
 
-test('Show Camera Controls, Show Zoom Controls and Show Measurement Tool save independently and the Editor Display rows share one layout', async t => {
+test('Show Camera Controls, Show Zoom Controls, Show Annotations and Show Measurement Tool save independently and the Editor Display rows share one layout', async t => {
   const dom = installDom(t);
   const { normalizePreferences } = await import('../../src/core/normalizer.js');
   let prefs = normalizePreferences({ theme: 'light', labelFontSize: 18, units: { length: 'ft', weight: 'kg' } });
@@ -1224,10 +1224,10 @@ test('Show Camera Controls, Show Zoom Controls and Show Measurement Tool save in
   const rows = card.children;
   const labelOf = row => row.children?.[0]?.textContent;
   const headingIndex = rows.findIndex(el => el.className === 'tp3d-prefs-heading' && el.textContent === 'Editor Display');
-  const order = ['Default Camera Projection', 'Apply to current Load Plan', 'Show Camera Controls', 'Show Zoom Controls', 'Show Measurement Tool', 'Hidden Case Opacity', 'Label Font Size'];
+  const order = ['Default Camera Projection', 'Apply to current Load Plan', 'Show Camera Controls', 'Show Zoom Controls', 'Show Annotations', 'Show Measurement Tool', 'Hidden Case Opacity', 'Label Font Size'];
   assert.deepEqual(rows.slice(headingIndex + 1, headingIndex + 1 + order.length).map(labelOf), order,
-    'camera, zoom and measurement switches sit together under Editor Display, after the projection rows');
-  for (const label of order.slice(0, 5)) {
+    'camera, zoom, annotations and measurement switches sit together under Editor Display, after the projection rows');
+  for (const label of order.slice(0, 6)) {
     const row = rows.find(el => labelOf(el) === label);
     assert.ok(row.className.split(' ').includes('tp3d-prefs-row--stacked'), `${label} uses the shared stacked-row alignment`);
   }
@@ -1238,14 +1238,30 @@ test('Show Camera Controls, Show Zoom Controls and Show Measurement Tool save in
   assert.equal(switchState('camera-controls-visibility'), 'true');
   assert.equal(switchState('zoom-controls-visibility'), 'true');
   assert.equal(switchState('measurement-tool-visibility'), 'true', 'the Measurement Tool is shown by default');
+  assert.equal(switchState('annotations-visibility'), 'true', 'Annotations are shown by default, also for a record without the field');
+  const annotationsSwitch = latest('annotations-visibility');
+  const annotationsRow = rows.find(el => labelOf(el) === 'Show Annotations');
+  assert.equal(annotationsSwitch.getAttribute('role'), 'switch');
+  assert.equal(annotationsSwitch.getAttribute('aria-label'), 'Show Annotations');
+  assert.equal(annotationsSwitch.dataset.value, 'on');
+  assert.equal(walk(annotationsSwitch).find(el => el.className === 'tp3d-pref-switch__value').textContent, 'On',
+    'the switch shows its state as text, like the other three');
+  const annotationsHelper = walk(annotationsRow).find(el => el.className === 'tp3d-prefs-helper');
+  assert.equal(annotationsSwitch.getAttribute('aria-describedby'), annotationsHelper.id);
+  assert.equal(annotationsHelper.textContent,
+    'Show or hide the Annotations button and graphics in the 3D Editor. Saved callouts and arrows are kept either way.');
+  assert.equal(annotationsSwitch.className, latest('measurement-tool-visibility').className, 'same switch component as the other three');
   settings.close();
 
-  // [camera, zoom, measurement] -> each preference changes without moving the others.
-  const combos = [[false, true, true], [true, false, true], [true, true, false], [false, false, false], [true, true, true]];
+  // [camera, zoom, annotations, measurement] -> each preference changes without moving the others.
+  const combos = [
+    [false, true, true, true], [true, false, true, true], [true, true, false, true], [true, true, true, false],
+    [false, false, false, false], [true, true, false, true], [true, true, true, true],
+  ];
   let before = saved.length;
-  for (const [camera, zoom, measure] of combos) {
+  for (const [camera, zoom, annotations, measure] of combos) {
     settings.open('preferences');
-    for (const [role, want] of [['camera-controls-visibility', camera], ['zoom-controls-visibility', zoom], ['measurement-tool-visibility', measure]]) {
+    for (const [role, want] of [['camera-controls-visibility', camera], ['zoom-controls-visibility', zoom], ['annotations-visibility', annotations], ['measurement-tool-visibility', measure]]) {
       if ((switchState(role) === 'true') !== want) latest(role).dispatchEvent({ type: 'click' });
     }
     assert.equal(saved.length, before, 'toggling does not save until Save changes');
@@ -1254,6 +1270,7 @@ test('Show Camera Controls, Show Zoom Controls and Show Measurement Tool save in
     assert.equal(saved.length, before);
     assert.equal(prefs.showCameraControls, camera, `camera ${camera}`);
     assert.equal(prefs.showZoomControls, zoom, `zoom ${zoom}`);
+    assert.equal(prefs.showAnnotations, annotations, `annotations ${annotations}`);
     assert.equal(prefs.showMeasurementTool, measure, `measurement ${measure}`);
     assert.equal(prefs.labelFontSize, 18, 'unrelated preferences are preserved');
     assert.equal(prefs.camera.defaultView, 'perspective', 'default projection is untouched by a visibility save');
@@ -1262,6 +1279,22 @@ test('Show Camera Controls, Show Zoom Controls and Show Measurement Tool save in
   settings.open('preferences');
   assert.equal(switchState('camera-controls-visibility'), 'true');
   assert.equal(switchState('zoom-controls-visibility'), 'true');
+  assert.equal(switchState('annotations-visibility'), 'true');
+  settings.close();
+
+  // A saved Off is shown again, and closing without Save discards a pending change.
+  settings.open('preferences');
+  latest('annotations-visibility').dispatchEvent({ type: 'click' });
+  save();
+  settings.close();
+  assert.equal(prefs.showAnnotations, false);
+  settings.open('preferences');
+  assert.equal(switchState('annotations-visibility'), 'false', 'the saved Annotations choice is shown again');
+  latest('annotations-visibility').dispatchEvent({ type: 'click' });
+  settings.close();
+  assert.equal(prefs.showAnnotations, false, 'a pending change that is not saved never reaches the preference');
+  settings.open('preferences');
+  assert.equal(switchState('annotations-visibility'), 'false', 'closing without Save discards the pending Annotations choice');
   settings.close();
 });
 

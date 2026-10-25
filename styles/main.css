@@ -5099,21 +5099,20 @@ body.tp3d-shared-modal-lock #app .nav {
   stroke-linejoin: round;
 }
 
-/* Selected: the halo turns brand orange and widens (the arrow keeps its own color, so a color change is visible). */
-.tp3d-annot-svg .tp3d-annot-arrow.is-selected .tp3d-annot-arrow__under,
-.tp3d-annot-svg .tp3d-annot-arrow.is-selected .tp3d-annot-arrow__under-head {
+/* Selected: the grips and the list row mark the selection; the shape only gains a hairline brand-orange edge in place of its
+   neutral halo (one pixel a side, so Thin stays thin and the arrow keeps its own color). An occluded arrow keeps its neutral
+   halo, so a hidden selected arrow is one dashed arrow, not a dashed line inside a solid sheath. */
+.tp3d-annot-svg .tp3d-annot-arrow.is-selected:not(.is-occluded) .tp3d-annot-arrow__under,
+.tp3d-annot-svg .tp3d-annot-arrow.is-selected:not(.is-occluded) .tp3d-annot-arrow__under-head {
   stroke: var(--accent-primary);
   stroke-opacity: 0.95;
 }
 
-.tp3d-annot-svg .tp3d-annot-arrow.is-selected .tp3d-annot-arrow__under-head {
-  fill: var(--accent-primary);
-  fill-opacity: 0.95;
-}
-
 /* Hidden by cargo or the truck from where the camera is: dashed and dimmed with a hollow head, selected or not
-   (selection never makes it look unobstructed). */
-.tp3d-annot-svg .tp3d-annot-arrow.is-occluded .tp3d-annot-arrow__shaft {
+   (selection never makes it look unobstructed). The halo is dashed on the same path and pattern, so each dash keeps
+   its own halo and no continuous line shows through the gaps. */
+.tp3d-annot-svg .tp3d-annot-arrow.is-occluded .tp3d-annot-arrow__shaft,
+.tp3d-annot-svg .tp3d-annot-arrow.is-occluded .tp3d-annot-arrow__under {
   stroke-dasharray: 7 5;
   opacity: 0.7;
 }
@@ -5144,7 +5143,8 @@ body.tp3d-shared-modal-lock #app .nav {
   stroke-width: 1.5px;
 }
 
-/* End handles of the selected arrow: a ring (tail) and a filled dot (head) with a generous invisible hit area. */
+/* End handles of the selected arrow: two small rings with a generous invisible hit area. The tail ring is filled; the head ring
+   is hollow, so the arrowhead stays visible inside it and the direction is never covered. */
 .tp3d-annot-handle {
   position: absolute;
   top: 0;
@@ -5169,17 +5169,16 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-annot-handle::before {
   content: '';
   position: absolute;
-  inset: 7px;
+  inset: 9px;
   box-sizing: border-box;
   border: 2px solid var(--accent-primary);
   border-radius: 50%;
   background: var(--bg-elevated);
-  box-shadow: var(--shadow-sm);
+  box-shadow: 0 0 0 1px var(--bg-elevated);
 }
 
 .tp3d-annot-handle[data-end='end']::before {
-  background: var(--accent-primary);
-  border-color: var(--bg-elevated);
+  background: transparent;
 }
 
 .tp3d-annot-handle:focus {

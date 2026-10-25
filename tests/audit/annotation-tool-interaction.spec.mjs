@@ -3086,6 +3086,88 @@ test('an arrow hidden by cargo is dashed with a hollow head even when selected; 
   assert.deepEqual(errors, []);
 });
 
+test('a selected arrow stays one slim arrow: every width keeps its stroke with at most a hairline edge, a hidden one stays one dashed arrow, and the end grips never cover the arrowhead', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // One clear ground arrow per width, and one whose middle runs under cargo-a.
+  const arrows = [
+    await seedArrow(page, [100, 62], [260, 66], { color: 'blue', width: 'thin' }),
+    await seedArrow(page, [100, 76], [260, 80], { color: 'green', width: 'regular' }),
+    await seedArrow(page, [100, 90], [260, 94], { color: 'red', width: 'bold' }),
+    await seedArrow(page, [20, -20], [120, -20], { color: 'violet', width: 'regular' }),
+  ];
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 4);
+  const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  const looks = id => page.evaluate(arrowId => {
+    const group = document.querySelector(`.tp3d-annot-arrow[data-annot-id="${arrowId}"]`);
+    const css = selector => getComputedStyle(group.querySelector(selector));
+    const accentProbe = document.createElement('i');
+    accentProbe.style.color = 'var(--accent-primary)';
+    document.body.append(accentProbe);
+    const accent = getComputedStyle(accentProbe).color;
+    accentProbe.remove();
+    const read = selector => ({ stroke: css(selector).stroke, width: parseFloat(css(selector).strokeWidth), dash: css(selector).strokeDasharray });
+    return { accent, shaft: read('.tp3d-annot-arrow__shaft'), under: read('.tp3d-annot-arrow__under'), underHead: read('.tp3d-annot-arrow__under-head'), head: read('.tp3d-annot-arrow__head') };
+  }, id);
+  const gripRing = end => page.evaluate(which => {
+    const el = document.querySelector(`.tp3d-annot-handle[data-end="${which}"]:not([hidden])`);
+    const ring = getComputedStyle(el, '::before');
+    return { diameter: parseFloat(ring.width), fill: ring.backgroundColor };
+  }, end);
+  const select = async index => {
+    await page.click(`.tp3d-annot-row:nth-child(${index + 1}) .tp3d-annot-row__select`);
+    await page.waitForFunction(id => document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).classList.contains('is-selected'), arrows[index].id);
+    await frames(page, 3);
+  };
+  const SHAFT = { thin: 2, regular: 3, bold: 5 };
+  const unselected = [];
+  for (const arrow of arrows) unselected.push(await looks(arrow.id));
+
+  for (const [index, width] of ['thin', 'regular', 'bold'].entries()) {
+    await select(index);
+    const own = await looks(arrows[index].id);
+    assert.equal(own.shaft.width, SHAFT[width], `${width}: the selected shaft keeps its preset width`);
+    assert.equal(own.shaft.stroke, unselected[index].shaft.stroke, `${width}: the authored color is untouched by selection`);
+    assert.notEqual(own.shaft.stroke, own.accent, `${width}: the shaft is never recolored to the selection color`);
+    assert.equal(unselected[index].under.width, SHAFT[width] + 4, `${width}: an unselected arrow keeps a neutral halo`);
+    assert.notEqual(unselected[index].under.stroke, own.accent);
+    // The selection edge is a hairline: one pixel a side, never wider than the neutral halo it replaces.
+    assert.equal(own.under.stroke, own.accent, `${width}: the edge uses the selection color`);
+    assert.equal(own.under.width, SHAFT[width] + 2, `${width}: one pixel a side, so a selected Thin arrow is still thin`);
+    assert.equal(own.underHead.width, 2, `${width}: the head edge is a hairline too`);
+    assert.equal(own.under.dash, 'none');
+    // Every other arrow is left exactly as it was.
+    for (const other of arrows.filter((_, i) => i !== index)) {
+      const now = await looks(other.id);
+      const was = unselected[arrows.indexOf(other)];
+      assert.deepEqual([now.under.width, now.under.stroke, now.shaft.width], [was.under.width, was.under.stroke, was.shaft.width], 'an unselected arrow does not change');
+    }
+    // The grips: a filled tail ring and a hollow head ring no larger than the smallest arrowhead, so direction stays readable.
+    assert.equal((await gripsShown(page)).length, 2, `${width}: both end grips`);
+    const [tail, head] = [await gripRing('start'), await gripRing('end')];
+    assert.ok(head.diameter <= 12 && tail.diameter <= 12, `${width}: grips are no larger than the smallest arrowhead (12 px)`);
+    assert.equal(head.fill, 'rgba(0, 0, 0, 0)', `${width}: the head grip is hollow, so the arrowhead shows through it`);
+    assert.notEqual(tail.fill, 'rgba(0, 0, 0, 0)', `${width}: the tail grip is filled`);
+  }
+
+  // Hidden by cargo and selected: one dashed arrow. The halo follows the shaft's dashes in the same neutral tone as before
+  // selection, so no continuous line (and no solid orange sheath) shows through the gaps.
+  await select(3);
+  const hidden = await looks(arrows[3].id);
+  assert.equal((await arrowGraphics(page)).find(g => g.id === arrows[3].id).occluded, true, 'it is behind cargo');
+  assert.notEqual(hidden.shaft.dash, 'none', 'a dashed shaft');
+  assert.equal(hidden.under.dash, hidden.shaft.dash, 'the halo is dashed with the same pattern, on the same path');
+  assert.notEqual(hidden.under.stroke, hidden.accent, 'no orange sheath behind the dashes');
+  assert.notEqual(hidden.underHead.stroke, hidden.accent, 'nor around the hollow head');
+  assert.equal(hidden.under.width, SHAFT.regular + 4, 'the halo is as wide as an unselected one');
+  assert.notEqual(hidden.head.dash, 'none', 'the head stays hollow and dashed');
+  assert.equal((await gripsShown(page)).length, 2, 'the grips and the list row still mark the selection');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-row.is-selected').length), 1);
+
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'styling never writes a record');
+  assert.deepEqual(errors, []);
+});
 test('occlusion follows the synchronized scene: cargo moved off or onto a ground arrow or marker re-measures it, also when the meshes synchronize after the first measurement, and an unchanged scene is never re-measured', { timeout: 240000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());

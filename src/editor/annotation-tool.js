@@ -2599,8 +2599,8 @@ export function createAnnotationTool({
   }
 
   /**
-   * Show `shape` (from `arrowShape`, or null to clear) on a graphic. The width is constant on screen; selection
-   * widens and warms the halo and does not touch the occluded look: a hidden arrow stays dashed with a hollow head.
+   * Show `shape` (from `arrowShape`, or null to clear) on a graphic. The width is constant on screen; a selected arrow
+   * swaps its neutral halo (2 px a side) for a 1 px orange edge, and a hidden one (dashed, hollow head) keeps its neutral halo.
    */
   function paintArrow(graphic, shape, { color, selected = false, occluded = false }) {
     if (graphic.colorKey !== color) {
@@ -2615,7 +2615,7 @@ export function createAnnotationTool({
     setPath(graphic.underHead, data.head);
     setPath(graphic.head, data.head);
     if (!shape) return;
-    const halo = selected ? 8 : 4;
+    const halo = selected && !occluded ? 2 : 4;
     setStyleProp(graphic.shaft, 'strokeWidth', `${shape.shaftWidth}px`);
     setStyleProp(graphic.under, 'strokeWidth', `${shape.shaftWidth + halo}px`);
     setStyleProp(graphic.underHead, 'strokeWidth', `${halo}px`);

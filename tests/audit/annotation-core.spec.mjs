@@ -951,3 +951,126 @@ test('the leader line joins marker and card, starts clear of the marker and vani
   assert.equal(L.estimateCardHeight(null), 58);
   assert.ok(L.estimateCardHeight('x'.repeat(140)) > L.estimateCardHeight('x'.repeat(10)));
 });
+
+// ============================================================================
+// SECTION: ARROW GEOMETRY (screen space, pure)
+// ============================================================================
+const ARROW_VIEW = { width: 800, height: 600 };
+const closeTo = (actual, expected, tolerance = 0.06) => Math.abs(actual - expected) <= tolerance;
+// Where the head's base sits (the midpoint of its two back corners) and how wide the base is.
+const headBase = shape => ({ x: (shape.head[1].x + shape.head[2].x) / 2, y: (shape.head[1].y + shape.head[2].y) / 2, span: Math.hypot(shape.head[1].x - shape.head[2].x, shape.head[1].y - shape.head[2].y) });
+
+test('near-plane clipping keeps the part of an arrow in front of the camera, flags the cut end and refuses what it cannot project', () => {
+  const NEAR = -1; // camera space looks down -Z: in front is z <= NEAR
+  const a = { x: 0, y: 0, z: -5 };
+  const b = { x: 4, y: 2, z: -9 };
+  const both = L.clipSegmentToNear(a, b, NEAR);
+  assert.deepEqual(both, { a, b, aClipped: false, bClipped: false }, 'both ends in front: nothing is cut');
+  assert.notEqual(both.a, a, 'the result is a copy, never the caller\'s point');
+  assert.equal(L.clipSegmentToNear({ x: 0, y: 0, z: 0 }, { x: 1, y: 1, z: 3 }, NEAR), null, 'both ends behind the plane: nothing to draw');
+  // Tail behind, head in front: the tail is cut where the segment crosses the plane (t = 0.2 here).
+  const tail = L.clipSegmentToNear({ x: 10, y: 0, z: 1 }, { x: 0, y: 5, z: -9 }, NEAR);
+  assert.deepEqual([tail.aClipped, tail.bClipped], [true, false], 'the tail was cut');
+  assert.deepEqual(tail.b, { x: 0, y: 5, z: -9 }, 'the head end is untouched');
+  assert.ok(closeTo(tail.a.x, 8, 1e-9) && closeTo(tail.a.y, 1, 1e-9) && tail.a.z === NEAR, 'cut on the plane, along the original line');
+  // Head behind, tail in front: the mirror case cuts the head and lands on the same point.
+  const head = L.clipSegmentToNear({ x: 0, y: 5, z: -9 }, { x: 10, y: 0, z: 1 }, NEAR);
+  assert.deepEqual([head.aClipped, head.bClipped], [false, true], 'the head was cut');
+  assert.ok(closeTo(head.b.x, 8, 1e-9) && closeTo(head.b.y, 1, 1e-9) && head.b.z === NEAR);
+  // An end exactly on the plane counts as in front; the other end is then cut onto it.
+  const onPlane = L.clipSegmentToNear({ x: 3, y: 4, z: NEAR }, { x: 0, y: 0, z: 3 }, NEAR);
+  assert.deepEqual([onPlane.aClipped, onPlane.bClipped, onPlane.b], [false, true, { x: 3, y: 4, z: NEAR }]);
+  // Anything that is not a finite point or plane is refused, never half-clipped.
+  for (const [p, q, near] of [
+    [{ x: NaN, y: 0, z: -5 }, b, NEAR], [a, { x: 0, y: Infinity, z: -5 }, NEAR], [a, { x: 0, y: 0, z: undefined }, NEAR],
+    [null, b, NEAR], [a, undefined, NEAR], [a, b, NaN], [a, b, undefined],
+  ]) assert.equal(L.clipSegmentToNear(p, q, near), null);
+});
+
+test('an arrow is a shaft and a head that points at the head end, scales down on short arrows and is shaft-only where its head end is not a real point', () => {
+  const horizontal = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, width: 'thin', viewport: ARROW_VIEW });
+  assert.deepEqual(horizontal, {
+    shaft: { x1: 100, y1: 300, x2: 389.8, y2: 300 },
+    head: [{ x: 400, y: 300 }, { x: 388, y: 305 }, { x: 388, y: 295 }],
+    tip: { x: 400, y: 300 }, length: 300, shaftWidth: 2,
+  });
+  // Every width keeps its own shaft stroke and head size, in every direction: the tip is the head end and the base lies toward the tail.
+  for (const width of ['thin', 'regular', 'bold']) {
+    for (const [tail, head] of [[{ x: 100, y: 300 }, { x: 500, y: 300 }], [{ x: 500, y: 300 }, { x: 100, y: 300 }], [{ x: 100, y: 100 }, { x: 400, y: 500 }], [{ x: 400, y: 500 }, { x: 100, y: 100 }], [{ x: 300, y: 500 }, { x: 300, y: 80 }]]) {
+      const shape = L.arrowShape({ tail, head, width, viewport: ARROW_VIEW });
+      const length = Math.hypot(head.x - tail.x, head.y - tail.y);
+      const base = headBase(shape);
+      const size = L.ARROW_HEAD_PX[width];
+      assert.equal(shape.shaftWidth, L.ARROW_SHAFT_PX[width]);
+      assert.deepEqual(shape.tip, head, `${width}: the tip is the head end`);
+      assert.ok(closeTo(Math.hypot(head.x - base.x, head.y - base.y), size.length, 0.1) && closeTo(base.span, size.width, 0.1), `${width}: full-size head`);
+      // The base lies on the tail side of the tip: moving from the tip toward the base moves toward the tail.
+      const toTail = { x: (tail.x - head.x) / length, y: (tail.y - head.y) / length };
+      assert.ok(closeTo((base.x - head.x) * toTail.x + (base.y - head.y) * toTail.y, size.length, 0.1), `${width}: the head points away from the tail`);
+      assert.ok(closeTo(Math.hypot(shape.shaft.x2 - head.x, shape.shaft.y2 - head.y), size.length * 0.85, 0.2), `${width}: the shaft ends a little inside the head`);
+    }
+  }
+  assert.equal(L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, width: 'huge', viewport: ARROW_VIEW }).shaftWidth, L.ARROW_SHAFT_PX.regular, 'an unknown width falls back to regular');
+
+  // Short arrows: nothing under the minimum length; above it the head shrinks so it never takes more than 60% of the arrow.
+  const at = length => L.arrowShape({ tail: { x: 100, y: 100 }, head: { x: 100 + length, y: 100 }, width: 'regular', viewport: ARROW_VIEW });
+  assert.equal(at(L.ARROW_MIN_SCREEN_PX - 0.01), null, 'just under the minimum length is not drawn');
+  assert.equal(at(0), null, 'a zero-length arrow is not drawn');
+  for (const length of [12, 15, 20, 24.9]) {
+    const base = headBase(at(length));
+    assert.ok(Math.hypot(100 + length - base.x, 100 - base.y) <= length * 0.6 + 0.1, `${length}px: the head is at most 60% of the arrow`);
+  }
+  assert.ok(closeTo(Math.hypot(125 - headBase(at(25)).x, 100 - headBase(at(25)).y), 15, 0.1), 'at 25px the head is full size');
+
+  // A head end cut by the near plane, or beyond the viewport margin, leaves a shaft only: no head, no tip.
+  const cut = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, viewport: ARROW_VIEW, headClipped: true });
+  assert.deepEqual([cut.head, cut.tip, cut.shaft], [null, null, { x1: 100, y1: 300, x2: 400, y2: 300 }]);
+  const far = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 900, y: 300 }, viewport: ARROW_VIEW });
+  assert.deepEqual([far.head, far.tip, far.shaft.x2], [null, null, 830], 'a head beyond the margin is cut at the margin edge');
+  const edge = L.arrowShape({ tail: { x: 100, y: 300 }, head: { x: 820, y: 300 }, viewport: ARROW_VIEW });
+  assert.deepEqual(edge.tip, { x: 820, y: 300 }, 'a head half outside the viewport but inside the margin is drawn whole');
+});
+
+test('an arrow outside the viewport is not drawn, one crossing its edge is cut there, and no input ever yields an invalid path', () => {
+  const shape = (tail, head, extra = {}) => L.arrowShape({ tail, head, width: 'regular', viewport: ARROW_VIEW, ...extra });
+  assert.equal(shape({ x: -200, y: -200 }, { x: -100, y: -100 }), null, 'entirely off the top-left');
+  assert.equal(shape({ x: 100, y: -100 }, { x: 500, y: -100 }), null, 'entirely above');
+  assert.equal(shape({ x: 900, y: 100 }, { x: 900, y: 500 }), null, 'entirely to the right of the margin');
+  assert.equal(shape({ x: -60, y: 300 }, { x: -27, y: 300 }), null, 'only 3 px of it is inside the margin: below the visible minimum');
+  const crossing = shape({ x: -100, y: 300 }, { x: 200, y: 300 });
+  assert.deepEqual([crossing.shaft.x1, crossing.shaft.y1, crossing.tip], [-30, 300, { x: 200, y: 300 }], 'the tail end is cut at the margin; the head is real and whole');
+  const through = shape({ x: -200, y: 300 }, { x: 1000, y: 300 });
+  assert.deepEqual([through.shaft.x1, through.shaft.x2, through.head], [-30, 830, null], 'crossing the whole viewport: both ends cut, shaft only');
+
+  // Not finite, missing or degenerate input draws nothing.
+  const good = { tail: { x: 100, y: 300 }, head: { x: 400, y: 300 }, viewport: ARROW_VIEW };
+  for (const bad of [
+    { tail: { x: NaN, y: 0 } }, { head: { x: 0, y: Infinity } }, { tail: null }, { head: undefined }, { viewport: undefined },
+    { viewport: { width: NaN, height: 600 } }, { viewport: { width: 800, height: -Infinity } }, { head: { x: 100, y: 300 } },
+  ]) assert.equal(L.arrowShape({ ...good, ...bad }), null);
+  assert.deepEqual(L.arrowPathData(null), { shaft: '', head: '' });
+  assert.deepEqual(L.arrowPathData(undefined), { shaft: '', head: '' });
+  const full = L.arrowPathData(L.arrowShape({ ...good, width: 'thin' }));
+  assert.deepEqual(full, { shaft: 'M100 300L389.8 300', head: 'M400 300L388 305L388 295Z' }, 'shaft and head are separate, closed paths');
+  assert.deepEqual(L.arrowPathData(L.arrowShape({ ...good, headClipped: true })), { shaft: 'M100 300L400 300', head: '' }, 'a shaft-only arrow has no head path');
+
+  // A sweep through ordinary, edge and absurd screen coordinates: whatever is drawn is finite and stays near the viewport.
+  const ordinates = [0, 1, 400, 799, 800, -29, -31, 1e6, -1e6, 1e12, -1e12, 1e308, -1e308]; // the last pair overflows a difference to Infinity
+  const SLACK = 60; // the 30 px margin plus the largest head
+  let drawn = 0;
+  for (const tx of ordinates) for (const ty of ordinates) for (const hx of ordinates) for (const hy of ordinates) {
+    const result = shape({ x: tx, y: ty }, { x: hx, y: hy });
+    const paths = L.arrowPathData(result);
+    assert.equal(/NaN|Infinity|undefined/.test(paths.shaft + paths.head), false, `no invalid path for ${tx},${ty} -> ${hx},${hy}`);
+    if (!result) { assert.deepEqual(paths, { shaft: '', head: '' }); continue; }
+    drawn += 1;
+    const points = [[result.shaft.x1, result.shaft.y1], [result.shaft.x2, result.shaft.y2], ...(result.head || []).map(p => [p.x, p.y])];
+    for (const [x, y] of points) {
+      assert.ok(Number.isFinite(x) && Number.isFinite(y), 'finite coordinates');
+      assert.ok(x >= -SLACK && x <= ARROW_VIEW.width + SLACK && y >= -SLACK && y <= ARROW_VIEW.height + SLACK, `inside the viewport and margin: ${x},${y}`);
+    }
+    assert.equal(Boolean(result.head), Boolean(result.tip), 'a head and its tip come together');
+    assert.equal(Boolean(result.head), paths.head !== '');
+  }
+  assert.ok(drawn > 1000, 'the sweep draws plenty of arrows, so the checks above are not vacuous');
+});

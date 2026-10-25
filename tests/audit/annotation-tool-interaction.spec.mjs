@@ -1327,6 +1327,23 @@ const unobstructed = (page, selector) => page.evaluate(sel => {
   return true;
 }, selector);
 const boxOf = (page, selector) => page.evaluate(sel => window.probe.box(sel), selector);
+// Toasts are transient (about 3 s) and paint above the editor, so on a slow runner one can still be up when a reachability check
+// runs. Wait for them to expire (no sleeps, nothing removed or hidden). One that never goes away is a finding: fail with its
+// text and box, never pass over it. A toast that was waited out is named in the test's diagnostics.
+const toastsOnScreen = page => page.evaluate(() => [...document.querySelectorAll('#toast-container .toast')].map(el => {
+  const r = el.getBoundingClientRect();
+  return { text: el.textContent.trim().replace(/\s+/g, ' ').slice(0, 120), box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] };
+}));
+const quietToasts = async (page, message, t) => {
+  const seen = await toastsOnScreen(page);
+  if (!seen.length) return;
+  t.diagnostic(`${message}: waited for ${seen.length} toast(s) to expire: ${JSON.stringify(seen)}`);
+  try {
+    await page.waitForFunction(() => !document.querySelector('#toast-container .toast'), null, { timeout: 15000 });
+  } catch {
+    assert.fail(`${message}: a toast is still on screen after 15 s: ${JSON.stringify(await toastsOnScreen(page))}`);
+  }
+};
 // Two animation frames: the overlays redraw on their own frame loops, so a state change is settled only after one.
 const frames = (page, n = 2) => page.evaluate(count => new Promise(resolve => {
   const step = left => (left <= 0 ? resolve() : window.requestAnimationFrame(() => step(left - 1)));
@@ -1917,7 +1934,11 @@ test('N01: the panel yields to an open editor only while they share space: an ed
   const cargo0 = await page.evaluate(() => window.probe.casesJson());
   const panelVisible = () => page.evaluate(sel => getComputedStyle(document.querySelector(sel)).visibility === 'visible', PANEL);
   const sweep = async message => {
-    assert.deepEqual(await editorControls(page), REACHABLE, `${message}: Title, Save and Cancel are reachable`);
+    await quietToasts(page, message, t);
+    const controls = await editorControls(page);
+    // A failure names what covers the control; the toasts on screen at that moment (text and box) are added to it.
+    const toasts = JSON.stringify(controls) === JSON.stringify(REACHABLE) ? '' : ` (toasts on screen: ${JSON.stringify(await toastsOnScreen(page))})`;
+    assert.deepEqual(controls, REACHABLE, `${message}: Title, Save and Cancel are reachable${toasts}`);
     assert.equal(await unobstructed(page, SAVE), true, `${message}: Save is clear along its whole width`);
     assert.equal(await unobstructed(page, CANCEL), true, `${message}: Cancel is clear along its whole width`);
   };

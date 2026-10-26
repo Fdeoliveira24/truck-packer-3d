@@ -310,7 +310,7 @@ test('the Annotations control is the first button of the stack and opens a compa
   assert.equal(panel.title, 'Annotations');
   assert.equal(panel.badgeShown, false, 'no count badge while there are no annotations');
   assert.deepEqual(panel.tools.map(t => t.tool), ['callout', 'arrow', 'draw']);
-  assert.deepEqual(panel.tools.map(t => t.disabled), [false, false, true], 'Callout and Arrow are available; Draw is clearly unavailable');
+  assert.deepEqual(panel.tools.map(t => t.disabled), [false, false, false], 'Callout, Arrow and Draw are all available');
   assert.deepEqual(panel.show, [['All', 'true'], ['Selected', 'false'], ['Off', 'false']]);
   assert.deepEqual(panel.display, [['Markers', 'true'], ['Labels', 'false'], ['Cards', 'false']]);
   assert.equal(panel.empty, true);
@@ -2430,7 +2430,7 @@ test('the panel and its callouts work from the keyboard, and a callout is named 
   await page.focus('.tp3d-annot-seg__btn[data-tool="callout"]');
   await page.keyboard.press('Enter');
   assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="callout"]', 'aria-pressed'), 'true');
-  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="draw"]', 'aria-label'), 'Draw (not available yet)');
+  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="draw"]', 'aria-label'), null, 'Draw is a real, named tool now');
   assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-label'), null, 'Arrow is a real, named tool now');
   assert.deepEqual(errors, []);
 });
@@ -2694,7 +2694,7 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);
   const before = await page.evaluate(() => ({ cases: window.probe.casesJson(), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited }));
-  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].map(b => b.disabled)), [false, false, true], 'Arrow is available, Draw is not');
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].map(b => b.disabled)), [false, false, false], 'Callout, Arrow and Draw are all available');
   await armArrow(page);
   assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed'), 'true');
   assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New arrows look', 'the look controls are for the next arrow while none is selected');
@@ -3959,4 +3959,1266 @@ test('Show Annotations is a visibility-only change: no Editor render, scene sync
     document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft[d]:not([d=""])').length === 1);
   assert.equal(await annotationsButtonShown(reloaded.page), true);
   assert.deepEqual(reloaded.errors, []);
+});
+
+// ============================================================================
+// Annotations V1B.2 Gate B: freehand drawing interaction and rendering
+// ============================================================================
+const armDraw = async page => {
+  await page.click('.tp3d-annot-seg__btn[data-tool="draw"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+};
+const drawState = page => page.evaluate(() => window.probe.AnnotationTool.drawingState());
+const rotateEnabled = page => page.evaluate(() => window.probe.SceneManager.getControls().enableRotate);
+const draws = page => page.evaluate(() => window.probe.annotations().filter(record => record.type === 'draw'));
+const drawGroups = page => page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-draws .tp3d-annot-draw')]
+  .filter(group => group.querySelector('.tp3d-annot-draw__line').getAttribute('d'))
+  .map(group => ({
+    id: group.dataset.annotId,
+    d: group.querySelector('.tp3d-annot-draw__line').getAttribute('d'),
+    occluded: group.classList.contains('is-occluded'),
+    selected: group.classList.contains('is-selected'),
+    color: group.dataset.color,
+    width: group.querySelector('.tp3d-annot-draw__line').style.strokeWidth,
+  })));
+const previewPath = page => page.evaluate(() => document.querySelector('.tp3d-annot-draw.is-preview .tp3d-annot-draw__line')?.getAttribute('d') || '');
+// Screen points of inch positions, each checked to be canvas (not the panel, a card or a control).
+async function screenPoints(page, inches) {
+  const points = [];
+  for (const position of inches) {
+    const at = await point(page, ...position);
+    const covering = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return el === document.querySelector('#viewport canvas') ? '' : `${Math.round(x)},${Math.round(y)} under ${el ? `${el.tagName}.${String((el.className && el.className.baseVal) ?? el.className)}` : 'nothing'}${el && el.closest && el.closest('.error-card') ? ` [${el.closest('.error-card').textContent.slice(0, 240)}]` : ''}`;
+    }, at);
+    assert.equal(covering, '', `${position.join(',')} is on the canvas, not covered`);
+    points.push(at);
+  }
+  return points;
+}
+// Press at the first point, move through the others and (by default) release.
+async function dragThrough(page, inches, { steps = 4, release = true } = {}) {
+  const points = await screenPoints(page, inches);
+  await page.mouse.move(points[0].x, points[0].y);
+  await page.mouse.down();
+  for (const next of points.slice(1)) await page.mouse.move(next.x, next.y, { steps });
+  if (release) await page.mouse.up();
+  return points;
+}
+// A page with the Annotations panel open and the Draw tool armed, the camera settled.
+async function openDrawing(browser, viewport) {
+  const opened = await openEditor(browser, viewport);
+  await opened.page.click('#btn-editor-annotations');
+  await opened.page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+  await armDraw(opened.page);
+  return opened;
+}
+const TOP_STROKE_A = [[52, 32, -28], [70, 32, -14], [88, 32, -26]]; // across the top of cargo-a (x 46..94, z -32..-8)
+const FLOOR_STROKE = [[150, 0, -30], [190, 0, 10], [230, 0, -20]]; // open truck floor between the two cargo items
+const GROUND_STROKE = [[100, 0, 62], [140, 0, 78], [180, 0, 66]]; // beside the truck
+
+test('freehand Draw mode: a primary drag draws one stroke on a cargo face without orbiting, selecting or moving cargo, and release writes exactly one record', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const before = await page.evaluate(() => ({ cases: window.probe.casesJson(), camera: window.probe.camera(), objects: window.probe.sceneObjectCount(), selection: window.probe.selection(), pixels: window.probe.canvasData() }));
+  assert.equal(await rotateEnabled(page), true, 'OrbitControls rotates until Draw is armed');
+
+  // Arming Draw: the three tools exist, Draw is pressed, Draw / Move View appears in Draw mode, and the camera cannot rotate.
+  await page.click('.tp3d-annot-seg__btn[data-tool="draw"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+  const panel = await page.evaluate(() => ({
+    pressed: document.querySelector('.tp3d-annot-seg__btn[data-tool="draw"]').getAttribute('aria-pressed'),
+    mode: [...document.querySelectorAll('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn')].map(b => [b.textContent, b.getAttribute('aria-pressed')]),
+    modeShown: !document.querySelector('.tp3d-annot-panel__drawmode').hidden,
+    look: document.querySelector('.tp3d-annot-panel__draw-title')?.textContent,
+    lookShown: !document.querySelector('.tp3d-annot-panel__draw').hidden,
+    arrowLookShown: Boolean(document.querySelector('.tp3d-annot-panel__arrow')) && !document.querySelector('.tp3d-annot-panel__arrow').hidden,
+    cursor: document.querySelector('#viewport canvas').style.cursor,
+  }));
+  assert.equal(panel.pressed, 'true');
+  assert.deepEqual(panel.mode, [['Draw', 'true'], ['Move View', 'false']]);
+  assert.equal(panel.modeShown, true);
+  assert.equal(panel.look, 'New drawings look');
+  assert.equal(panel.lookShown, true);
+  assert.equal(panel.arrowLookShown, false, 'the arrow look controls stay out of the way');
+  assert.equal(panel.cursor, 'crosshair');
+  assert.equal(await rotateEnabled(page), false, 'a primary drag does not rotate the camera while drawing');
+  assert.match(await page.evaluate(() => window.probe.hint()), /drag across cargo/i);
+
+  // An unfinished stroke is only on screen, and a repaint is one path; releasing writes exactly one record.
+  const points = await dragThrough(page, TOP_STROKE_A, { release: false });
+  assert.equal(await drawState(page), 'stroking');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-draw.is-preview .tp3d-annot-draw__line')?.getAttribute('d'));
+  assert.match(await previewPath(page), /^M[-\d.]+ [-\d.]+(L[-\d.]+ [-\d.]+)+$/, 'the stroke so far is one finite path');
+  assert.equal(await count(page), 0, 'nothing is stored while the button is down');
+  assert.equal(await page.evaluate(() => window.probe.sceneObjectCount()), before.objects, 'the stroke is SVG: no scene object is added');
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  assert.equal(await drawState(page), 'armed', 'the tool stays armed after a save');
+  const [saved] = await draws(page);
+  assert.equal(saved.type, 'draw');
+  assert.equal(saved.schemaVersion, 1);
+  assert.equal(saved.face, '+y', 'the top of the cargo, read from the hit triangle');
+  assert.equal(saved.anchor.kind, 'cargo');
+  assert.equal(saved.anchor.instanceId, 'cargo-a');
+  assert.equal(saved.color, 'ink');
+  assert.equal(saved.width, 'regular');
+  assert.ok(saved.points.length >= 2 && saved.points.length % 2 === 0, 'vertices after the anchor, as u, v pairs');
+  for (let i = 0; i < saved.points.length; i += 2) {
+    assert.ok(Math.abs(saved.points[i]) <= 24.011 && Math.abs(saved.points[i + 1]) <= 12.011, `vertex ${i / 2 + 1} is on the 48 x 24 in face`);
+    assert.equal(Math.round(saved.points[i] * 100) / 100, saved.points[i], 'on the 0.01 in grid');
+  }
+  assert.ok(Math.abs(saved.anchor.local.x - -18) < 1.5 && Math.abs(saved.anchor.local.z - -8) < 1.5, 'the first vertex is where the button went down');
+  // The camera did not orbit, cargo did not move or get selected, and the path of the saved stroke is on screen.
+  assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'no orbit');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is untouched');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), before.selection, 'cargo was not selected');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 1);
+  const groups = await drawGroups(page);
+  assert.equal(groups.length, 1);
+  assert.match(groups[0].d, /^M[-\d.]+ [-\d.]+(L[-\d.]+ [-\d.]+)+$/);
+  assert.equal(groups[0].selected, false, 'a saved stroke is not selected');
+  assert.equal(await previewPath(page), '', 'the preview is gone');
+  assert.equal(await page.evaluate(() => window.probe.sceneObjectCount()), before.objects, 'still no scene object');
+  // The stroke is in the DOM / SVG overlay only, so nothing that reads the canvas (screenshot, PDF, thumbnail, AutoPack preview) sees it.
+  assert.equal(await page.evaluate(() => window.probe.canvasData()), before.pixels, 'the canvas pixels are exactly as they were before the stroke');
+  assert.match(await page.evaluate(() => window.probe.hint()), /drawing saved/i);
+  const row = await rowOf(page, 0);
+  assert.equal(row.name, 'Drawing 1');
+  assert.equal(row.selected, false);
+  assert.equal(row.flagged, false);
+
+  // Another drag adds another record: the tool is still armed.
+  await dragThrough(page, [[56, 32, -12], [84, 32, -20]]);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  assert.equal((await draws(page)).length, 2);
+  assert.deepEqual(await page.evaluate(() => window.probe.annotations().map(r => r.type)), ['draw', 'draw']);
+  assert.equal(await page.evaluate(() => window.probe.camera()), before.camera);
+
+  // Escape: the armed tool ends, the camera can rotate again, the records stay.
+  assert.equal(await escapeConsumed(page), true);
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal(await rotateEnabled(page), true, 'rotation is back exactly as it was');
+  assert.equal(await count(page), 2);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand Move View, modified drags, the wheel and the other buttons keep navigating, and none of them starts a stroke', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  const start = await page.evaluate(() => window.probe.camera());
+  const at = await screenPoints(page, [[70, 32, -20]]).then(list => list[0]);
+  const settledCamera = async () => { await cameraSettled(page); return page.evaluate(() => window.probe.camera()); };
+
+  // Draw mode: a plain drag draws (no orbit); with Shift, Ctrl or Cmd it pans instead and never draws.
+  for (const [name, key] of [['Shift', 'Shift'], ['Ctrl', 'Control'], ['Cmd', 'Meta']]) {
+    const camera = await settledCamera();
+    await page.keyboard.down(key);
+    await page.mouse.move(at.x, at.y);
+    await page.mouse.down();
+    assert.equal(await drawState(page), 'armed', `${name} + press does not start a stroke`);
+    await page.mouse.move(at.x + 50, at.y + 30, { steps: 6 });
+    await page.mouse.up();
+    await page.keyboard.up(key);
+    assert.notEqual(await settledCamera(), camera, `${name} + drag navigates the camera`);
+    assert.equal(await count(page), 0, `${name} + drag wrote nothing`);
+    assert.equal(await rotateEnabled(page), false, 'Draw mode is unchanged by a modified drag');
+  }
+
+  // The wheel still zooms, and the right button still pans, in Draw mode.
+  const zoomFrom = await settledCamera();
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.wheel(0, -240);
+  assert.notEqual(await settledCamera(), zoomFrom, 'the wheel zooms while Draw is armed');
+  const panFrom = await settledCamera();
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down({ button: 'right' });
+  await page.mouse.move(at.x + 40, at.y + 20, { steps: 5 });
+  await page.mouse.up({ button: 'right' });
+  assert.notEqual(await settledCamera(), panFrom, 'the right button pans while Draw is armed');
+  assert.equal(await count(page), 0);
+  assert.equal(await drawState(page), 'armed');
+
+  // Move View: rotation is back, a plain drag orbits, no stroke can start, the saved strokes would stay drawn.
+  await page.click('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="move"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'move');
+  assert.equal(await rotateEnabled(page), true, 'Move View restores rotation');
+  assert.match(await page.evaluate(() => window.probe.hint()), /Move View/);
+  assert.notEqual(await page.evaluate(() => document.querySelector('#viewport canvas').style.cursor), 'crosshair');
+  const orbitFrom = await settledCamera();
+  const moved = await screenPoints(page, [[70, 32, -20]]).then(list => list[0]);
+  await page.mouse.move(moved.x, moved.y);
+  await page.mouse.down();
+  assert.equal(await drawState(page), 'move', 'a press in Move View starts nothing');
+  await page.mouse.move(moved.x + 60, moved.y + 10, { steps: 8 });
+  await page.mouse.up();
+  assert.notEqual(await settledCamera(), orbitFrom, 'a plain drag orbits in Move View');
+  assert.equal(await count(page), 0);
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'Move View does not select cargo either');
+
+  // Back to Draw: rotation off again; the tool owner is one control, not two.
+  await page.click('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="draw"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+  assert.equal(await rotateEnabled(page), false);
+  assert.notEqual(start, await page.evaluate(() => window.probe.camera()));
+  assert.deepEqual(errors, []);
+});
+
+test('freehand rotation gate: it changes only enableRotate, restores exactly what it found on every exit, and a replaced controls instance never keeps a disabled state', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const controlsState = () => page.evaluate(() => {
+    const c = window.probe.SceneManager.getControls();
+    return { rotate: c.enableRotate, zoom: c.enableZoom, pan: c.enablePan, enabled: c.enabled, damping: c.enableDamping, mouse: JSON.stringify(c.mouseButtons), touches: JSON.stringify(c.touches) };
+  });
+  const untouched = await controlsState();
+  assert.equal(untouched.rotate, true);
+
+  // Arming changes enableRotate and nothing else; every way out of Draw ownership puts it back.
+  const exits = {
+    'Escape': async () => { assert.equal(await escapeConsumed(page), true); },
+    'another tool': async () => { await page.click('.tp3d-annot-seg__btn[data-tool="callout"]'); },
+    'Move View': async () => { await page.click('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="move"]'); },
+    'closing the panel': async () => { await page.click('#btn-editor-annotations'); },
+  };
+  for (const [name, exit] of Object.entries(exits)) {
+    if (await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden)) await page.click('#btn-editor-annotations');
+    await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+    // Move View leaves the tool armed (a button press would now disarm it): start every round from "no tool".
+    if (await drawState(page) !== 'off') {
+      assert.equal(await escapeConsumed(page), true);
+      await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+    }
+    await armDraw(page);
+    const armed = await controlsState();
+    assert.equal(armed.rotate, false, `${name}: rotation is off while Draw is armed`);
+    assert.deepEqual({ ...armed, rotate: true }, untouched, `${name}: nothing but enableRotate changed`);
+    await exit();
+    await page.waitForFunction(() => window.probe.SceneManager.getControls().enableRotate === true);
+    assert.deepEqual(await controlsState(), untouched, `${name}: everything is exactly as it was found`);
+  }
+
+  // Show Annotations Off through the real segmented control.
+  if (await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden)) await page.click('#btn-editor-annotations');
+  await armDraw(page);
+  assert.equal(await rotateEnabled(page), false);
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("Off")');
+  await page.waitForFunction(() => window.probe.SceneManager.getControls().enableRotate === true);
+  assert.equal(await drawState(page), 'off', 'Show Off ends the tool');
+  await page.click('.tp3d-annot-seg--show .tp3d-annot-seg__btn:has-text("All")');
+
+  // A rotation that was already off stays off: the gate never restores a blind `true`.
+  await page.evaluate(() => { window.probe.SceneManager.getControls().enableRotate = false; });
+  await armDraw(page);
+  assert.equal(await rotateEnabled(page), false);
+  assert.equal(await escapeConsumed(page), true);
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal(await rotateEnabled(page), false, 'the earlier value (off) is the one restored');
+  await page.evaluate(() => { window.probe.SceneManager.getControls().enableRotate = true; });
+
+  // A value another owner set after the gate closed is theirs; the gate does not touch it.
+  await armDraw(page);
+  await page.evaluate(() => {
+    window.probe.SceneManager.getControls().enableRotate = true; // another owner turns rotation on
+    document.getElementById('viewport').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+  });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal(await rotateEnabled(page), true);
+
+  // A replaced controls instance: the old one is released at once, the new one is gated, neither is left disabled.
+  await armDraw(page);
+  await page.evaluate(() => {
+    const { SceneManager } = window.probe;
+    const original = SceneManager.getControls;
+    const first = original.call(SceneManager);
+    const replacement = { enableRotate: true, marker: 'replacement' };
+    window.__controlsSwap = { original, first, replacement };
+    SceneManager.getControls = () => replacement;
+  });
+  await page.waitForFunction(() => window.__controlsSwap.replacement.enableRotate === false);
+  assert.equal(await page.evaluate(() => window.__controlsSwap.first.enableRotate), true, 'the instance that went away was released');
+  await page.evaluate(() => document.getElementById('viewport').dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true })));
+  await page.waitForFunction(() => window.__controlsSwap.replacement.enableRotate === true);
+  await page.evaluate(() => { window.probe.SceneManager.getControls = window.__controlsSwap.original; });
+  assert.equal(await rotateEnabled(page), true, 'the real controls rotate again');
+  assert.deepEqual(await controlsState(), untouched);
+  assert.deepEqual(errors, []);
+});
+
+// Frame the camera on a world point from a world-inch offset, the way a user would orbit and zoom there.
+const aimCamera = async (page, target, offset, { settle = true } = {}) => {
+  await page.evaluate(({ target, offset }) => {
+    const { SceneManager } = window.probe;
+    const controls = SceneManager.getControls();
+    const camera = SceneManager.getCamera();
+    const at = SceneManager.vecInchesToWorld({ x: target[0], y: target[1], z: target[2] });
+    const from = SceneManager.vecInchesToWorld({ x: target[0] + offset[0], y: target[1] + offset[1], z: target[2] + offset[2] });
+    controls.target.copy(at);
+    camera.position.copy(from);
+    camera.lookAt(at);
+    controls.update();
+  }, { target, offset });
+  if (settle) await cameraSettled(page);
+};
+// Steps small enough that no two consecutive pointer samples are further apart than a stroke may jump.
+const stepsFor = (from, to) => Math.max(2, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / 14));
+async function dragSmooth(page, inches, { release = true } = {}) {
+  const points = await screenPoints(page, inches);
+  await page.mouse.move(points[0].x, points[0].y);
+  await page.mouse.down();
+  for (let i = 1; i < points.length; i += 1) await page.mouse.move(points[i].x, points[i].y, { steps: stepsFor(points[i - 1], points[i]) });
+  if (release) await page.mouse.up();
+  return points;
+}
+const lastDraw = async page => (await draws(page)).at(-1);
+const quiet = page => page.waitForTimeout(250);
+
+test('freehand surfaces: the truck floor, the ground and a truck wall take a stroke on their own surface, and every record stays on the surface it started on', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  const cargoBefore = await page.evaluate(() => window.probe.casesJson());
+  const objects = await page.evaluate(() => window.probe.sceneObjectCount());
+
+  // The truck floor.
+  await dragSmooth(page, FLOOR_STROKE);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  const floor = await lastDraw(page);
+  assert.equal(floor.type, 'draw');
+  assert.equal(floor.anchor.kind, 'floor', 'the truck floor is a floor surface');
+  assert.ok(floor.points.length >= 2);
+  assert.ok(Math.hypot(floor.anchor.position.x - FLOOR_STROKE[0][0], floor.anchor.position.z - FLOOR_STROKE[0][2]) < 4, 'the stroke starts where the button went down');
+  assert.equal(floor.anchor.position.y, 0);
+  const last = [floor.points.at(-2), floor.points.at(-1)];
+  assert.ok(Math.hypot(last[0] - FLOOR_STROKE.at(-1)[0], last[1] - FLOOR_STROKE.at(-1)[2]) < 6, 'and ends where it was released');
+
+  // The ground beside the truck.
+  await dragSmooth(page, GROUND_STROKE);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  const ground = await lastDraw(page);
+  assert.equal(ground.anchor.kind, 'space');
+  assert.equal(ground.anchor.surface, 'ground');
+
+  // A truck wall: the far side wall seen from the default view.
+  const wall = [[150, 20, -51], [190, 50, -51], [230, 30, -51]];
+  await dragSmooth(page, wall);
+  await page.waitForFunction(() => window.probe.annotations().length === 3);
+  const side = await lastDraw(page);
+  assert.equal(side.anchor.kind, 'space');
+  assert.match(side.anchor.surface, /^wall-/);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'no cargo was touched');
+  assert.equal(await page.evaluate(() => window.probe.sceneObjectCount()), objects, 'no scene object was added');
+  assert.deepEqual(await page.evaluate(() => window.probe.annotations().map(r => r.type)), ['draw', 'draw', 'draw']);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 3);
+
+  // A stroke that is dragged from the floor onto cargo stops where the cargo is: it is never moved onto that cargo's face.
+  const before = (await draws(page)).length;
+  const cargoTop = await point(page, 70, 32, -20);
+  const start = await point(page, 70, 0, 14);
+  await page.mouse.move(start.x, start.y);
+  await page.mouse.down();
+  await page.mouse.move(cargoTop.x, cargoTop.y, { steps: stepsFor(start, cargoTop) });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'frozen');
+  assert.match(await page.evaluate(() => window.probe.hint()), /in the way|edge/i);
+  await page.mouse.move(start.x + 30, start.y + 6, { steps: 4 });
+  assert.equal(await drawState(page), 'frozen', 'a frozen stroke never resumes');
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+  const dragged = (await draws(page));
+  assert.equal(dragged.length, before + 1);
+  assert.equal(dragged.at(-1).anchor.kind, 'floor', 'it stayed on the floor');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand cylinder and drum cargo take a stroke on an end cap, refuse the curved side, and a cap stroke ends on the 24-sided rim', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  // Cargo A becomes a drum: axis along its length (x), end caps at x = 70 +/- 24, radius half the smaller of width and height.
+  await page.evaluate(() => {
+    const { StateStore, PackLibrary } = window.probe;
+    const caseId = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a').caseId;
+    StateStore.set({ caseLibrary: StateStore.get('caseLibrary').map(c => (c.id === caseId ? { ...c, shape: 'drum' } : c)) }, { skipHistory: true });
+  });
+  await armDraw(page);
+  await aimCamera(page, [94, 16, -20], [150, 40, 30]);
+  const info = await page.evaluate(() => {
+    const { PackLibrary, CaseLibrary } = window.probe;
+    const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+    const c = CaseLibrary.getById(inst.caseId);
+    return { shape: c.shape, length: c.dimensions.length, width: c.dimensions.width, height: c.dimensions.height };
+  });
+  const radius = Math.min(info.width, info.height) / 2;
+  assert.equal(info.shape, 'drum');
+  const capX = 70 + info.length / 2;
+  const centre = [capX, info.height / 2, -20];
+
+  // The curved side: refused, nothing stored, the tool stays armed.
+  const sideAt = await screenPoints(page, [[70, info.height / 2 + radius - 0.5, -20]]).then(list => list[0]);
+  await page.mouse.move(sideAt.x, sideAt.y);
+  await page.mouse.down();
+  assert.equal(await drawState(page), 'armed', 'a press on the curved side starts nothing');
+  await page.mouse.move(sideAt.x + 40, sideAt.y + 10, { steps: 5 });
+  await page.mouse.up();
+  assert.equal(await count(page), 0);
+  assert.match(await page.evaluate(() => document.querySelector('.tp3d-annot-panel__hint, .tp3d-annot-panel__status')?.textContent || window.probe.hint()), /curved|end cap|cannot take/i);
+
+  // The end cap: a stroke inside the rim is saved on the cap's own face.
+  const inside = [[capX, centre[1] - 3, centre[2] - 6], [capX, centre[1] + 3, centre[2] - 1], [capX, centre[1] + 1, centre[2] + 6]];
+  await dragSmooth(page, inside);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  const cap = await lastDraw(page);
+  assert.equal(cap.face, '+x', 'the +x end cap');
+  assert.equal(cap.anchor.kind, 'cargo');
+  assert.equal(cap.anchor.instanceId, 'cargo-a');
+  for (let i = 0; i < cap.points.length; i += 2) {
+    assert.ok(Math.hypot(cap.points[i], cap.points[i + 1]) <= radius + 0.011, 'every vertex is inside the cap');
+  }
+
+  // Running off the rim: the stroke stops exactly on the rim (the 24-gon, not the bounding box) and stays stopped.
+  const toRim = [[capX, centre[1], centre[2]], [capX, centre[1], centre[2] + radius + 8]];
+  const pts = await screenPoints(page, toRim);
+  await page.mouse.move(pts[0].x, pts[0].y);
+  await page.mouse.down();
+  await page.mouse.move(pts[1].x, pts[1].y, { steps: stepsFor(pts[0], pts[1]) });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'frozen');
+  assert.match(await page.evaluate(() => window.probe.hint()), /edge/i);
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  const rim = await lastDraw(page);
+  const end = [rim.points.at(-2), rim.points.at(-1)];
+  const apothem = radius * Math.cos(Math.PI / 24);
+  const reach = Math.hypot(end[0], end[1]);
+  assert.ok(reach <= radius + 0.011 && reach >= apothem - 0.05, `the last vertex is on the rim (${reach.toFixed(2)} in from the axis, rim ${apothem.toFixed(2)}..${radius.toFixed(2)})`);
+  assert.deepEqual(errors, []);
+});
+
+// Count every annotation write while a gesture runs: a stroke must be one write, or none. (Camera saves and cargo edits are
+// other writes and are not counted.)
+const watchWrites = page => page.evaluate(() => {
+  window.__writes = 0;
+  if (window.__unwatchWrites) window.__unwatchWrites();
+  window.__unwatchWrites = window.probe.StateStore.subscribe((changes, next, notification) => {
+    if (notification && notification.type === 'pack-annotations') window.__writes += 1;
+  });
+});
+const writes = page => page.evaluate(() => window.__writes);
+// The id of the mouse pointer as the page sees it (Playwright's mouse is one pointer).
+const watchPointer = page => page.evaluate(() => {
+  window.__pointerId = null;
+  window.addEventListener('pointerdown', ev => { window.__pointerId = ev.pointerId; }, true);
+});
+const pointerId = page => page.evaluate(() => window.__pointerId);
+
+test('freehand freezes: the stroke ends where the surface ends, where something stands in front, or where the pointer jumped, and it never resumes; too-short strokes write nothing', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  await watchWrites(page);
+
+  // Edge: dragging across the +x edge of the top face (local x = 24) ends the stroke exactly on that edge, and coming back does not resume it.
+  const edge = await screenPoints(page, [[56, 32, -22], [84, 32, -22], [108, 32, -22]]);
+  await page.mouse.move(edge[0].x, edge[0].y);
+  await page.mouse.down();
+  await page.mouse.move(edge[1].x, edge[1].y, { steps: stepsFor(edge[0], edge[1]) });
+  await page.mouse.move(edge[2].x, edge[2].y, { steps: stepsFor(edge[1], edge[2]) });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'frozen');
+  assert.match(await page.evaluate(() => window.probe.hint()), /edge of the surface/i);
+  const frozenPreview = await previewPath(page);
+  await page.mouse.move(edge[0].x, edge[0].y, { steps: stepsFor(edge[2], edge[0]) });
+  assert.equal(await drawState(page), 'frozen', 'it does not resume when the pointer comes back onto the face');
+  assert.equal(await previewPath(page), frozenPreview, 'and the preview does not grow');
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  assert.equal(await writes(page), 1, 'one write for the whole gesture');
+  const edgeStroke = await lastDraw(page);
+  assert.equal(edgeStroke.face, '+y');
+  assert.ok(Math.abs(edgeStroke.points.at(-2) - 24) <= 0.011, `the last vertex is on the edge (u ${edgeStroke.points.at(-2)})`);
+  assert.ok(Math.abs(edgeStroke.points.at(-1) - -2) <= 1.5, 'and on the line that was drawn');
+  assert.equal(await drawState(page), 'armed');
+
+  // Occluder: a floor stroke dragged under cargo stops where the cargo begins.
+  const floorStart = await point(page, 70, 0, 20);
+  const underCargo = await point(page, 70, 32, -20);
+  await page.mouse.move(floorStart.x, floorStart.y);
+  await page.mouse.down();
+  await page.mouse.move(underCargo.x, underCargo.y, { steps: stepsFor(floorStart, underCargo) });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'frozen');
+  assert.match(await page.evaluate(() => window.probe.hint()), /in the way/i);
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  assert.equal(await writes(page), 2);
+  const floorStroke = await lastDraw(page);
+  assert.equal(floorStroke.anchor.kind, 'floor');
+  assert.equal(floorStroke.anchor.position.y, 0);
+
+  // Excessive gap: a jump of well over 160 px freezes the stroke at the last verified sample.
+  const gapStart = await screenPoints(page, [[150, 0, -30], [162, 0, -22]]);
+  let jump = null;
+  for (const candidate of [[400, 0, 40], [450, 0, 30], [500, 0, -20], [330, 0, 45], [250, 0, 45]]) {
+    const at = await point(page, ...candidate);
+    const clear = await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), at);
+    if (clear && Math.hypot(at.x - gapStart[1].x, at.y - gapStart[1].y) > 180) { jump = at; break; }
+  }
+  assert.ok(jump, 'a floor point wider than a stroke may cross is on the canvas');
+  const gap = [gapStart[0], gapStart[1], jump];
+  await page.mouse.move(gap[0].x, gap[0].y);
+  await page.mouse.down();
+  await page.mouse.move(gap[1].x, gap[1].y, { steps: stepsFor(gap[0], gap[1]) });
+  await page.mouse.move(gap[2].x, gap[2].y, { steps: 1 });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'frozen');
+  assert.match(await page.evaluate(() => window.probe.hint()), /too fast/i);
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 3);
+  const gapStroke = await lastDraw(page);
+  assert.ok(Math.hypot(gapStroke.points.at(-2) - 162, gapStroke.points.at(-1) - -22) < 4, 'it ends before the jump');
+  assert.equal(await writes(page), 3);
+
+  // Leaving the view freezes a stroke too (the pointer goes off the canvas).
+  const inView = await screenPoints(page, [[150, 0, -10], [190, 0, 0]]);
+  const box = await page.evaluate(() => window.probe.box('#viewport canvas'));
+  await page.mouse.move(inView[0].x, inView[0].y);
+  await page.mouse.down();
+  await page.mouse.move(inView[1].x, inView[1].y, { steps: stepsFor(inView[0], inView[1]) });
+  await page.mouse.move(box.x + box.w * 0.5, box.y - 40, { steps: 12 });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'frozen');
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 4);
+  assert.equal(await writes(page), 4);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand minimum length and taps: a click or a drag shorter than an inch writes nothing, a stroke past it writes one record', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await watchWrites(page);
+  // Close in on the top of cargo A: an inch is about twenty pixels here, so a few pixels is far under the minimum length.
+  await aimCamera(page, [70, 32, -20], [0, 40, 40]);
+  const perInch = await page.evaluate(() => {
+    const a = window.probe.screenOf(60, 32, -20);
+    const b = window.probe.screenOf(70, 32, -20);
+    return Math.hypot(a.x - b.x, a.y - b.y) / 10;
+  });
+  assert.ok(perInch > 6, `an inch is ${perInch.toFixed(1)} px: close enough for a 5 px drag to be under an inch`);
+  const at = await screenPoints(page, [[66, 32, -20]]).then(list => list[0]);
+
+  // A click: no sample at all.
+  await click(page, at);
+  assert.equal(await count(page), 0);
+  assert.equal(await writes(page), 0, 'a tap writes nothing');
+  assert.equal(await drawState(page), 'armed');
+
+  // A few pixels: one sample, shorter than the minimum length, refused by the writer without a record.
+  await page.mouse.move(at.x, at.y);
+  await page.mouse.down();
+  await page.mouse.move(at.x + 5, at.y, { steps: 2 });
+  await page.mouse.up();
+  await page.waitForFunction(() => /too short/i.test(window.probe.hint()) || document.querySelector('.tp3d-toast, .toast'));
+  assert.equal(await count(page), 0, 'a stroke under the minimum length is not stored');
+  assert.equal(await writes(page), 0);
+  assert.equal(await drawState(page), 'armed', 'and the tool stays armed');
+
+  // Past the minimum: stored.
+  await dragSmooth(page, [[58, 32, -28], [66, 32, -26]]);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  assert.equal(await writes(page), 1);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand cancellation: every interruption ends the unfinished stroke without a write, none can bring it back, and a normal camera move does not cancel one', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  await watchWrites(page);
+  await watchPointer(page);
+  let hold = await screenPoints(page, TOP_STROKE_A);
+  const toolButtonClick = selector => page.evaluate(sel => document.querySelector(sel).click(), selector);
+  // Start a stroke and keep the button down, with a visible preview.
+  const begin = async () => {
+    hold = await screenPoints(page, TOP_STROKE_A);
+    await page.mouse.move(hold[0].x, hold[0].y);
+    await page.mouse.down();
+    await page.mouse.move(hold[1].x, hold[1].y, { steps: 4 });
+    await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'stroking');
+    await page.waitForFunction(() => document.querySelector('.tp3d-annot-draw.is-preview .tp3d-annot-draw__line')?.getAttribute('d'));
+  };
+  // After the interruption: nothing stored, nothing on screen, the rest of the gesture (more moves, the release) does nothing.
+  const afterwards = async (name, expected) => {
+    await page.waitForFunction(want => window.probe.AnnotationTool.drawingState() === want, expected);
+    assert.equal(await previewPath(page), '', `${name}: no preview is left`);
+    // Writes the trigger itself made (moving cargo, another Load Plan) are not the stroke's: count from here.
+    const base = await writes(page);
+    await page.mouse.move(hold[2].x, hold[2].y, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    assert.equal(await count(page), 0, `${name}: nothing was written`);
+    assert.equal(await writes(page), base, `${name}: the stroke wrote nothing, not even an empty record`);
+    assert.equal(await previewPath(page), '', `${name}: the rest of the gesture brought nothing back`);
+    assert.equal(await drawState(page), expected, `${name}: the state is unchanged by the rest of the gesture`);
+  };
+  // Back to an armed Draw tool in an open panel.
+  const rearm = async () => {
+    if (await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden)) await page.click('#btn-editor-annotations');
+    await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+    if (await drawState(page) === 'move') await toolButtonClick('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="draw"]');
+    if (await drawState(page) === 'off') await armDraw(page);
+    await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+  };
+  const cases = [
+    ['Escape (the stroke goes before the tool)', async () => { assert.equal(await escapeConsumed(page), true); }, 'armed'],
+    ['pointercancel', async () => { await page.evaluate(() => document.querySelector('#viewport canvas').dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.__pointerId, bubbles: true }))); }, 'armed'],
+    ['a lost pointer capture', async () => { await page.evaluate(() => document.querySelector('#viewport canvas').dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: window.__pointerId, bubbles: true }))); }, 'armed'],
+    ['a second touch', async () => {
+      // Sent to the window, where the stroke listens: OrbitControls tracks real pointers only and is not fed a fake finger.
+      await page.evaluate(() => {
+        window.dispatchEvent(new PointerEvent('pointerdown', { pointerId: window.__pointerId + 7, pointerType: 'touch', isPrimary: false, bubbles: true, clientX: 300, clientY: 300, button: 0, buttons: 1 }));
+      });
+    }, 'armed'],
+    ['window blur', async () => { await page.evaluate(() => window.dispatchEvent(new Event('blur'))); }, 'armed'],
+    ['a hidden document', async () => {
+      await page.evaluate(() => {
+        Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+        document.dispatchEvent(new Event('visibilitychange'));
+      });
+    }, 'armed', async () => { await page.evaluate(() => { delete document.visibilityState; }); }],
+    ['switching tool', async () => { await toolButtonClick('.tp3d-annot-seg__btn[data-tool="callout"]'); }, 'off'],
+    ['Move View', async () => { await toolButtonClick('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="move"]'); }, 'move'],
+    ['closing the panel', async () => { await toolButtonClick('#btn-editor-annotations'); }, 'off'],
+    ['Show Off', async () => { await toolButtonClick('.tp3d-annot-seg--show .tp3d-annot-seg__btn:nth-child(3)'); }, 'off', async () => { await toolButtonClick('.tp3d-annot-seg--show .tp3d-annot-seg__btn:nth-child(1)'); }],
+    ['Settings Show Annotations off', async () => { await setShowAnnotations(page, false); }, 'off', async () => { await setShowAnnotations(page, true); }],
+    ['Measurement Mode', async () => { await toolButtonClick('#btn-editor-measure'); }, 'off', async () => { await toolButtonClick('#btn-editor-measure'); }],
+    ['an AutoPack operation', async () => { await page.evaluate(() => { window.__op = window.probe.OperationLifecycle.beginOperation('autopacking'); }); }, 'off', async () => { await page.evaluate(() => window.probe.OperationLifecycle.finishOperation(window.__op)); }],
+    ['a transient preview', async () => { await page.evaluate(() => { window.__tp = window.probe.CaseScene.isTransientPreview; window.probe.CaseScene.isTransientPreview = () => true; }); }, 'off', async () => { await page.evaluate(() => { window.probe.CaseScene.isTransientPreview = window.__tp; }); }],
+    ['a held cargo pose', async () => { await page.evaluate(() => { window.__hold = window.probe.InteractionManager.hasProvisionalPose; window.probe.InteractionManager.hasProvisionalPose = () => true; }); }, 'armed', async () => { await page.evaluate(() => { window.probe.InteractionManager.hasProvisionalPose = window.__hold; }); }],
+    ['cargo moving', async () => {
+      await page.evaluate(() => {
+        const { PackLibrary } = window.probe;
+        const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+        PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, x: inst.transform.position.x + 30 } } });
+      });
+    }, 'armed', async () => {
+      await page.evaluate(() => {
+        const { PackLibrary } = window.probe;
+        const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+        PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, x: inst.transform.position.x - 30 } } });
+      });
+      await cameraSettled(page);
+    }],
+    ['a cargo Undo', async () => { await page.evaluate(() => { window.probe.StateStore.set({ selectedInstanceIds: [] }); window.probe.StateStore.undo(); }); }, 'armed'],
+    ['another Load Plan', async () => {
+      await page.evaluate(() => { const copy = window.probe.PackLibrary.duplicate('fixture-pack'); window.__otherPack = copy.id; window.probe.StateStore.set({ currentPackId: copy.id }, { skipHistory: true }); });
+    }, 'off', async () => { await page.evaluate(() => window.probe.StateStore.set({ currentPackId: 'fixture-pack' }, { skipHistory: true })); }],
+  ];
+  for (const [name, trigger, expected, restore] of cases) {
+    try {
+      await rearm();
+      await cameraSettled(page);
+      await begin();
+      await trigger();
+      await afterwards(name, expected);
+      if (restore) await restore();
+      await page.evaluate(() => { window.__writes = 0; });
+    } catch (error) {
+      throw new Error(`[${name}] ${error.message}${errors.length ? `\npage errors: ${errors.join(' || ')}` : ''}`, { cause: error });
+    }
+  }
+
+  // A normal camera move during a stroke (the wheel) does not cancel it: the stroke is still saved, once.
+  await rearm();
+  await cameraSettled(page);
+  await watchWrites(page);
+  await page.mouse.move(hold[0].x, hold[0].y);
+  await page.mouse.down();
+  await page.mouse.move(hold[1].x, hold[1].y, { steps: 4 });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'stroking');
+  await page.mouse.wheel(0, -120);
+  await page.waitForTimeout(250);
+  assert.equal(await drawState(page), 'stroking', 'a wheel zoom during a stroke does not cancel it');
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  assert.equal(await writes(page), 1);
+
+  // Another pointer's moves and release are ignored, and a trailing lost-capture after the save is harmless.
+  await cameraSettled(page);
+  const again = await screenPoints(page, TOP_STROKE_A);
+  await page.mouse.move(again[0].x, again[0].y);
+  await page.mouse.down();
+  await page.mouse.move(again[1].x, again[1].y, { steps: 4 });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'stroking');
+  await page.evaluate(() => {
+    const id = window.__pointerId + 5;
+    window.dispatchEvent(new PointerEvent('pointermove', { pointerId: id, pointerType: 'touch', isPrimary: false, bubbles: true, clientX: 200, clientY: 200, buttons: 1 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { pointerId: id, pointerType: 'touch', isPrimary: false, bubbles: true, clientX: 200, clientY: 200 }));
+  });
+  assert.equal(await drawState(page), 'stroking', "another pointer's move and release do not touch the stroke");
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  await page.evaluate(() => document.querySelector('#viewport canvas').dispatchEvent(new PointerEvent('lostpointercapture', { pointerId: window.__pointerId, bubbles: true })));
+  await page.evaluate(() => document.querySelector('#viewport canvas').dispatchEvent(new PointerEvent('pointercancel', { pointerId: window.__pointerId, bubbles: true })));
+  await page.waitForTimeout(150);
+  assert.equal(await count(page), 2, 'trailing events after the save change nothing and bring nothing back');
+  assert.equal(await writes(page), 2, 'exactly one write per saved stroke');
+  assert.equal(await drawState(page), 'armed');
+  assert.deepEqual(errors, []);
+});
+
+// A drawing saved through the real writer (not the gesture). `local` is the first vertex on the top of cargo A; `rest` are (x, z) pairs.
+const seedDraw = (page, { cargo = 'cargo-a', local = { x: -18, y: 16, z: -8 }, face = '+y', rest = [-6, 0, 10, -6, 18, 4], color = 'ink', width = 'regular', ground = null } = {}) => page.evaluate(spec => {
+  const { M, PackLibrary, CaseLibrary } = window.probe;
+  const pack = PackLibrary.getById('fixture-pack');
+  let anchor;
+  if (spec.ground) {
+    anchor = M.buildSpaceAnchor({ surface: 'ground', point: { x: spec.ground[0], y: 0, z: spec.ground[1] } });
+  } else {
+    const inst = pack.cases.find(c => c.id === spec.cargo);
+    anchor = M.buildCargoAnchor({ instanceId: inst.id, local: spec.local, caseData: CaseLibrary.getById(inst.caseId) });
+  }
+  const outcome = PackLibrary.addDraw('fixture-pack', { anchor, face: spec.ground ? undefined : spec.face, rawPoints: spec.rest, color: spec.color, width: spec.width });
+  if (!outcome.ok) throw new Error(`draw seed failed: ${outcome.reason}`);
+  return outcome.annotation;
+}, { cargo, local, face, rest, color, width, ground });
+const moveCargoA = (page, dx) => page.evaluate(delta => {
+  const { PackLibrary } = window.probe;
+  const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
+  PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: { ...inst.transform, position: { ...inst.transform.position, x: inst.transform.position.x + delta } } });
+}, dx);
+const rowFor = id => `.tp3d-annot-row[data-annot-id="${id}"]`;
+const groupFor = (page, id) => drawGroups(page).then(list => list.find(group => group.id === id) || null);
+// How many times each stroke's path or its look was written while `action` ran (a drawing is only repainted when it changed).
+const watchDrawPaint = page => page.evaluate(() => {
+  window.__paint = { d: 0, style: 0 };
+  window.__paintObserver?.disconnect();
+  window.__paintObserver = new MutationObserver(records => records.forEach(record => {
+    if (record.attributeName === 'd') window.__paint.d += 1;
+    else window.__paint.style += 1;
+  }));
+  document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line, .tp3d-annot-draws .tp3d-annot-draw__under').forEach(el => window.__paintObserver.observe(el, { attributes: true }));
+});
+const paintCount = page => page.evaluate(() => ({ ...window.__paint }));
+
+test('freehand saved strokes: they persist across tool exit and re-entry, follow their cargo, hide with Settings and per stroke, and are managed from the panel without touching cargo or the stroke geometry', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const [onCargo, onGround] = [await seedDraw(page), await seedDraw(page, { ground: [100, 70], rest: [140, 78, 180, 66], color: 'blue', width: 'bold' })];
+  const [callout] = await seed(page, [{ title: 'A callout', ground: [520, 10] }]);
+  const arrow = await seedArrow(page, [GROUND_B[0], GROUND_B[2]], [GROUND_A[0], GROUND_A[2]]);
+  const casesBefore = await page.evaluate(() => window.probe.casesJson());
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 2);
+
+  // Rendering: both drawn from their records, one SVG path each, in the right colors; rows are drawings, not "Unreadable".
+  let groups = await drawGroups(page);
+  assert.deepEqual(groups.map(g => g.id).sort(), [onCargo.id, onGround.id].sort());
+  groups.forEach(g => assert.match(g.d, /^M[-\d.]+ [-\d.]+(L[-\d.]+ [-\d.]+)+$/));
+  assert.equal((await groupFor(page, onCargo.id)).color, 'ink');
+  assert.equal((await groupFor(page, onGround.id)).color, 'blue');
+  assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-row__name')].map(el => el.textContent)), ['Drawing 1', 'Drawing 2', 'A callout', 'Arrow 1']);
+  assert.equal((await arrowGraphics(page)).length, 1, 'the arrow is still drawn');
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length), 1, 'and so is the callout marker');
+  const rowOne = await rowOf(page, 0);
+  assert.deepEqual([rowOne.name, rowOne.flagged, rowOne.issueShown, rowOne.selected], ['Drawing 1', false, false, false]);
+  assert.doesNotMatch(await page.evaluate(() => document.querySelector('.tp3d-annot-list, .tp3d-annot-panel__list').textContent), /Unreadable|could not be read/);
+
+  // Tool exit and re-entry leave them as they were.
+  const drawn = groups.map(g => g.d);
+  await armDraw(page);
+  assert.deepEqual((await drawGroups(page)).map(g => g.d), drawn);
+  assert.equal(await escapeConsumed(page), true);
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.deepEqual((await drawGroups(page)).map(g => g.d), drawn);
+
+  // A stroke on cargo follows it; the record never changes; a stroke on the ground does not move.
+  const recordsBefore = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+  await moveCargoA(page, 40);
+  await page.waitForFunction(({ id, was }) => [...document.querySelectorAll('.tp3d-annot-draw')].find(g => g.dataset.annotId === id).querySelector('.tp3d-annot-draw__line').getAttribute('d') !== was, { id: onCargo.id, was: drawn[0] });
+  assert.equal((await groupFor(page, onGround.id)).d, drawn[1], 'the ground stroke stays put');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), recordsBefore, 'the records are untouched by a cargo move');
+  await moveCargoA(page, -40);
+  await page.waitForFunction(({ id, was }) => [...document.querySelectorAll('.tp3d-annot-draw')].find(g => g.dataset.annotId === id).querySelector('.tp3d-annot-draw__line').getAttribute('d') === was, { id: onCargo.id, was: drawn[0] });
+
+  // Settings > Show Annotations Off hides every stroke and On brings them back from the unchanged records.
+  await setShowAnnotations(page, false);
+  await page.waitForFunction(() => document.getElementById('editor-annotation-layer').hidden);
+  assert.equal((await drawGroups(page)).length, 0, 'Off draws nothing');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), recordsBefore);
+  await setShowAnnotations(page, true);
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 2);
+  assert.deepEqual((await drawGroups(page)).map(g => g.d), drawn, 'back from the unchanged records');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), recordsBefore);
+
+  // An individual Hide is respected and saved; Show brings it back.
+  await page.click(`${rowFor(onGround.id)} .tp3d-annot-row__eye`);
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).hidden === true, onGround.id);
+  assert.equal((await groupFor(page, onGround.id)), null, 'a hidden stroke is not drawn');
+  assert.equal((await groupFor(page, onCargo.id)).d, drawn[0], 'and the other is untouched');
+  await page.click(`${rowFor(onGround.id)} .tp3d-annot-row__eye`);
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).hidden === false, onGround.id);
+  assert.equal((await groupFor(page, onGround.id)).d, drawn[1]);
+
+  // Selecting a drawing: its row and its stroke are marked, the look controls are for that drawing, cargo is not selected.
+  await page.click(`${rowFor(onCargo.id)} .tp3d-annot-row__select`);
+  await page.waitForSelector(`${rowFor(onCargo.id)}.is-selected`);
+  assert.equal((await groupFor(page, onCargo.id)).selected, true);
+  assert.equal((await groupFor(page, onGround.id)).selected, false);
+  assert.equal(await page.locator('.tp3d-annot-panel__draw-title').textContent(), 'Drawing 1 look');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'a drawing never selects cargo');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-panel__arrow')?.hidden ?? true), true, 'the arrow look controls stay out of the way');
+
+  // Color and width edit only that stroke and never its geometry: the path is not rewritten and the vertices are identical.
+  const otherBefore = await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id)), onGround.id);
+  const geometryBefore = await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id).points), onCargo.id);
+  await watchDrawPaint(page);
+  await page.click('.tp3d-annot-panel__draw-colors .tp3d-annot-swatch[data-color="red"]');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).color === 'red', onCargo.id);
+  await page.click('.tp3d-annot-seg--draw-width .tp3d-annot-seg__btn[data-draw-width="bold"]');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).width === 'bold', onCargo.id);
+  await page.waitForFunction(id => [...document.querySelectorAll('.tp3d-annot-draw')].find(g => g.dataset.annotId === id).dataset.color === 'red', onCargo.id);
+  await page.waitForTimeout(250);
+  assert.equal((await paintCount(page)).d, 0, 'a color or width edit does not rebuild the path');
+  assert.equal(await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id).points), onCargo.id), geometryBefore, 'the vertices are identical');
+  assert.equal(await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id)), onGround.id), otherBefore, 'the other stroke was not touched');
+  const styled = await groupFor(page, onCargo.id);
+  assert.deepEqual([styled.color, styled.d], ['red', drawn[0]]);
+  assert.ok(Number.parseFloat(styled.width) > Number.parseFloat((await groupFor(page, onGround.id)).width) - 0.01, 'bold is at least as heavy as the other stroke');
+
+  // Delete: the record goes, cargo stays, one Undo restores the identical record (and selects it again).
+  const deletedJson = await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id)), onCargo.id);
+  await page.click(`${rowFor(onCargo.id)} .tp3d-annot-row__delete`);
+  await page.waitForFunction(id => !window.probe.annotations().some(r => r.id === id), onCargo.id);
+  assert.equal(await groupFor(page, onCargo.id), null);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore, 'Delete never touches cargo');
+  assert.match(await page.locator('.tp3d-annot-panel__undo').textContent(), /Drawing deleted\. Cargo is unchanged\./);
+  await page.click('.tp3d-annot-panel__undo-btn');
+  await page.waitForFunction(id => window.probe.annotations().some(r => r.id === id), onCargo.id);
+  assert.equal(await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id)), onCargo.id), deletedJson, 'the identical record is back');
+  assert.deepEqual(await page.evaluate(() => window.probe.annotations().map(r => r.type)), ['draw', 'draw', 'callout', 'arrow'], 'in its place');
+  await page.waitForFunction(id => [...document.querySelectorAll('.tp3d-annot-draw')].some(g => g.dataset.annotId === id && g.querySelector('.tp3d-annot-draw__line').getAttribute('d')), onCargo.id);
+
+  // The Delete key acts on the selected drawing and never on cargo.
+  await page.click(`${rowFor(onGround.id)} .tp3d-annot-row__select`);
+  await page.waitForSelector(`${rowFor(onGround.id)}.is-selected`);
+  await page.evaluate(() => document.getElementById('viewport').dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true, cancelable: true })));
+  await page.waitForFunction(id => !window.probe.annotations().some(r => r.id === id), onGround.id);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore, 'the Delete key deleted the drawing, not cargo');
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 3);
+
+  // The callout and the arrow were never disturbed.
+  assert.equal((await arrowGraphics(page)).length, 1);
+  assert.equal(await page.evaluate(id => window.probe.annotations().find(r => r.id === id).title, callout.id), 'A callout');
+  assert.equal(await page.evaluate(id => window.probe.annotations().find(r => r.id === id).type, arrow.id), 'arrow');
+  assert.deepEqual(errors, []);
+});
+
+test('freehand Needs Review and Unresolved strokes stay in the panel with a reason and are never drawn as valid geometry; the stroke returns when its cargo does', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const stroke = await seedDraw(page);
+  const ground = await seedDraw(page, { ground: [100, 70], rest: [140, 78, 180, 66] });
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 2);
+  const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+
+  // The cargo leaves the Load Plan: the stroke is kept and listed with a reason, not drawn.
+  const withCargo = await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('packLibrary')));
+  await page.evaluate(() => {
+    const { StateStore } = window.probe;
+    StateStore.set({ packLibrary: StateStore.get('packLibrary').map(p => (p.id === 'fixture-pack' ? { ...p, cases: p.cases.filter(c => c.id !== 'cargo-a') } : p)) }, { skipHistory: true });
+  });
+  await page.waitForFunction(id => !([...document.querySelectorAll('.tp3d-annot-draw')].find(g => g.dataset.annotId === id)?.querySelector('.tp3d-annot-draw__line').getAttribute('d')), stroke.id);
+  const flagged = await rowOf(page, 0);
+  assert.deepEqual([flagged.name, flagged.flagged, flagged.issueShown], ['Drawing 1', true, true]);
+  assert.match(await page.evaluate(id => document.querySelector(`.tp3d-annot-row[data-annot-id="${id}"] .tp3d-annot-row__issue`).textContent, stroke.id), /no longer in this Load Plan|kept as drawn/i);
+  assert.equal(await page.evaluate(id => window.probe.resolved().find(r => r.id === id).status !== 'valid', stroke.id), true);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, 'the record is kept verbatim');
+  assert.equal((await groupFor(page, ground.id)).color, 'ink', 'the valid ground stroke is still drawn');
+  assert.equal(await page.evaluate(id => document.querySelector(`.tp3d-annot-row[data-annot-id="${id}"] .tp3d-annot-row__edit`)?.hidden ?? true, stroke.id), true, 'a drawing has no text editor');
+
+  // The cargo returns and the stroke is drawn again from the same record.
+  await page.evaluate(plan => { const { StateStore } = window.probe; StateStore.set({ packLibrary: JSON.parse(plan) }, { skipHistory: true }); }, withCargo);
+  await page.waitForFunction(id => [...document.querySelectorAll('.tp3d-annot-draw')].find(g => g.dataset.annotId === id)?.querySelector('.tp3d-annot-draw__line').getAttribute('d'), stroke.id);
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand creation defaults are separate for Drawings and Arrows, are session-only, and new strokes use the Drawing default', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  const lookState = () => page.evaluate(() => ({
+    drawTitle: document.querySelector('.tp3d-annot-panel__draw-title')?.textContent || '',
+    drawShown: Boolean(document.querySelector('.tp3d-annot-panel__draw')) && !document.querySelector('.tp3d-annot-panel__draw').hidden,
+    drawColor: document.querySelector('.tp3d-annot-panel__draw-colors .tp3d-annot-swatch[aria-pressed="true"]')?.dataset.color || '',
+    drawWidth: document.querySelector('.tp3d-annot-seg--draw-width .tp3d-annot-seg__btn[aria-pressed="true"]')?.dataset.drawWidth || '',
+    arrowShown: Boolean(document.querySelector('.tp3d-annot-panel__arrow')) && !document.querySelector('.tp3d-annot-panel__arrow').hidden,
+    arrowColor: document.querySelector('.tp3d-annot-panel__arrow-colors .tp3d-annot-swatch[aria-pressed="true"]')?.dataset.color || '',
+    arrowWidth: document.querySelector('.tp3d-annot-seg--width .tp3d-annot-seg__btn[aria-pressed="true"]')?.dataset.width || '',
+  }));
+  assert.deepEqual(await lookState(), { drawTitle: 'New drawings look', drawShown: true, drawColor: 'ink', drawWidth: 'regular', arrowShown: false, arrowColor: '', arrowWidth: '' });
+  await page.click('.tp3d-annot-panel__draw-colors .tp3d-annot-swatch[data-color="green"]');
+  await page.click('.tp3d-annot-seg--draw-width .tp3d-annot-seg__btn[data-draw-width="thin"]');
+  assert.deepEqual([(await lookState()).drawColor, (await lookState()).drawWidth], ['green', 'thin']);
+  assert.equal(await count(page), 0, 'a default is not a record');
+
+  // The arrow defaults are their own and untouched.
+  await armArrow(page);
+  assert.deepEqual(await lookState(), { drawTitle: (await lookState()).drawTitle, drawShown: false, drawColor: (await lookState()).drawColor, drawWidth: (await lookState()).drawWidth, arrowShown: true, arrowColor: 'ink', arrowWidth: 'regular' });
+  await page.click('.tp3d-annot-panel__arrow-colors .tp3d-annot-swatch[data-color="red"]');
+  await armDraw(page);
+  const back = await lookState();
+  assert.deepEqual([back.drawShown, back.drawColor, back.drawWidth, back.arrowShown], [true, 'green', 'thin', false], 'the Drawing default survived and the arrow color did not leak into it');
+
+  // The next stroke takes the Drawing default.
+  await dragSmooth(page, TOP_STROKE_A);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  const [saved] = await draws(page);
+  assert.deepEqual([saved.color, saved.width], ['green', 'thin']);
+  await watchDrawPaint(page);
+  assert.equal((await groupFor(page, saved.id)).color, 'green');
+  assert.deepEqual(errors, []);
+});
+
+test('freehand and the ruler: a saved measurement and a stroke are on screen together, only the tool that owns the scene gets input, and an operation or a preview pauses drawing', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const stroke = await seedDraw(page);
+  await page.evaluate(() => {
+    const { M, PackLibrary } = window.probe;
+    const at = (x, z) => M.buildSpaceAnchor({ surface: 'ground', point: { x, y: 0, z } });
+    if (!PackLibrary.addMeasurement('fixture-pack', { start: at(100, 70), end: at(260, 80) }).ok) throw new Error('measurement seed failed');
+  });
+  await watchWrites(page);
+  const lines = () => page.evaluate(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].filter(g => g.style.display !== 'none').length);
+  await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-measure-svg__segment')].some(g => g.style.display !== 'none') && document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 1);
+  const saved = () => page.evaluate(() => JSON.stringify([window.probe.annotations(), window.probe.PackLibrary.getMeasurements('fixture-pack'), window.probe.casesJson()]));
+  const before = await saved();
+
+  // Draw armed: the stroke and the saved line are both drawn.
+  await armDraw(page);
+  assert.equal(await lines(), 1);
+  assert.equal((await drawGroups(page)).length, 1);
+  assert.equal(await rotateEnabled(page), false);
+
+  // The ruler takes the scene: Annotations closes, Draw ends and rotation returns, the stroke stays drawn but cannot take input.
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'false');
+  assert.equal(await rotateEnabled(page), true, 'the ruler gets a normal camera');
+  await frames(page, 4);
+  assert.equal(await lines(), 1);
+  assert.equal((await drawGroups(page)).length, 1, 'the saved stroke stays drawn while the ruler is on');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-layer').inert), true, 'and takes no input');
+  const topPoint = await point(page, 70, 32, -20);
+  await page.mouse.move(topPoint.x, topPoint.y);
+  await page.mouse.down();
+  await page.mouse.move(topPoint.x + 40, topPoint.y + 8, { steps: 5 });
+  await page.mouse.up();
+  assert.equal(await count(page), 1, 'a drag with the ruler on draws nothing');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
+  assert.equal(await saved(), before, 'neither tool wrote anything');
+
+  // Back to Annotations: Draw can be armed again and the ruler's saved line is still there.
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+  await armDraw(page);
+  assert.equal(await lines(), 1);
+  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false);
+
+  // An operation owns the Editor: strokes are not drawn, the Draw tool is unavailable and a drag starts nothing.
+  await page.evaluate(() => { window.__op = window.probe.OperationLifecycle.beginOperation('autopacking'); });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal((await drawGroups(page)).length, 0, 'paused: no stroke is drawn');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-seg__btn[data-tool="draw"]').disabled), true, 'and Draw cannot be armed');
+  assert.equal(await rotateEnabled(page), true);
+  await page.evaluate(() => window.probe.OperationLifecycle.finishOperation(window.__op));
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 1);
+  assert.equal(await saved(), before, 'the operation changed nothing about the strokes');
+
+  // A transient preview pauses them the same way.
+  await armDraw(page);
+  await page.evaluate(() => { window.__tp = window.probe.CaseScene.isTransientPreview; window.probe.CaseScene.isTransientPreview = () => true; });
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal((await drawGroups(page)).length, 0);
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-seg__btn[data-tool="draw"]').disabled), true);
+  await page.evaluate(() => { window.probe.CaseScene.isTransientPreview = window.__tp; });
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === 1);
+  assert.equal(await writes(page), 0, 'no stroke was written by any of this');
+  assert.deepEqual(errors, []);
+});
+
+test('freehand refuses to start on a held pose, on cargo whose ID is shared, and in Show Off; the tool stays armed and nothing is written', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  await watchWrites(page);
+  const top = await screenPoints(page, TOP_STROKE_A);
+  const tryStroke = async () => {
+    await page.mouse.move(top[0].x, top[0].y);
+    await page.mouse.down();
+    const state = await drawState(page);
+    await page.mouse.move(top[1].x, top[1].y, { steps: 4 });
+    await page.mouse.move(top[2].x, top[2].y, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    return state;
+  };
+
+  // A cargo pose that is still being held (a drag or a gizmo not finished): no stroke starts.
+  await page.evaluate(() => { window.__hold = window.probe.InteractionManager.hasProvisionalPose; window.probe.InteractionManager.hasProvisionalPose = () => true; });
+  assert.equal(await tryStroke(), 'armed', 'no stroke started on a held pose');
+  assert.equal(await count(page), 0);
+  await page.evaluate(() => { window.probe.InteractionManager.hasProvisionalPose = window.__hold; });
+
+  // Two cargo items with the same ID: it is not known which one a stroke belongs to, so none is drawn on either.
+  const plan = await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('packLibrary')));
+  await page.evaluate(() => {
+    const { StateStore } = window.probe;
+    StateStore.set({ packLibrary: StateStore.get('packLibrary').map(p => {
+      if (p.id !== 'fixture-pack') return p;
+      const twin = p.cases.find(c => c.id === 'cargo-b');
+      return { ...p, cases: [...p.cases, { ...twin, id: 'cargo-a', transform: { ...twin.transform, position: { ...twin.transform.position, x: 500 } } }] };
+    }) }, { skipHistory: true });
+  });
+  await cameraSettled(page);
+  // The scene keys cargo by ID, so one mesh remains for the shared ID: press on that mesh, wherever it now stands.
+  const shared = await page.evaluate(() => window.probe.cargoPoint('cargo-a'));
+  assert.equal(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), shared), true, 'the shared cargo is on the canvas');
+  await page.mouse.move(shared.x, shared.y);
+  await page.mouse.down();
+  assert.equal(await drawState(page), 'armed', 'no stroke started on cargo that shares its ID');
+  await page.mouse.move(shared.x + 40, shared.y + 6, { steps: 5 });
+  await page.mouse.up();
+  assert.equal(await count(page), 0);
+  assert.match(await page.evaluate(() => window.probe.hint()), /shares its ID/i);
+  await page.evaluate(plan => window.probe.StateStore.set({ packLibrary: JSON.parse(plan) }, { skipHistory: true }), plan);
+  await cameraSettled(page);
+
+  // Show Off: the tool is gone, so a drag orbits and writes nothing.
+  await page.evaluate(() => document.querySelector('.tp3d-annot-seg--show .tp3d-annot-seg__btn:nth-child(3)').click());
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal(await rotateEnabled(page), true);
+  assert.equal(await count(page), 0);
+  assert.equal(await writes(page), 0);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand rendering follows the camera in perspective and orthographic views, clips at the view, dims behind cargo and never writes a non-finite coordinate', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  const finite = page_ => page_.evaluate(() => [...document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line, .tp3d-annot-draw.is-preview .tp3d-annot-draw__line')]
+    .every(el => !/NaN|Infinity/.test(el.getAttribute('d') || '')));
+
+  // Perspective: draw on the cargo, then switch to orthographic and back; the same record is drawn in both.
+  await dragSmooth(page, TOP_STROKE_A);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  const [record] = await draws(page);
+  const perspective = (await groupFor(page, record.id)).d;
+  await page.evaluate(() => window.probe.SceneManager.switchProjection('orthographic'));
+  await cameraSettled(page);
+  await page.waitForFunction(() => window.probe.SceneManager.getCamera().isOrthographicCamera === true);
+  await page.waitForFunction(({ id, was }) => [...document.querySelectorAll('.tp3d-annot-draw')].find(g => g.dataset.annotId === id)?.querySelector('.tp3d-annot-draw__line').getAttribute('d') !== was, { id: record.id, was: perspective });
+  const ortho = await groupFor(page, record.id);
+  assert.match(ortho.d, /^M[-\d.]+ [-\d.]+(L[-\d.]+ [-\d.]+)+$/, 'drawn in the orthographic view');
+  assert.equal(await finite(page), true);
+
+  // A stroke can be drawn in the orthographic view too (the camera does not rotate on the drag, the record is on the surface).
+  const cameraOrtho = await page.evaluate(() => window.probe.camera());
+  await dragSmooth(page, [[56, 32, -12], [84, 32, -20]]);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  assert.equal(await page.evaluate(() => window.probe.camera()), cameraOrtho, 'no orbit while drawing in the orthographic view');
+  const second = (await draws(page)).at(-1);
+  assert.equal(second.face, '+y');
+  assert.equal(second.anchor.instanceId, 'cargo-a');
+  for (let i = 0; i < second.points.length; i += 2) assert.ok(Math.abs(second.points[i]) <= 24.011 && Math.abs(second.points[i + 1]) <= 12.011);
+  assert.equal(await finite(page), true);
+
+  await page.evaluate(() => window.probe.SceneManager.switchProjection('perspective'));
+  await cameraSettled(page);
+  await page.waitForFunction(() => !window.probe.SceneManager.getCamera().isOrthographicCamera);
+  await page.waitForFunction(({ id, was }) => [...document.querySelectorAll('.tp3d-annot-draw')].find(g => g.dataset.annotId === id)?.querySelector('.tp3d-annot-draw__line').getAttribute('d') === was, { id: record.id, was: perspective }).catch(() => {});
+  assert.equal((await drawGroups(page)).length, 2);
+  assert.equal(await finite(page), true);
+
+  // Behind cargo: a floor stroke seen through cargo A is dimmed (occluded) and is solid again when the view is clear.
+  const behind = [[130, 0, -24], [160, 0, -18]];
+  let aimed = null;
+  for (const target of [[145, 0, -21], [260, 0, -21], [20, 0, -21], [145, 0, 30]]) {
+    await aimCamera(page, target, [-1, 260, 1]);
+    const covered = await page.evaluate(list => list.some(([x, y, z]) => {
+      const at = window.probe.screenOf(x, y, z);
+      return document.elementFromPoint(at.x, at.y) !== document.querySelector('#viewport canvas');
+    }), behind);
+    if (!covered) { aimed = target; break; }
+  }
+  assert.ok(aimed, 'a view from above where the stroke is on the canvas');
+  await dragSmooth(page, behind);
+  await page.waitForFunction(() => window.probe.annotations().length === 3);
+  const floor = (await draws(page)).at(-1);
+  assert.equal(floor.anchor.kind, 'floor');
+  await page.waitForFunction(id => { const g = [...document.querySelectorAll('.tp3d-annot-draw')].find(x => x.dataset.annotId === id); return g && g.querySelector('.tp3d-annot-draw__line').getAttribute('d') && !g.classList.contains('is-occluded'); }, floor.id);
+  await aimCamera(page, [145, 0, -21], [-195, 12, 1]);
+  await page.waitForFunction(id => [...document.querySelectorAll('.tp3d-annot-draw')].find(x => x.dataset.annotId === id)?.classList.contains('is-occluded'), floor.id, { timeout: 20000 });
+  assert.equal((await groupFor(page, floor.id)).occluded, true, 'dimmed behind cargo');
+  await aimCamera(page, aimed, [-1, 260, 1]);
+  await page.waitForFunction(id => !([...document.querySelectorAll('.tp3d-annot-draw')].find(x => x.dataset.annotId === id)?.classList.contains('is-occluded')), floor.id, { timeout: 20000 });
+
+  // Zoomed in until the stroke runs off the view: the path is clipped to the view, stays finite and is not dropped.
+  await aimCamera(page, [145, 0, -21], [0, 6, 6]);
+  await page.waitForFunction(id => [...document.querySelectorAll('.tp3d-annot-draw')].find(x => x.dataset.annotId === id)?.querySelector('.tp3d-annot-draw__line').getAttribute('d'), floor.id);
+  assert.equal(await finite(page), true);
+  // Looking away entirely: nothing is drawn for it and nothing is non-finite.
+  await aimCamera(page, [600, 0, 40], [0, 6, 6]);
+  await page.waitForFunction(id => !([...document.querySelectorAll('.tp3d-annot-draw')].find(x => x.dataset.annotId === id)?.querySelector('.tp3d-annot-draw__line').getAttribute('d')), floor.id);
+  assert.equal(await finite(page), true);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand every visible box face of cargo takes a stroke, and the face saved is the one that was hit', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openDrawing(browser);
+  await cameraSettled(page);
+  // Cargo A is 48 long (x), 24 wide (z), 32 high (y) around (70, 16, -20). Each face is looked at from inside the truck.
+  const faces = [
+    ['+x', [94, 16, -20], [110, 12, 0], [[94, 12, -26], [94, 20, -14]]],
+    ['-x', [46, 16, -20], [-34, 14, 0], [[46, 12, -26], [46, 20, -14]]],
+    ['+z', [70, 16, -8], [0, 14, 100], [[58, 12, -8], [82, 20, -8]]],
+    ['-z', [70, 16, -32], [0, 14, -14], [[58, 12, -32], [82, 20, -32]]],
+  ];
+  const seen = [];
+  for (const [face, target, offset, stroke] of faces) {
+    // Slide the view sideways (camera and target together) until the stroke is on the canvas, not under the panel.
+    const across = face.endsWith('x') ? 2 : 0;
+    let clear = false;
+    const tried = [];
+    for (const shift of [0, -10, 10, -20, 20, -30, 30, -40, 40]) {
+      const shifted = [...target];
+      shifted[across] += shift;
+      await aimCamera(page, shifted, offset, { settle: false });
+      const report = await page.evaluate(list => list.map(([x, y, z]) => {
+        const at = window.probe.screenOf(x, y, z);
+        const el = document.elementFromPoint(at.x, at.y);
+        return el === document.querySelector('#viewport canvas') ? 'ok' : `${Math.round(at.x)},${Math.round(at.y)} ${el ? el.className : 'nothing'}`;
+      }), stroke);
+      tried.push(`${shift}: ${report.join(' / ')}`);
+      clear = report.every(entry => entry === 'ok');
+      if (clear) break;
+    }
+    assert.equal(clear, true, `${face}: a view where the stroke is on the canvas (${tried.join(' | ')})`);
+    await cameraSettled(page);
+    const before = await count(page);
+    await dragSmooth(page, stroke);
+    await page.waitForFunction(n => window.probe.annotations().length === n + 1, before);
+    const saved = (await draws(page)).at(-1);
+    assert.equal(saved.face, face, `a stroke on the ${face} face is saved on ${face}`);
+    assert.equal(saved.anchor.kind, 'cargo');
+    assert.equal(saved.anchor.instanceId, 'cargo-a');
+    const half = face.endsWith('x') ? [12, 16] : [24, 16];
+    for (let i = 0; i < saved.points.length; i += 2) {
+      assert.ok(Math.abs(saved.points[i]) <= half[0] + 0.011 && Math.abs(saved.points[i + 1]) <= half[1] + 0.011, `${face}: vertex ${i / 2 + 1} is on the face`);
+    }
+    seen.push(saved.face);
+    assert.equal(await drawState(page), 'armed');
+  }
+  assert.deepEqual(seen, ['+x', '-x', '+z', '-z']);
+  assert.deepEqual(errors, []);
+});
+
+test('freehand the panel is operable from the keyboard: arm Draw, switch Draw and Move View, select a stroke, change its look and delete it', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  const stroke = await seedDraw(page);
+  await page.waitForSelector(rowFor(stroke.id));
+
+  // The tool button, the mode buttons, the row, the look controls and Delete are real focusable buttons with pressed state.
+  await page.focus('.tp3d-annot-seg__btn[data-tool="draw"]');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+  assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="draw"]', 'aria-pressed'), 'true');
+  assert.equal(await rotateEnabled(page), false);
+  await page.focus('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="move"]');
+  await page.keyboard.press('Space');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'move');
+  assert.equal(await page.getAttribute('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="move"]', 'aria-pressed'), 'true');
+  assert.equal(await rotateEnabled(page), true);
+  await page.focus('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="draw"]');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+
+  // Select the stroke from its row with the keyboard; its look can be changed with the keyboard too.
+  await page.focus(`${rowFor(stroke.id)} .tp3d-annot-row__select`);
+  await page.keyboard.press('Enter');
+  await page.waitForSelector(`${rowFor(stroke.id)}.is-selected`);
+  assert.equal(await page.getAttribute(`${rowFor(stroke.id)} .tp3d-annot-row__select`, 'title'), 'Select to edit its color and width');
+  await page.focus('.tp3d-annot-seg--draw-width .tp3d-annot-seg__btn[data-draw-width="thin"]');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).width === 'thin', stroke.id);
+  await page.focus('.tp3d-annot-panel__draw-colors .tp3d-annot-swatch[data-color="blue"]');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).color === 'blue', stroke.id);
+  assert.equal(await page.getAttribute('.tp3d-annot-panel__draw-colors .tp3d-annot-swatch[data-color="blue"]', 'aria-pressed'), 'true');
+  const casesBefore = await page.evaluate(() => window.probe.casesJson());
+
+  // Hide, Show and Delete from the row buttons; Undo from its button; none of it reaches cargo.
+  await page.focus(`${rowFor(stroke.id)} .tp3d-annot-row__eye`);
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).hidden === true, stroke.id);
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).hidden === false, stroke.id);
+  await page.focus(`${rowFor(stroke.id)} .tp3d-annot-row__delete`);
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.probe.annotations().length === 0);
+  await page.focus('.tp3d-annot-panel__undo-btn');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore, 'cargo is untouched by any of it');
+  assert.deepEqual(errors, []);
+});
+
+test('freehand in a compact viewport: with Draw armed the panel still reaches Draw / Move View, every saved stroke row and the look controls', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 500, height: 740 });
+  await cameraSettled(page);
+  const strokes = [await seedDraw(page), await seedDraw(page, { color: 'red' }), await seedDraw(page, { ground: [100, 70], rest: [140, 78, 180, 66] })];
+  await armDraw(page);
+  const panelBox = () => page.evaluate(() => { const r = document.getElementById('editor-annotation-panel').getBoundingClientRect(); return { top: r.top, bottom: r.bottom, width: r.width }; });
+  const box = await panelBox();
+  assert.ok(box.width <= 500 && box.top >= 0 && box.bottom <= 740, 'the panel is inside the viewport');
+  // Each control takes an ordinary click (Playwright refuses a covered target), in the order a person would use them.
+  await page.click('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="move"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'move');
+  await page.click('.tp3d-annot-seg--drawmode .tp3d-annot-seg__btn[data-draw-view="draw"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'armed');
+  for (const stroke of strokes) {
+    await page.click(`${rowFor(stroke.id)} .tp3d-annot-row__select`);
+    await page.waitForSelector(`${rowFor(stroke.id)}.is-selected`);
+    // The selected stroke's look controls are on screen and clickable.
+    await page.click('.tp3d-annot-seg--draw-width .tp3d-annot-seg__btn[data-draw-width="thin"]');
+    await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).width === 'thin', stroke.id);
+  }
+  assert.deepEqual(errors, []);
 });

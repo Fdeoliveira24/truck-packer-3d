@@ -12,6 +12,11 @@
  *   while the Editor holds a scene-only pose, and cargo whose instance ID another item shares is
  *   refused), while `liveAnchorWorld` follows the pose the scene currently displays so overlays never
  *   float away from cargo that is being dragged, nudged or animated. Nothing here writes anything.
+ *
+ *   Freehand strokes add two things on top of the same ray glue: `pickDraw` (the pick plus the physical face a
+ *   cargo hit landed on, read from the hit triangle's own normal, and a refusal for everything a stroke cannot
+ *   sit on) and `sampleDrawSurface` (where the pointer's ray meets the ONE plane a stroke began on, whether that
+ *   plane is still what the pointer sees there, and whether the point is still on a patch the stroke may use).
  * @module editor/surface-picker
  */
 
@@ -20,7 +25,15 @@ import {
   buildFloorAnchor,
   buildSpaceAnchor,
   cargoAnchorLocal,
+  cargoFaceFrame,
+  cargoFacePatch,
+  drawAnchorUV,
+  drawFrameKey,
+  drawLift,
+  drawSurfacePatches,
   instanceIdentityKey,
+  isCargoFaceSupported,
+  patchContains,
   resolveCargoPose,
 } from '../core/measurements.js';
 
@@ -30,6 +43,11 @@ const AXIS_NAMES = ['x', 'y', 'z'];
 // A ray hit within this distance of a shell face's edge still counts as on it (half the anchor tolerance,
 // so the point built from it always validates).
 const SHELL_FACE_SLACK_INCHES = 0.005;
+// A triangle's normal must point along one axis this closely for its hit to name a face. Box faces and cylinder
+// caps are exactly axis-aligned; a cylinder's side facets and any tilted surface are not, so they name no face.
+const FACE_NORMAL_MIN_ALIGNMENT = 0.999;
+// Two floor elevations this close are the same floor (the shared floor tolerance of the anchor model).
+const SAME_FLOOR_INCHES = 0.01;
 
 /**
  * @param {{
@@ -42,6 +60,10 @@ const SHELL_FACE_SLACK_INCHES = 0.005;
 export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, PackLibrary, getPack, hasProvisionalPose = () => false }) {
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
+  const sampleOrigin = new THREE.Vector3();
+  const sampleDirection = new THREE.Vector3();
+  const sampleHit = new THREE.Vector3();
+  const inverseMatrix = new THREE.Matrix4();
   // identity key -> the instance's own ID, for each unambiguous cargo item, per cargo list (cached by identity).
   const sceneIdCache = new WeakMap();
 
@@ -120,7 +142,26 @@ export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, Pack
     const anchor = buildCargoAnchor({ instanceId, local, caseData }) ||
       buildSpaceAnchor({ surface: 'free', point: worldVectorToInches(hit.point) });
     if (!anchor) return null;
-    return { kind: anchor.kind, anchor, world: hit.point.clone(), distance: hit.distance, fromCargo: true };
+    const face = anchor.kind === 'cargo' ? cargoFaceFromHit(hit, /** @type {any} */ (anchor).signature) : null;
+    return { kind: anchor.kind, anchor, world: hit.point.clone(), distance: hit.distance, fromCargo: true, ...(face ? { face } : {}) };
+  }
+
+  /**
+   * The physical cargo face a ray hit landed on, read from the hit triangle's own normal in the cargo's frame
+   * (never inferred from where the anchor sits, which is ambiguous at an edge). Null when the normal is not
+   * along one axis (a cylinder's curved side, a tilted surface) or the face is not one a stroke may use
+   * (every cylinder or drum face but the two flat end caps).
+   */
+  function cargoFaceFromHit(hit, signature) {
+    const normal = hit.face && hit.face.normal;
+    if (!normal) return null;
+    let axis = 'x';
+    if (Math.abs(normal.y) > Math.abs(normal[axis])) axis = 'y';
+    if (Math.abs(normal.z) > Math.abs(normal[axis])) axis = 'z';
+    const value = normal[axis];
+    if (!Number.isFinite(value) || Math.abs(value) < FACE_NORMAL_MIN_ALIGNMENT) return null;
+    const face = `${value > 0 ? '+' : '-'}${axis}`;
+    return isCargoFaceSupported(face, signature) ? face : null;
   }
 
   // Ray / axis-aligned box entry distance (slab method) in world units, or null.
@@ -248,6 +289,136 @@ export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, Pack
   }
 
   // ==========================================================================
+  // SECTION: FREEHAND SURFACES (where a stroke began, and every later sample on that one plane)
+  // ==========================================================================
+  /**
+   * The pick under a screen point, if a stroke can start there: any cargo face the hit names (a box face or a
+   * cylinder end cap), a floor, a truck wall or the ceiling, or the ground. `outcome.blocked` is the pick's own
+   * ('provisional', 'ambiguous') or 'unsupported' for a surface a stroke can never sit on (a cylinder's
+   * curved side, open space).
+   */
+  function pickDraw(clientX, clientY, outcome = null) {
+    const picked = pick(clientX, clientY, outcome);
+    if (!picked) return null;
+    const unsupported = picked.kind === 'cargo' ? !picked.face : picked.kind === 'space' && picked.anchor.surface === 'free';
+    if (unsupported) {
+      if (outcome) outcome.blocked = 'unsupported';
+      return null;
+    }
+    return picked;
+  }
+
+  /**
+   * The surface a stroke is drawn on, from the pick that starts it: its frame, the plane every vertex lies in,
+   * and the convex patches that hold the first vertex. A cargo face has the one patch it was picked on; a floor,
+   * wall, ceiling or the ground has every patch the CURRENT layout offers that shares the anchor's plane
+   * (Gate A's `drawSurfacePatches`), and the stroke keeps only those that also hold each later vertex, so it can
+   * never be carried onto a second zone or wall piece. Null when the pick cannot carry a stroke.
+   */
+  function beginDrawSurface(picked, pack) {
+    if (!picked || !picked.anchor || !pack) return null;
+    const { anchor } = picked;
+    const face = anchor.kind === 'cargo' ? picked.face : undefined;
+    const key = drawFrameKey(anchor, face);
+    const frame = key ? cargoFaceFrame(key) : null;
+    const first = drawAnchorUV(anchor, face);
+    if (!frame || !first) return null;
+    const point = anchor.kind === 'cargo' ? anchor.local : anchor.position;
+    const patches = anchor.kind === 'cargo'
+      ? [cargoFacePatch(face, anchor.signature)]
+      : drawSurfacePatches(anchor, {
+        floors: PackLibrary.getMeasurementFloors(pack), truck: pack.truck, zones: PackLibrary.getMeasurementZones(pack),
+      });
+    const holding = patches.filter(patch => patch && patchContains(patch, first.u, first.v));
+    if (!holding.length || !point || !Number.isFinite(point[frame.normal])) return null;
+    return {
+      anchor, face, frame, first, patches: holding,
+      plane: point[frame.normal], // inches, along the surface normal, in the anchor's frame (cargo-local or world)
+      identity: anchor.kind === 'cargo' ? instanceIdentityKey(anchor.instanceId) : null,
+    };
+  }
+
+  /** The world position of a surface-local (u, v) on a stroke's surface, as the scene displays it now (cargo follows its group). */
+  function drawSurfaceWorld(surface, u, v, target) {
+    const lifted = drawLift(surface.anchor, surface.face, u, v);
+    if (!lifted) return null;
+    inchesToWorldVector(lifted, target);
+    if (surface.anchor.kind !== 'cargo') return target;
+    const group = cargoGroupFor(surface.anchor);
+    if (!group) return null;
+    group.updateMatrixWorld(true);
+    return group.localToWorld(target);
+  }
+
+  /** Whether the surface at this screen point is the surface a stroke is on: the same cargo face, floor, wall or ground. */
+  function seesSurface(surface, seen) {
+    if (!seen) return false;
+    const { anchor } = surface;
+    if (anchor.kind === 'cargo') {
+      return seen.kind === 'cargo' && seen.face === surface.face && instanceIdentityKey(seen.anchor.instanceId) === surface.identity;
+    }
+    if (anchor.kind === 'floor') {
+      return seen.kind === 'floor' && seen.anchor.surface === anchor.surface &&
+        Math.abs(seen.anchor.position.y - anchor.position.y) <= SAME_FLOOR_INCHES;
+    }
+    return seen.kind === 'space' && seen.anchor.surface === anchor.surface;
+  }
+
+  /**
+   * Where the pointer's ray meets a stroke's own plane, and whether the stroke may continue there. `candidates`
+   * are the patches still holding every vertex so far. `status`:
+   *  - 'ok': on the plane, on a patch that holds it, and that plane is what the pointer sees (u, v, world);
+   *  - 'edge': on the plane but off every candidate patch (the stroke left its face or zone; u, v given);
+   *  - 'blocked': inside a patch, but something else is in front of it or is what is shown there;
+   *  - 'view': outside the canvas, or the ray does not reach the plane in front of the camera;
+   *  - 'provisional': the Editor now holds a scene-only pose (the caller cancels the stroke).
+   * @returns {{ status: string, u?: number, v?: number, world?: any }}
+   */
+  function sampleDrawSurface(surface, candidates, clientX, clientY) {
+    const camera = SceneManager.getCamera();
+    const canvas = getCanvas();
+    const pack = getPack();
+    if (!camera || !canvas || !pack || !surface) return { status: 'view' };
+    if (hasProvisionalPose()) return { status: 'provisional' };
+    const rect = canvas.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0 || clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
+      return { status: 'view' };
+    }
+    ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+    raycaster.setFromCamera(ndc, camera);
+    const { frame, anchor } = surface;
+    const scale = toWorldScale();
+    const group = anchor.kind === 'cargo' ? cargoGroupFor(anchor) : null;
+    if (anchor.kind === 'cargo' && !group) return { status: 'blocked' };
+    sampleOrigin.copy(raycaster.ray.origin);
+    sampleDirection.copy(raycaster.ray.direction);
+    if (group) {
+      group.updateMatrixWorld(true);
+      inverseMatrix.copy(group.matrixWorld).invert();
+      sampleOrigin.applyMatrix4(inverseMatrix);
+      sampleDirection.transformDirection(inverseMatrix);
+    }
+    const along = sampleDirection[frame.normal];
+    if (Math.abs(along) < 1e-9) return { status: 'view' };
+    const t = (surface.plane * scale - sampleOrigin[frame.normal]) / along;
+    if (!(t > 0) || !Number.isFinite(t)) return { status: 'view' };
+    sampleHit.copy(sampleDirection).multiplyScalar(t).add(sampleOrigin);
+    const u = sampleHit[frame.u] / scale;
+    const v = sampleHit[frame.v] / scale;
+    if (!Number.isFinite(u) || !Number.isFinite(v)) return { status: 'view' };
+    if (!candidates.some(patch => patchContains(patch, u, v))) return { status: 'edge', u, v };
+    // The same nearest-surface rule that placed the stroke's first vertex: if anything else is what the pointer
+    // sees here (cargo in front, another surface), the stroke stops instead of drawing through it.
+    const outcome = {};
+    const seen = pick(clientX, clientY, outcome);
+    if (outcome.blocked === 'provisional') return { status: 'provisional' };
+    if (!seesSurface(surface, seen)) return { status: 'blocked', u, v };
+    const world = new THREE.Vector3();
+    if (!drawSurfaceWorld(surface, u, v, world)) return { status: 'blocked', u, v };
+    return { status: 'ok', u, v, world };
+  }
+
+  // ==========================================================================
   // SECTION: LIVE ANCHORS (follow the scene's displayed pose, never persisted)
   // ==========================================================================
   /**
@@ -281,6 +452,10 @@ export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, Pack
 
   return {
     pick,
+    pickDraw,
+    beginDrawSurface,
+    sampleDrawSurface,
+    drawSurfaceWorld,
     liveAnchorWorld,
     cargoGroupFor,
     lookupInstance,

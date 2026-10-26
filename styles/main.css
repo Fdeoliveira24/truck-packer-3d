@@ -5025,6 +5025,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
 /* The user's colors, one place: pins, cards, arrows, list badges and swatches read --annot-color / --annot-fg. */
 .tp3d-annot-arrow[data-color='ink'],
+.tp3d-annot-draw[data-color='ink'],
 .tp3d-annot-pin[data-color='ink'],
 .tp3d-annot-card[data-color='ink'],
 .tp3d-annot-row__badge[data-color='ink'],
@@ -5034,6 +5035,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='blue'],
+.tp3d-annot-draw[data-color='blue'],
 .tp3d-annot-pin[data-color='blue'],
 .tp3d-annot-card[data-color='blue'],
 .tp3d-annot-row__badge[data-color='blue'],
@@ -5043,6 +5045,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='green'],
+.tp3d-annot-draw[data-color='green'],
 .tp3d-annot-pin[data-color='green'],
 .tp3d-annot-card[data-color='green'],
 .tp3d-annot-row__badge[data-color='green'],
@@ -5052,6 +5055,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='red'],
+.tp3d-annot-draw[data-color='red'],
 .tp3d-annot-pin[data-color='red'],
 .tp3d-annot-card[data-color='red'],
 .tp3d-annot-row__badge[data-color='red'],
@@ -5061,6 +5065,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='violet'],
+.tp3d-annot-draw[data-color='violet'],
 .tp3d-annot-pin[data-color='violet'],
 .tp3d-annot-card[data-color='violet'],
 .tp3d-annot-row__badge[data-color='violet'],
@@ -5123,6 +5128,48 @@ body.tp3d-shared-modal-lock #app .nav {
   stroke-width: 1.75px;
   stroke-dasharray: 4 2.5;
   opacity: 0.85;
+}
+
+/* Annotations V1B.2 freehand drawings: one SVG path per stroke (a neutral halo under the colored line), in the same layer and under
+   the arrows. The width is a screen-pixel stroke (set from the width name), so it never scales with zoom. The user's color is
+   --annot-color, as for markers and arrows. */
+.tp3d-annot-svg .tp3d-annot-draw__under {
+  fill: none;
+  stroke: var(--bg-elevated);
+  stroke-opacity: 0.72;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw__line {
+  fill: none;
+  stroke: var(--annot-color, var(--annot-ink));
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Selected: the list row marks the selection too; the line gains a brand-orange edge in place of its neutral halo, wider than a
+   selected arrow's hairline because a freehand line is thin and wanders over every surface. A hidden-behind-cargo stroke keeps
+   its neutral halo so it never looks unobstructed. */
+.tp3d-annot-svg .tp3d-annot-draw.is-selected:not(.is-occluded) .tp3d-annot-draw__under {
+  stroke: var(--accent-primary);
+  stroke-opacity: 0.95;
+}
+
+/* Hidden by cargo or the truck from where the camera is: dashed and dimmed, selected or not, the same convention as an arrow. */
+.tp3d-annot-svg .tp3d-annot-draw.is-occluded .tp3d-annot-draw__line,
+.tp3d-annot-svg .tp3d-annot-draw.is-occluded .tp3d-annot-draw__under {
+  stroke-dasharray: 7 5;
+  opacity: 0.7;
+}
+
+/* While drawing: the stroke so far, slightly lighter; frozen where it stopped until the button is released. */
+.tp3d-annot-svg .tp3d-annot-draw.is-preview .tp3d-annot-draw__line {
+  opacity: 0.9;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-preview.is-frozen .tp3d-annot-draw__line {
+  opacity: 0.65;
 }
 
 /* While placing: the arrow the next click would make, and a dot where the tail is. */
@@ -6133,6 +6180,11 @@ body.tp3d-shared-modal-lock #app .nav {
   padding: 0 14px 10px;
 }
 
+/* The Draw / Move View row only exists while the Draw tool is armed; its display rule would otherwise beat `hidden`. */
+.tp3d-annot-panel__drawmode[hidden] {
+  display: none;
+}
+
 .tp3d-annot-panel__view-label {
   width: 52px;
   color: var(--text-secondary);
@@ -6325,13 +6377,15 @@ body.tp3d-shared-modal-lock #app .nav {
 
 /* The look of arrows (width and color) for the selected arrow, or for the next one: below the list, so showing it
    never moves a row under the pointer. */
-.tp3d-annot-panel__arrow {
+.tp3d-annot-panel__arrow,
+.tp3d-annot-panel__draw {
   flex: none;
   padding: 10px 0 12px;
   border-top: 1px solid var(--border-subtle);
 }
 
-.tp3d-annot-panel__arrow[hidden] {
+.tp3d-annot-panel__arrow[hidden],
+.tp3d-annot-panel__draw[hidden] {
   display: none;
 }
 
@@ -6353,7 +6407,8 @@ body.tp3d-shared-modal-lock #app .nav {
   overflow: visible;
 }
 
-.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__arrow {
+.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__arrow,
+.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__draw {
   position: sticky;
   bottom: 0;
   background: var(--bg-elevated);
@@ -6365,22 +6420,26 @@ body.tp3d-shared-modal-lock #app .nav {
   scroll-padding-bottom: 0;
 }
 
-.tp3d-annot-panel__body.has-arrow-options.is-flow .tp3d-annot-panel__arrow {
+.tp3d-annot-panel__body.has-arrow-options.is-flow .tp3d-annot-panel__arrow,
+.tp3d-annot-panel__body.has-arrow-options.is-flow .tp3d-annot-panel__draw {
   position: static;
 }
 
-.tp3d-annot-panel__arrow-title {
+.tp3d-annot-panel__arrow-title,
+.tp3d-annot-panel__draw-title {
   padding: 0 14px 8px;
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: var(--font-semibold);
 }
 
-.tp3d-annot-panel__arrow-colors {
+.tp3d-annot-panel__arrow-colors,
+.tp3d-annot-panel__draw-colors {
   padding: 0 14px;
 }
 
-.tp3d-annot-panel__arrow-colors .tp3d-annot-editor__label {
+.tp3d-annot-panel__arrow-colors .tp3d-annot-editor__label,
+.tp3d-annot-panel__draw-colors .tp3d-annot-editor__label {
   width: 52px;
   margin-right: 2px;
   font-size: inherit;

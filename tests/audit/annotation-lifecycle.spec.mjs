@@ -1534,3 +1534,87 @@ test('line style: the writers store Dashed and Dotted only, an unchanged choice 
   assert.equal(JSON.stringify(PackLibrary.getAnnotations('L')[0]), JSON.stringify(legacy), 'a legacy arrow is not rewritten by loading it');
   assert.deepEqual(statuses('L'), ['valid']);
 });
+
+test('drawing move: moveDraw is one annotation-only write, a refused move writes nothing, and the new position survives every export and restore', () => {
+  seed();
+  const crate = placeCrate();
+  const top = PackLibrary.addDraw('A', crateGesture(crate.id, { color: 'blue', width: 'bold', style: 'dashed' })).annotation;
+  const floor = PackLibrary.addDraw('A', floorGesture()).annotation;
+  const callout1 = PackLibrary.addCallout('A', note('Beside', ground(3, 3))).annotation;
+  StateStore.resetHistory();
+  setLastEdited('A', 123);
+  const cargoBefore = JSON.stringify(stored('A').cases);
+  const find = id => PackLibrary.getAnnotations('A').find(record => record.id === id);
+  const flat = record => [M.drawAnchorUV(record.anchor, record.face), record.points];
+  const notifications = [];
+  const unsubscribe = StateStore.subscribe((_changes, _state, notification) => { if (notification) notifications.push(notification.type); });
+  try {
+    const before = JSON.stringify(PackLibrary.getAnnotations('A'));
+    const moved = PackLibrary.moveDraw('A', top.id, 3.5, 2);
+    assert.equal(moved.ok, true);
+    assert.deepEqual(notifications, ['pack-annotations'], 'exactly one annotation-only write');
+    const after = find(top.id);
+    assert.deepEqual(after.points, top.points.map((value, i) => Math.round((value + (i % 2 ? 2 : 3.5)) * 100) / 100), 'every vertex moved by the same offset');
+    assert.ok(Math.abs(M.drawAnchorUV(after.anchor, after.face).u - M.drawAnchorUV(top.anchor, top.face).u - 3.5) < 1e-9, 'the anchor moved with it');
+    assert.equal(after.anchor.local.y, top.anchor.local.y, 'and stayed on its face plane');
+    assert.deepEqual([after.id, after.anchor.instanceId, after.face, after.color, after.width, after.style, after.hidden, after.createdAt],
+      [top.id, top.anchor.instanceId, top.face, top.color, top.width, top.style, top.hidden, top.createdAt], 'identity, surface and presentation are preserved');
+    assert.equal(JSON.stringify(stored('A').cases), cargoBefore, 'cargo is never touched');
+    assert.equal(JSON.stringify(PackLibrary.getAnnotations('A').filter(r => r.id !== top.id)), JSON.stringify(JSON.parse(before).filter(r => r.id !== top.id)), 'no other annotation changed');
+    assert.ok(stored('A').lastEdited > 123, 'a real move updates lastEdited');
+    assert.equal(StateStore.undo(), false, 'and adds no cargo Undo step');
+    assert.deepEqual(statuses('A'), ['valid', 'valid', 'valid'], 'the moved stroke still resolves');
+
+    // The same position again, or an offset below the grid, is not an edit.
+    const editedAt = stored('A').lastEdited;
+    notifications.length = 0;
+    assert.equal(PackLibrary.moveDraw('A', top.id, 0, 0).unchanged, true);
+    assert.equal(PackLibrary.moveDraw('A', floor.id, 0.004, -0.004).unchanged, true);
+    assert.deepEqual(notifications, [], 'no write, no notification');
+    assert.equal(stored('A').lastEdited, editedAt, 'lastEdited is not touched');
+
+    // A refused move changes nothing, and the dry run gives the same verdict without writing.
+    const steady = JSON.stringify(PackLibrary.getAnnotations('A'));
+    const refusals = [
+      ['invalid', 'A', top.id, 40, 0], // past the end of the crate top
+      ['invalid', 'A', top.id, 0, -30],
+      ['unresolved', 'A', floor.id, 0, 80], // through the truck wall
+      ['unresolved', 'A', floor.id, -30, 0], // behind the truck
+      ['invalid', 'A', top.id, NaN, 0],
+      ['not-found', 'A', callout1.id, 1, 1],
+      ['not-found', 'A', 'nope', 1, 1],
+      ['pack-not-found', 'missing', top.id, 1, 1],
+    ];
+    for (const [reason, packId, id, du, dv] of refusals) {
+      assert.equal(PackLibrary.moveDraw(packId, id, du, dv).reason, reason, `moveDraw ${id} ${du},${dv}`);
+      assert.equal(PackLibrary.checkDrawMove(packId, id, du, dv).reason, reason, `checkDrawMove ${id} ${du},${dv}`);
+    }
+    assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), steady, 'nothing was written');
+    assert.deepEqual(notifications, []);
+    assert.equal(stored('A').lastEdited, editedAt);
+    const dry = PackLibrary.checkDrawMove('A', floor.id, 5, 5);
+    assert.deepEqual([dry.ok, dry.dryRun, dry.annotation.points[0]], [true, true, floor.points[0] + 5]);
+    assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), steady, 'a passing dry run writes nothing either');
+    assert.deepEqual(notifications, []);
+
+    // A stroke whose surface no longer resolves cannot be moved; it can still be restyled or deleted.
+    StateStore.set({ caseLibrary: [{ ...CASE, dimensions: { ...CASE.dimensions, height: 40 } }] }, { skipHistory: true });
+    assert.deepEqual(statuses('A'), ['needs-review:case-changed', 'valid', 'valid']);
+    assert.equal(PackLibrary.moveDraw('A', top.id, 1, 1).reason, 'unresolved');
+    assert.equal(PackLibrary.moveDraw('A', floor.id, 1, 1).ok, true, 'a world stroke does not depend on the crate');
+    StateStore.set({ caseLibrary: [CASE] }, { skipHistory: true });
+    assert.equal(PackLibrary.moveDraw('A', floor.id, -1, -1).ok, true);
+  } finally {
+    unsubscribe();
+  }
+
+  // The saved position is what every export and restore path carries.
+  const plan = stored('A');
+  const expected = A.normalizeAnnotations(plan.annotations);
+  assert.deepEqual(flat(expected.find(r => r.id === top.id)), flat(find(top.id)));
+  for (const project of [projectPortablePack, projectPortableWorkspacePack]) assert.deepEqual(project(plan).annotations, expected, `${project.name} carries the moved stroke`);
+  const workspaceJson = ImportExport.buildWorkspaceExportJSON('Probe', 'ws-1');
+  const restore = ImportExport.planWorkspaceRestore(ImportExport.parseWorkspaceImportJSON(workspaceJson), { currentState: StateStore.snapshot() });
+  assert.deepEqual(restore.packLibrary.find(pack => pack.id === 'A').annotations, expected, 'a restore brings the moved stroke back where it was put');
+  assert.doesNotThrow(() => ImportExport.assertRestorableWorkspaceBackup(workspaceJson));
+});

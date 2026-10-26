@@ -5195,6 +5195,53 @@ body.tp3d-shared-modal-lock #app .nav {
   opacity: 0.65;
 }
 
+/* Direct selection and movement: each shown drawing carries one transparent hit path along its own line, wide enough to grab and
+   never drawn. The layer and the SVG stay click-through; only this path takes input, and only while the layer says nothing else
+   owns the pointer (no armed tool, gesture, Present or Measurement - see drawHitWanted). */
+.tp3d-annot-svg .tp3d-annot-draw__hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.tp3d-annot-layer.is-draw-hit:not(.is-view-only) .tp3d-annot-svg .tp3d-annot-draw__hit {
+  pointer-events: stroke;
+  cursor: grab;
+  touch-action: none;
+}
+
+.tp3d-annot-layer.is-draw-moving .tp3d-annot-svg .tp3d-annot-draw__hit {
+  cursor: grabbing;
+}
+
+@media (pointer: coarse) {
+  .tp3d-annot-svg .tp3d-annot-draw__hit {
+    stroke-width: 24px;
+  }
+}
+
+/* Being carried: the selected edge and a slightly lighter line. A position the whole drawing cannot take swaps the edge for the
+   error colour and dims the line; releasing there leaves the drawing exactly where it was. */
+.tp3d-annot-svg .tp3d-annot-draw.is-moving .tp3d-annot-draw__under {
+  stroke: var(--accent-primary);
+  stroke-opacity: 0.95;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-moving .tp3d-annot-draw__line {
+  opacity: 0.85;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-moving.is-move-invalid .tp3d-annot-draw__under {
+  stroke: var(--error);
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-moving.is-move-invalid .tp3d-annot-draw__line {
+  opacity: 0.45;
+}
+
 /* While placing: the arrow the next click would make, and a dot where the tail is. */
 .tp3d-annot-svg .tp3d-annot-arrow.is-preview .tp3d-annot-arrow__shaft,
 .tp3d-annot-svg .tp3d-annot-arrow.is-preview .tp3d-annot-arrow__head {

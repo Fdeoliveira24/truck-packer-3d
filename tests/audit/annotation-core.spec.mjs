@@ -1910,3 +1910,137 @@ test('line style: an unknown style makes the record unreadable and is kept verba
   assert.equal(Object.hasOwn(A.normalizeAnnotations([{ ...plainCallout, style: 'dashed' }])[0], 'style'), false, 'a stray style is never stored on a callout');
   assert.equal(JSON.stringify(A.normalizeAnnotations([plainCallout])[0]), JSON.stringify(plainCallout), 'a callout is stored exactly as before');
 });
+
+// ============================================================================
+// SECTION: FREEHAND STROKES (V1B.2 Gate B.4) — rigid move of a whole stroke on its own surface
+// ============================================================================
+
+/** Every vertex of a stroke as `[u, v]` in its own surface frame, anchor first. */
+const strokeUV = record => {
+  const first = M.drawAnchorUV(record.anchor, record.face);
+  const flat = [first.u, first.v, ...record.points];
+  return Array.from({ length: flat.length / 2 }, (_, i) => [flat[i * 2], flat[i * 2 + 1]]);
+};
+const MOVE_FIXTURES = [
+  ['box top', TOP_STROKE], ['box side', SIDE_STROKE], ['cylinder cap', CAP_STROKE], ['floor', FLOOR_STROKE], ['wall', WALL_STROKE],
+];
+
+test('drawing move: every vertex, anchor included, moves by one identical surface-local offset and nothing else changes', () => {
+  for (const [label, make] of MOVE_FIXTURES) {
+    const before = make();
+    const frozen = JSON.parse(JSON.stringify(before));
+    const moved = A.translateDrawRecord(before, 3.25, -2.5, 5000);
+    assert.ok(moved, `${label}: the move is valid`);
+    assert.deepEqual(before, frozen, `${label}: the input record is never mutated`);
+    assert.equal(A.validateDrawRecord(moved), null, `${label}: the moved stroke is a valid record`);
+    assert.equal(JSON.stringify(A.normalizeAnnotations([moved])[0]), JSON.stringify(moved), `${label}: the result is already canonical`);
+    const [old, now] = [strokeUV(before), strokeUV(moved)];
+    assert.equal(now.length, old.length, `${label}: same vertex count`);
+    now.forEach(([u, v], i) => {
+      assert.ok(Math.abs(u - old[i][0] - 3.25) < 1e-9 && Math.abs(v - old[i][1] + 2.5) < 1e-9, `${label}: vertex ${i} moved by exactly (3.25, -2.5)`);
+    });
+    assert.ok(moved.points.every(value => Math.round(value * 100) / 100 === value), `${label}: stored vertices stay on the 0.01 in grid`);
+    // Everything but the geometry is carried over exactly.
+    const keep = record => ({ ...record, anchor: undefined, points: undefined, updatedAt: undefined });
+    assert.deepEqual(keep(moved), keep(before), `${label}: id, type, color, width, hidden, face and createdAt are preserved`);
+    assert.equal(moved.updatedAt, 5000, `${label}: updatedAt is the time of the move`);
+    assert.equal(moved.createdAt, before.createdAt);
+    // The anchor keeps its kind, identity, signature and truck evidence, and its coordinate along the normal.
+    const home = before.anchor.kind === 'cargo' ? 'local' : 'position';
+    const frame = M.cargoFaceFrame(M.drawFrameKey(before.anchor, before.face));
+    assert.deepEqual({ ...moved.anchor, [home]: undefined }, { ...before.anchor, [home]: undefined }, `${label}: anchor identity is preserved`);
+    assert.equal(moved.anchor[home][frame.normal], before.anchor[home][frame.normal], `${label}: the plane coordinate is untouched`);
+  }
+});
+
+test('drawing move: the offset snaps to the grid, and a zero or sub-grid offset is a no-op that keeps updatedAt', () => {
+  const stroke = TOP_STROKE();
+  const snapped = A.translateDrawRecord(stroke, 3.2549, -0.0051, 5000);
+  assert.deepEqual(strokeUV(snapped).map(([u, v], i) => [u - strokeUV(stroke)[i][0], v - strokeUV(stroke)[i][1]].map(x => Math.round(x * 1e6) / 1e6)),
+    strokeUV(stroke).map(() => [3.25, -0.01]), 'the offset is snapped to 0.01 before it is applied to every vertex');
+  for (const [du, dv] of [[0, 0], [0.004, -0.004], [-0, 0], [0.0049, 0.0049]]) {
+    const same = A.translateDrawRecord(stroke, du, dv, 5000);
+    assert.equal(JSON.stringify(same), JSON.stringify(A.normalizeAnnotations([stroke])[0]), `(${du}, ${dv}) changes nothing, not even updatedAt`);
+  }
+  // Bad input is refused, never repaired.
+  for (const [du, dv] of [[NaN, 0], [0, Infinity], ['1', 0], [null, 1], [undefined, 1]]) {
+    assert.equal(A.translateDrawRecord(stroke, du, dv, 5000), null, `(${du}, ${dv}) is refused`);
+  }
+  assert.equal(A.translateDrawRecord(stroke, 1, 1, NaN), null);
+  assert.equal(A.translateDrawRecord({ ...stroke, type: 'arrow' }, 1, 1, 5000), null);
+  assert.equal(A.translateDrawRecord({ ...stroke, color: 'plaid' }, 1, 1, 5000), null, 'an invalid source stroke is not moved');
+  assert.equal(A.translateDrawRecord(null, 1, 1, 5000), null);
+});
+
+test('drawing move: a move that leaves its cargo face, cap polygon, floor or wall is refused whole', () => {
+  // Box top: x spans -24..24 and the stroke reaches x = 9.8, so +14.2 lands exactly on the edge and +14.25 is over it.
+  const top = TOP_STROKE();
+  assert.ok(A.translateDrawRecord(top, 14.2, 0, 5000), 'a stroke that ends exactly on the face edge is kept');
+  assert.equal(A.translateDrawRecord(top, 14.25, 0, 5000), null, 'one vertex past the edge refuses the whole move');
+  assert.ok(A.translateDrawRecord(top, -9.75, 0, 5000), 'the other edge: the anchor reaches u = -24');
+  assert.equal(A.translateDrawRecord(top, -9.8, 0, 5000), null);
+  assert.equal(A.translateDrawRecord(top, 0, 20.1, 5000), null, 'past the far edge on the other axis');
+  assert.equal(A.translateDrawRecord(top, 1000, 1000, 5000), null, 'a huge move is refused, not clamped');
+  assert.equal(A.translateDrawRecord(top, 1e9, 0, 5000), null, 'a move beyond the stored coordinate bound is refused');
+  // Cylinder cap: a real 24-gon of circumradius 12, apothem 11.897 — the circle around it is NOT the boundary.
+  const cap = draw('cap-edge', drumAnchor({ x: 30, y: 5, z: 0 }), [0.5, 5.4], { face: '+x' });
+  assert.ok(A.translateDrawRecord(cap, 0, 6.4, 5000), 'a vertex inside the polygon is kept');
+  assert.equal(A.translateDrawRecord(cap, 0, 6.55, 5000), null, 'a vertex at radius 11.96 is inside the circle but outside the polygon');
+  assert.equal(A.translateDrawRecord(CAP_STROKE(), 0, 6, 5000), null, 'above the cap');
+  assert.equal(A.translateDrawRecord(CAP_STROKE(), 20, 0, 5000), null, 'beside the cap');
+  // A floor or wall stroke is judged against the layout at write time: the pure result is valid, the placement is not.
+  const ctx = drawContext();
+  const floor = FLOOR_STROKE();
+  const verdict = (record, du, dv, context = ctx) => {
+    const moved = A.translateDrawRecord(record, du, dv, 5000);
+    return moved ? A.drawPlacementProblem(moved, context) : 'refused';
+  };
+  assert.equal(verdict(floor, 0, 60.9), null, 'a stroke ending on the wall line is placed');
+  assert.equal(verdict(floor, 0, 61.1), 'unresolved', 'one vertex past the truck wall refuses the whole move');
+  assert.equal(verdict(floor, -120.5, 0), null);
+  assert.equal(verdict(floor, -120.6, 0), 'unresolved', 'behind the rear of the truck');
+  const wall = WALL_STROKE();
+  assert.equal(verdict(wall, 0, 50.5), null, 'up to the ceiling line');
+  assert.equal(verdict(wall, 0, 50.6), 'unresolved', 'through the ceiling');
+  assert.equal(verdict(wall, 0, -41), 'refused', 'below the floor the anchor itself is off the wall, so even the pure helper refuses');
+  // A wheel well splits the floor: a stroke on the main floor cannot be carried across the well edge.
+  const well = drawContext({ truck: WELL_TRUCK, zones: WELL_ZONES });
+  const lane = draw('lane', floorAt(100, 45), [110, 45, 120, 45]);
+  assert.equal(A.drawPlacementProblem(lane, well), null, 'the fixture sits on the full-width floor in front of the wells');
+  assert.equal(verdict(lane, 0, -45, well), null, 'moved along the same floor');
+  assert.equal(verdict(lane, 100, 0, well), 'unresolved', 'carried onto the raised wheel well it is refused whole');
+  assert.equal(verdict(lane, 100, -45, well), null, 'and the same distance along the open floor between the wells is fine');
+});
+
+test('drawing move: quantization corner cases — rigid for any offset, and a tie that would repeat a vertex is refused, not repaired', () => {
+  // Fuzz: for every offset that is accepted the move is exactly rigid at the stored precision; otherwise it is refused.
+  const next = lcg(20260826);
+  let accepted = 0;
+  for (let n = 0; n < 400; n++) {
+    const make = MOVE_FIXTURES[n % MOVE_FIXTURES.length][1];
+    const before = make();
+    const du = (next() - 0.5) * 30;
+    const dv = (next() - 0.5) * 30;
+    const moved = A.translateDrawRecord(before, du, dv, 5000);
+    if (!moved) continue;
+    accepted += 1;
+    const snapped = [Math.round(du * 100) / 100, Math.round(dv * 100) / 100];
+    const [old, now] = [strokeUV(before), strokeUV(moved)];
+    now.forEach(([u, v], i) => {
+      assert.ok(Math.abs(u - old[i][0] - snapped[0]) < 1e-9 && Math.abs(v - old[i][1] - snapped[1]) < 1e-9, `fuzz ${n}: vertex ${i} is rigid`);
+    });
+    assert.equal(A.validateDrawRecord(moved), null, `fuzz ${n}: valid`);
+  }
+  assert.ok(accepted > 40, 'the fuzz exercises plenty of accepted moves, so the checks above are not vacuous');
+  // The anchor is stored at 4 decimals and compared on the 0.01 grid with the first stored vertex. Anchor 10.075 (which
+  // rounds down on the grid) and a vertex at 10.08 are distinct there; shifted by 0.5 the anchor rounds up onto 10.58 and
+  // the stroke would repeat a vertex.
+  const tie = draw('tie', floorAt(10.075, 5), [10.08, 5, 12, 6]);
+  assert.equal(A.validateDrawRecord(tie), null, 'the fixture is a valid stroke');
+  assert.equal(A.translateDrawRecord(tie, 0.5, 0, 5000), null, 'the tie is refused (nothing is nudged or dropped)');
+  assert.ok(A.translateDrawRecord(tie, -1.5, 0, 5000), 'an offset that does not flip the anchor onto the vertex moves it');
+  // Precision: the anchor keeps its own 4-decimal precision after the move.
+  const precise = draw('precise', boxAnchor({ x: -14.2537, y: 15, z: -6.5123 }), [-10.4, -6.1, -6.8, -5.2], { face: '+y' });
+  const moved = A.translateDrawRecord(precise, 0.07, 0.03, 5000);
+  assert.deepEqual(moved.anchor.local, { x: -14.1837, y: 15, z: -6.4823 }, 'anchor offsets add exactly at 4 decimals');
+});

@@ -122,7 +122,7 @@ import {
   rectFromOffset,
   VIEWPORT_MARGIN,
 } from '../core/annotation-layout.js';
-import { drawAnchorUV, drawLift, patchContains, patchOutline } from '../core/measurements.js';
+import { cargoFaceFrame, drawAnchorUV, drawFrameKey, drawLift, patchContains, patchOutline } from '../core/measurements.js';
 import { createSurfacePicker } from './surface-picker.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -218,6 +218,14 @@ const DRAW_FROZEN_TEXT = Object.freeze({
   gap: 'The drawing stopped because the pointer moved too fast. Release to save it.',
   limit: 'The drawing reached its length limit. Release to save it.',
 });
+const MOVE_GRID_STEPS = 100; // a whole-stroke move is snapped to the 0.01 in grid the stored vertices live on
+const AXIS_INDEX = Object.freeze({ x: 0, y: 1, z: 2 });
+const DRAW_MOVE_TEXT = Object.freeze({
+  ok: 'Release to move the drawing here. Esc cancels.',
+  off: 'Part of the drawing would leave its surface. Release to leave it where it was, or press Esc.',
+  view: 'Move the pointer back over the surface. Release to leave the drawing where it was, or press Esc.',
+});
+const DRAW_MOVE_REFUSED = 'The whole drawing has to stay on its surface, so it was left where it was.';
 const AMBIGUOUS_CARGO_DRAW_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so a drawing cannot be made on it.';
 const UNSUPPORTED_DRAW_NOTICE = 'Drawings go on cargo faces and end caps, the truck and the ground. Curved sides and open space cannot take one.';
 // The shared reason copy says "callout"; a drawing describes its own surface.
@@ -281,6 +289,7 @@ export function createAnnotationTool({
   let drawableIds = new Set(); // callouts, arrows and drawings the overlay may draw (Valid and not hidden)
   let pinDrag = null; // { id, which (arrow end, else null), pointerId, startX, startY, moved, dirty, candidate, poseKey, target }
   let cardDrag = null; // { id, pointerId, startX, startY, startRect, marker, moved, rect, offset }
+  let moveDrag = null; // a saved drawing being carried along its surface, see beginDrawMove
   let editorDrag = null;
   let press = null; // { x, y } of a primary press that began on the canvas while a scene tool is armed
   let hover = null;
@@ -653,6 +662,15 @@ export function createAnnotationTool({
       cancelPinDrag('The cargo changed, so the move was cancelled.');
     }
     if (cardDrag && !recordById(cardDrag.id)) cancelCardDrag();
+    if (moveDrag) {
+      const record = recordById(moveDrag.id);
+      const result = resultById(moveDrag.id);
+      if (!record || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden || moveShapeOf(record) !== moveDrag.shape) {
+        cancelMoveDrag('The drawing changed, so the move was cancelled.');
+      } else if (moveDrag.packId !== pack.id || cargoPoseKey(pack, record.anchor) !== moveDrag.poseKey || layoutKey(pack) !== moveDrag.layoutKey) {
+        cancelMoveDrag('The cargo changed, so the move was cancelled.');
+      }
+    }
     if (lastDeleted && lastDeleted.packId !== pack.id) clearDeleted();
     visDirty = true;
     renderPanel();
@@ -668,6 +686,7 @@ export function createAnnotationTool({
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
         sessionEpoch += 1;
         showMode = 'all'; // the view mode ends with the Load Plan session it belonged to
+        cancelMoveDrag();
         if (panelOpen || selectedId || draft || records.length) resetSession();
         return;
       }
@@ -678,6 +697,7 @@ export function createAnnotationTool({
         ensureLoop();
       }
       if (changes._undo || changes._redo) {
+        if (moveDrag) cancelMoveDrag('Undo or redo cancelled the move.');
         if (pinDrag) cancelPinDrag('Undo or redo cancelled the move.');
         if (cardDrag) cancelCardDrag();
         if (reattachId) cancelReattach('Undo or redo cancelled the re-attach.');
@@ -763,6 +783,7 @@ export function createAnnotationTool({
     const wasOpen = panelOpen;
     endPresent({ panel: false }); // the panel is closing, so nothing is brought back
     cancelStroke();
+    cancelMoveDrag();
     cancelPinDrag();
     cancelCardDrag();
     if (draft) cancelDraft();
@@ -847,6 +868,7 @@ export function createAnnotationTool({
       return;
     }
     cancelStroke();
+    cancelMoveDrag();
     if (draft) cancelDraft();
     cancelArrowTail();
     reattachId = null;
@@ -1924,6 +1946,7 @@ export function createAnnotationTool({
   function applyShowMode(mode) {
     if (mode === 'off') {
       cancelStroke();
+      cancelMoveDrag();
       if (pinDrag) cancelPinDrag();
       if (cardDrag) cancelCardDrag();
       if (draft) cancelDraft();
@@ -1992,6 +2015,7 @@ export function createAnnotationTool({
   function beginPresent() {
     if (presenting || !panelOpen || !toolShown || !inEditor() || !currentPack() || presentRefusal()) return;
     if (draft) cancelDraft();
+    cancelMoveDrag();
     tool = null;
     hover = null;
     press = null;
@@ -2091,6 +2115,7 @@ export function createAnnotationTool({
     if (draft && draft.editId === id) cancelDraft();
     if (pinDrag && pinDrag.id === id) cancelPinDrag();
     if (cardDrag && cardDrag.id === id) cancelCardDrag();
+    if (moveDrag && moveDrag.id === id) cancelMoveDrag();
     if (reattachId === id) {
       reattachId = null;
       reattachWhich = null;
@@ -2412,6 +2437,302 @@ export function createAnnotationTool({
   }
 
   // ==========================================================================
+  // SECTION: DRAWING SELECT + MOVE (a saved stroke is carried rigidly along the surface it is on)
+  // ==========================================================================
+  /**
+   * Whether a stroke's hit path may take the pointer right now (the layer's CSS gate). Derived, never stored: no armed tool or re-attach
+   * (those own the canvas gestures), no unsaved stroke, open editor or other drag, no Present, no Measurement, not Show Off and
+   * not paused. Each of those either owns the pointer or leaves the strokes out of reach.
+   */
+  function drawHitReachable() {
+    return toolShown && inEditor() && !tool && !reattachId && !stroke && !draft && !pinDrag && !cardDrag &&
+      !presenting && !sceneOwnedElsewhere() && showMode !== 'off' && !blockedReason();
+  }
+
+  /** The same, and no move already under way: what a new press on a hit path needs. */
+  function drawHitWanted() {
+    return !moveDrag && drawHitReachable();
+  }
+
+  /** A saved stroke's hit path takes input only while nothing else owns the pointer (drawHitWanted): the layer's classes are the CSS gate. */
+  function syncDrawHitClasses() {
+    if (!els.layer) return;
+    const carrying = Boolean(moveDrag && moveDrag.moved);
+    // While a stroke is carried the pointer is captured by its own hit path, so no other stroke can be grabbed meanwhile. A press that has
+    // not yet become a drag keeps the gate open: the release must still land on the same path for the click to select it.
+    toggleClass(els.layer, 'is-draw-hit', drawHitReachable() && !carrying);
+    toggleClass(els.layer, 'is-draw-moving', carrying);
+  }
+
+  function drawIdOfHit(hit) {
+    const group = hit && hit.closest ? hit.closest('.tp3d-annot-draw') : null;
+    return group && group.dataset ? group.dataset.annotId : '';
+  }
+
+  function snapInches(value) {
+    return Math.round(value * MOVE_GRID_STEPS) / MOVE_GRID_STEPS + 0;
+  }
+
+  /** What fixes a stroke's place: the surface it is on, the face and every vertex (a style edit leaves it alone). */
+  function moveShapeOf(record) {
+    return JSON.stringify([record.anchor, record.face, record.points]);
+  }
+
+  /**
+   * A primary press on a saved stroke's hit path. Nothing is written or selected here: a click selects (the layer's click
+   * handler), a drag past the threshold carries the whole stroke along the plane it is on. The press position on that plane is the
+   * baseline every later position is measured from, never an accumulated delta. Refused quietly when the stroke cannot be moved
+   * (the click that follows still selects it).
+   */
+  function beginDrawMove(ev, id, target) {
+    if (ev.button !== 0 || ev.isPrimary === false || !drawHitWanted()) return;
+    keyboardModality = false;
+    const record = recordById(id);
+    const result = resultById(id);
+    const pack = currentPack();
+    if (!pack || !isDraw(record) || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden || !isShownByMode(id)) return;
+    if (provisionalPoseActive()) return; // select() refuses the click that follows, and says why
+    const surface = picker.beginDrawSurface({ anchor: record.anchor, face: record.face }, pack);
+    const base = surface ? picker.sampleDrawPlane(surface, ev.clientX, ev.clientY) : null;
+    const view = drawViews.get(id);
+    if (!surface || !view || !base || base.status !== 'ok') return;
+    moveDrag = {
+      id, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY, target,
+      moved: false, dirty: false, packId: pack.id, epoch: sessionEpoch, surface, base: { u: base.u, v: base.v },
+      shape: moveShapeOf(record), poseKey: cargoPoseKey(pack, record.anchor), layoutKey: layoutKey(pack), poseStamp: view.poseStamp,
+      du: 0, dv: 0, rev: 0, valid: true, reason: '', kind: 'ok', verdictKey: '',
+    };
+    lastClient = { x: ev.clientX, y: ev.clientY };
+    attachMoveListeners(target);
+    syncDrawHitClasses();
+    ensureLoop();
+  }
+
+  function attachMoveListeners(target) {
+    window.addEventListener('pointermove', onMoveDragMove);
+    window.addEventListener('pointerup', onMoveDragUp);
+    window.addEventListener('pointercancel', onMoveDragCancel);
+    window.addEventListener('pointerdown', onMoveDragOtherPointer, true);
+    window.addEventListener('blur', onMoveDragInterrupted);
+    if (doc) doc.addEventListener('visibilitychange', onMoveDragVisibility);
+    if (target) target.addEventListener('lostpointercapture', onMoveDragLost);
+  }
+
+  function detachMoveListeners(target) {
+    window.removeEventListener('pointermove', onMoveDragMove);
+    window.removeEventListener('pointerup', onMoveDragUp);
+    window.removeEventListener('pointercancel', onMoveDragCancel);
+    window.removeEventListener('pointerdown', onMoveDragOtherPointer, true);
+    window.removeEventListener('blur', onMoveDragInterrupted);
+    if (doc) doc.removeEventListener('visibilitychange', onMoveDragVisibility);
+    if (target) target.removeEventListener('lostpointercapture', onMoveDragLost);
+  }
+
+  function onMoveDragOtherPointer(ev) {
+    if (moveDrag && ev.pointerId !== moveDrag.pointerId) cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragInterrupted() {
+    if (moveDrag) cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragVisibility() {
+    if (moveDrag && doc && doc.visibilityState === 'hidden') cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragCancel(ev) {
+    if (moveDrag && ev.pointerId === moveDrag.pointerId) cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragLost(ev) {
+    if (moveDrag && ev.pointerId === moveDrag.pointerId) cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragMove(ev) {
+    const drag = moveDrag;
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    // A button other than the primary joining the press, or the primary no longer held (the release was lost), ends the move.
+    if (ev.pointerType === 'mouse' && ev.buttons !== 1) {
+      cancelMoveDrag('Move cancelled.');
+      return;
+    }
+    drag.lastX = ev.clientX;
+    drag.lastY = ev.clientY;
+    lastClient = { x: ev.clientX, y: ev.clientY };
+    if (!drag.moved) {
+      if (Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < PIN_DRAG_THRESHOLD_PX) return;
+      drag.moved = true;
+      drag.rev = 1;
+      syncDrawHitClasses();
+      try {
+        if (drag.target && typeof drag.target.setPointerCapture === 'function') drag.target.setPointerCapture(ev.pointerId);
+      } catch (_) {
+        // Capture is a convenience; the window listeners still end the move.
+      }
+      CaseScene.setHover(null);
+      updateCursor();
+      renderPanel();
+    }
+    ev.preventDefault();
+    drag.dirty = true;
+  }
+
+  /**
+   * Where the pointer is on the stroke's own plane and whether the WHOLE stroke may sit there. The offset is measured from the press
+   * and snapped to the grid; the verdict is the writer's own (a valid record, and every vertex on the one cargo face, cap, floor or
+   * wall patch it belongs to), asked without writing. An unreadable position (the ray misses the plane) is a position the stroke
+   * cannot take. `provisional` means the Editor now holds a scene-only pose.
+   */
+  function judgeMove(drag, x, y) {
+    const sample = picker.sampleDrawPlane(drag.surface, x, y);
+    if (sample.status === 'provisional') return { status: 'provisional' };
+    if (sample.status !== 'ok') return { status: 'off', du: drag.du, dv: drag.dv, valid: false, reason: 'view' };
+    const du = snapInches(sample.u - drag.base.u);
+    const dv = snapInches(sample.v - drag.base.v);
+    const verdict = PackLibrary.checkDrawMove(drag.packId, drag.id, du, dv);
+    return { status: 'ok', du, dv, valid: Boolean(verdict.ok), reason: verdict.ok ? '' : verdict.reason };
+  }
+
+  /** Take a verdict into the live move: the preview geometry follows the offset, and the panel line follows the kind of verdict. */
+  function applyMoveJudgement(drag, judged) {
+    if (judged.du !== drag.du || judged.dv !== drag.dv) {
+      drag.du = judged.du;
+      drag.dv = judged.dv;
+      drag.rev += 1;
+    }
+    drag.valid = judged.valid;
+    drag.reason = judged.reason;
+    const kind = judged.valid ? 'ok' : (judged.reason === 'view' ? 'view' : 'off');
+    if (kind !== drag.kind) {
+      drag.kind = kind;
+      renderPanel();
+    }
+  }
+
+  /** Each frame while a stroke is carried: anything that changed under it ends the move, then the pointer's latest position is judged once. */
+  function advanceMove() {
+    const drag = moveDrag;
+    if (!drag) return;
+    if (provisionalPoseActive()) {
+      cancelMoveDrag(HELD_POSE_NOTICE);
+      return;
+    }
+    const view = drawViews.get(drag.id);
+    if (!view || !drawableIds.has(drag.id) || !isShownByMode(drag.id)) {
+      cancelMoveDrag('The drawing changed, so the move was cancelled.');
+      return;
+    }
+    if (view.poseStamp !== drag.poseStamp) {
+      cancelMoveDrag('The cargo changed, so the move was cancelled.');
+      return;
+    }
+    if (!drag.moved || !drag.dirty) return;
+    drag.dirty = false;
+    const judged = judgeMove(drag, drag.lastX, drag.lastY);
+    if (judged.status === 'provisional') cancelMoveDrag(HELD_POSE_NOTICE);
+    else applyMoveJudgement(drag, judged);
+  }
+
+  function onMoveDragUp(ev) {
+    const finished = moveDrag;
+    if (!finished || ev.pointerId !== finished.pointerId) return;
+    // The release position decides, not the last frame's: judged on the finished gesture, which is cleared before anything below
+    // can notify, so no trailing cancellation can reach a move that already ended.
+    const judged = finished.moved ? judgeMove(finished, ev.clientX, ev.clientY) : null;
+    endMoveDrag();
+    if (!finished.moved) return; // an ordinary click: the click handler selects
+    suppressNextClick();
+    commitMove(finished, judged);
+    refreshOverlay(); // the moved drawing, or the one a refused move left where it was, is on screen now rather than a frame later
+  }
+
+  /**
+   * Write the finished move, once, if everything it was measured against is still as it was. Whether the moved stroke is valid and
+   * still sits wholly on its surface is PackLibrary.moveDraw's rule; this only checks the session, the plan and the tool are still
+   * the ones the move belongs to, and explains a refusal. A refused or cancelled move leaves the stored stroke exactly as it was.
+   */
+  function commitMove(finished, judged) {
+    const reason = blockedReason();
+    if (reason) {
+      notice(blockedMessage(reason));
+      return;
+    }
+    const pack = currentPack();
+    const record = recordById(finished.id);
+    if (!pack || pack.id !== finished.packId || finished.epoch !== sessionEpoch || !toolShown || showMode === 'off' || presenting ||
+        sceneOwnedElsewhere() || provisionalPoseActive() || !record || moveShapeOf(record) !== finished.shape) {
+      setStatus('The drawing changed, so the move was cancelled.');
+      return;
+    }
+    if (cargoPoseKey(pack, record.anchor) !== finished.poseKey || layoutKey(pack) !== finished.layoutKey) {
+      setStatus('The cargo changed, so the move was cancelled.');
+      return;
+    }
+    if (!judged || judged.status !== 'ok' || !judged.valid) {
+      notice(DRAW_MOVE_REFUSED);
+      return;
+    }
+    if (!judged.du && !judged.dv) {
+      setStatus('The drawing was left where it was.');
+      return;
+    }
+    clearDeleted();
+    const outcome = PackLibrary.moveDraw(pack.id, finished.id, judged.du, judged.dv);
+    if (!outcome.ok) {
+      if (outcome.reason === 'invalid' || outcome.reason === 'unresolved') notice(DRAW_MOVE_REFUSED);
+      else UIComponents.showToast('Could not move this drawing.', 'error', { title: 'Annotations' });
+      return;
+    }
+    adoptSelection(finished.id);
+    visDirty = true;
+    setStatus(outcome.unchanged ? 'The drawing was left where it was.' : 'Drawing moved.', { tone: 'success' });
+  }
+
+  /** Release everything a move holds. After this no pointer event can reach it, so none can bring it back. */
+  function endMoveDrag() {
+    if (!moveDrag) return;
+    const { target, pointerId } = moveDrag;
+    detachMoveListeners(target);
+    moveDrag = null;
+    try {
+      if (target && typeof target.releasePointerCapture === 'function' && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+    } catch (_) {
+      // Already released.
+    }
+    visDirty = true;
+    syncDrawHitClasses();
+    updateCursor();
+  }
+
+  /** Abandon the move: the stored stroke was never touched, so showing it where it is IS the restore. */
+  function cancelMoveDrag(message = '') {
+    if (!moveDrag) return;
+    const moved = moveDrag.moved;
+    endMoveDrag();
+    if (moved || message) setStatus(message);
+    refreshOverlay();
+  }
+
+  /**
+   * The stroke's vertices shifted by the live offset, in the frame they are stored in (scene units). A scratch copy: the record, the
+   * view's own geometry and the cargo are never changed, so cancelling needs no restore.
+   */
+  function movedLocal(view, record) {
+    const axes = cargoFaceFrame(drawFrameKey(record.anchor, record.face));
+    if (!axes || !view.local) return view.local;
+    if (!view.moved || view.moved.length !== view.local.length) view.moved = new Float64Array(view.local.length);
+    view.moved.set(view.local);
+    const scale = picker.toWorldScale();
+    const iu = AXIS_INDEX[axes.u];
+    const iv = AXIS_INDEX[axes.v];
+    for (let i = 0; i < view.moved.length; i += 3) {
+      view.moved[i + iu] += moveDrag.du * scale;
+      view.moved[i + iv] += moveDrag.dv * scale;
+    }
+    return view.moved;
+  }
+
+  // ==========================================================================
   // SECTION: OVERLAY EVENTS (markers and cards are ordinary DOM above the canvas)
   // ==========================================================================
   function attachLayerEvents(layer) {
@@ -2426,6 +2747,11 @@ export function createAnnotationTool({
       const pin = ev.target.closest && ev.target.closest('.tp3d-annot-pin');
       if (pin && layer.contains(pin)) {
         beginPinDrag({ button: ev.button, pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY, currentTarget: pin, target: pin }, pin.dataset.annotId);
+        return;
+      }
+      const hit = ev.target.closest && ev.target.closest('.tp3d-annot-draw__hit');
+      if (hit && layer.contains(hit)) {
+        beginDrawMove(ev, drawIdOfHit(hit), hit);
         return;
       }
       const head = ev.target.closest && ev.target.closest('.tp3d-annot-card__head');
@@ -2453,6 +2779,15 @@ export function createAnnotationTool({
       if (pin && layer.contains(pin)) {
         if (pin.dataset.annotId === DRAFT_ID) return;
         select(pin.dataset.annotId, { toggle: true });
+        return;
+      }
+      const hit = ev.target.closest && ev.target.closest('.tp3d-annot-draw__hit');
+      if (hit && layer.contains(hit)) {
+        // A click on the stroke's line selects it like its row does; nothing is written.
+        if (drawHitWanted()) {
+          select(drawIdOfHit(hit), { toggle: true });
+          refocusViewportIfLost();
+        }
         return;
       }
       const head = ev.target.closest && ev.target.closest('.tp3d-annot-card__head');
@@ -2483,7 +2818,7 @@ export function createAnnotationTool({
   // SECTION: KEYBOARD OWNERSHIP (capture phase)
   // ==========================================================================
   function ownsEscape() {
-    return Boolean(presenting || stroke || pinDrag || cardDrag || draft || reattachId || arrowTail || tool || selectedId);
+    return Boolean(presenting || stroke || moveDrag || pinDrag || cardDrag || draft || reattachId || arrowTail || tool || selectedId);
   }
 
   function onKeyDownCapture(ev) {
@@ -2517,8 +2852,9 @@ export function createAnnotationTool({
       return;
     }
     // Undo / Redo mid-drag cancels only that drag; cargo history is untouched.
-    if (key === 'z' && (ev.metaKey || ev.ctrlKey) && !ev.altKey && (pinDrag || cardDrag) && !isTypingTarget(ev.target)) {
-      if (pinDrag) cancelPinDrag('Move cancelled.');
+    if (key === 'z' && (ev.metaKey || ev.ctrlKey) && !ev.altKey && (pinDrag || cardDrag || moveDrag) && !isTypingTarget(ev.target)) {
+      if (moveDrag) cancelMoveDrag('Move cancelled.');
+      else if (pinDrag) cancelPinDrag('Move cancelled.');
       else cancelCardDrag();
       ev.preventDefault();
     }
@@ -2534,6 +2870,8 @@ export function createAnnotationTool({
     if (stroke) {
       // An unfinished stroke goes before the armed Draw tool does.
       cancelStroke('Drawing cancelled.');
+    } else if (moveDrag) {
+      cancelMoveDrag('Move cancelled.');
     } else if (pinDrag) {
       cancelPinDrag('Move cancelled.');
     } else if (cardDrag) {
@@ -2944,6 +3282,7 @@ export function createAnnotationTool({
   /** Context-sensitive guidance: empty unless something is relevant right now. */
   function guidanceText(blockedNow) {
     if (blockedNow) return blockedMessage(blockedNow);
+    if (moveDrag && moveDrag.moved) return DRAW_MOVE_TEXT[moveDrag.kind];
     if (statusMessage) return statusMessage;
     if (showMode === 'off') return SHOW_OFF_HINT;
     if (pinDrag && pinDrag.moved) return pinDrag.which ? 'Drag the handle onto a surface. Esc cancels.' : 'Drag the marker onto a surface. Esc cancels.';
@@ -2968,7 +3307,7 @@ export function createAnnotationTool({
 
   /** Colour of the dot beside the guidance: orange while a gesture is under way or something needs attention, green after a save. */
   function guidanceTone(blockedNow) {
-    if (blockedNow) return 'active';
+    if (blockedNow || (moveDrag && moveDrag.moved)) return 'active';
     if (showMode === 'off' && !statusMessage) return 'active';
     if (statusMessage) return statusTone || (tool || draft || reattachId ? 'active' : '');
     if (tool || draft || reattachId || stroke || (pinDrag && pinDrag.moved) || records.length >= MAX_ANNOTATIONS_PER_PACK) return 'active';
@@ -3228,6 +3567,7 @@ export function createAnnotationTool({
     lastBlockedReason = reason;
     if (reason) {
       cancelStroke(blockedMessage(reason));
+      cancelMoveDrag(blockedMessage(reason));
       if (pinDrag) cancelPinDrag(blockedMessage(reason));
       if (cardDrag) cancelCardDrag();
       if (reattachId) cancelReattach(blockedMessage(reason));
@@ -3260,6 +3600,7 @@ export function createAnnotationTool({
     if (els.layer) {
       toggleClass(els.layer, 'is-view-only', owned);
       toggleClass(els.layer, 'is-presenting', presenting);
+      syncDrawHitClasses();
       // Present is a view too: markers and cards take no input, so a click or drag goes to the canvas underneath.
       const inert = owned || presenting;
       if ('inert' in els.layer && els.layer.inert !== inert) els.layer.inert = inert;
@@ -3269,6 +3610,7 @@ export function createAnnotationTool({
     if (!owned) return;
     endPresent();
     cancelStroke();
+    cancelMoveDrag();
     cancelPinDrag();
     cancelCardDrag();
     if (draft) cancelDraft();
@@ -3292,7 +3634,7 @@ export function createAnnotationTool({
 
   function wantsLoop() {
     return bound && toolShown && inEditor() && Boolean(currentPack()) &&
-      (panelOpen || presenting || draft || tool || reattachId || pinDrag || cardDrag || stroke || drawableIds.size > 0);
+      (panelOpen || presenting || draft || tool || reattachId || pinDrag || cardDrag || stroke || moveDrag || drawableIds.size > 0);
   }
 
   function ensureLoop() {
@@ -3319,6 +3661,7 @@ export function createAnnotationTool({
   }
 
   function updateCursor() {
+    syncDrawHitClasses(); // who owns the pointer decides both the cursor and whether a saved stroke's line may take it
     const canvas = getCanvas();
     if (!canvas || sceneOwnedElsewhere()) return; // the tool that owns the scene owns the cursor
     let cursor = 'default';
@@ -3327,6 +3670,7 @@ export function createAnnotationTool({
       else if (tool === 'draw') cursor = drawView === 'draw' ? 'crosshair' : 'default';
       else cursor = hover ? 'crosshair' : 'default';
     }
+    if (moveDrag && moveDrag.moved) cursor = 'grabbing';
     if (cursor === lastCursor) return;
     lastCursor = cursor;
     canvas.style.cursor = cursor;
@@ -3336,6 +3680,7 @@ export function createAnnotationTool({
     const reason = syncBlocked();
     applyViewGate();
     advanceStroke();
+    advanceMove();
     if (pinDrag && pinDrag.moved) {
       if (pinDrag.dirty && lastClient) {
         pinDrag.dirty = false;
@@ -3408,19 +3753,23 @@ export function createAnnotationTool({
   // SECTION: DRAWINGS (one SVG path per stroke in the overlay; never a Three.js object, never a texture)
   // ==========================================================================
   /** The two paths of one stroke: a neutral halo under the colored line. A stroke is one path however many vertices it has. */
-  function makeDrawGraphic(extraClass = '') {
+  function makeDrawGraphic(extraClass = '', hittable = false) {
     const group = svgEl('g', `tp3d-annot-draw ${extraClass}`.trim());
     const under = svgEl('path', 'tp3d-annot-draw__under');
     const line = svgEl('path', 'tp3d-annot-draw__line');
     group.append(under, line);
-    return { group, under, line, colorKey: null, widthKey: '', patternKey: '' };
+    // A saved stroke also carries ONE transparent hit path over the same geometry: the only part of the overlay that takes pointer
+    // input, and only while the layer allows it (see drawHitWanted). It adds no visible stroke of its own.
+    const hit = hittable ? svgEl('path', 'tp3d-annot-draw__hit') : null;
+    if (hit) group.append(hit);
+    return { group, under, line, hit, colorKey: null, widthKey: '', patternKey: '' };
   }
 
   /**
    * Show `d` (or nothing, for an empty string) on a stroke graphic. The line width is constant on screen, so it never scales
    * with zoom. Only what changed is written: a new color or selection touches classes and one custom property, never the path.
    */
-  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false }) {
+  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false, moving = false, invalid = false, hit = false }) {
     if (graphic.colorKey !== color) {
       graphic.colorKey = color;
       applyColor(graphic.group, color);
@@ -3428,8 +3777,11 @@ export function createAnnotationTool({
     toggleClass(graphic.group, 'is-selected', selected);
     toggleClass(graphic.group, 'is-occluded', occluded);
     toggleClass(graphic.group, 'is-frozen', frozen);
+    toggleClass(graphic.group, 'is-moving', moving);
+    toggleClass(graphic.group, 'is-move-invalid', moving && invalid);
     setPath(graphic.under, d);
     setPath(graphic.line, d);
+    if (graphic.hit) setPath(graphic.hit, hit ? d : '');
     if (!d) return;
     setAttr(graphic.group, 'data-line-style', style);
     const px = ARROW_SHAFT_PX[width] || ARROW_SHAFT_PX.regular;
@@ -3445,12 +3797,12 @@ export function createAnnotationTool({
   function getDrawView(id) {
     let view = drawViews.get(id);
     if (!view) {
-      const graphic = makeDrawGraphic();
+      const graphic = makeDrawGraphic('', true);
       graphic.group.dataset.annotId = id;
       layerParts.drawGroup.appendChild(graphic.group);
       view = {
         id, graphic, record: null, local: null, world: null, stamp: NaN, poseStamp: 0, d: '', visible: [],
-        front: false, measured: false, measuredAt: -1, shown: false,
+        front: false, measured: false, measuredAt: -1, shown: false, moved: null, dragKey: 0,
       };
       drawViews.set(id, view);
       visDirty = true;
@@ -3598,22 +3950,27 @@ export function createAnnotationTool({
         return;
       }
       const stamp = camSig + view.poseStamp * 3.1 + width * 0.013 + height * 0.017;
-      if (stamp !== view.stamp) {
+      // A stroke being carried is drawn from a shifted copy of its own vertices; the revision says when the offset changed.
+      const carried = Boolean(moveDrag && moveDrag.moved && moveDrag.id === record.id);
+      const dragKey = carried ? moveDrag.rev : 0;
+      if (stamp !== view.stamp || dragKey !== view.dragKey) {
         view.stamp = stamp;
+        view.dragKey = dragKey;
+        const source = carried ? movedLocal(view, record) : view.local;
         if (group) {
           const matrix = group.matrixWorld.elements;
-          const count = view.local.length / 3;
-          if (!view.world || view.world.length !== view.local.length) view.world = new Float64Array(view.local.length);
+          const count = source.length / 3;
+          if (!view.world || view.world.length !== source.length || view.world === view.local) view.world = new Float64Array(source.length);
           for (let i = 0; i < count; i++) {
-            const x = view.local[3 * i];
-            const y = view.local[3 * i + 1];
-            const z = view.local[3 * i + 2];
+            const x = source[3 * i];
+            const y = source[3 * i + 1];
+            const z = source[3 * i + 2];
             view.world[3 * i] = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
             view.world[3 * i + 1] = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
             view.world[3 * i + 2] = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
           }
         } else {
-          view.world = view.local;
+          view.world = source;
         }
         view.d = projectDrawPath(view.world, camera, width, height, view.visible);
       }
@@ -3678,9 +4035,15 @@ export function createAnnotationTool({
   }
 
   function paintDraws(entries) {
+    const grabbable = drawHitReachable();
     entries.forEach(({ record, view, selected }) => {
+      const moving = Boolean(moveDrag && moveDrag.moved && moveDrag.id === record.id);
+      // Hidden behind cargo (or not yet measured) a stroke has no hit path: it stays reachable from its list row and never takes
+      // input meant for the cargo in front of it.
+      const hit = moving || (grabbable && view.front && view.measured);
       paintDraw(view.graphic, view.d, {
-        color: record.color, width: record.width, style: lineStyleOf(record), selected: selected && !presenting, occluded: !view.front,
+        color: record.color, width: record.width, style: lineStyleOf(record), selected: selected && !presenting,
+        occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, hit,
       });
     });
   }
@@ -4789,6 +5152,8 @@ export function createAnnotationTool({
     // Read-only, for the Editor's interaction routing: while true, cargo is never selected, dragged, highlighted or edited from the viewport.
     isPresenting: () => presenting,
     drawingState: () => (stroke ? stroke.phase : (tool === 'draw' ? (drawView === 'move' ? 'move' : 'armed') : 'off')),
+    // 'idle' | 'pressed' (a press on a saved drawing, not yet a drag) | 'moving' | 'blocked' (carried to a place it cannot take): read-only, for tests.
+    moveState: () => (moveDrag ? (moveDrag.moved ? (moveDrag.valid ? 'moving' : 'blocked') : 'pressed') : 'idle'),
     selectedId: () => selectedId,
     onPointerDown,
     onPointerMove,

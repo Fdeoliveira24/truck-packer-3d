@@ -2766,10 +2766,11 @@ const sameAnnotationContent = (a, b) => JSON.stringify({ ...a, updatedAt: 0 }) =
 /**
  * Apply a pure record edit to one stored annotation of the given type and commit it. An edit that changes
  * nothing writes nothing. `placement`, when given, is a write-time rule judged on the edited record against
- * the committed layout; it returns the reason to refuse the write, or null.
- * @returns {{ ok: true, pack: any, annotation: any, unchanged?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' | 'unresolved' | 'too-short' }}
+ * the committed layout; it returns the reason to refuse the write, or null. With `commit` false nothing is
+ * written: the result is the same verdict (`dryRun`), so a gesture can preview whether its edit would be accepted.
+ * @returns {{ ok: true, pack: any, annotation: any, unchanged?: true, dryRun?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' | 'unresolved' | 'too-short' }}
  */
-function editStoredAnnotation(packId, annotationId, type, edit, placement = null) {
+function editStoredAnnotation(packId, annotationId, type, edit, placement = null, commit = true) {
   const previousPack = getById(packId);
   if (!previousPack) return { ok: false, reason: 'pack-not-found' };
   const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
@@ -2780,6 +2781,7 @@ function editStoredAnnotation(packId, annotationId, type, edit, placement = null
   if (sameAnnotationContent(edited, current[index])) return { ok: true, pack: previousPack, annotation: current[index], unchanged: true };
   const problem = placement ? placement(edited, previousPack) : null;
   if (problem) return { ok: false, reason: problem };
+  if (!commit) return { ok: true, pack: previousPack, annotation: edited, dryRun: true };
   const next = current.map((record, i) => (i === index ? edited : record));
   return { ok: true, pack: commitAnnotations(previousPack, next), annotation: edited };
 }
@@ -2905,6 +2907,26 @@ export function addDraw(packId, { anchor, face, rawPoints, color, width, style }
 export function updateDraw(packId, annotationId, patch) {
   return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_DRAW,
     (record, now) => CoreAnnotations.editDrawRecord(record, patch, now));
+}
+
+/**
+ * Move a whole stroke rigidly by one in-plane offset `(du, dv)` (inches, snapped to the 0.01 in grid) on the
+ * surface it is already attached to. The moved stroke must be a valid record AND resolve Valid against the
+ * committed layout (every vertex on the one cargo face, cap, floor or wall patch it belongs to): otherwise the
+ * whole move is refused, never clamped, trimmed or re-attached. Exactly one annotation-only write, or none; an
+ * offset that snaps to zero is `unchanged` and writes nothing. Cargo is never touched.
+ */
+export function moveDraw(packId, annotationId, du, dv) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_DRAW,
+    (record, now) => CoreAnnotations.translateDrawRecord(record, du, dv, now),
+    (edited, pack) => CoreAnnotations.drawPlacementProblem(edited, anchorResolutionContext(pack)));
+}
+
+/** The verdict moveDraw would give for this offset right now, without writing: what a drag previews. */
+export function checkDrawMove(packId, annotationId, du, dv) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_DRAW,
+    (record, now) => CoreAnnotations.translateDrawRecord(record, du, dv, now),
+    (edited, pack) => CoreAnnotations.drawPlacementProblem(edited, anchorResolutionContext(pack)), false);
 }
 
 /** Deliberate, individual deletion (also removes an unreadable recovery record). Cargo is never touched. */

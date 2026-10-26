@@ -365,25 +365,21 @@ export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, Pack
   }
 
   /**
-   * Where the pointer's ray meets a stroke's own plane, and whether the stroke may continue there. `candidates`
-   * are the patches still holding every vertex so far. `status`:
-   *  - 'ok': on the plane, on a patch that holds it, and that plane is what the pointer sees (u, v, world);
-   *  - 'edge': on the plane but off every candidate patch (the stroke left its face or zone; u, v given);
-   *  - 'blocked': inside a patch, but something else is in front of it or is what is shown there;
-   *  - 'view': outside the canvas, or the ray does not reach the plane in front of the camera;
-   *  - 'provisional': the Editor now holds a scene-only pose (the caller cancels the stroke).
-   * @returns {{ status: string, u?: number, v?: number, world?: any }}
+   * Where the pointer's ray meets a stroke's own plane, as surface-local inches (the plane only: no patch, no
+   * visibility rule). `bounded` additionally requires the pointer to be over the canvas. `status`: 'ok' (u, v),
+   * 'view' (outside the canvas when bounded, or the ray does not reach the plane in front of the camera),
+   * 'blocked' (the cargo the plane belongs to is not in the scene), 'provisional' (the Editor holds a scene-only pose).
+   * @returns {{ status: string, u?: number, v?: number }}
    */
-  function sampleDrawSurface(surface, candidates, clientX, clientY) {
+  function planeSample(surface, clientX, clientY, bounded) {
     const camera = SceneManager.getCamera();
     const canvas = getCanvas();
     const pack = getPack();
     if (!camera || !canvas || !pack || !surface) return { status: 'view' };
     if (hasProvisionalPose()) return { status: 'provisional' };
     const rect = canvas.getBoundingClientRect();
-    if (rect.width <= 0 || rect.height <= 0 || clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom) {
-      return { status: 'view' };
-    }
+    if (rect.width <= 0 || rect.height <= 0) return { status: 'view' };
+    if (bounded && (clientX < rect.left || clientX > rect.right || clientY < rect.top || clientY > rect.bottom)) return { status: 'view' };
     ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     raycaster.setFromCamera(ndc, camera);
     const { frame, anchor } = surface;
@@ -406,6 +402,23 @@ export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, Pack
     const u = sampleHit[frame.u] / scale;
     const v = sampleHit[frame.v] / scale;
     if (!Number.isFinite(u) || !Number.isFinite(v)) return { status: 'view' };
+    return { status: 'ok', u, v };
+  }
+
+  /**
+   * Where the pointer's ray meets a stroke's own plane, and whether the stroke may continue there. `candidates`
+   * are the patches still holding every vertex so far. `status`:
+   *  - 'ok': on the plane, on a patch that holds it, and that plane is what the pointer sees (u, v, world);
+   *  - 'edge': on the plane but off every candidate patch (the stroke left its face or zone; u, v given);
+   *  - 'blocked': inside a patch, but something else is in front of it or is what is shown there;
+   *  - 'view': outside the canvas, or the ray does not reach the plane in front of the camera;
+   *  - 'provisional': the Editor now holds a scene-only pose (the caller cancels the stroke).
+   * @returns {{ status: string, u?: number, v?: number, world?: any }}
+   */
+  function sampleDrawSurface(surface, candidates, clientX, clientY) {
+    const onPlane = planeSample(surface, clientX, clientY, true);
+    if (onPlane.status !== 'ok') return { status: onPlane.status };
+    const { u, v } = /** @type {{ u: number, v: number }} */ (onPlane);
     if (!candidates.some(patch => patchContains(patch, u, v))) return { status: 'edge', u, v };
     // The same nearest-surface rule that placed the stroke's first vertex: if anything else is what the pointer
     // sees here (cargo in front, another surface), the stroke stops instead of drawing through it.
@@ -416,6 +429,16 @@ export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, Pack
     const world = new THREE.Vector3();
     if (!drawSurfaceWorld(surface, u, v, world)) return { status: 'blocked', u, v };
     return { status: 'ok', u, v, world };
+  }
+
+  /**
+   * Where the pointer's ray meets a stroke's plane, wherever on that plane: the position a whole-stroke move is
+   * measured from. Unlike sampleDrawSurface it neither requires a patch nor that the surface is what the pointer
+   * sees, so a drag can run past the edge of its surface (the caller then judges the move invalid).
+   * @returns {{ status: string, u?: number, v?: number }}
+   */
+  function sampleDrawPlane(surface, clientX, clientY) {
+    return planeSample(surface, clientX, clientY, false);
   }
 
   // ==========================================================================
@@ -455,6 +478,7 @@ export function createSurfacePicker({ SceneManager, CaseScene, CaseLibrary, Pack
     pickDraw,
     beginDrawSurface,
     sampleDrawSurface,
+    sampleDrawPlane,
     drawSurfaceWorld,
     liveAnchorWorld,
     cargoGroupFor,

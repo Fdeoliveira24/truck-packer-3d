@@ -5935,3 +5935,260 @@ test('annotation line style: Arrows and Drawings offer Weight and Style, a recor
   assert.equal(await writes(page), 6, 'display choices write nothing');
   assert.deepEqual(errors, []);
 });
+
+// ============================================================================
+// SECTION: DIRECT DRAWING SELECTION + MOVEMENT (V1B.2 Gate B.4)
+// ============================================================================
+const HIT = '.tp3d-annot-draw__hit';
+// What the pointer would reach at a screen point: the stroke's own hit path, the canvas, or whatever else is there.
+const reachAt = (page, at) => page.evaluate(({ x, y }) => {
+  const el = document.elementFromPoint(x, y);
+  if (!el) return 'nothing';
+  if (el.matches('.tp3d-annot-draw__hit')) return `hit:${el.closest('.tp3d-annot-draw').dataset.annotId}`;
+  return el === document.querySelector('#viewport canvas') ? 'canvas' : `${el.tagName}.${String((el.className && el.className.baseVal) ?? el.className)}`;
+}, at);
+const moveLook = (page, id) => page.evaluate(sel => {
+  const group = document.querySelector(`.tp3d-annot-draws .tp3d-annot-draw[data-annot-id="${sel}"]`);
+  return group ? {
+    d: group.querySelector('.tp3d-annot-draw__line').getAttribute('d'),
+    hit: group.querySelector('.tp3d-annot-draw__hit').getAttribute('d'),
+    moving: group.classList.contains('is-moving'),
+    invalid: group.classList.contains('is-move-invalid'),
+    selected: group.classList.contains('is-selected'),
+  } : null;
+}, id);
+const moveState = page => page.evaluate(() => window.probe.AnnotationTool.moveState());
+const layerClasses = page => page.evaluate(() => [...document.querySelector('.tp3d-annot-layer').classList].filter(name => /^is-(draw-hit|draw-moving|view-only|presenting)$/.test(name)));
+const waitHit = (page, id) => page.waitForFunction(sel => document.querySelector(`.tp3d-annot-draws .tp3d-annot-draw[data-annot-id="${sel}"] .tp3d-annot-draw__hit`)?.getAttribute('d'), id);
+const seedFloorDraw = (page, from, rest) => page.evaluate(({ from, rest }) => {
+  const { M, PackLibrary } = window.probe;
+  const anchor = M.buildFloorAnchor({ surface: 'main', point: { x: from[0], y: 0, z: from[1] } });
+  const outcome = PackLibrary.addDraw('fixture-pack', { anchor, rawPoints: rest });
+  if (!outcome.ok) throw new Error(`floor draw seed failed: ${outcome.reason}`);
+  return outcome.annotation;
+}, { from, rest });
+
+test('annotation drawing move: a saved drawing is selected by clicking its line and carried rigidly along its own surface, one write on a valid release and none for a click, a cancel or a position it cannot take', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  await watchWrites(page);
+  await watchPointer(page);
+  const TOP_AIM = [[70, 32, -20], [0, 70, 70]]; // close enough that an inch is several pixels
+  await aimCamera(page, ...TOP_AIM);
+  const top = await seedDraw(page); // across the top of cargo-a: world (52,32,-28) -> (64,32,-20) -> (80,32,-26) -> (88,32,-24)
+  const floor = await seedFloorDraw(page, [150, -30], [190, 10, 230, -20]); // open truck floor
+  await waitHit(page, top.id); // the floor drawing is out of this view until the camera goes there
+  await watchWrites(page); // the seeds are not part of what is counted
+  const onTop = await point(page, 58, 32, -24); // the middle of the stroke's first segment
+  const aside = await point(page, 82, 32, -10); // cargo-a's top, well away from the stroke
+  const camera = await page.evaluate(() => window.probe.camera());
+  const start = await dataOf(page);
+
+  // The hit path is the only thing in the overlay that takes the pointer, and it sits on the line itself.
+  assert.deepEqual(await layerClasses(page), ['is-draw-hit']);
+  assert.equal(await reachAt(page, onTop), `hit:${top.id}`, 'the stroke is reachable through the click-through layer');
+  assert.equal(await reachAt(page, aside), 'canvas', 'the cargo beside it is not covered');
+  assert.equal(await page.evaluate(sel => getComputedStyle(document.querySelector(sel)).pointerEvents, '.tp3d-annot-svg'), 'none', 'the SVG itself stays click-through');
+  const look = await page.evaluate(() => {
+    const group = document.querySelector('.tp3d-annot-draws .tp3d-annot-draw');
+    const css = getComputedStyle(group.querySelector('.tp3d-annot-draw__hit'));
+    return { stroke: css.stroke, width: css.strokeWidth, line: getComputedStyle(group.querySelector('.tp3d-annot-draw__line')).strokeWidth, children: group.querySelectorAll('path').length };
+  });
+  assert.equal(look.children, 3, 'a halo, the line and ONE hit path');
+  assert.notEqual(look.width, look.line, 'the grab band is wider than the line it follows');
+
+  // A click selects it like its row does and writes nothing; cargo is not selected and the camera does not move.
+  await click(page, onTop);
+  await page.waitForFunction(id => window.probe.AnnotationTool.selectedId() === id, top.id);
+  assert.equal((await moveLook(page, top.id)).selected, true, 'the selected edge is the existing one');
+  assert.match(await page.locator(`${rowFor(top.id)}`).getAttribute('class'), /is-selected/);
+  assert.equal((await lookControls(page, 'draw')).title, 'Drawing 1 look');
+  assert.deepEqual({ ...await dataOf(page), selected: null }, { ...start, selected: null }, 'selecting wrote nothing and moved nothing');
+  assert.equal(await writes(page), 0);
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'cargo was not selected');
+  assert.equal(await page.evaluate(() => window.probe.camera()), camera);
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => window.probe.AnnotationTool.selectedId() === null);
+
+  // A press that stays under the drag threshold is a click: nothing moves, nothing is written.
+  await page.mouse.move(onTop.x, onTop.y);
+  await page.mouse.down();
+  await page.mouse.move(onTop.x + 2, onTop.y + 2, { steps: 3 });
+  assert.equal(await moveState(page), 'pressed');
+  await page.mouse.up();
+  assert.equal(await moveState(page), 'idle');
+  assert.equal(await writes(page), 0);
+
+  // A drag carries the whole stroke: the record is untouched while it moves, and the preview is the stroke shifted.
+  const before = (await page.evaluate(() => window.probe.annotations())).find(r => r.id === top.id);
+  const original = await moveLook(page, top.id);
+  const target = await point(page, 62, 32, -21); // +4 along the face's u (world x), +3 along its v (world z)
+  await page.mouse.move(onTop.x, onTop.y);
+  await page.mouse.down();
+  await page.mouse.move(target.x, target.y, { steps: 10 });
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'moving');
+  const carried = await moveLook(page, top.id);
+  assert.equal(carried.moving, true);
+  assert.equal(carried.invalid, false);
+  assert.notEqual(carried.d, original.d, 'the preview follows the pointer');
+  assert.deepEqual(await layerClasses(page), ['is-draw-moving'], 'no other stroke can be grabbed meanwhile');
+  assert.match(await page.evaluate(() => window.probe.hint()), /release to move the drawing here/i);
+  assert.equal(await writes(page), 0, 'nothing is written while it moves');
+  assert.equal(JSON.stringify((await page.evaluate(() => window.probe.annotations())).find(r => r.id === top.id)), JSON.stringify(before), 'and the stored drawing is exactly as it was');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), start.cases);
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle');
+  await page.waitForFunction(count => window.probe.annotations().length === count && window.__writes === 1, 2);
+  const after = (await page.evaluate(() => window.probe.annotations())).find(r => r.id === top.id);
+  const delta = [after.anchor.local.x - before.anchor.local.x, after.anchor.local.z - before.anchor.local.z];
+  assert.ok(Math.abs(delta[0] - 4) < 0.25 && Math.abs(delta[1] - 3) < 0.25, `moved by about (4, 3) in (${delta.map(v => v.toFixed(2)).join(', ')})`);
+  assert.equal(after.anchor.local.y, before.anchor.local.y, 'still on the face plane');
+  after.points.forEach((value, i) => {
+    const moved = value - before.points[i];
+    assert.ok(Math.abs(moved - delta[i % 2]) < 1e-9, `vertex ${Math.floor(i / 2) + 1} moved by the same offset as the anchor (${moved} vs ${delta[i % 2]})`);
+  });
+  assert.equal(Math.round(delta[0] * 100) / 100, delta[0], 'the offset is on the 0.01 in grid');
+  const keep = record => JSON.stringify({ ...record, anchor: { ...record.anchor, local: undefined }, points: undefined, updatedAt: undefined });
+  assert.equal(keep(after), keep(before), 'ID, cargo, face, signature, color, weight, style and createdAt are unchanged');
+  assert.ok(after.updatedAt >= before.updatedAt);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), start.cases, 'cargo is untouched');
+  assert.equal(await page.evaluate(() => window.probe.camera()), camera, 'and so is the camera');
+  assert.equal(JSON.stringify((await page.evaluate(() => window.probe.annotations())).find(r => r.id === floor.id)), JSON.stringify(floor), 'other drawings are untouched');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.selectedId()), top.id, 'the moved drawing is the selection');
+  assert.match(await page.evaluate(() => window.probe.hint()), /drawing moved/i);
+  assert.equal((await moveLook(page, top.id)).moving, false);
+  assert.notEqual((await moveLook(page, top.id)).d, original.d, 'it is drawn in its new place');
+  await watchWrites(page);
+
+  // Dragging and coming back to where the press began is not an edit: nothing is written and lastEdited stays.
+  const edited = (await dataOf(page)).edited;
+  const here = await point(page, 62, 32, -21);
+  const out = await point(page, 54, 32, -21);
+  await waitHit(page, top.id);
+  assert.equal(await reachAt(page, here), `hit:${top.id}`, 'the moved line is under the pointer in its new place');
+  await page.mouse.move(here.x, here.y);
+  await page.mouse.down();
+  await page.mouse.move(out.x, out.y, { steps: 6 });
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'moving');
+  await page.mouse.move(here.x, here.y, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle');
+  assert.deepEqual(await layerClasses(page), ['is-draw-hit'], 'the stroke can be grabbed again once the move ended');
+  assert.equal(await writes(page), 0, 'a no-op move is not a write');
+  assert.equal((await dataOf(page)).edited, edited, 'and does not touch lastEdited');
+  assert.match(await page.evaluate(() => window.probe.hint()), /left where it was/i);
+
+  // A position the whole drawing cannot take: past the edge of its cargo face, past the truck wall. It is shown, then refused
+  // whole - no clamping, no partial move - and the drawing returns to where it was.
+  const refusals = [
+    ['cargo face', top.id, [[62, 32, -21], [76, 32, -21]], null],
+    ['truck floor', floor.id, [[170, 0, -10], [170, 0, 62]], [[170, 0, -10], [0, 90, 120]]],
+  ];
+  for (const [label, id, [from, to], aim] of refusals) {
+    if (aim) {
+      await aimCamera(page, ...aim);
+      await waitHit(page, id);
+    }
+    const [a, b] = [await point(page, ...from), await point(page, ...to)];
+    const record = JSON.stringify((await page.evaluate(() => window.probe.annotations())).find(r => r.id === id));
+    const rest = await moveLook(page, id);
+    assert.equal(await reachAt(page, a), `hit:${id}`, `${label}: the line is under the pointer`);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 12 });
+    await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'blocked');
+    const refused = await moveLook(page, id);
+    assert.deepEqual([refused.moving, refused.invalid], [true, true], `${label}: the position is shown as one it cannot take`);
+    assert.match(await page.evaluate(() => window.probe.hint()), /would leave its surface/i);
+    assert.equal(JSON.stringify((await page.evaluate(() => window.probe.annotations())).find(r => r.id === id)), record, `${label}: the stored drawing is untouched while it is shown there`);
+    await page.mouse.up();
+    await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle');
+    assert.equal(await writes(page), 0, `${label}: refused, nothing written`);
+    assert.equal(JSON.stringify((await page.evaluate(() => window.probe.annotations())).find(r => r.id === id)), record, `${label}: stored exactly as it was`);
+    assert.deepEqual(await moveLook(page, id), { ...rest, selected: refused.selected || rest.selected }, `${label}: drawn exactly where it was`);
+    assert.match(await page.evaluate(() => window.probe.hint()), /left where it was/i);
+  }
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), start.cases);
+  await aimCamera(page, ...TOP_AIM);
+  await waitHit(page, top.id);
+
+  // Escape and a cancelled pointer end the move without writing, and the drawing is where it was.
+  const pointer = await pointerId(page);
+  for (const [label, cancel] of [
+    ['Escape', () => page.keyboard.press('Escape')],
+    ['pointercancel', () => page.evaluate(id => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: id, bubbles: true })), pointer)],
+    ['window blur', () => page.evaluate(() => window.dispatchEvent(new Event('blur')))],
+  ]) {
+    const rest = await moveLook(page, top.id);
+    const [a, b] = [await point(page, 62, 32, -21), await point(page, 54, 32, -25)];
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down();
+    await page.mouse.move(b.x, b.y, { steps: 8 });
+    await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'moving');
+    await cancel();
+    await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle');
+    assert.equal(await writes(page), 0, `${label}: nothing written`);
+    assert.match(await page.evaluate(() => window.probe.hint()), /move cancelled/i, label);
+    await page.mouse.up();
+    assert.deepEqual(await moveLook(page, top.id), rest, `${label}: drawn where it was, no longer carried`);
+    assert.equal(await writes(page), 0, `${label}: releasing afterwards writes nothing`);
+  }
+
+  // The cargo the drawing is on moving mid-drag ends the move: the drawing follows its cargo, the move is not applied to it.
+  const [c, d] = [await point(page, 62, 32, -21), await point(page, 54, 32, -25)];
+  await page.mouse.move(c.x, c.y);
+  await page.mouse.down();
+  await page.mouse.move(d.x, d.y, { steps: 8 });
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'moving');
+  await moveCargoA(page, 6);
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle');
+  await page.mouse.up();
+  assert.equal(await writes(page), 0, 'a cargo change cancelled the move without writing');
+  assert.equal(JSON.stringify((await page.evaluate(() => window.probe.annotations())).find(r => r.id === top.id).points), JSON.stringify(after.points), 'the drawing itself was not changed');
+  await moveCargoA(page, -6);
+  await cameraSettled(page);
+  await waitHit(page, top.id);
+
+  // Nothing else may take a drag meant for a tool that owns the pointer: an armed tool, Present and Measurement leave the line out of reach.
+  const reach = await point(page, 62, 32, -21);
+  assert.equal(await reachAt(page, reach), `hit:${top.id}`);
+  for (const tool of ['callout', 'arrow', 'draw']) {
+    await page.click(`.tp3d-annot-seg__btn[data-tool="${tool}"]`);
+    await page.waitForFunction(() => window.probe.AnnotationTool.isActive());
+    assert.equal(await reachAt(page, reach), 'canvas', `${tool}: the pointer reaches the scene, so the tool keeps its gestures`);
+    assert.ok(!(await layerClasses(page)).includes('is-draw-hit'), tool);
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !window.probe.AnnotationTool.isActive());
+  }
+  await page.click(PRESENT);
+  await page.waitForFunction(() => window.probe.AnnotationTool.isPresenting());
+  assert.equal(await reachAt(page, reach), 'canvas', 'Present is a view: the layer is inert');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !window.probe.AnnotationTool.isPresenting());
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-layer')?.classList.contains('is-view-only')); // the layer follows on the next frame
+  assert.equal(await reachAt(page, reach), 'canvas', 'Measurement owns the pointer');
+  assert.ok(!(await layerClasses(page)).includes('is-draw-hit'));
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'false');
+  await waitHit(page, top.id);
+  assert.equal(await writes(page), 0, 'none of that wrote anything');
+
+  // A callout marker sitting on the line keeps the click: markers are above the overlay's SVG.
+  const [marker] = await seed(page, [{ title: 'On the line', cargo: 'cargo-a', local: { x: -6, y: 16, z: 0 } }]);
+  await page.waitForSelector(`.tp3d-annot-pin[data-annot-id="${marker.id}"]`);
+  const pin = await pinCentreOf(page, `.tp3d-annot-pin[data-annot-id="${marker.id}"]`);
+  await click(page, pin);
+  await page.waitForFunction(id => window.probe.AnnotationTool.selectedId() === id, marker.id);
+
+  // Reload: the moved position is what the record says, and a fresh overlay draws it there.
+  const stored = (await page.evaluate(() => window.probe.annotations())).find(r => r.id === top.id);
+  assert.equal(JSON.stringify(await page.evaluate(record => window.probe.A.normalizeAnnotations([JSON.parse(JSON.stringify(record))])[0], stored)), JSON.stringify(stored), 'the saved record round-trips unchanged');
+  const drawn = (await moveLook(page, top.id)).d;
+  await page.evaluate(() => { window.probe.AnnotationTool.closePanel(); window.probe.AnnotationTool.openPanel(); });
+  await page.waitForFunction(({ id, d }) => document.querySelector(`.tp3d-annot-draws .tp3d-annot-draw[data-annot-id="${id}"] .tp3d-annot-draw__line`)?.getAttribute('d') === d, { id: top.id, d: drawn });
+  assert.deepEqual(errors, []);
+});

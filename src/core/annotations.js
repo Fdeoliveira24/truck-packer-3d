@@ -44,8 +44,10 @@ import {
   MEASUREMENT_STATUS,
   canonicalAnchorRecord,
   cargoAnchorLocal,
+  cargoFaceFrame,
   cargoFacePatch,
   drawAnchorUV,
+  drawFrameKey,
   instanceIdentityKey,
   patchContains,
   resolveAnchor,
@@ -399,6 +401,37 @@ export function editDrawRecord(record, patch, now) {
   if (Object.hasOwn(patch, 'width')) next.width = patch.width;
   if (Object.hasOwn(patch, 'style')) next.style = patch.style;
   if (Object.hasOwn(patch, 'hidden')) next.hidden = patch.hidden === true;
+  return validateDrawRecord(next) ? null : canonicalDrawRecord(next);
+}
+
+/**
+ * Pure rigid move of a whole stroke by one in-plane offset `(du, dv)` in its own surface frame (inches). The
+ * offset is snapped to the 0.01 in grid first, so every stored vertex stays exactly on the grid; the anchor
+ * (vertex 0) moves by the same offset at its own 4-decimal precision and keeps its coordinate along the surface
+ * normal. The kind, cargo instance, face, truck evidence, geometry signature, presentation, identity and
+ * creation time are carried over exactly. An offset that snaps to zero returns the stroke unchanged (same
+ * `updatedAt`); any other result gets `updatedAt = now`. Null when the stroke is not valid, the offset is not
+ * finite, or the moved stroke is not valid (a vertex leaves the cargo face, a vertex repeats its predecessor).
+ * Whether a moved world stroke still sits on one floor or wall patch needs the layout and is judged at write
+ * time (drawPlacementProblem), never here.
+ * @param {Record<string, any>} record
+ * @param {number} du
+ * @param {number} dv
+ * @param {number} now
+ */
+export function translateDrawRecord(record, du, dv, now) {
+  if (!isRecord(record) || record.type !== ANNOTATION_TYPE_DRAW || !isFiniteNumber(now)) return null;
+  if (!isFiniteNumber(du) || !isFiniteNumber(dv) || validateDrawRecord(record)) return null;
+  const offset = [quantizeDrawValue(du), quantizeDrawValue(dv)];
+  if (offset[0] === 0 && offset[1] === 0) return canonicalDrawRecord(record);
+  const frame = cargoFaceFrame(drawFrameKey(record.anchor, record.face));
+  if (!frame) return null;
+  const home = record.anchor.kind === 'cargo' ? 'local' : 'position';
+  const anchor = { ...record.anchor, [home]: { ...record.anchor[home] } };
+  anchor[home][frame.u] = round(anchor[home][frame.u] + offset[0], 4);
+  anchor[home][frame.v] = round(anchor[home][frame.v] + offset[1], 4);
+  const points = record.points.map((value, i) => quantizeDrawValue(value + offset[i % 2]));
+  const next = { ...record, anchor, points, updatedAt: now };
   return validateDrawRecord(next) ? null : canonicalDrawRecord(next);
 }
 

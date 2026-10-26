@@ -5630,6 +5630,15 @@ body.tp3d-shared-modal-lock #app .nav {
   min-height: 0;
   padding: 12px 14px;
   overflow-y: auto;
+
+  /* In a short window the body scrolls under the fixed header and footer: a soft edge shows where more of it lies
+     beyond the fold, so a row cut off there (Color, Keep expanded) reads as scrollable, not covered. The `local` layers
+     hide the edge once the body is scrolled to that end (or does not scroll at all). */
+  background:
+    linear-gradient(var(--bg-elevated) 30%, transparent) 0 0 / 100% 16px no-repeat local,
+    linear-gradient(transparent, var(--bg-elevated) 70%) 0 100% / 100% 16px no-repeat local,
+    linear-gradient(rgb(0, 0, 0, 0.16), transparent) 0 0 / 100% 8px no-repeat scroll,
+    linear-gradient(transparent, rgb(0, 0, 0, 0.16)) 0 100% / 100% 8px no-repeat scroll;
 }
 
 .tp3d-annot-editor__field {

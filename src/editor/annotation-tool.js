@@ -4250,7 +4250,8 @@ export function createAnnotationTool({
     // yields while the card is open) rather than covering Save. A card the owner positioned only yields to Results.
     const markerBox = screen ? [{ x: screen.x - PIN_RECT_PX / 2, y: screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }] : [];
     const panelRects = panelRectsNow();
-    const placement = fitEditorClear({ rect, viewport, panel: panelRects, status: statusObstacle(), results: resultsBox, marker: markerBox, controls: controlsObstacle(), ownerPlaced });
+    // The toolbar is a hard obstacle like the status button: a card never opens with its header under it.
+    const placement = fitEditorClear({ rect, viewport, panel: panelRects, status: statusObstacle().concat(toolbarObstacle()), results: resultsBox, marker: markerBox, controls: controlsObstacle(), ownerPlaced });
     const fit = placement.fit;
     // A panel the owner is dragging stays under their pointer; it yields once it is dropped.
     const panelDragging = Boolean(els.panel && els.panel.classList.contains('is-dragging'));
@@ -4321,6 +4322,17 @@ export function createAnnotationTool({
     if (!els.layer || !doc) return [];
     const stack = doc.getElementById('editor-zoom-controls');
     return layerRects([stack && !(stack.closest && stack.closest('[hidden]')) ? stack : null]);
+  }
+
+  /**
+   * The floating Editor toolbar (Cases, AutoPack, ...) across the top of the viewport. It is drawn above this layer, so
+   * an editor card or sheet that reaches it has its header underneath; both keep clear of it like the Annotations panel
+   * does (the panel's own region starts below it).
+   */
+  function toolbarObstacle() {
+    if (!els.layer || !doc) return [];
+    const toolbar = doc.getElementById('viewport-toolbar');
+    return layerRects([toolbar && !(toolbar.closest && toolbar.closest('[hidden]')) ? toolbar : null]);
   }
 
   /** The Editor's "Load plan needs review" button, when it shows. */
@@ -4413,9 +4425,9 @@ export function createAnnotationTool({
     return changed;
   }
 
-  /** The narrow-viewport sheet, moved clear of the Results card and limited in height before any button is hidden. True when it changed. */
+  /** The narrow-viewport sheet, moved clear of the Results card and the toolbar and limited in height before any button is hidden. True when it changed. */
   function fitEditorSheet(parts, viewport, resultsBox, natural) {
-    const fit = fitSheet({ viewport, blockers: resultsBox, height: natural });
+    const fit = fitSheet({ viewport, blockers: resultsBox.concat(toolbarObstacle()), height: natural });
     const maxHeight = fit.moved ? `${fit.maxHeight}px` : '';
     const bottom = fit.moved ? `${fit.bottom}px` : '';
     const changed = parts.root.style.maxHeight !== maxHeight || parts.root.style.bottom !== bottom;

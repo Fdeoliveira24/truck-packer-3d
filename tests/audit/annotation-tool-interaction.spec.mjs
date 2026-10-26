@@ -5222,3 +5222,51 @@ test('freehand in a compact viewport: with Draw armed the panel still reaches Dr
   }
   assert.deepEqual(errors, []);
 });
+
+// ============================================================================
+// Annotations V1B.2 Gate B.1: the callout editor keeps clear of the floating Editor toolbar (drawn above the annotation layer),
+// and in a window too short for it the body scrolls to its last row (Color, Keep expanded) above the footer, never under it.
+// ============================================================================
+test('callout editor in a short window keeps its header clear of the toolbar and scrolls every option, Color included, above the footer', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  // The reported window (a card on a 556x398 canvas with the toolbar across its top), then the narrow sheet under the two-row toolbar.
+  for (const [width, height, sheet] of [[1100, 480, false], [1000, 600, true], [1000, 520, true]]) {
+    const label = `${width}x${height}`;
+    const { page, errors } = await openPanel(browser, { width, height });
+    await seed(page, [{ title: 'UNLOAD FIRST', description: 'Place near rear doors. Required at first delivery stop.', ground: [520, 10] }]);
+    const stored = await page.evaluate(() => JSON.stringify(window.probe.annotations()));
+    await page.click('.tp3d-annot-row__edit');
+    await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+    await frames(page, 6);
+    assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-editor').classList.contains('is-sheet')), sheet, `${label}: ${sheet ? 'the sheet' : 'the card'}`);
+    assert.equal(overlaps(await boxOf(page, '.tp3d-annot-editor'), await boxOf(page, '#viewport-toolbar')), false, `${label}: the editor is not under the toolbar`);
+    assert.equal(await unobstructed(page, '.tp3d-annot-editor__head'), true, `${label}: the header is not covered`);
+    assert.deepEqual(await editorControls(page), REACHABLE, `${label}: Save, Cancel and the title field are reachable`);
+    assert.match(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-editor__body')).backgroundImage), /linear-gradient/, `${label}: a scrolling body shows where more lies beyond the fold`);
+    // Scrolled to its end, every option sits whole above the footer and is topmost at its own centre.
+    const problems = await page.evaluate(() => {
+      const editor = document.querySelector('.tp3d-annot-editor');
+      const body = editor.querySelector('.tp3d-annot-editor__body');
+      body.scrollTop = body.scrollHeight;
+      const view = body.getBoundingClientRect();
+      const floor = Math.min(view.bottom, editor.querySelector('.tp3d-annot-editor__foot').getBoundingClientRect().top);
+      const found = [];
+      const controls = [...editor.querySelectorAll('.tp3d-annot-swatch, .tp3d-annot-editor__keep input')];
+      if (controls.length < 7) found.push(`only ${controls.length} option controls`);
+      controls.forEach((el, index) => {
+        const r = el.getBoundingClientRect();
+        if (r.top < view.top - 0.5 || r.bottom > floor + 0.5) found.push(`control ${index} is cut off (${Math.round(r.top)}..${Math.round(r.bottom)} within ${Math.round(view.top)}..${Math.round(floor)})`);
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        if (hit !== el && !el.contains(hit)) found.push(`control ${index} is covered by ${hit ? `${hit.tagName}.${hit.className}` : 'nothing'}`);
+      });
+      return found;
+    });
+    assert.deepEqual(problems, [], `${label}: every option is reachable above the footer`);
+    await page.click('.tp3d-annot-editor__foot .tp3d-annot-btn:not(.tp3d-annot-btn--primary):not(.tp3d-annot-btn--danger)');
+    await page.waitForFunction(() => document.querySelector('.tp3d-annot-editor').hidden);
+    assert.equal(await page.evaluate(() => JSON.stringify(window.probe.annotations())), stored, `${label}: the stored annotation is exactly as it was`);
+    assert.deepEqual(errors, []);
+    await page.close();
+  }
+});

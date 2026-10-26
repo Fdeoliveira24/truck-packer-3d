@@ -5165,12 +5165,17 @@ body.tp3d-shared-modal-lock #app .nav {
   stroke-linejoin: round;
 }
 
-/* Selected: the list row marks the selection too; the line gains a brand-orange edge in place of its neutral halo, wider than a
-   selected arrow's hairline because a freehand line is thin and wanders over every surface. A hidden-behind-cargo stroke keeps
-   its neutral halo so it never looks unobstructed. */
+/* Selected: the list row marks the selection too; the line gains a thin brand-orange edge in place of its neutral one (about a pixel
+   a side, set in annotation-tool.js), so the stroke keeps its own colour and weight and a Dashed or Dotted line keeps its pattern.
+   A hidden-behind-cargo stroke keeps its neutral edge so it never looks unobstructed. */
 .tp3d-annot-svg .tp3d-annot-draw.is-selected:not(.is-occluded) .tp3d-annot-draw__under {
   stroke: var(--accent-primary);
   stroke-opacity: 0.95;
+}
+
+/* The edge of a Dotted line is a faint hairline on each dot, never a ring: the dots are the line. */
+.tp3d-annot-svg .tp3d-annot-draw[data-line-style='dotted']:not(.is-selected) .tp3d-annot-draw__under {
+  stroke-opacity: 0.5;
 }
 
 /* Hidden by cargo or the truck from where the camera is: dashed and dimmed, selected or not, the same convention as an arrow. */

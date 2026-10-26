@@ -6474,3 +6474,142 @@ test('annotation drawing touch: a second finger ends the move without a write an
   await finger.lift(9);
   assert.deepEqual(errors, []);
 });
+
+// ============================================================================
+// SECTION: DRAWING LINE AND SELECTION APPEARANCE (V1B.2 Gate B.4.2)
+// ============================================================================
+// What a drawing's line and the edge under it are painted with, read from the page: widths, pattern, colors and the edge's opacity.
+const drawLook = page => page.evaluate(() => Object.fromEntries([...document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-draws .tp3d-annot-draw:not(.is-preview)')]
+  .filter(group => group.dataset.lineStyle)
+  .map(group => {
+    const line = getComputedStyle(group.querySelector('.tp3d-annot-draw__line'));
+    const edge = getComputedStyle(group.querySelector('.tp3d-annot-draw__under'));
+    return [group.dataset.annotId, {
+      style: group.dataset.lineStyle,
+      selected: group.classList.contains('is-selected'),
+      occluded: group.classList.contains('is-occluded'),
+      dash: line.strokeDasharray,
+      lineWidth: parseFloat(line.strokeWidth),
+      lineStroke: line.stroke,
+      edgeWidth: parseFloat(edge.strokeWidth),
+      edgeStroke: edge.stroke,
+      edgeOpacity: parseFloat(edge.strokeOpacity),
+    }];
+  })));
+
+test('annotation drawing look: a Dotted line is clean dots with no ring, a Dashed one keeps clear gaps, the selection is a restrained accent edge that keeps the line\'s color and weight, the pattern follows the stroke\'s size on screen, and Arrows are untouched', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  await aimCamera(page, ...TOP_FACE_AIM);
+  // One row per look on cargo A's top face (its own small face), each a gentle wave: every weight Dotted, two Dashed, one Solid.
+  const wave = (v, count = 27) => Array.from({ length: count }, (_, i) => [-19.5 + i * 1.5, +(v + 1.6 * Math.sin(i * 0.55)).toFixed(2)]).flat();
+  const row = (v, width, style, color) => seedDraw(page, { local: { x: -20, y: 16, z: v }, rest: wave(v), width, style, color });
+  const thinDot = await row(-9, 'thin', 'dotted', 'ink');
+  const regDot = await row(-5, 'regular', 'dotted', 'blue');
+  const bolDot = await row(-1, 'bold', 'dotted', 'red');
+  const regDash = await row(3, 'regular', 'dashed', 'blue');
+  const bolDash = await row(6.5, 'bold', 'dashed', 'violet');
+  const solid = await row(10, 'regular', undefined, 'green');
+  const arrowDot = await seedArrow(page, [100, 62], [180, 62], { style: 'dotted' });
+  const arrowDash = await seedArrow(page, [100, 74], [180, 74], { style: 'dashed', width: 'bold' });
+  const everyDrawing = [thinDot, regDot, bolDot, regDash, bolDash, solid];
+  await page.waitForFunction(n => document.querySelectorAll('.tp3d-annot-draws .tp3d-annot-draw__line[d]:not([d=""])').length === n, everyDrawing.length);
+  await cameraSettled(page);
+  await watchWrites(page);
+  const select = async id => {
+    await page.click(`${rowFor(id)} .tp3d-annot-row__select`);
+    await page.waitForFunction(selected => window.probe.AnnotationTool.selectedId() === selected, id);
+    await cameraSettled(page);
+  };
+  const clearSelection = async () => {
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !window.probe.AnnotationTool.selectedId());
+  };
+
+  // Unselected, at a normal distance. The edge of a Dotted line is a hairline that never reads as a ring, and the dots stay apart.
+  let look = await drawLook(page);
+  const plain = Object.fromEntries(everyDrawing.map(record => [record.id, look[record.id]]));
+  assert.ok(everyDrawing.every(record => plain[record.id] && plain[record.id].selected === false), 'every drawing is painted, none selected');
+  assert.deepEqual([thinDot, regDot, bolDot].map(r => plain[r.id].lineWidth), [2, 3, 5], 'Thin, Regular and Bold keep their weights');
+  for (const record of [thinDot, regDot, bolDot]) {
+    const info = plain[record.id];
+    const [dot, gap] = dashes(info.dash);
+    assert.ok(dot < 0.5 && info.edgeWidth - info.lineWidth <= 2 && info.edgeOpacity <= 0.5, `${record.id}: a dot's edge is a faint hairline, not a ring (${info.edgeWidth - info.lineWidth} px at ${info.edgeOpacity})`);
+    assert.ok(gap - info.edgeWidth >= 3, `${record.id}: neighbouring dots keep clear space between their edges (${gap} apart, ${info.edgeWidth} wide)`);
+  }
+  for (const record of [regDash, bolDash]) {
+    const info = plain[record.id];
+    const [dash, gap] = dashes(info.dash);
+    assert.ok(dash >= info.lineWidth * 2.5 && gap >= 4 && gap < dash, `${record.id}: long dashes with clear gaps (${dash} ${gap})`);
+  }
+  assert.ok(dashes(plain[bolDash.id].dash)[0] > dashes(plain[regDash.id].dash)[0], 'a Bold dash is longer than a Regular one');
+  assert.deepEqual([plain[solid.id].dash, plain[solid.id].edgeWidth - plain[solid.id].lineWidth, plain[solid.id].edgeOpacity], ['none', 3, 0.72], 'a Solid line keeps its continuous line and its neutral edge');
+
+  // Selected: an accent edge that keeps the line's own color and weight, a little wider than its plain one, never a doubling of the line.
+  const selectedWidths = [];
+  for (const record of [thinDot, regDot, bolDot, bolDash]) {
+    await select(record.id);
+    look = await drawLook(page);
+    const was = plain[record.id];
+    const now = look[record.id];
+    assert.equal(now.selected, true);
+    assert.equal(now.lineWidth, was.lineWidth, `${record.id}: selecting does not change the line's weight`);
+    assert.equal(now.lineStroke, was.lineStroke, `${record.id}: the line keeps the color the user chose`);
+    assert.notEqual(now.edgeStroke, was.edgeStroke, `${record.id}: the edge is the accent`);
+    assert.ok(now.edgeOpacity >= 0.9, `${record.id}: and it is clearly visible (${now.edgeOpacity})`);
+    assert.ok(now.edgeWidth - now.lineWidth >= 1.5 && now.edgeWidth <= now.lineWidth * 2.1, `${record.id}: restrained, under twice the line (${now.edgeWidth} for ${now.lineWidth})`);
+    assert.ok(now.edgeWidth - was.edgeWidth <= 2, `${record.id}: no heavier than its plain edge by more than 2 px (${was.edgeWidth} -> ${now.edgeWidth})`);
+    assert.equal(now.dash, was.dash, `${record.id}: the pattern does not change when selected`);
+    if (now.style === 'dotted') assert.ok(dashes(now.dash)[1] - now.edgeWidth >= 3, `${record.id}: selected dots still do not touch`);
+    selectedWidths.push(now.edgeWidth);
+    // Every other drawing is untouched by this selection.
+    for (const other of everyDrawing.filter(r => r.id !== record.id)) assert.deepEqual(look[other.id], plain[other.id], `${other.id}: another selection leaves it alone`);
+  }
+  assert.ok(selectedWidths[0] < selectedWidths[1] && selectedWidths[1] < selectedWidths[2], `selected Thin, Regular and Bold stay distinguishable (${selectedWidths.slice(0, 3)})`);
+  assert.equal(await writes(page), 0, 'looking at the selection writes nothing');
+  await clearSelection();
+
+  // The same saved strokes from farther away: the line's weight is the same, the pattern follows the smaller stroke and keeps its gaps.
+  await aimCamera(page, [104, 32, -20], [0, 300, 300]); // a 40 in stroke is then about 105 px across, under the 140 px that gets the full pattern
+  await page.waitForFunction(({ id, dash }) => {
+    const group = document.querySelector(`.tp3d-annot-draws .tp3d-annot-draw[data-annot-id="${id}"] .tp3d-annot-draw__line`);
+    return group && getComputedStyle(group).strokeDasharray !== dash;
+  }, { id: bolDash.id, dash: plain[bolDash.id].dash });
+  look = await drawLook(page);
+  assert.deepEqual(everyDrawing.map(r => look[r.id].lineWidth), everyDrawing.map(r => plain[r.id].lineWidth), 'zooming out never changes a line\'s weight');
+  const [nearDash, nearGap] = dashes(plain[bolDash.id].dash);
+  const [farDash, farGap] = dashes(look[bolDash.id].dash);
+  assert.ok(farDash < nearDash && farGap < nearGap && farGap >= 4, `a Dashed line fits its smaller stroke and keeps a clear gap (${nearDash} ${nearGap} -> ${farDash} ${farGap})`);
+  for (const record of [thinDot, regDot, bolDot]) {
+    const info = look[record.id];
+    assert.ok(dashes(info.dash)[1] < dashes(plain[record.id].dash)[1], `${record.id}: dots sit closer on a smaller stroke`);
+    assert.ok(dashes(info.dash)[1] - info.edgeWidth >= 2, `${record.id}: but never touch (${dashes(info.dash)[1]} apart, ${info.edgeWidth} wide)`);
+  }
+  const farPlain = look[bolDash.id];
+  await select(bolDash.id);
+  const farSelected = (await drawLook(page))[bolDash.id];
+  assert.ok(farSelected.edgeWidth <= farSelected.lineWidth * 2.1 && farSelected.edgeWidth - farPlain.edgeWidth <= 2, `a selected stroke far away is still a restrained edge (${farPlain.edgeWidth} -> ${farSelected.edgeWidth} for ${farSelected.lineWidth})`);
+  await clearSelection();
+
+  // Dark theme: the neutral edge follows the theme, the selection edge stays the accent and the line its own color.
+  const lightEdge = look[solid.id].edgeStroke;
+  await page.evaluate(() => { document.documentElement.setAttribute('data-theme', 'dark'); });
+  await page.waitForFunction(({ id, stroke }) => getComputedStyle(document.querySelector(`.tp3d-annot-draws .tp3d-annot-draw[data-annot-id="${id}"] .tp3d-annot-draw__under`)).stroke !== stroke, { id: solid.id, stroke: lightEdge });
+  const darkPlain = await drawLook(page);
+  await select(regDot.id);
+  const dark = await drawLook(page);
+  assert.equal(dark[regDot.id].lineStroke, darkPlain[regDot.id].lineStroke, 'the line keeps its own color when selected in the dark theme');
+  assert.notEqual(dark[regDot.id].edgeStroke, dark[regDash.id].edgeStroke, 'and the selection edge still differs from a plain one');
+  assert.ok(dark[regDot.id].edgeOpacity >= 0.9);
+  await clearSelection();
+  await page.evaluate(() => { document.documentElement.setAttribute('data-theme', 'light'); });
+
+  // Arrows share the line patterns but not a drawing's look, and this change leaves them exactly as they were.
+  const arrows = await lineLook(page);
+  assert.deepEqual([arrows[arrowDot.id].line.width, arrows[arrowDot.id].halo.width, dashes(arrows[arrowDot.id].line.dash), arrows[arrowDot.id].halo.cap], [3, 7, [0.01, 10], 'round'], 'a Regular Dotted arrow keeps its ring and spacing');
+  assert.deepEqual([arrows[arrowDash.id].line.width, arrows[arrowDash.id].halo.width, dashes(arrows[arrowDash.id].line.dash)], [5, 9, [20, 12.5]], 'a Bold Dashed arrow keeps its pattern and edge');
+  assert.equal(await writes(page), 0, 'nothing here wrote a record');
+  assert.deepEqual(errors, []);
+});

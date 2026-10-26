@@ -147,6 +147,17 @@ const DRAW_FLUSH_PICKS = 128;
 const DRAW_QUEUE_LIMIT = 64;
 const DRAW_EDGE_MIN_INCHES = 0.02; // an exit point closer than this to the last vertex adds nothing
 const DRAW_CLIP_MARGIN_PX = 40; // strokes are clipped to the view plus this margin, so SVG coordinates stay small and finite
+// A drawing's own look is in screen pixels, but its edge and its pattern follow how large the stroke is on screen: one that spans
+// DRAW_FIT_SPAN_PX or more is drawn at full size, a smaller one down to DRAW_FIT_MIN of it (the line itself never changes weight).
+const DRAW_FIT_SPAN_PX = 140;
+const DRAW_FIT_MIN = 0.7;
+// The extra width (px, both sides together) of the edge under a drawing's line: a neutral one that keeps it legible on any cargo, a
+// fainter one for the dots of a Dotted line (no ring around each dot), and the selection's own accent edge, which grows a little with
+// the line's weight (so a selected Thin, Regular and Bold stay distinguishable) rather than adding the same band to each.
+// Never below DRAW_EDGE_FLOOR.
+const DRAW_EDGE_PX = Object.freeze({ neutral: 3, dotted: 1.5, selected: 1.5 });
+const DRAW_SELECTED_EDGE_PER_PX = 0.3;
+const DRAW_EDGE_FLOOR_PX = 1.5;
 const DRAW_OCCLUSION_RAYS_PER_STROKE = 5;
 const DRAW_OCCLUSION_RAYS_PER_TICK = 60;
 const PIN_RECT_PX = 24;
@@ -3857,7 +3868,7 @@ export function createAnnotationTool({
    * Show `d` (or nothing, for an empty string) on a stroke graphic. The line width is constant on screen, so it never scales
    * with zoom. Only what changed is written: a new color or selection touches classes and one custom property, never the path.
    */
-  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false, moving = false, invalid = false, hit = false }) {
+  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false, moving = false, invalid = false, hit = false, span = Infinity }) {
     if (graphic.colorKey !== color) {
       graphic.colorKey = color;
       applyColor(graphic.group, color);
@@ -3873,13 +3884,50 @@ export function createAnnotationTool({
     if (!d) return;
     setAttr(graphic.group, 'data-line-style', style);
     const px = ARROW_SHAFT_PX[width] || ARROW_SHAFT_PX.regular;
-    const halo = selected && !occluded ? 6 : 4; // a selected edge wide enough to read on a light floor and a dark one
-    const key = `${px}|${halo}|${style}`;
+    // The edge under the line: the accent edge while selected (a hidden stroke keeps its neutral one, so it never looks unobstructed),
+    // otherwise the neutral one. Both follow the stroke's size on screen, in steps so a zoom does not rewrite styles every frame.
+    const fit = drawFit(span);
+    const edge = selected && !occluded
+      ? DRAW_EDGE_PX.selected + px * DRAW_SELECTED_EDGE_PER_PX
+      : (style === 'dotted' ? DRAW_EDGE_PX.dotted : DRAW_EDGE_PX.neutral);
+    const halo = Math.max(DRAW_EDGE_FLOOR_PX, Math.round(edge * fit * 4) / 4);
+    const key = `${px}|${halo}|${style}|${fit}`;
     if (graphic.widthKey === key) return;
     graphic.widthKey = key;
     setStyleProp(graphic.line, 'strokeWidth', `${px}px`);
     setStyleProp(graphic.under, 'strokeWidth', `${px + halo}px`);
-    paintLinePattern(graphic, style, px, graphic.line, graphic.under);
+    paintDrawPattern(graphic, style, px, fit);
+  }
+
+  /** 1 for a stroke that spans DRAW_FIT_SPAN_PX on screen or more, down to DRAW_FIT_MIN for a small one, in steps of a tenth. */
+  function drawFit(span) {
+    if (!(span < DRAW_FIT_SPAN_PX)) return 1;
+    const fit = DRAW_FIT_MIN + (1 - DRAW_FIT_MIN) * Math.max(0, span) / DRAW_FIT_SPAN_PX;
+    return Math.round(fit * 10) / 10;
+  }
+
+  /**
+   * A drawing's Dashed or Dotted pattern on its line and its edge. Dashes and dot spacing grow with the weight and follow `fit` (never
+   * below a clear gap), so a small stroke keeps its rhythm instead of showing three huge marks. A dot is a zero-length dash with round
+   * caps, so its diameter is the line's own weight; Solid sets nothing, which leaves the stylesheet in charge.
+   */
+  function paintDrawPattern(graphic, style, px, fit) {
+    const key = `${style}|${px}|${fit}`;
+    if (graphic.patternKey === key) return;
+    graphic.patternKey = key;
+    let dash = '';
+    let cap = '';
+    if (style === 'dashed') {
+      dash = `${Math.max(px * 4 * fit, px * 2)} ${Math.max(px * 2.5 * fit, 4)}`;
+      cap = 'butt';
+    } else if (style === 'dotted') {
+      dash = `0.01 ${Math.max(Math.max(px * 2.6, px + 7) * fit, px + 3.5)}`;
+      cap = 'round';
+    }
+    [graphic.line, graphic.under].forEach(path => {
+      setStyleProp(path, 'strokeDasharray', dash);
+      setStyleProp(path, 'strokeLinecap', cap);
+    });
   }
 
   function getDrawView(id) {
@@ -3890,7 +3938,7 @@ export function createAnnotationTool({
       layerParts.drawGroup.appendChild(graphic.group);
       view = {
         id, graphic, record: null, local: null, world: null, stamp: NaN, poseStamp: 0, d: '', visible: [],
-        front: false, measured: false, measuredAt: -1, shown: false, moved: null, dragKey: 0,
+        front: false, measured: false, measuredAt: -1, shown: false, moved: null, dragKey: 0, extent: { span: Infinity },
       };
       drawViews.set(id, view);
       visDirty = true;
@@ -3936,9 +3984,10 @@ export function createAnnotationTool({
    * coordinate is finite and small however close the camera is. A cut that leaves a gap starts a new sub-path. `visible`
    * receives the index of every vertex that is on screen (what the occlusion samples are chosen from). One vertex draws a dot.
    */
-  function projectDrawPath(points, camera, width, height, visible) {
+  function projectDrawPath(points, camera, width, height, visible, extent = null) {
     const count = Math.floor(points.length / 3);
     visible.length = 0;
+    if (extent) extent.span = 0;
     if (!count) return '';
     camera.updateMatrixWorld(true);
     const e = camera.matrixWorldInverse.elements;
@@ -3951,6 +4000,10 @@ export function createAnnotationTool({
     let lastX = NaN;
     let lastY = NaN;
     let previous = null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
     for (let i = 0; i < count; i++) {
       const x = points[3 * i];
       const y = points[3 * i + 1];
@@ -3964,6 +4017,13 @@ export function createAnnotationTool({
       if (inFront) {
         const screen = cameraToLayer(current, camera, width, height);
         if (screen.x >= 0 && screen.x <= width && screen.y >= 0 && screen.y <= height) visible.push(i);
+        // How large the stroke is on screen, from every vertex in front of the camera (not the clipped path, so panning never changes it).
+        if (extent) {
+          minX = Math.min(minX, screen.x);
+          maxX = Math.max(maxX, screen.x);
+          minY = Math.min(minY, screen.y);
+          maxY = Math.max(maxY, screen.y);
+        }
       }
       if (previous) {
         let a = previous;
@@ -3984,6 +4044,7 @@ export function createAnnotationTool({
       }
       previous = current;
     }
+    if (extent && maxX >= minX) extent.span = Math.hypot(maxX - minX, maxY - minY);
     if (!parts.length && count === 1 && visible.length) {
       const screen = cameraToLayer(previous, camera, width, height);
       return `M${fixed(screen.x)} ${fixed(screen.y)}L${fixed(screen.x)} ${fixed(screen.y)}`;
@@ -4060,7 +4121,7 @@ export function createAnnotationTool({
         } else {
           view.world = source;
         }
-        view.d = projectDrawPath(view.world, camera, width, height, view.visible);
+        view.d = projectDrawPath(view.world, camera, width, height, view.visible, view.extent);
       }
       if (!view.d) {
         hideDrawView(view);
@@ -4131,7 +4192,7 @@ export function createAnnotationTool({
       const hit = moving || (grabbable && view.front && view.measured);
       paintDraw(view.graphic, view.d, {
         color: record.color, width: record.width, style: lineStyleOf(record), selected: selected && !presenting,
-        occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, hit,
+        occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, hit, span: view.extent.span,
       });
     });
   }

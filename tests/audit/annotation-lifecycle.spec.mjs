@@ -1458,3 +1458,79 @@ test('the generic Pack update cannot write strokes, and an older wrapper holding
   assert.deepEqual(JSON.parse(CoreStorage.exportAppJSON()).data.packLibrary.find(p => p.id === 'B').annotations.filter(r => r.id === 'w'), [wrapper], 'and exports it verbatim');
   assert.equal(PackLibrary.deleteAnnotation('B', 'w').ok, true, 'the owner can still delete it deliberately');
 });
+
+// ============================================================================
+// SECTION: LINE STYLES (V1B.2 Gate B.3) — writers, no-op edits, export, backup and restore
+// ============================================================================
+
+test('line style: the writers store Dashed and Dotted only, an unchanged choice writes nothing, and styled records survive every export and restore', () => {
+  seed();
+  const crate = placeCrate();
+  StateStore.resetHistory();
+  setLastEdited('A', 123);
+  const notifications = [];
+  const unsubscribe = StateStore.subscribe((_changes, _state, notification) => { if (notification) notifications.push(notification.type); });
+  try {
+    const legacyArrow = PackLibrary.addArrow('A', { start: ground(0, 60), end: ground(40, 60) }).annotation;
+    const solidArrow = PackLibrary.addArrow('A', { start: ground(0, 70), end: ground(40, 70), style: 'solid' }).annotation;
+    const dashedArrow = PackLibrary.addArrow('A', { start: ground(0, 80), end: ground(40, 80), style: 'dashed', width: 'bold' }).annotation;
+    const dottedStroke = PackLibrary.addDraw('A', crateGesture(crate.id, { style: 'dotted' })).annotation;
+    const solidStroke = PackLibrary.addDraw('A', floorGesture({ style: 'solid' })).annotation;
+    assert.deepEqual([legacyArrow, solidArrow, solidStroke].map(record => Object.hasOwn(record, 'style')), [false, false, false], 'Solid is never stored');
+    assert.deepEqual([dashedArrow.style, dottedStroke.style], ['dashed', 'dotted']);
+    assert.equal(PackLibrary.addArrow('A', { start: ground(0, 90), end: ground(40, 90), style: 'wavy' }).reason, 'invalid');
+    assert.equal(PackLibrary.addDraw('A', crateGesture(crate.id, { style: 'Dashed' })).reason, 'invalid');
+    assert.equal(PackLibrary.getAnnotations('A').length, 5, 'a refused style writes nothing');
+    assert.equal(StateStore.undo(), false, 'and none of these adds a cargo Undo step');
+
+    // A saved record changes with exactly one annotation write; the same choice again writes nothing.
+    notifications.length = 0;
+    const edited = PackLibrary.updateArrow('A', legacyArrow.id, { style: 'dotted' });
+    assert.equal(edited.ok, true);
+    assert.deepEqual(notifications, ['pack-annotations'], 'one annotation-only write');
+    const find = id => PackLibrary.getAnnotations('A').find(record => record.id === id);
+    assert.equal(find(legacyArrow.id).style, 'dotted');
+    assert.deepEqual([find(legacyArrow.id).start, find(legacyArrow.id).end, find(legacyArrow.id).createdAt], [legacyArrow.start, legacyArrow.end, legacyArrow.createdAt]);
+    const editedAt = stored('A').lastEdited;
+    notifications.length = 0;
+    assert.equal(PackLibrary.updateArrow('A', legacyArrow.id, { style: 'dotted' }).unchanged, true);
+    assert.equal(PackLibrary.updateArrow('A', solidArrow.id, { style: 'solid' }).unchanged, true, 'choosing Solid on a Solid arrow is not an edit');
+    assert.equal(PackLibrary.updateDraw('A', solidStroke.id, { style: 'solid' }).unchanged, true);
+    assert.deepEqual(notifications, [], 'no write, no notification');
+    assert.equal(stored('A').lastEdited, editedAt);
+    assert.equal(PackLibrary.updateArrow('A', dashedArrow.id, { style: 'solid' }).ok, true);
+    assert.equal(Object.hasOwn(find(dashedArrow.id), 'style'), false, 'back to Solid removes the key');
+    assert.equal(PackLibrary.updateDraw('A', dottedStroke.id, { style: 'dashed' }).ok, true);
+    assert.equal(find(dottedStroke.id).style, 'dashed');
+    assert.equal(PackLibrary.updateArrow('A', legacyArrow.id, { style: 'wavy' }).reason, 'invalid');
+    assert.equal(PackLibrary.updateDraw('A', dottedStroke.id, { style: null }).reason, 'invalid');
+    assert.equal(find(legacyArrow.id).style, 'dotted', 'a refused edit changes nothing');
+    assert.equal(StateStore.undo(), false, 'style edits stay outside cargo Undo');
+  } finally {
+    unsubscribe();
+  }
+
+  // Styled records are carried by every export and restore path without any change to them.
+  const plan = stored('A');
+  const expected = A.normalizeAnnotations(plan.annotations);
+  assert.deepEqual(expected.map(record => record.style ?? 'solid'), ['dotted', 'solid', 'solid', 'dashed', 'solid']);
+  for (const project of [projectPortablePack, projectPortableWorkspacePack]) assert.deepEqual(project(plan).annotations, expected, `${project.name} carries line styles`);
+  const workspaceJson = ImportExport.buildWorkspaceExportJSON('Probe', 'ws-1');
+  const restore = ImportExport.planWorkspaceRestore(ImportExport.parseWorkspaceImportJSON(workspaceJson), { currentState: StateStore.snapshot() });
+  assert.deepEqual(restore.packLibrary.find(pack => pack.id === 'A').annotations.map(record => record.style ?? 'solid'), ['dotted', 'solid', 'solid', 'dashed', 'solid']);
+  assert.doesNotThrow(() => ImportExport.assertRestorableWorkspaceBackup(workspaceJson));
+  const single = ImportExport.buildRestorablePackExportJSON(plan);
+  emptyDestination();
+  const imported = PackLibrary.planPackImport(ImportExport.parsePackImportJSON(single)).pack;
+  assert.deepEqual(imported.annotations.map(record => record.style ?? 'solid'), ['dotted', 'solid', 'solid', 'dashed', 'solid']);
+  // A backup naming a style this build does not know is refused whole, like any other malformed annotation.
+  const tampered = JSON.parse(workspaceJson);
+  tampered.data.packLibrary.find(pack => pack.id === 'A').annotations[0].style = 'wavy';
+  assert.throws(() => ImportExport.assertRestorableWorkspaceBackup(JSON.stringify(tampered)), /annotation/i);
+  // A record saved before line styles reads back as Solid with no style key and no rewrite.
+  const legacy = JSON.parse(JSON.stringify(A.normalizeAnnotations([arrowRecord('old')])[0]));
+  assert.equal(Object.hasOwn(legacy, 'style'), false);
+  seed([makePack('L', { annotations: [legacy] })]);
+  assert.equal(JSON.stringify(PackLibrary.getAnnotations('L')[0]), JSON.stringify(legacy), 'a legacy arrow is not rewritten by loading it');
+  assert.deepEqual(statuses('L'), ['valid']);
+});

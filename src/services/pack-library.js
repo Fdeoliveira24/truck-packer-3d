@@ -2830,15 +2830,15 @@ export function setCalloutOffset(packId, annotationId, offset) {
  * must resolve against the committed layout and be at least MIN_ARROW_LENGTH_INCHES apart, otherwise
  * nothing is written. Exactly one record is written, or nothing.
  * @param {string} packId
- * @param {{ start?: any, end?: any, color?: string, width?: string }} [input]
+ * @param {{ start?: any, end?: any, color?: string, width?: string, style?: string }} [input]
  * @returns {{ ok: true, annotation: any, pack: any } | { ok: false, reason: 'pack-not-found' | 'limit' | 'invalid' | 'unresolved' | 'too-short' }}
  */
-export function addArrow(packId, { start, end, color, width } = {}) {
+export function addArrow(packId, { start, end, color, width, style } = {}) {
   const previousPack = getById(packId);
   if (!previousPack) return { ok: false, reason: 'pack-not-found' };
   const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
   if (current.length >= CoreAnnotations.MAX_ANNOTATIONS_PER_PACK) return { ok: false, reason: 'limit' };
-  const record = CoreAnnotations.createArrowRecord({ id: Utils.uuid(), start, end, color, width, now: Date.now() });
+  const record = CoreAnnotations.createArrowRecord({ id: Utils.uuid(), start, end, color, width, style, now: Date.now() });
   const checked = CoreAnnotations.validateAnnotationCollection([record]);
   if (!checked.ok) return { ok: false, reason: 'invalid' };
   const annotation = checked.annotations[0];
@@ -2847,7 +2847,7 @@ export function addArrow(packId, { start, end, color, width } = {}) {
   return { ok: true, annotation, pack: commitAnnotations(previousPack, [...current, annotation]) };
 }
 
-/** Edit an arrow's color, width or visibility. Its endpoints are never touched, so no placement rule applies. */
+/** Edit an arrow's color, width, line style or visibility. Its endpoints are never touched, so no placement rule applies. */
 export function updateArrow(packId, annotationId, patch) {
   return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_ARROW,
     (record, now) => CoreAnnotations.editArrowRecord(record, patch, now));
@@ -2873,11 +2873,11 @@ export function moveArrowEndpoint(packId, annotationId, which, anchor) {
  * `too-complex`, never truncated. The stroke must also resolve Valid now (the anchor resolves and one
  * patch holds every vertex) and run at least MIN_DRAW_LENGTH_INCHES. Exactly one record is written, or nothing.
  * @param {string} packId
- * @param {{ anchor?: any, face?: string, rawPoints?: number[], color?: string, width?: string }} [input]
+ * @param {{ anchor?: any, face?: string, rawPoints?: number[], color?: string, width?: string, style?: string }} [input]
  * @returns {{ ok: true, annotation: any, pack: any, tolerance: number }
  *   | { ok: false, reason: 'pack-not-found' | 'limit' | 'points-limit' | 'invalid' | 'too-short' | 'too-complex' | 'unresolved' }}
  */
-export function addDraw(packId, { anchor, face, rawPoints, color, width } = {}) {
+export function addDraw(packId, { anchor, face, rawPoints, color, width, style } = {}) {
   const previousPack = getById(packId);
   if (!previousPack) return { ok: false, reason: 'pack-not-found' };
   const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
@@ -2885,7 +2885,7 @@ export function addDraw(packId, { anchor, face, rawPoints, color, width } = {}) 
   const prepared = CoreAnnotations.prepareDrawStroke({ anchor, face, rawPoints });
   if ('reason' in prepared) return { ok: false, reason: prepared.reason };
   const record = CoreAnnotations.createDrawRecord({
-    id: Utils.uuid(), anchor, face, points: prepared.points, color, width, now: Date.now(),
+    id: Utils.uuid(), anchor, face, points: prepared.points, color, width, style, now: Date.now(),
   });
   const checked = CoreAnnotations.validateAnnotationCollection([record]);
   if (!checked.ok) return { ok: false, reason: 'invalid' };
@@ -2899,7 +2899,7 @@ export function addDraw(packId, { anchor, face, rawPoints, color, width } = {}) 
 }
 
 /**
- * Edit a stroke's color, width or visibility. Its surface, face and vertices are carried over untouched, so
+ * Edit a stroke's color, width, line style or visibility. Its surface, face and vertices are carried over untouched, so
  * no placement rule applies and a stroke that needs review can still be restyled or hidden.
  */
 export function updateDraw(packId, annotationId, patch) {

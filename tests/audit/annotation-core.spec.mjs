@@ -1811,3 +1811,102 @@ test('clipSegmentToConvex returns the exact boundary point for a rectangle and f
   }
   assert.ok(hits > 100);
 });
+
+// ============================================================================
+// SECTION: LINE STYLES (V1B.2 Gate B.3) — an optional `style` on arrows and strokes; absent means Solid
+// ============================================================================
+
+const STYLED_TOP = (style, id = `top-${style}`) => draw(id, boxAnchor({ x: -14.25, y: 15, z: -6.5 }), [-10.4, -6.1, -6.8, -5.2, -2.1, -3.9], { face: '+y', style });
+const STYLE_ARROW_KEYS = ['id', 'type', 'schemaVersion', 'color', 'width', 'style', 'hidden', 'start', 'end', 'createdAt', 'updatedAt'];
+const STYLE_DRAW_KEYS = ['id', 'type', 'schemaVersion', 'color', 'width', 'style', 'hidden', 'anchor', 'face', 'points', 'createdAt', 'updatedAt'];
+
+test('line style: Solid is the absence of the key, so a record saved before line styles stays byte for byte what it was', () => {
+  assert.deepEqual([...A.LINE_STYLES], ['solid', 'dashed', 'dotted']);
+  assert.equal(A.DEFAULT_LINE_STYLE, 'solid');
+  assert.equal(A.ANNOTATION_SCHEMA_VERSION, 1, 'the schema version is not bumped');
+  // The exact stored spelling a V1B.1 arrow has: key order and all.
+  const legacyArrow = {
+    id: 'a1', type: 'arrow', schemaVersion: 1, color: 'ink', width: 'regular', hidden: false,
+    start: ground(5, 5), end: ground(40, 5), createdAt: 1000, updatedAt: 1000,
+  };
+  const legacyText = JSON.stringify(legacyArrow);
+  assert.equal(A.validateArrowRecord(legacyArrow), null);
+  assert.equal(JSON.stringify(A.normalizeAnnotations([legacyArrow])[0]), legacyText, 'a legacy arrow is unchanged by normalization');
+  assert.equal(JSON.stringify(A.normalizeAnnotations(JSON.parse(`[${legacyText}]`))[0]), legacyText, 'and by a JSON round trip');
+  assert.equal(JSON.stringify(arrow('a1')), legacyText, 'a new Solid arrow with no style is that same record');
+  assert.equal(JSON.stringify(arrow('a1', ground(5, 5), ground(40, 5), { style: undefined })), legacyText, 'an unspecified style adds no key');
+  assert.deepEqual(Object.keys(TOP_STROKE()), STYLE_DRAW_KEYS.filter(key => key !== 'style'), 'nor does a stroke');
+  // Naming Solid explicitly is accepted and stored as nothing, never as `style: "solid"`.
+  for (const explicit of [arrow('a1', ground(5, 5), ground(40, 5), { style: 'solid' }), { ...TOP_STROKE(), style: 'solid' }, STYLED_TOP('solid', 'top')]) {
+    assert.equal(A.validateAnnotationCollection([explicit]).ok, true, explicit.id);
+    const [stored] = A.normalizeAnnotations([explicit]);
+    assert.equal(Object.hasOwn(stored, 'style'), false, `${explicit.id}: canonical Solid omits the key`);
+  }
+  assert.equal(JSON.stringify(A.normalizeAnnotations([arrow('a1', ground(5, 5), ground(40, 5), { style: 'solid' })])[0]), legacyText);
+  assert.equal(JSON.stringify(A.normalizeAnnotations([STYLED_TOP('solid', 'top')])[0]), JSON.stringify(A.normalizeAnnotations([{ ...without(STYLED_TOP('solid', 'top'), 'style') }])[0]));
+});
+
+test('line style: Dashed and Dotted validate, keep their place in the record, round-trip and change nothing but themselves when edited', () => {
+  for (const style of ['dashed', 'dotted']) {
+    const styledArrow = arrow(`a-${style}`, onCargo('inst-1'), FLOOR_ANCHOR, { style, width: 'bold', color: '#A1B2C3' });
+    const styledStroke = STYLED_TOP(style);
+    assert.deepEqual(Object.keys(styledArrow), STYLE_ARROW_KEYS);
+    assert.deepEqual(Object.keys(styledStroke), STYLE_DRAW_KEYS);
+    for (const record of [styledArrow, styledStroke]) {
+      assert.equal(record.style, style);
+      assert.equal(record.type === 'arrow' ? A.validateArrowRecord(record) : A.validateDrawRecord(record), null, `${record.id} is valid`);
+      const [stored] = A.normalizeAnnotations([record]);
+      assert.deepEqual(stored, record, `${record.id}: stored as given`);
+      assert.deepEqual(Object.keys(stored), Object.keys(record), `${record.id}: with the style beside the width`);
+      assert.deepEqual(A.normalizeAnnotations(JSON.parse(JSON.stringify([record]))), [stored], `${record.id}: survives a JSON round trip`);
+      assert.deepEqual(A.validateAnnotationCollection([record]).annotations, [stored]);
+    }
+    // Editing the style moves nothing else: endpoints, anchor, face, vertices, identity, creation time and presentation stay.
+    const plain = arrow('p', onCargo('inst-1'), FLOOR_ANCHOR, { width: 'thin', color: 'red' });
+    const restyled = A.editArrowRecord(plain, { style }, 2000);
+    assert.equal(restyled.style, style);
+    assert.deepEqual(Object.keys(restyled), STYLE_ARROW_KEYS);
+    const [plainStored] = A.normalizeAnnotations([plain]);
+    assert.equal(JSON.stringify({ ...restyled, style: undefined, updatedAt: 0 }), JSON.stringify({ ...plainStored, style: undefined, updatedAt: 0 }), 'the arrow differs by its style (and update time) alone');
+    assert.equal(restyled.updatedAt, 2000);
+    const back = A.editArrowRecord(restyled, { style: 'solid' }, 3000);
+    assert.equal(JSON.stringify(back), JSON.stringify({ ...plainStored, updatedAt: 3000 }), 'back to Solid, the key is gone again');
+    const base = A.normalizeAnnotations([TOP_STROKE()])[0];
+    const strokeRestyled = A.editDrawRecord(base, { style }, 2000);
+    assert.equal(strokeRestyled.style, style);
+    assert.equal(JSON.stringify([strokeRestyled.anchor, strokeRestyled.face, strokeRestyled.points, strokeRestyled.id, strokeRestyled.createdAt, strokeRestyled.color, strokeRestyled.width, strokeRestyled.hidden]),
+      JSON.stringify([base.anchor, base.face, base.points, base.id, base.createdAt, base.color, base.width, base.hidden]), 'a style edit cannot move or re-attach a stroke');
+    assert.equal(JSON.stringify(A.editDrawRecord(strokeRestyled, { style: 'solid' }, 3000)), JSON.stringify({ ...base, updatedAt: 3000 }));
+    // The other presentation edits keep the style they find.
+    assert.equal(A.editArrowRecord(restyled, { width: 'bold', hidden: true }, 4000).style, style);
+    assert.equal(A.editDrawRecord(strokeRestyled, { color: 'blue', hidden: true }, 4000).style, style);
+  }
+  const bytes = record => new TextEncoder().encode(JSON.stringify(A.normalizeAnnotations([record])[0])).length;
+  assert.ok(bytes(STYLED_TOP('dotted')) > bytes(without(STYLED_TOP('dotted'), 'style')), 'a stored style counts toward the record size');
+});
+
+test('line style: an unknown style makes the record unreadable and is kept verbatim, and callouts do not take one', () => {
+  for (const bad of ['wavy', 'Dashed', 'DOTTED', ' dashed', '', null, 0, true, ['dashed'], { value: 'dashed' }]) {
+    const label = JSON.stringify(bad);
+    const badArrow = { ...arrow('x'), style: bad };
+    const badStroke = { ...TOP_STROKE(), style: bad };
+    assert.match(A.validateArrowRecord(badArrow) || '', /style/, `arrow ${label}`);
+    assert.match(A.validateDrawRecord(badStroke) || '', /style/, `stroke ${label}`);
+    assert.equal(A.validateAnnotationCollection([badArrow]).ok, false, `the strict gate refuses an arrow with ${label}`);
+    const [wrapped, wrappedStroke] = A.normalizeAnnotations([badArrow, badStroke]);
+    assert.equal(wrapped.type, A.ANNOTATION_TYPE_UNREADABLE, `arrow ${label}`);
+    assert.equal(wrappedStroke.type, A.ANNOTATION_TYPE_UNREADABLE, `stroke ${label}`);
+    assert.deepEqual([wrapped.original, wrappedStroke.original], [badArrow, badStroke], 'the original is kept verbatim, never repaired to Solid');
+  }
+  assert.equal(A.editArrowRecord(arrow('e'), { style: 'wavy' }, 2000), null);
+  assert.equal(A.editArrowRecord(arrow('e'), { style: undefined }, 2000), null);
+  assert.equal(A.editDrawRecord(TOP_STROKE(), { style: 'Dashed' }, 2000), null);
+  // The create helpers keep an invalid style as given, so the write gate refuses it instead of storing another value.
+  assert.equal(arrow('k', ground(1, 1), ground(9, 9), { style: 'wavy' }).style, 'wavy');
+  assert.equal(A.validateAnnotationCollection([arrow('k', ground(1, 1), ground(9, 9), { style: 'wavy' })]).ok, false);
+  // Callouts have no style: they neither take one nor change their stored form.
+  const plainCallout = callout('c');
+  assert.equal(Object.hasOwn(A.createCalloutRecord({ id: 'c', anchor: ground(5, 5), title: 'Fragile', now: 1000, style: 'dashed' }), 'style'), false);
+  assert.equal(Object.hasOwn(A.normalizeAnnotations([{ ...plainCallout, style: 'dashed' }])[0], 'style'), false, 'a stray style is never stored on a callout');
+  assert.equal(JSON.stringify(A.normalizeAnnotations([plainCallout])[0]), JSON.stringify(plainCallout), 'a callout is stored exactly as before');
+});

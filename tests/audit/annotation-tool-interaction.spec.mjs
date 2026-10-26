@@ -4674,7 +4674,7 @@ test('freehand cancellation: every interruption ends the unfinished stroke witho
 });
 
 // A drawing saved through the real writer (not the gesture). `local` is the first vertex on the top of cargo A; `rest` are (x, z) pairs.
-const seedDraw = (page, { cargo = 'cargo-a', local = { x: -18, y: 16, z: -8 }, face = '+y', rest = [-6, 0, 10, -6, 18, 4], color = 'ink', width = 'regular', ground = null } = {}) => page.evaluate(spec => {
+const seedDraw = (page, { cargo = 'cargo-a', local = { x: -18, y: 16, z: -8 }, face = '+y', rest = [-6, 0, 10, -6, 18, 4], color = 'ink', width = 'regular', style = undefined, ground = null } = {}) => page.evaluate(spec => {
   const { M, PackLibrary, CaseLibrary } = window.probe;
   const pack = PackLibrary.getById('fixture-pack');
   let anchor;
@@ -4684,10 +4684,10 @@ const seedDraw = (page, { cargo = 'cargo-a', local = { x: -18, y: 16, z: -8 }, f
     const inst = pack.cases.find(c => c.id === spec.cargo);
     anchor = M.buildCargoAnchor({ instanceId: inst.id, local: spec.local, caseData: CaseLibrary.getById(inst.caseId) });
   }
-  const outcome = PackLibrary.addDraw('fixture-pack', { anchor, face: spec.ground ? undefined : spec.face, rawPoints: spec.rest, color: spec.color, width: spec.width });
+  const outcome = PackLibrary.addDraw('fixture-pack', { anchor, face: spec.ground ? undefined : spec.face, rawPoints: spec.rest, color: spec.color, width: spec.width, style: spec.style });
   if (!outcome.ok) throw new Error(`draw seed failed: ${outcome.reason}`);
   return outcome.annotation;
-}, { cargo, local, face, rest, color, width, ground });
+}, { cargo, local, face, rest, color, width, style, ground });
 const moveCargoA = (page, dx) => page.evaluate(delta => {
   const { PackLibrary } = window.probe;
   const inst = PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a');
@@ -5737,5 +5737,201 @@ test('annotation Present mode keeps cargo read-only: clicks, drags, hover and th
   assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isPresenting()), false, 'a held case refuses Present');
   assert.equal(await page.evaluate(() => window.probe.casesJson()), heldCargo, 'and nothing was placed or returned');
   await page.evaluate(() => { window.probe.InteractionManager.hasProvisionalPose = window.__hold; });
+  assert.deepEqual(errors, []);
+});
+
+// ============================================================================
+// Annotations V1B.2 Gate B.3: Weight and Style (Solid / Dashed / Dotted) for arrows and drawings
+// ============================================================================
+// The Weight and Style rows of the look controls (`kind` is 'arrow' or 'draw'): their labels, which button is pressed, and the
+// title that says whether they are for one record or for the next ones.
+const lookControls = (page, kind) => page.evaluate(which => {
+  const root = document.querySelector(`.tp3d-annot-panel__${which}`);
+  const pressed = selector => root.querySelector(`${selector} .tp3d-annot-seg__btn[aria-pressed="true"]`);
+  const weightGroup = which === 'arrow' ? '.tp3d-annot-seg--width' : '.tp3d-annot-seg--draw-width';
+  const styleGroup = which === 'arrow' ? '.tp3d-annot-seg--line' : '.tp3d-annot-seg--draw-line';
+  return {
+    shown: !root.hidden,
+    title: root.querySelector(`.tp3d-annot-panel__${which}-title`).textContent,
+    labels: [...root.querySelectorAll('.tp3d-annot-panel__view-label')].map(el => el.textContent),
+    weights: [...root.querySelectorAll(`${weightGroup} .tp3d-annot-seg__btn`)].map(el => el.textContent),
+    styles: [...root.querySelectorAll(`${styleGroup} .tp3d-annot-seg__btn`)].map(el => el.textContent),
+    weight: pressed(weightGroup)?.textContent || '',
+    style: pressed(styleGroup)?.textContent || '',
+  };
+}, kind);
+// What each arrow and drawing is painted with: its style attribute, the dash pattern, caps, weight, opacity and edge color of
+// the line and of its halo, and of an arrow's head.
+const lineLook = page => page.evaluate(() => {
+  const read = el => {
+    const css = getComputedStyle(el);
+    return { dash: css.strokeDasharray, cap: css.strokeLinecap, width: parseFloat(css.strokeWidth), opacity: parseFloat(css.opacity), stroke: css.stroke };
+  };
+  const groups = document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview), .tp3d-annot-svg .tp3d-annot-draws .tp3d-annot-draw:not(.is-preview)');
+  return Object.fromEntries([...groups].filter(group => group.dataset.lineStyle).map(group => {
+    const arrow = group.classList.contains('tp3d-annot-arrow');
+    return [group.dataset.annotId, {
+      style: group.dataset.lineStyle,
+      occluded: group.classList.contains('is-occluded'),
+      selected: group.classList.contains('is-selected'),
+      line: read(group.querySelector(arrow ? '.tp3d-annot-arrow__shaft' : '.tp3d-annot-draw__line')),
+      halo: read(group.querySelector(arrow ? '.tp3d-annot-arrow__under' : '.tp3d-annot-draw__under')),
+      head: arrow ? read(group.querySelector('.tp3d-annot-arrow__head')) : null,
+    }];
+  }));
+});
+const dashes = pattern => (pattern === 'none' ? [] : pattern.split(/[ ,]+/).map(parseFloat));
+
+test('annotation line style: Arrows and Drawings offer Weight and Style, a record shows and changes only its own style, new ones start from separate session defaults, and each style paints its own pattern', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  // Saved before line styles existed (no key), then styled ones; two arrows run under cargo A to be hidden by it.
+  const [callout] = await seed(page, [{ title: 'A callout', ground: [520, 10] }]);
+  const legacy = await seedArrow(page, [100, 62], [180, 62]);
+  const dashed = await seedArrow(page, [100, 68], [180, 68], { style: 'dashed', width: 'bold' });
+  const dotted = await seedArrow(page, [100, 74], [180, 74], { style: 'dotted', width: 'thin' });
+  const hiddenSolid = await seedArrow(page, [20, -14], [120, -14]);
+  const hiddenDashed = await seedArrow(page, [20, -24], [120, -24], { style: 'dashed' });
+  const drawSolid = await seedDraw(page, { ground: [200, 62], rest: [240, 70, 280, 62] });
+  const drawDotted = await seedDraw(page, { ground: [200, 68], rest: [240, 76, 280, 68], style: 'dotted' });
+  const drawDashed = await seedDraw(page, { ground: [200, 74], rest: [240, 82, 280, 74], style: 'dashed', width: 'bold' });
+  assert.equal(Object.hasOwn(legacy, 'style') || Object.hasOwn(drawSolid, 'style'), false, 'a record with no style is stored with no style');
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg [data-line-style]').length === 8);
+  await watchWrites(page);
+  const stored = () => page.evaluate(() => window.probe.annotations());
+  const others = async id => (await stored()).filter(record => record.id !== id);
+  const select = async id => {
+    await page.click(`${rowFor(id)} .tp3d-annot-row__select`);
+    await page.waitForFunction(selected => window.probe.AnnotationTool.selectedId() === selected, id);
+  };
+
+  // Every style paints a pattern of its own, scaled by the weight; the halo repeats it and the arrowhead stays solid.
+  let look = await lineLook(page);
+  assert.deepEqual([legacy, dashed, dotted, drawSolid, drawDotted, drawDashed].map(r => look[r.id].style), ['solid', 'dashed', 'dotted', 'solid', 'dotted', 'dashed']);
+  assert.deepEqual([look[legacy.id].line.dash, look[drawSolid.id].line.dash], ['none', 'none'], 'Solid is a continuous line');
+  assert.deepEqual([look[legacy.id].line.cap, look[drawSolid.id].line.cap], ['butt', 'round'], 'and keeps the caps it always had');
+  const [bolDash, bolGap] = dashes(look[dashed.id].line.dash);
+  assert.equal(look[dashed.id].line.width, 5, 'Bold is 5 px');
+  assert.ok(bolDash >= look[dashed.id].line.width * 3 && bolGap >= 5 && bolGap < bolDash, `a Dashed line has long dashes with clear gaps (${bolDash} ${bolGap})`);
+  assert.equal(look[dashed.id].line.cap, 'butt', 'dashes are cut square');
+  const [dot, dotGap] = dashes(look[dotted.id].line.dash);
+  assert.equal(look[dotted.id].line.width, 2, 'Thin is 2 px');
+  assert.ok(dot < 0.5 && dotGap >= look[dotted.id].line.width * 2.5, `a Dotted line is round dots, well apart (${dot} ${dotGap})`);
+  assert.equal(look[dotted.id].line.cap, 'round');
+  for (const record of [dashed, dotted, drawDotted, drawDashed]) assert.equal(look[record.id].halo.dash, look[record.id].line.dash, `${record.id}: the halo repeats the line's pattern`);
+  assert.deepEqual([look[dashed.id].head.dash, look[dotted.id].head.dash], ['none', 'none'], 'arrowheads are solid whatever the shaft is');
+  assert.deepEqual([look[drawDotted.id].line.cap, look[drawDashed.id].line.cap, look[drawDotted.id].line.width, look[drawDashed.id].line.width], ['round', 'butt', 3, 5]);
+  assert.ok(dashes(look[drawDashed.id].line.dash)[0] > dashes(look[hiddenDashed.id].line.dash)[0], 'a Bold dash is longer than a Regular one: the pattern scales with the weight');
+  const dashedPattern = look[dashed.id].line.dash;
+
+  // Hidden behind cargo: a Solid line keeps its established dashed cue; a styled one keeps its own pattern and is dimmed instead.
+  assert.deepEqual([look[hiddenSolid.id].occluded, look[hiddenDashed.id].occluded], [true, true], 'both run under cargo A');
+  assert.deepEqual(dashes(look[hiddenSolid.id].line.dash), [7, 5], 'a hidden Solid arrow is dashed 7 5');
+  assert.notEqual(look[hiddenSolid.id].head.dash, 'none', 'with a hollow, dashed head');
+  assert.deepEqual(dashes(look[hiddenDashed.id].line.dash), [12, 7.5], 'a hidden Dashed arrow keeps its own Regular pattern, not the behind-cargo dash');
+  assert.ok(look[hiddenDashed.id].line.opacity <= 0.45 && look[dashed.id].line.opacity === 1, 'and is dimmed where a clear one is not');
+  assert.equal(look[hiddenDashed.id].head.dash, 'none', 'its head stays solid');
+
+  // Selecting a legacy arrow shows it as Solid and writes nothing; selecting a styled one shows its own Weight and Style.
+  await select(legacy.id);
+  assert.deepEqual(await lookControls(page, 'arrow'), {
+    shown: true, title: 'Arrow 1 look', labels: ['Weight', 'Style'], weights: ['Thin', 'Regular', 'Bold'], styles: ['Solid', 'Dashed', 'Dotted'], weight: 'Regular', style: 'Solid',
+  });
+  await select(dashed.id);
+  assert.deepEqual([(await lookControls(page, 'arrow')).weight, (await lookControls(page, 'arrow')).style], ['Bold', 'Dashed']);
+  await select(dotted.id);
+  assert.deepEqual([(await lookControls(page, 'arrow')).weight, (await lookControls(page, 'arrow')).style], ['Thin', 'Dotted']);
+  await select(drawDotted.id);
+  assert.deepEqual(await lookControls(page, 'draw'), {
+    shown: true, title: 'Drawing 2 look', labels: ['Weight', 'Style'], weights: ['Thin', 'Regular', 'Bold'], styles: ['Solid', 'Dashed', 'Dotted'], weight: 'Regular', style: 'Dotted',
+  });
+  assert.equal(await writes(page), 0, 'looking at records writes nothing');
+  // The selection edge follows the line's own pattern and stays apart from a plain one.
+  look = await lineLook(page);
+  assert.equal(look[drawDotted.id].selected, true);
+  assert.equal(look[drawDotted.id].halo.dash, look[drawDotted.id].line.dash);
+  assert.notEqual(look[drawDotted.id].halo.stroke, look[drawDashed.id].halo.stroke, 'a selected line has its own edge color');
+
+  // Changing a saved record's Style is one annotation write that moves nothing else; choosing the same Style again writes nothing.
+  await select(legacy.id);
+  const before = { others: await others(legacy.id), cases: await page.evaluate(() => window.probe.casesJson()), camera: await page.evaluate(() => window.probe.camera()), record: (await stored()).find(r => r.id === legacy.id) };
+  await page.focus('.tp3d-annot-seg--line .tp3d-annot-seg__btn[data-line-style="dotted"]');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).style === 'dotted', legacy.id);
+  assert.equal(await writes(page), 1, 'one annotation write');
+  assert.equal(JSON.stringify(await others(legacy.id)), JSON.stringify(before.others), 'no other annotation is written');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is untouched');
+  assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'and so is the camera');
+  const changed = (await stored()).find(r => r.id === legacy.id);
+  assert.deepEqual([changed.start, changed.end, changed.id, changed.createdAt, changed.color, changed.width], [before.record.start, before.record.end, before.record.id, before.record.createdAt, before.record.color, before.record.width]);
+  assert.equal((await lookControls(page, 'arrow')).style, 'Dotted');
+  await page.waitForFunction(id => document.querySelector(`.tp3d-annot-arrow[data-annot-id="${id}"]`).dataset.lineStyle === 'dotted', legacy.id);
+  await page.click('.tp3d-annot-seg--line .tp3d-annot-seg__btn[data-line-style="dotted"]');
+  assert.equal(await writes(page), 1, 'choosing what it already is writes nothing');
+  await page.click('.tp3d-annot-seg--line .tp3d-annot-seg__btn[data-line-style="solid"]');
+  await page.waitForFunction(id => !Object.hasOwn(window.probe.annotations().find(r => r.id === id), 'style'), legacy.id);
+  assert.equal(await writes(page), 2);
+  assert.equal(JSON.stringify({ ...(await stored()).find(r => r.id === legacy.id), updatedAt: 0 }), JSON.stringify({ ...before.record, updatedAt: 0 }), 'back to Solid, the record is the legacy record again');
+  await select(drawSolid.id);
+  await page.click('.tp3d-annot-seg--draw-line .tp3d-annot-seg__btn[data-draw-line-style="dashed"]');
+  await page.waitForFunction(id => window.probe.annotations().find(r => r.id === id).style === 'dashed', drawSolid.id);
+  assert.equal(await writes(page), 3);
+  await page.click('.tp3d-annot-seg--draw-line .tp3d-annot-seg__btn[data-draw-line-style="solid"]');
+  await page.waitForFunction(id => !Object.hasOwn(window.probe.annotations().find(r => r.id === id), 'style'), drawSolid.id);
+  assert.equal(await writes(page), 4);
+  assert.equal(JSON.stringify((await stored()).find(r => r.id === callout.id)), JSON.stringify(callout), 'a callout is never touched');
+
+  // New arrows and new drawings have their own session defaults, apart from each other and from any record: choosing one writes nothing.
+  await armArrow(page);
+  assert.deepEqual([(await lookControls(page, 'arrow')).title, (await lookControls(page, 'arrow')).style], ['New arrows look', 'Solid'], 'new arrows start Solid');
+  await page.click('.tp3d-annot-seg--line .tp3d-annot-seg__btn[data-line-style="dashed"]');
+  assert.equal(await writes(page), 4, 'choosing a default writes nothing');
+  const placeArrow = async (from, to) => {
+    const count = (await stored()).length;
+    await click(page, await freePoint(page, [from]));
+    await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
+    await click(page, await freePoint(page, [to]));
+    await page.waitForFunction(n => window.probe.annotations().length === n + 1, count);
+    return (await stored()).at(-1);
+  };
+  const created = await placeArrow(GROUND_B, GROUND_A);
+  assert.deepEqual([created.type, created.style], ['arrow', 'dashed'], 'the next arrow takes the chosen Style');
+  assert.equal(await writes(page), 5, 'and costs one write');
+  await armDraw(page);
+  assert.deepEqual([(await lookControls(page, 'draw')).title, (await lookControls(page, 'draw')).style], ['New drawings look', 'Solid'], 'drawings keep their own default: the arrow choice did not leak');
+  await page.click('.tp3d-annot-seg--draw-line .tp3d-annot-seg__btn[data-draw-line-style="dotted"]');
+  assert.equal(await writes(page), 5);
+  await dragThrough(page, FLOOR_STROKE);
+  await page.waitForFunction(() => window.probe.annotations().filter(r => r.type === 'draw').length === 4);
+  const drawn = (await stored()).at(-1);
+  assert.deepEqual([drawn.type, drawn.style], ['draw', 'dotted']);
+  assert.equal(await writes(page), 6);
+  await page.click('.tp3d-annot-seg__btn[data-tool="arrow"]');
+  assert.equal((await lookControls(page, 'arrow')).style, 'Dashed', 'the arrow default is remembered while drawing');
+  assert.equal(JSON.stringify(await others(created.id)).includes('"style":"dashed"'), true);
+  await page.keyboard.press('Escape');
+
+  // Present shows styled lines as they are saved, with no selection edge, no handles and no way to edit them.
+  await select(dashed.id);
+  await page.click(PRESENT);
+  await page.waitForFunction(() => window.probe.AnnotationTool.isPresenting());
+  look = await lineLook(page);
+  assert.deepEqual([look[dashed.id].selected, look[dashed.id].style, look[dashed.id].line.dash], [false, 'dashed', dashedPattern]);
+  assert.deepEqual([look[dotted.id].style, look[drawDashed.id].style], ['dotted', 'dashed']);
+  assert.deepEqual(await chromeOf(page), { handles: 0, selected: 0, cardButtons: 0 });
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true, 'the Weight and Style controls are away');
+  await page.click(EXIT);
+  await page.waitForFunction(() => !window.probe.AnnotationTool.isPresenting());
+  assert.equal(await writes(page), 6, 'Present writes nothing');
+
+  // Show Off hides the lines and their controls; Show All brings them back.
+  await showButton(page, 'Off').click();
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""]), .tp3d-annot-svg .tp3d-annot-draw__line[d]:not([d=""])').length === 0);
+  assert.equal((await lookControls(page, 'arrow')).shown, false);
+  await showButton(page, 'All').click();
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-svg .tp3d-annot-arrow__shaft[d]:not([d=""])').length >= 5);
+  assert.equal(await writes(page), 6, 'display choices write nothing');
   assert.deepEqual(errors, []);
 });

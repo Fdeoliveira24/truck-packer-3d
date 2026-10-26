@@ -75,6 +75,9 @@ export const DEFAULT_ANNOTATION_COLOR = 'ink';
 export const ANNOTATION_STATUS = MEASUREMENT_STATUS;
 export const ARROW_WIDTHS = Object.freeze(['thin', 'regular', 'bold']);
 export const DEFAULT_ARROW_WIDTH = 'regular';
+/** How an arrow's shaft or a stroke's line is drawn. Absent in storage means solid; solid is never written. */
+export const LINE_STYLES = Object.freeze(['solid', 'dashed', 'dotted']);
+export const DEFAULT_LINE_STYLE = 'solid';
 /** A new or moved arrow must span at least this much between its resolved endpoints (inches). */
 export const MIN_ARROW_LENGTH_INCHES = 0.5;
 
@@ -104,9 +107,9 @@ const MAX_ID_LENGTH = 64;
 /** Record types a later release writes. An older build keeps them untouched and says why. None is reserved now. */
 const FUTURE_TYPES = new Set();
 /** The only top-level keys an arrow may carry; any other key makes the record unreadable, never dropped. */
-const ARROW_KEYS = new Set(['id', 'type', 'schemaVersion', 'color', 'width', 'hidden', 'start', 'end', 'createdAt', 'updatedAt']);
+const ARROW_KEYS = new Set(['id', 'type', 'schemaVersion', 'color', 'width', 'style', 'hidden', 'start', 'end', 'createdAt', 'updatedAt']);
 /** The only top-level keys a stroke may carry (`face` for cargo only); any other key makes it unreadable, never dropped. */
-const DRAW_KEYS = new Set(['id', 'type', 'schemaVersion', 'color', 'width', 'hidden', 'anchor', 'face', 'points', 'createdAt', 'updatedAt']);
+const DRAW_KEYS = new Set(['id', 'type', 'schemaVersion', 'color', 'width', 'style', 'hidden', 'anchor', 'face', 'points', 'createdAt', 'updatedAt']);
 
 /**
  * Optional starting texts for the callout editor. Picking one only fills the title and description,
@@ -284,31 +287,35 @@ export function offsetCalloutRecord(record, offset, now) {
 
 /**
  * New arrow record: `start` is the tail, `end` the head. `id` and `now` are injected so callers own identity
- * and time. The record is not validated (an invalid color or width is kept as given, so the gate refuses it
- * instead of storing a different value); callers pass it through validateAnnotationCollection.
+ * and time. The record is not validated (an invalid color, width or style is kept as given, so the gate refuses
+ * it instead of storing a different value); callers pass it through validateAnnotationCollection. A solid
+ * line carries no `style` key once canonical.
  * @param {{ id: string, start: Record<string, any>, end: Record<string, any>, color?: string, width?: string,
- *   hidden?: boolean, now: number }} input
+ *   style?: string, hidden?: boolean, now: number }} input
  */
-export function createArrowRecord({ id, start, end, color = DEFAULT_ANNOTATION_COLOR, width = DEFAULT_ARROW_WIDTH, hidden = false, now }) {
-  return {
+export function createArrowRecord({ id, start, end, color = DEFAULT_ANNOTATION_COLOR, width = DEFAULT_ARROW_WIDTH, style, hidden = false, now }) {
+  /** @type {Record<string, any>} */
+  const record = {
     id: String(id),
     type: ANNOTATION_TYPE_ARROW,
     schemaVersion: ANNOTATION_SCHEMA_VERSION,
     color: canonicalAnnotationColor(color) || color,
     width,
-    hidden: hidden === true,
-    start,
-    end,
-    createdAt: now,
-    updatedAt: now,
   };
+  if (style !== undefined) record.style = style;
+  record.hidden = hidden === true;
+  record.start = start;
+  record.end = end;
+  record.createdAt = now;
+  record.updatedAt = now;
+  return record;
 }
 
 /**
  * Pure edit of an arrow's presentation. Unknown patch keys are ignored; the endpoints, identity and creation
- * time are preserved. Null when the result would not be a valid arrow (for example an unknown width).
+ * time are preserved. Null when the result would not be a valid arrow (for example an unknown width or style).
  * @param {Record<string, any>} record
- * @param {{ color?: string, width?: string, hidden?: boolean }} patch
+ * @param {{ color?: string, width?: string, style?: string, hidden?: boolean }} patch
  * @param {number} now
  */
 export function editArrowRecord(record, patch, now) {
@@ -317,6 +324,7 @@ export function editArrowRecord(record, patch, now) {
   const next = { ...record, updatedAt: now };
   if (Object.hasOwn(patch, 'color')) next.color = canonicalAnnotationColor(patch.color) || patch.color;
   if (Object.hasOwn(patch, 'width')) next.width = patch.width;
+  if (Object.hasOwn(patch, 'style')) next.style = patch.style;
   if (Object.hasOwn(patch, 'hidden')) next.hidden = patch.hidden === true;
   return validateArrowRecord(next) ? null : canonicalArrowRecord(next);
 }
@@ -351,12 +359,12 @@ function isOnDrawGrid(value) {
 /**
  * New stroke record. `points` are the already-prepared canonical vertices 1..n (see prepareDrawStroke);
  * `face` is for cargo only. `id` and `now` are injected so callers own identity and time. The record is not
- * validated (an invalid color or width is kept as given, so the gate refuses it instead of storing a
+ * validated (an invalid color, width or style is kept as given, so the gate refuses it instead of storing a
  * different value); callers pass it through validateAnnotationCollection.
  * @param {{ id: string, anchor: Record<string, any>, face?: string, points: number[], color?: string,
- *   width?: string, hidden?: boolean, now: number }} input
+ *   width?: string, style?: string, hidden?: boolean, now: number }} input
  */
-export function createDrawRecord({ id, anchor, face, points, color = DEFAULT_ANNOTATION_COLOR, width = DEFAULT_DRAW_WIDTH, hidden = false, now }) {
+export function createDrawRecord({ id, anchor, face, points, color = DEFAULT_ANNOTATION_COLOR, width = DEFAULT_DRAW_WIDTH, style, hidden = false, now }) {
   /** @type {Record<string, any>} */
   const record = {
     id: String(id),
@@ -364,9 +372,10 @@ export function createDrawRecord({ id, anchor, face, points, color = DEFAULT_ANN
     schemaVersion: ANNOTATION_SCHEMA_VERSION,
     color: canonicalAnnotationColor(color) || color,
     width,
-    hidden: hidden === true,
-    anchor,
   };
+  if (style !== undefined) record.style = style;
+  record.hidden = hidden === true;
+  record.anchor = anchor;
   if (face !== undefined) record.face = face;
   record.points = points;
   record.createdAt = now;
@@ -377,9 +386,9 @@ export function createDrawRecord({ id, anchor, face, points, color = DEFAULT_ANN
 /**
  * Pure edit of a stroke's presentation. Unknown patch keys are ignored. The anchor, face, vertices, identity
  * and creation time are carried over exactly as stored, so a style change can never move a stroke or change
- * what it is attached to. Null when the result would not be a valid stroke (for example an unknown width).
+ * what it is attached to. Null when the result would not be a valid stroke (for example an unknown width or style).
  * @param {Record<string, any>} record
- * @param {{ color?: string, width?: string, hidden?: boolean }} patch
+ * @param {{ color?: string, width?: string, style?: string, hidden?: boolean }} patch
  * @param {number} now
  */
 export function editDrawRecord(record, patch, now) {
@@ -388,6 +397,7 @@ export function editDrawRecord(record, patch, now) {
   const next = { ...record, updatedAt: now };
   if (Object.hasOwn(patch, 'color')) next.color = canonicalAnnotationColor(patch.color) || patch.color;
   if (Object.hasOwn(patch, 'width')) next.width = patch.width;
+  if (Object.hasOwn(patch, 'style')) next.style = patch.style;
   if (Object.hasOwn(patch, 'hidden')) next.hidden = patch.hidden === true;
   return validateDrawRecord(next) ? null : canonicalDrawRecord(next);
 }
@@ -475,6 +485,7 @@ export function validateArrowRecord(record) {
   if (Object.keys(record).some(key => !ARROW_KEYS.has(key))) return 'record has an unsupported field';
   if (!isValidAnnotationColor(record.color)) return 'color is invalid';
   if (!ARROW_WIDTHS.includes(record.width)) return 'width is invalid';
+  if (Object.hasOwn(record, 'style') && !LINE_STYLES.includes(record.style)) return 'style is invalid';
   if (typeof record.hidden !== 'boolean') return 'display flags are invalid';
   if (!isFiniteNumber(record.createdAt) || !isFiniteNumber(record.updatedAt)) return 'timestamps are invalid';
   const anchorError = validateAnchorRecord(record.start, 'start') || validateAnchorRecord(record.end, 'end');
@@ -558,6 +569,7 @@ export function validateDrawRecord(record, { maxBytes = MAX_DRAW_RECORD_BYTES } 
   if (Object.keys(record).some(key => !DRAW_KEYS.has(key))) return 'record has an unsupported field';
   if (!isValidAnnotationColor(record.color)) return 'color is invalid';
   if (!DRAW_WIDTHS.includes(record.width)) return 'width is invalid';
+  if (Object.hasOwn(record, 'style') && !LINE_STYLES.includes(record.style)) return 'style is invalid';
   if (typeof record.hidden !== 'boolean') return 'display flags are invalid';
   if (!isFiniteNumber(record.createdAt) || !isFiniteNumber(record.updatedAt)) return 'timestamps are invalid';
   const surfaceError = validateAnchorRecord(record.anchor, 'anchor') || validateDrawSurface(record.anchor, record.face, 'anchor');
@@ -594,18 +606,22 @@ function canonicalCalloutRecord(record) {
 }
 
 function canonicalArrowRecord(record) {
-  return {
+  /** @type {Record<string, any>} */
+  const canonical = {
     id: record.id,
     type: ANNOTATION_TYPE_ARROW,
     schemaVersion: ANNOTATION_SCHEMA_VERSION,
     color: canonicalAnnotationColor(record.color) || record.color,
     width: record.width,
-    hidden: record.hidden,
-    start: canonicalAnchorRecord(record.start),
-    end: canonicalAnchorRecord(record.end),
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
   };
+  // Solid is the absence of the key, so a record that was never styled keeps its exact stored form.
+  if (record.style !== undefined && record.style !== DEFAULT_LINE_STYLE) canonical.style = record.style;
+  canonical.hidden = record.hidden;
+  canonical.start = canonicalAnchorRecord(record.start);
+  canonical.end = canonicalAnchorRecord(record.end);
+  canonical.createdAt = record.createdAt;
+  canonical.updatedAt = record.updatedAt;
+  return canonical;
 }
 
 function canonicalDrawRecord(record) {
@@ -616,9 +632,10 @@ function canonicalDrawRecord(record) {
     schemaVersion: ANNOTATION_SCHEMA_VERSION,
     color: canonicalAnnotationColor(record.color) || record.color,
     width: record.width,
-    hidden: record.hidden,
-    anchor: canonicalAnchorRecord(record.anchor),
   };
+  if (record.style !== undefined && record.style !== DEFAULT_LINE_STYLE) canonical.style = record.style;
+  canonical.hidden = record.hidden;
+  canonical.anchor = canonicalAnchorRecord(record.anchor);
   if (record.anchor.kind === 'cargo') canonical.face = record.face;
   // `+ 0` turns a negative zero into zero, which JSON would write as 0 anyway.
   canonical.points = record.points.map(value => value + 0);

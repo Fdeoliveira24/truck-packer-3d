@@ -5130,6 +5130,23 @@ body.tp3d-shared-modal-lock #app .nav {
   opacity: 0.85;
 }
 
+/* Dashed and Dotted (set by the owner) draw their own pattern, inline, on the shaft and its halo; the head stays solid. Hidden behind
+   cargo, such a line keeps that pattern and is dimmed instead of getting the Solid line's 7 5 dash above, so a hidden Dashed line is
+   never mistaken for a hidden Solid one and the head reads as one solid, dimmed shape. */
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__shaft,
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__under,
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__under-head {
+  opacity: 0.4;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__head {
+  fill: var(--annot-color, var(--annot-ink));
+  fill-opacity: 1;
+  stroke-width: 1px;
+  stroke-dasharray: none;
+  opacity: 0.4;
+}
+
 /* Annotations V1B.2 freehand drawings: one SVG path per stroke (a neutral halo under the colored line), in the same layer and under
    the arrows. The width is a screen-pixel stroke (set from the width name), so it never scales with zoom. The user's color is
    --annot-color, as for markers and arrows. */
@@ -5161,6 +5178,12 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-annot-svg .tp3d-annot-draw.is-occluded .tp3d-annot-draw__under {
   stroke-dasharray: 7 5;
   opacity: 0.7;
+}
+
+/* The same rule as for an arrow: a Dashed or Dotted stroke keeps its pattern behind cargo and is dimmed, not dashed again. */
+.tp3d-annot-svg .tp3d-annot-draw:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-draw__line,
+.tp3d-annot-svg .tp3d-annot-draw:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-draw__under {
+  opacity: 0.4;
 }
 
 /* While drawing: the stroke so far, slightly lighter; frozen where it stopped until the button is released. */
@@ -6450,7 +6473,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-panel__body.has-arrow-options {
-  scroll-padding-bottom: 116px; /* what scrolling a row or button into view leaves clear of the pinned controls */
+  scroll-padding-bottom: 148px; /* what scrolling a row or button into view leaves clear of the pinned controls */
 }
 
 .tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__list,

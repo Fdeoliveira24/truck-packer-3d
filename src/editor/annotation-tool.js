@@ -80,8 +80,10 @@ import {
   CALLOUT_PRESETS,
   DEFAULT_ARROW_WIDTH,
   DEFAULT_DRAW_WIDTH,
+  DEFAULT_LINE_STYLE,
   DRAW_MAX_RAW_VERTICES,
   DRAW_WIDTHS,
+  LINE_STYLES,
   MAX_ANNOTATIONS_PER_PACK,
   MAX_CALLOUT_DESCRIPTION_LENGTH,
   MAX_CALLOUT_TITLE_LENGTH,
@@ -188,6 +190,7 @@ const DISPLAY_MODES = Object.freeze([['markers', 'Markers'], ['labels', 'Labels'
 const SHOW_MODES = Object.freeze([['all', 'All'], ['selected', 'Selected'], ['off', 'Off']]);
 const DEFAULT_CUSTOM_COLOR = '#e11d8f';
 const ARROW_WIDTH_LABELS = Object.freeze({ thin: 'Thin', regular: 'Regular', bold: 'Bold' });
+const LINE_STYLE_LABELS = Object.freeze({ solid: 'Solid', dashed: 'Dashed', dotted: 'Dotted' });
 const ARROW_END_NAMES = Object.freeze({ start: 'tail', end: 'head' });
 const ARROW_HINT_TAIL = 'Click cargo, the truck or the ground to place the arrow tail.';
 const ARROW_HINT_HEAD = 'Click where the arrow should point. You can orbit first. Esc cancels.';
@@ -260,8 +263,8 @@ export function createAnnotationTool({
   let reattachId = null; // a callout (or an arrow end) whose marker is waiting for a new surface
   let reattachWhich = null; // 'start' | 'end' when that pending re-attach belongs to an arrow
   let arrowTail = null; // the first click of a new arrow, waiting for its head: { anchor, world, poseKey }
-  let arrowStyle = { color: 'ink', width: DEFAULT_ARROW_WIDTH }; // what the next new arrow looks like (this session only)
-  let drawStyle = { color: 'ink', width: DEFAULT_DRAW_WIDTH }; // what the next new drawing looks like (this session only; apart from arrows)
+  let arrowStyle = { color: 'ink', width: DEFAULT_ARROW_WIDTH, style: DEFAULT_LINE_STYLE }; // what the next new arrow looks like (this session only)
+  let drawStyle = { color: 'ink', width: DEFAULT_DRAW_WIDTH, style: DEFAULT_LINE_STYLE }; // what the next new drawing looks like (this session only; apart from arrows)
   let drawView = 'draw'; // while the Draw tool is armed: 'draw' (a primary drag draws) or 'move' (a primary drag orbits)
   let stroke = null; // the unsaved freehand gesture, see beginStroke
   let viewGate = null; // { controls, prior } while this tool holds OrbitControls' rotation off for Draw mode
@@ -1238,6 +1241,7 @@ export function createAnnotationTool({
     }
     const outcome = PackLibrary.addDraw(pack.id, {
       anchor: finished.anchor, face: finished.face, rawPoints: finished.raw, color: finished.style.color, width: finished.style.width,
+      style: finished.style.style,
     });
     if (!outcome.ok) {
       const refused = {
@@ -1323,7 +1327,7 @@ export function createAnnotationTool({
       notice('That point is too close to the tail. Click farther away to point the arrow.');
       return;
     }
-    const outcome = PackLibrary.addArrow(pack.id, { start: arrowTail.anchor, end: picked.anchor, color: arrowStyle.color, width: arrowStyle.width });
+    const outcome = PackLibrary.addArrow(pack.id, { start: arrowTail.anchor, end: picked.anchor, color: arrowStyle.color, width: arrowStyle.width, style: arrowStyle.style });
     if (!outcome.ok) {
       if (outcome.reason === 'too-short') {
         // Nothing was written and the tail stays: the owner can simply click farther away.
@@ -1797,15 +1801,16 @@ export function createAnnotationTool({
   }
 
   /**
-   * Change the look of arrows. With an arrow selected the change is written to that arrow alone (one record edit, ends
-   * untouched) and the defaults stay as they were; with none selected it sets the look of the next new arrows.
+   * Change the look of arrows (color, weight, line style). With an arrow selected the change is written to that arrow
+   * alone (one record edit, ends untouched) and the defaults stay as they were; with none selected it sets the look of the
+   * next new arrows and writes nothing.
    */
   function setArrowStyle(patch) {
     const record = recordById(selectedId);
     const editing = isArrow(record);
     // A selected arrow is edited on its own; only with none selected does this set what the next new arrows look like.
-    const next = { ...(editing ? record : arrowStyle), ...patch };
-    if (!next.color || !ARROW_WIDTHS.includes(next.width)) return;
+    const next = { ...(editing ? { ...record, style: lineStyleOf(record) } : arrowStyle), ...patch };
+    if (!next.color || !ARROW_WIDTHS.includes(next.width) || !LINE_STYLES.includes(next.style)) return;
     if (editing) {
       const reason = blockedReason();
       if (reason) {
@@ -1819,21 +1824,21 @@ export function createAnnotationTool({
       if (!outcome.ok) UIComponents.showToast('Could not change this arrow.', 'error', { title: 'Annotations' });
       return;
     }
-    arrowStyle = { color: next.color, width: next.width };
+    arrowStyle = { color: next.color, width: next.width, style: next.style };
     renderPanel();
     refreshOverlay();
   }
 
   /**
-   * Change the look of drawings. With a drawing selected the change is written to that drawing alone (one record edit, vertices
-   * untouched) and the defaults stay as they were; with none selected it sets the look of the next new drawings. Separate from
-   * the arrow defaults.
+   * Change the look of drawings (color, weight, line style). With a drawing selected the change is written to that drawing
+   * alone (one record edit, vertices untouched) and the defaults stay as they were; with none selected it sets the look of the
+   * next new drawings and writes nothing. Separate from the arrow defaults.
    */
   function setDrawStyle(patch) {
     const record = recordById(selectedId);
     const editing = isDraw(record);
-    const next = { ...(editing ? record : drawStyle), ...patch };
-    if (!next.color || !DRAW_WIDTHS.includes(next.width)) return;
+    const next = { ...(editing ? { ...record, style: lineStyleOf(record) } : drawStyle), ...patch };
+    if (!next.color || !DRAW_WIDTHS.includes(next.width) || !LINE_STYLES.includes(next.style)) return;
     if (editing) {
       const reason = blockedReason();
       if (reason) {
@@ -1847,7 +1852,7 @@ export function createAnnotationTool({
       if (!outcome.ok) UIComponents.showToast('Could not change this drawing.', 'error', { title: 'Annotations' });
       return;
     }
-    drawStyle = { color: next.color, width: next.width };
+    drawStyle = { color: next.color, width: next.width, style: next.style };
     renderPanel();
     refreshOverlay();
   }
@@ -2788,7 +2793,7 @@ export function createAnnotationTool({
       root: els.panel, head, toggle: toggleButton, chevron, count, body,
       toolButtons, drawModeRow, drawModeButtons, hint, undoBar, undoText, showButtons, presentButton, displayButtons, empty, warning, list,
       arrowOptions: null, arrowTitle: null, widthButtons: [], arrowColors: null,
-      drawOptions: null, drawTitle: null, drawWidthButtons: [], drawColors: null,
+      drawOptions: null, drawTitle: null, drawWidthButtons: [], drawStyleButtons: [], drawColors: null,
     };
     return panelParts;
   }
@@ -3070,8 +3075,8 @@ export function createAnnotationTool({
     const options = htmlEl('div', 'tp3d-annot-panel__arrow');
     const title = htmlEl('div', 'tp3d-annot-panel__arrow-title');
     const widthRow = htmlEl('div', 'tp3d-annot-panel__view');
-    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Width'));
-    const widthGroup = segmented('Arrow width', 'tp3d-annot-seg--small tp3d-annot-seg--width');
+    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Weight'));
+    const widthGroup = segmented('Arrow weight', 'tp3d-annot-seg--small tp3d-annot-seg--width');
     const widthButtons = ARROW_WIDTHS.map(key => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', ARROW_WIDTH_LABELS[key]);
       button.type = 'button';
@@ -3081,17 +3086,30 @@ export function createAnnotationTool({
       return { key, button };
     });
     widthRow.appendChild(widthGroup);
+    const styleRow = htmlEl('div', 'tp3d-annot-panel__view');
+    styleRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Style'));
+    const styleGroup = segmented('Arrow line style', 'tp3d-annot-seg--small tp3d-annot-seg--line');
+    const styleButtons = LINE_STYLES.map(key => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', LINE_STYLE_LABELS[key]);
+      button.type = 'button';
+      button.dataset.lineStyle = key;
+      button.addEventListener('click', () => setArrowStyle({ style: key }));
+      styleGroup.appendChild(button);
+      return { key, button };
+    });
+    styleRow.appendChild(styleGroup);
     const colors = buildColorPicker({
       ariaLabel: 'Arrow color',
       getColor: () => { const selectedArrow = recordById(selectedId); return isArrow(selectedArrow) ? selectedArrow.color : arrowStyle.color; },
       onPick: color => setArrowStyle({ color }),
     });
     colors.root.classList.add('tp3d-annot-panel__arrow-colors');
-    options.append(title, widthRow, colors.root);
+    options.append(title, widthRow, styleRow, colors.root);
     parts.body.appendChild(options);
     parts.arrowOptions = options;
     parts.arrowTitle = title;
     parts.widthButtons = widthButtons;
+    parts.styleButtons = styleButtons;
     parts.arrowColors = colors;
   }
 
@@ -3111,8 +3129,8 @@ export function createAnnotationTool({
     const options = htmlEl('div', 'tp3d-annot-panel__draw');
     const title = htmlEl('div', 'tp3d-annot-panel__draw-title');
     const widthRow = htmlEl('div', 'tp3d-annot-panel__view');
-    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Width'));
-    const widthGroup = segmented('Drawing width', 'tp3d-annot-seg--small tp3d-annot-seg--draw-width');
+    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Weight'));
+    const widthGroup = segmented('Drawing weight', 'tp3d-annot-seg--small tp3d-annot-seg--draw-width');
     const widthButtons = DRAW_WIDTHS.map(key => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', ARROW_WIDTH_LABELS[key]);
       button.type = 'button';
@@ -3122,17 +3140,30 @@ export function createAnnotationTool({
       return { key, button };
     });
     widthRow.appendChild(widthGroup);
+    const styleRow = htmlEl('div', 'tp3d-annot-panel__view');
+    styleRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Style'));
+    const styleGroup = segmented('Drawing line style', 'tp3d-annot-seg--small tp3d-annot-seg--draw-line');
+    const styleButtons = LINE_STYLES.map(key => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', LINE_STYLE_LABELS[key]);
+      button.type = 'button';
+      button.dataset.drawLineStyle = key;
+      button.addEventListener('click', () => setDrawStyle({ style: key }));
+      styleGroup.appendChild(button);
+      return { key, button };
+    });
+    styleRow.appendChild(styleGroup);
     const colors = buildColorPicker({
       ariaLabel: 'Drawing color',
       getColor: () => { const selectedDraw = recordById(selectedId); return isDraw(selectedDraw) ? selectedDraw.color : drawStyle.color; },
       onPick: color => setDrawStyle({ color }),
     });
     colors.root.classList.add('tp3d-annot-panel__draw-colors');
-    options.append(title, widthRow, colors.root);
+    options.append(title, widthRow, styleRow, colors.root);
     parts.body.appendChild(options);
     parts.drawOptions = options;
     parts.drawTitle = title;
     parts.drawWidthButtons = widthButtons;
+    parts.drawStyleButtons = styleButtons;
     parts.drawColors = colors;
   }
 
@@ -3149,10 +3180,15 @@ export function createAnnotationTool({
     setHidden(parts.drawOptions, false);
     const color = editing ? editing.color : drawStyle.color;
     const width = editing ? editing.width : drawStyle.width;
+    const lineStyle = editing ? lineStyleOf(editing) : drawStyle.style;
     setText(parts.drawTitle, editing ? `${drawName(editing.id)} look` : 'New drawings look');
     parts.drawColors.sync(color);
     parts.drawWidthButtons.forEach(({ key, button }) => {
       setAttr(button, 'aria-pressed', width === key ? 'true' : 'false');
+      button.disabled = Boolean(blockedNow);
+    });
+    parts.drawStyleButtons.forEach(({ key, button }) => {
+      setAttr(button, 'aria-pressed', lineStyle === key ? 'true' : 'false');
       button.disabled = Boolean(blockedNow);
     });
     return true;
@@ -3171,10 +3207,15 @@ export function createAnnotationTool({
     setHidden(parts.arrowOptions, false);
     const color = editing ? editing.color : arrowStyle.color;
     const width = editing ? editing.width : arrowStyle.width;
+    const lineStyle = editing ? lineStyleOf(editing) : arrowStyle.style;
     setText(parts.arrowTitle, editing ? `${arrowName(editing.id)} look` : 'New arrows look');
     parts.arrowColors.sync(color);
     parts.widthButtons.forEach(({ key, button }) => {
       setAttr(button, 'aria-pressed', width === key ? 'true' : 'false');
+      button.disabled = Boolean(blockedNow);
+    });
+    parts.styleButtons.forEach(({ key, button }) => {
+      setAttr(button, 'aria-pressed', lineStyle === key ? 'true' : 'false');
       button.disabled = Boolean(blockedNow);
     });
     return true;
@@ -3372,14 +3413,14 @@ export function createAnnotationTool({
     const under = svgEl('path', 'tp3d-annot-draw__under');
     const line = svgEl('path', 'tp3d-annot-draw__line');
     group.append(under, line);
-    return { group, under, line, colorKey: null, widthKey: '' };
+    return { group, under, line, colorKey: null, widthKey: '', patternKey: '' };
   }
 
   /**
    * Show `d` (or nothing, for an empty string) on a stroke graphic. The line width is constant on screen, so it never scales
    * with zoom. Only what changed is written: a new color or selection touches classes and one custom property, never the path.
    */
-  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, selected = false, occluded = false, frozen = false }) {
+  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false }) {
     if (graphic.colorKey !== color) {
       graphic.colorKey = color;
       applyColor(graphic.group, color);
@@ -3390,13 +3431,15 @@ export function createAnnotationTool({
     setPath(graphic.under, d);
     setPath(graphic.line, d);
     if (!d) return;
+    setAttr(graphic.group, 'data-line-style', style);
     const px = ARROW_SHAFT_PX[width] || ARROW_SHAFT_PX.regular;
     const halo = selected && !occluded ? 6 : 4; // a selected edge wide enough to read on a light floor and a dark one
-    const key = `${px}|${halo}`;
+    const key = `${px}|${halo}|${style}`;
     if (graphic.widthKey === key) return;
     graphic.widthKey = key;
     setStyleProp(graphic.line, 'strokeWidth', `${px}px`);
     setStyleProp(graphic.under, 'strokeWidth', `${px + halo}px`);
+    paintLinePattern(graphic, style, px, graphic.line, graphic.under);
   }
 
   function getDrawView(id) {
@@ -3636,7 +3679,9 @@ export function createAnnotationTool({
 
   function paintDraws(entries) {
     entries.forEach(({ record, view, selected }) => {
-      paintDraw(view.graphic, view.d, { color: record.color, width: record.width, selected: selected && !presenting, occluded: !view.front });
+      paintDraw(view.graphic, view.d, {
+        color: record.color, width: record.width, style: lineStyleOf(record), selected: selected && !presenting, occluded: !view.front,
+      });
     });
   }
 
@@ -3652,7 +3697,9 @@ export function createAnnotationTool({
       stroke.previewKey = key;
       stroke.previewPath = projectDrawPath(stroke.world, camera, width, height, strokePreviewVisible);
     }
-    paintDraw(preview, stroke.previewPath, { color: stroke.style.color, width: stroke.style.width, frozen: stroke.phase === 'frozen' });
+    paintDraw(preview, stroke.previewPath, {
+      color: stroke.style.color, width: stroke.style.width, style: stroke.style.style, frozen: stroke.phase === 'frozen',
+    });
   }
 
   // ==========================================================================
@@ -3666,18 +3713,47 @@ export function createAnnotationTool({
     const shaft = svgEl('path', 'tp3d-annot-arrow__shaft');
     const head = svgEl('path', 'tp3d-annot-arrow__head');
     group.append(under, underHead, shaft, head);
-    return { group, under, underHead, shaft, head, colorKey: null };
+    return { group, under, underHead, shaft, head, colorKey: null, patternKey: '' };
   }
 
   function setStyleProp(el, name, value) {
     if (el.style[name] !== value) el.style[name] = value;
   }
 
+  /** The line style a stored arrow or drawing shows: a record with no `style` has always been solid. */
+  function lineStyleOf(record) {
+    return record && LINE_STYLES.includes(record.style) ? record.style : DEFAULT_LINE_STYLE;
+  }
+
+  /**
+   * Draw a line (and its halo) in its style at `px` screen pixels. Dashes and the dot spacing grow with the weight, so a Bold
+   * line is never a Thin pattern thickened. Dots are zero-length dashes with round caps; Solid sets nothing, which leaves the
+   * stylesheet in charge (including its dashed look for a Solid line hidden behind cargo).
+   */
+  function paintLinePattern(graphic, style, px, line, halo) {
+    const key = `${style}|${px}`;
+    if (graphic.patternKey === key) return;
+    graphic.patternKey = key;
+    let dash = '';
+    let cap = '';
+    if (style === 'dashed') {
+      dash = `${px * 4} ${Math.max(px * 2.5, 5)}`;
+      cap = 'butt';
+    } else if (style === 'dotted') {
+      dash = `0.01 ${Math.max(px * 2.6, px + 7)}`;
+      cap = 'round';
+    }
+    [line, halo].forEach(path => {
+      setStyleProp(path, 'strokeDasharray', dash);
+      setStyleProp(path, 'strokeLinecap', cap);
+    });
+  }
+
   /**
    * Show `shape` (from `arrowShape`, or null to clear) on a graphic. The width is constant on screen; a selected arrow
    * swaps its neutral halo (2 px a side) for a 1 px orange edge, and a hidden one (dashed, hollow head) keeps its neutral halo.
    */
-  function paintArrow(graphic, shape, { color, selected = false, occluded = false }) {
+  function paintArrow(graphic, shape, { color, style = DEFAULT_LINE_STYLE, selected = false, occluded = false }) {
     if (graphic.colorKey !== color) {
       graphic.colorKey = color;
       applyColor(graphic.group, color);
@@ -3690,10 +3766,13 @@ export function createAnnotationTool({
     setPath(graphic.underHead, data.head);
     setPath(graphic.head, data.head);
     if (!shape) return;
+    setAttr(graphic.group, 'data-line-style', style);
     const halo = selected && !occluded ? 2 : 4;
     setStyleProp(graphic.shaft, 'strokeWidth', `${shape.shaftWidth}px`);
     setStyleProp(graphic.under, 'strokeWidth', `${shape.shaftWidth + halo}px`);
     setStyleProp(graphic.underHead, 'strokeWidth', `${halo}px`);
+    // Only the shaft and its halo take the pattern; the head and its halo stay solid so the direction always reads.
+    paintLinePattern(graphic, style, shape.shaftWidth, graphic.shaft, graphic.under);
   }
 
   function getArrowView(id) {
@@ -3825,7 +3904,7 @@ export function createAnnotationTool({
     const gripsAllowed = !isActive() && !sceneOwnedElsewhere();
     entries.forEach(({ record, view, projection, selected: isSelected }) => {
       const selected = isSelected && !presenting; // Present draws the saved look: no selected edge, no end handles
-      paintArrow(view.graphic, projection.shape, { color: record.color, selected, occluded: !view.front });
+      paintArrow(view.graphic, projection.shape, { color: record.color, style: lineStyleOf(record), selected, occluded: !view.front });
       view.shown = true;
       ['start', 'end'].forEach(which => {
         const screen = which === 'start' ? projection.tail : projection.head;
@@ -3864,7 +3943,7 @@ export function createAnnotationTool({
     const target = hover && hover.world && !(pinDrag && pinDrag.moved) ? hover.world : null;
     const far = target && tailWorld.distanceTo(target) / picker.toWorldScale() >= MIN_ARROW_LENGTH_INCHES;
     const projection = far ? projectArrow(tailWorld, target, camera, width, height, viewport, arrowStyle.width) : null;
-    paintArrow(preview, projection ? projection.shape : null, { color: arrowStyle.color });
+    paintArrow(preview, projection ? projection.shape : null, { color: arrowStyle.color, style: arrowStyle.style });
   }
 
   function makePin(id) {

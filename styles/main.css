@@ -5210,6 +5210,12 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-annot-layer.is-draw-hit:not(.is-view-only) .tp3d-annot-svg .tp3d-annot-draw__hit {
   pointer-events: stroke;
   cursor: grab;
+}
+
+/* A finger that starts on a hit path must not become a page pan or pinch, or the browser cancels the pointer on its first move.
+   Chromium ignored touch-action on the path itself and honours it on the SVG root. Only graphics live in the SVG, so no scrolling
+   area loses its touch panning. */
+.tp3d-annot-layer:is(.is-draw-hit, .is-draw-moving):not(.is-view-only) .tp3d-annot-svg {
   touch-action: none;
 }
 

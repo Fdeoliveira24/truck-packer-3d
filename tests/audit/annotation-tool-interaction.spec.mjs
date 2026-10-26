@@ -6192,3 +6192,285 @@ test('annotation drawing move: a saved drawing is selected by clicking its line 
   await page.waitForFunction(({ id, d }) => document.querySelector(`.tp3d-annot-draws .tp3d-annot-draw[data-annot-id="${id}"] .tp3d-annot-draw__line`)?.getAttribute('d') === d, { id: top.id, d: drawn });
   assert.deepEqual(errors, []);
 });
+
+// ============================================================================
+// SECTION: DRAWING HIT TARGET + CAMERA GESTURES (V1B.2 Gate B.4.1)
+// ============================================================================
+const FLOOR_AIM = [[170, 0, -10], [0, 90, 120]]; // the open truck floor: no cargo stands under a stroke there
+const TOP_FACE_AIM = [[90, 32, -20], [0, 70, 70]]; // cargo-a's top face, left of the panel
+// Everything a camera gesture must not touch, besides the camera: cargo, both selections, the stored drawing and the write count.
+const gestureLook = (page, id) => page.evaluate(sel => ({
+  camera: window.probe.camera(),
+  cases: window.probe.casesJson(),
+  cargoSelection: JSON.stringify(window.probe.selection()),
+  selected: window.probe.AnnotationTool.selectedId(),
+  record: JSON.stringify(window.probe.annotations().find(r => r.id === sel) || null),
+  writes: window.__writes,
+}), id);
+const changedBy = (before, after) => Object.keys(before).filter(key => before[key] !== after[key]);
+const freshDrawing = async (page, previous, make) => {
+  if (previous) await page.evaluate(id => window.probe.PackLibrary.deleteAnnotation('fixture-pack', id), previous.id);
+  const record = await make();
+  await waitHit(page, record.id);
+  await watchWrites(page);
+  return record;
+};
+
+test('annotation drawing gestures: a Shift, Ctrl or Cmd press on a drawing\'s line is camera navigation - the line steps aside, nothing is selected, moved or written, and the keys never stay stuck', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  await watchWrites(page);
+  await aimCamera(page, ...FLOOR_AIM);
+  let line = await freshDrawing(page, null, () => seedFloorDraw(page, [150, -30], [190, 10, 230, -20]));
+  const onLine = await point(page, 170, 0, -10);
+  const open = { x: onLine.x - 170, y: onLine.y + 60 }; // bare canvas: the same press with no line under it
+  const reachable = async () => (await layerClasses(page)).includes('is-draw-hit');
+  assert.equal(await reachAt(page, onLine), `hit:${line.id}`);
+  assert.equal(await reachAt(page, open), 'canvas');
+
+  // Key down: the line steps aside at once, so the press lands on the canvas and OrbitControls pans, as it does anywhere else.
+  for (const [name, key] of [['Shift', 'Shift'], ['Ctrl', 'Control'], ['Cmd', 'Meta']]) {
+    await aimCamera(page, ...FLOOR_AIM);
+    const before = await gestureLook(page, line.id);
+    await page.keyboard.down(key);
+    assert.equal(await reachable(), false, `${name}: the line is out of reach as soon as the key is down`);
+    assert.equal(await reachAt(page, onLine), 'canvas', `${name}: the press reaches the canvas`);
+    await page.mouse.move(onLine.x, onLine.y);
+    await page.mouse.down();
+    assert.equal(await moveState(page), 'idle', `${name}: the press starts no move`);
+    await page.mouse.move(onLine.x + 50, onLine.y + 30, { steps: 8 });
+    assert.equal(await moveState(page), 'idle', `${name}: and the drag carries nothing`);
+    await page.mouse.up();
+    await page.keyboard.up(key);
+    await cameraSettled(page);
+    assert.deepEqual(changedBy(before, await gestureLook(page, line.id)), ['camera'], `${name} + drag pans the camera and changes nothing else`);
+    assert.equal(await reachable(), true, `${name}: the line is back in reach once the key is released`);
+  }
+
+  // A modified click on the line is not a selection either; the same click with no key still selects it.
+  await aimCamera(page, ...FLOOR_AIM);
+  let before = await gestureLook(page, line.id);
+  await page.keyboard.down('Shift');
+  await page.mouse.move(onLine.x, onLine.y);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.keyboard.up('Shift');
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)), [], 'a Shift click on the line selects and writes nothing');
+
+  // A press that still lands on the line with a key held (the key went down while the page had no focus) is refused, not taken as a move.
+  const press = (shift) => page.evaluate(({ id, x, y, shift }) => {
+    const hit = document.querySelector(`.tp3d-annot-draw[data-annot-id="${id}"] .tp3d-annot-draw__hit`);
+    const init = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, buttons: 1, pointerId: 41, pointerType: 'mouse', isPrimary: true, shiftKey: shift };
+    hit.dispatchEvent(new PointerEvent('pointerdown', init));
+    const started = window.probe.AnnotationTool.moveState();
+    window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 41 }));
+    hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, clientX: x, clientY: y, shiftKey: shift }));
+    return { started, selected: window.probe.AnnotationTool.selectedId() };
+  }, { id: line.id, x: onLine.x, y: onLine.y, shift });
+  assert.deepEqual(await press(true), { started: 'idle', selected: null }, 'a modified press that reaches the line starts nothing and selects nothing');
+  assert.deepEqual(await press(false), { started: 'pressed', selected: line.id }, 'the same press without the key is a move and a selection (the check above has teeth)');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => window.probe.AnnotationTool.selectedId() === null);
+  assert.equal(await writes(page), 0);
+
+  // The state follows the keys that are really down: a missed key-up, a lost focus, a cancelled pointer or a hidden page ends it.
+  const keyDown = () => page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Shift', shiftKey: true, bubbles: true })));
+  await keyDown();
+  assert.equal(await reachable(), false);
+  await page.mouse.move(open.x, open.y); // any pointer event carries the keys actually held
+  assert.equal(await reachable(), true, 'a missed key-up is corrected by the next pointer event');
+  await keyDown();
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  assert.equal(await reachable(), true, 'losing focus releases the keys');
+  await keyDown();
+  await page.evaluate(() => window.dispatchEvent(new PointerEvent('pointercancel', { pointerId: 77 })));
+  assert.equal(await reachable(), true, 'a cancelled pointer re-reads the keys');
+  await keyDown();
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  assert.equal(await reachable(), true, 'a hidden page releases the keys');
+  await page.evaluate(() => { delete document.visibilityState; });
+  await page.keyboard.down('Shift');
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.keyboard.up('Shift');
+  assert.equal(await reachable(), true, 'a key released after the focus was lost leaves nothing behind');
+
+  // On a drawing that lies on cargo the same press is the editor's own press on that cargo: exactly what it is one finger-width beside the line.
+  await aimCamera(page, ...TOP_FACE_AIM);
+  line = await freshDrawing(page, line, () => seedDraw(page));
+  const on = await point(page, 58, 32, -24);
+  const beside = await point(page, 70, 32, -14);
+  assert.equal(await reachAt(page, on), `hit:${line.id}`);
+  assert.equal(await reachAt(page, beside), 'canvas');
+  const home = await page.evaluate(() => JSON.stringify(window.probe.PackLibrary.getById('fixture-pack').cases.find(c => c.id === 'cargo-a').transform));
+  const outcomes = {};
+  for (const [name, key] of [['Shift', 'Shift'], ['Ctrl', 'Control'], ['Cmd', 'Meta']]) {
+    for (const [label, from] of [['on', on], ['beside', beside]]) {
+      await page.evaluate(saved => {
+        window.probe.PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: JSON.parse(saved) });
+        window.probe.StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+      }, home);
+      await aimCamera(page, ...TOP_FACE_AIM);
+      before = await gestureLook(page, line.id);
+      await page.keyboard.down(key);
+      await page.mouse.move(from.x, from.y);
+      await page.mouse.down();
+      await page.mouse.move(from.x + 40, from.y + 25, { steps: 8 });
+      await page.mouse.up();
+      await page.keyboard.up(key);
+      await cameraSettled(page);
+      outcomes[`${name} ${label}`] = changedBy(before, await gestureLook(page, line.id));
+    }
+    assert.deepEqual(outcomes[`${name} on`], outcomes[`${name} beside`], `${name}: a press on the line does what the same press beside it does`);
+    assert.ok(!outcomes[`${name} on`].some(key => ['record', 'selected', 'writes'].includes(key)), `${name}: the drawing is not selected, moved or written`);
+  }
+
+  // Plain gestures are untouched afterwards: a click selects, a drag carries the line, one write.
+  await page.evaluate(saved => {
+    window.probe.PackLibrary.updateInstance('fixture-pack', 'cargo-a', { transform: JSON.parse(saved) });
+    window.probe.StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true });
+  }, home);
+  await aimCamera(page, ...TOP_FACE_AIM);
+  await watchWrites(page);
+  await click(page, on);
+  await page.waitForFunction(id => window.probe.AnnotationTool.selectedId() === id, line.id);
+  await page.keyboard.press('Escape');
+  const target = await point(page, 62, 32, -20);
+  await page.mouse.move(on.x, on.y);
+  await page.mouse.down();
+  await page.mouse.move(target.x, target.y, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.__writes === 1);
+  assert.equal(await writes(page), 1, 'a plain drag still writes exactly one move');
+  assert.deepEqual(errors, []);
+});
+
+test('annotation drawing touch: a second finger ends the move without a write and sets the first aside, a finger on a line is never a camera input, and one finger still selects and moves', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  await watchPointer(page);
+  // Real touch input through the browser's own pipeline (Chrome's touch emulation); it is not a claim about any particular device.
+  const cdp = await page.context().newCDPSession(page);
+  await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+  const down = new Map();
+  const send = type => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: [...down].map(([id, p]) => ({ x: p.x, y: p.y, id })) });
+  const finger = {
+    async press(id, p) { down.set(id, p); await send('touchStart'); },
+    async move(id, p) { down.set(id, p); await send('touchMove'); },
+    async lift(id) { down.delete(id); await send('touchEnd'); },
+    async drag(id, from, to, steps = 8) { for (let i = 1; i <= steps; i += 1) await finger.move(id, { x: from.x + (to.x - from.x) * i / steps, y: from.y + (to.y - from.y) * i / steps }); },
+  };
+  const captured = (id, pointer) => page.evaluate(({ id, pointer }) => document.querySelector(`.tp3d-annot-draw[data-annot-id="${id}"] .tp3d-annot-draw__hit`).hasPointerCapture(pointer), { id, pointer });
+  const settle = () => new Promise(resolve => setTimeout(resolve, 250));
+
+  await aimCamera(page, ...FLOOR_AIM);
+  const makeFloor = () => seedFloorDraw(page, [150, -30], [190, 10, 230, -20]);
+  let line = await freshDrawing(page, null, makeFloor);
+  const onLine = await point(page, 170, 0, -10);
+  const along = await point(page, 190, 0, 0);
+  const open = { x: onLine.x - 170, y: onLine.y + 60 }; // bare canvas
+  assert.equal(await reachAt(page, onLine), `hit:${line.id}`);
+  assert.equal(await reachAt(page, open), 'canvas');
+
+  // One finger: a tap selects, and a drag carries the line and writes once (the browser does not take the finger for a page pan).
+  await finger.press(1, onLine);
+  await finger.lift(1);
+  await page.waitForFunction(id => window.probe.AnnotationTool.selectedId() === id, line.id);
+  assert.equal(await writes(page), 0, 'a tap writes nothing');
+  await page.keyboard.press('Escape');
+  const stored = (await page.evaluate(() => window.probe.annotations())).find(r => r.id === line.id);
+  await finger.press(2, onLine);
+  await finger.drag(2, onLine, along);
+  assert.equal(await moveState(page), 'moving', 'one finger carries the line');
+  await finger.lift(2);
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle' && window.__writes === 1);
+  assert.notEqual(JSON.stringify((await page.evaluate(() => window.probe.annotations())).find(r => r.id === line.id).points), JSON.stringify(stored.points), 'the line moved');
+
+  // A second finger while the first carries the line: the move ends, nothing is written, the line is drawn where it was and nothing is held.
+  await aimCamera(page, ...FLOOR_AIM);
+  line = await freshDrawing(page, line, makeFloor);
+  const drawn = (await moveLook(page, line.id)).d;
+  let before = await gestureLook(page, line.id);
+  await finger.press(3, onLine);
+  await finger.drag(3, onLine, along, 6);
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'moving');
+  const first = await page.evaluate(() => window.__pointerId);
+  assert.equal(await captured(line.id, first), true, 'the carrying finger holds the pointer');
+  await finger.press(4, open);
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle');
+  assert.match(await page.evaluate(() => window.probe.hint()), /move cancelled/i);
+  assert.equal(await captured(line.id, first), false, 'the pointer is released');
+  assert.equal((await moveLook(page, line.id)).d, drawn, 'the line is drawn where it was');
+  assert.deepEqual(await layerClasses(page), ['is-draw-hit'], 'no gesture state is left on the layer');
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)), [], 'nothing was written or changed');
+
+  // The finger that was set aside stays inert; the second finger is an ordinary one-finger camera gesture.
+  await finger.drag(3, along, { x: along.x + 40, y: along.y + 60 }, 6);
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)), [], 'the set-aside finger changes nothing');
+  const camera = await page.evaluate(() => window.probe.camera());
+  await finger.drag(4, open, { x: open.x - 70, y: open.y + 20 }, 8);
+  await settle();
+  assert.notEqual(await page.evaluate(() => window.probe.camera()), camera, 'the second finger still moves the camera');
+  await finger.lift(3);
+  await finger.lift(4);
+  await cameraSettled(page);
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)).filter(key => key !== 'camera'), [], 'and lifting both writes and selects nothing');
+
+  // A finger that lands on a line while another is already down is not a camera input and not a move.
+  await aimCamera(page, ...FLOOR_AIM);
+  line = await freshDrawing(page, line, makeFloor);
+  before = await gestureLook(page, line.id);
+  await finger.press(5, open);
+  await finger.press(6, onLine);
+  await finger.drag(6, onLine, along, 10);
+  await settle();
+  assert.equal(await moveState(page), 'idle', 'a second finger on a line starts no move');
+  assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'its moves are not read as the first finger\'s: the camera stays put');
+  await finger.lift(6);
+  await finger.lift(5);
+  await cameraSettled(page);
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)), [], 'a finger sliding on a line selects, moves and writes nothing');
+
+  // Camera gestures stay whole: a pinch on bare canvas still zooms.
+  const pinchFrom = await page.evaluate(() => window.probe.camera());
+  await finger.press(7, { x: open.x - 40, y: open.y });
+  await finger.press(8, { x: open.x + 40, y: open.y });
+  for (let i = 1; i <= 8; i += 1) {
+    await finger.move(7, { x: open.x - 40 - 6 * i, y: open.y });
+    await finger.move(8, { x: open.x + 40 + 6 * i, y: open.y });
+  }
+  await finger.lift(7);
+  await finger.lift(8);
+  await cameraSettled(page);
+  assert.notEqual(await page.evaluate(() => window.probe.camera()), pinchFrom, 'a pinch away from any line zooms');
+
+  // On cargo: the second finger lands on the cargo face while the first, set aside, keeps moving. That finger starts no cargo drag.
+  await aimCamera(page, ...TOP_FACE_AIM);
+  line = await freshDrawing(page, line, () => seedDraw(page));
+  const stroke = await point(page, 58, 32, -24);
+  const face = await point(page, 70, 32, -14);
+  assert.equal(await reachAt(page, stroke), `hit:${line.id}`);
+  assert.equal(await reachAt(page, face), 'canvas');
+  before = await gestureLook(page, line.id);
+  await finger.press(9, stroke);
+  await finger.drag(9, stroke, { x: stroke.x - 40, y: stroke.y - 15 }, 6);
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'moving');
+  await finger.press(10, face);
+  await page.waitForFunction(() => window.probe.AnnotationTool.moveState() === 'idle');
+  await finger.drag(9, { x: stroke.x - 40, y: stroke.y - 15 }, { x: stroke.x - 160, y: stroke.y + 30 }, 10);
+  await settle();
+  const held = await gestureLook(page, line.id);
+  assert.equal(held.cases, before.cases, 'the cancelled finger drags no cargo');
+  assert.equal(held.cargoSelection, before.cargoSelection, 'and selects none');
+  assert.equal(held.record, before.record);
+  assert.equal(held.writes, 0);
+  await finger.lift(10);
+  await finger.lift(9);
+  assert.deepEqual(errors, []);
+});

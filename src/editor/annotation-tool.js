@@ -220,6 +220,8 @@ const DRAW_FROZEN_TEXT = Object.freeze({
 });
 const MOVE_GRID_STEPS = 100; // a whole-stroke move is snapped to the 0.01 in grid the stored vertices live on
 const AXIS_INDEX = Object.freeze({ x: 0, y: 1, z: 2 });
+const NAV_INPUT_EVENTS = Object.freeze(['keydown', 'keyup', 'pointerdown', 'pointermove', 'pointerup', 'pointercancel']); // each carries the live Shift / Ctrl / Cmd flags
+const INERT_POINTER_EVENTS = Object.freeze(['pointerdown', 'pointermove', 'pointerup', 'pointercancel']);
 const DRAW_MOVE_TEXT = Object.freeze({
   ok: 'Release to move the drawing here. Esc cancels.',
   off: 'Part of the drawing would leave its surface. Release to leave it where it was, or press Esc.',
@@ -329,6 +331,8 @@ export function createAnnotationTool({
   let lastGeometryRevision = NaN; // CaseScene's count of syncs that changed what stands in the scene
   let selfClearing = false;
   let lastOwnedElsewhere = false; // another scene tool (Measurement Mode) owned gestures on the previous frame
+  let navModifier = false; // Shift, Ctrl or Cmd is held: a press is camera navigation, so a saved stroke's hit path steps aside
+  const inertPointers = new Set(); // fingers set aside (a second finger on a stroke's line, or the one a second finger cancelled): their events end here until they lift
   let titleRevealPending = false; // the editor just opened: show its title field if the card is shorter than its content
   const views = new Map(); // annotation id -> { pin, chip, badge, card, ... } DOM + per-frame state
   const arrowViews = new Map(); // arrow id -> { graphic, grips, start/end world + screen, front, ... } DOM + per-frame state
@@ -717,6 +721,7 @@ export function createAnnotationTool({
       });
     }
     if (doc) doc.addEventListener('keydown', onKeyDownCapture, true);
+    attachInputState();
     if (els.layer) attachLayerEvents(els.layer);
     if (typeof ResizeObserver === 'function' && els.layer) {
       layerObserver = new ResizeObserver(() => { visDirty = true; });
@@ -730,6 +735,7 @@ export function createAnnotationTool({
   function destroy() {
     resetSession();
     if (doc) doc.removeEventListener('keydown', onKeyDownCapture, true);
+    detachInputState();
     if (layerObserver) layerObserver.disconnect();
     layerObserver = null;
     if (layerParts && layerParts.svg.parentNode) layerParts.svg.parentNode.removeChild(layerParts.svg);
@@ -2460,8 +2466,53 @@ export function createAnnotationTool({
     const carrying = Boolean(moveDrag && moveDrag.moved);
     // While a stroke is carried the pointer is captured by its own hit path, so no other stroke can be grabbed meanwhile. A press that has
     // not yet become a drag keeps the gate open: the release must still land on the same path for the click to select it.
-    toggleClass(els.layer, 'is-draw-hit', drawHitReachable() && !carrying);
+    // A held Shift, Ctrl or Cmd turns the press into camera navigation, which only reaches OrbitControls if it lands on the canvas, so
+    // the paths are out of reach until the key is released. A press that already began keeps its gate.
+    toggleClass(els.layer, 'is-draw-hit', drawHitReachable() && !carrying && (Boolean(moveDrag) || !navModifier));
     toggleClass(els.layer, 'is-draw-moving', carrying);
+  }
+
+  /** Shift, Ctrl or Cmd: OrbitControls pans on a primary press that carries any of them, so it is never a stroke gesture. */
+  function navigationKeys(ev) {
+    return Boolean(ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey));
+  }
+
+  /**
+   * Keep navModifier true to the keys held now. A hit path lives in the overlay, not on the canvas: a press that lands on it never reaches
+   * OrbitControls, so the path has to be out of reach BEFORE the press. Every key and pointer event carries the current flags, so any of
+   * them corrects a missed key-up; losing focus or the page clears it.
+   */
+  function onNavInput(ev) {
+    const held = navigationKeys(ev);
+    if (held === navModifier) return;
+    navModifier = held;
+    syncDrawHitClasses();
+  }
+
+  /** Focus left the page: no key is known to be held any more, and a finger that was waiting to lift is forgotten. */
+  function onInputLost() {
+    releaseInert();
+    if (!navModifier) return;
+    navModifier = false;
+    syncDrawHitClasses();
+  }
+
+  function onInputVisibility() {
+    if (doc && doc.visibilityState === 'hidden') onInputLost();
+  }
+
+  function attachInputState() {
+    for (const type of NAV_INPUT_EVENTS) window.addEventListener(type, onNavInput, { capture: true, passive: true });
+    window.addEventListener('blur', onInputLost);
+    if (doc) doc.addEventListener('visibilitychange', onInputVisibility);
+  }
+
+  function detachInputState() {
+    for (const type of NAV_INPUT_EVENTS) window.removeEventListener(type, onNavInput, { capture: true });
+    window.removeEventListener('blur', onInputLost);
+    if (doc) doc.removeEventListener('visibilitychange', onInputVisibility);
+    navModifier = false;
+    releaseInert();
   }
 
   function drawIdOfHit(hit) {
@@ -2485,7 +2536,9 @@ export function createAnnotationTool({
    * (the click that follows still selects it).
    */
   function beginDrawMove(ev, id, target) {
-    if (ev.button !== 0 || ev.isPrimary === false || !drawHitWanted()) return;
+    // A press with Shift, Ctrl or Cmd is navigation: the path is normally out of reach then (navModifier), and a press that still lands here
+    // (a key held through a focus change) is refused rather than taken as a move.
+    if (ev.button !== 0 || ev.isPrimary === false || navigationKeys(ev) || !drawHitWanted()) return;
     keyboardModality = false;
     const record = recordById(id);
     const result = resultById(id);
@@ -2497,7 +2550,7 @@ export function createAnnotationTool({
     const view = drawViews.get(id);
     if (!surface || !view || !base || base.status !== 'ok') return;
     moveDrag = {
-      id, pointerId: ev.pointerId, startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY, target,
+      id, pointerId: ev.pointerId, pointerType: ev.pointerType || 'mouse', startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY, target,
       moved: false, dirty: false, packId: pack.id, epoch: sessionEpoch, surface, base: { u: base.u, v: base.v },
       shape: moveShapeOf(record), poseKey: cargoPoseKey(pack, record.anchor), layoutKey: layoutKey(pack), poseStamp: view.poseStamp,
       du: 0, dv: 0, rev: 0, valid: true, reason: '', kind: 'ok', verdictKey: '',
@@ -2529,7 +2582,40 @@ export function createAnnotationTool({
   }
 
   function onMoveDragOtherPointer(ev) {
-    if (moveDrag && ev.pointerId !== moveDrag.pointerId) cancelMoveDrag('Move cancelled.');
+    const drag = moveDrag;
+    if (!drag || ev.pointerId === drag.pointerId) return;
+    cancelMoveDrag('Move cancelled.');
+    // This finger's press went to the overlay, so OrbitControls and the cargo handlers never saw it go down: its later moves would be
+    // read against the other finger's press (an orbit that jumps, a cargo drag). It stays inert until it lifts.
+    if (drag.pointerType !== 'mouse') holdInert(drag.pointerId);
+  }
+
+  /**
+   * Set a finger aside until it lifts. OrbitControls only learns of a pointer from a press on the canvas, so a finger whose press went to
+   * a stroke's hit path cannot pinch with another: its moves would be read as the other finger's. Seamless takeover would need that
+   * press re-sent to the canvas, which is a pointer-router change; until then the finger is ignored and the other one navigates.
+   */
+  function holdInert(pointerId) {
+    if (!inertPointers.size) for (const type of INERT_POINTER_EVENTS) window.addEventListener(type, onInertPointer, true);
+    inertPointers.add(pointerId);
+  }
+
+  /** Release one set-aside finger, or all of them (focus lost, tool destroyed). */
+  function releaseInert(pointerId) {
+    if (!inertPointers.size) return;
+    if (pointerId === undefined) inertPointers.clear();
+    else inertPointers.delete(pointerId);
+    if (!inertPointers.size) for (const type of INERT_POINTER_EVENTS) window.removeEventListener(type, onInertPointer, true);
+  }
+
+  function onInertPointer(ev) {
+    if (!inertPointers.has(ev.pointerId)) return;
+    if (ev.type === 'pointerdown') { // the id came round again: a new finger, not the one that was set aside
+      releaseInert(ev.pointerId);
+      return;
+    }
+    ev.stopImmediatePropagation();
+    if (ev.type !== 'pointermove') releaseInert(ev.pointerId);
   }
 
   function onMoveDragInterrupted() {
@@ -2751,7 +2837,9 @@ export function createAnnotationTool({
       }
       const hit = ev.target.closest && ev.target.closest('.tp3d-annot-draw__hit');
       if (hit && layer.contains(hit)) {
-        beginDrawMove(ev, drawIdOfHit(hit), hit);
+        // Another finger is already down (this one is not the primary): a line is not something to pinch with, and a move needs one finger.
+        if (ev.isPrimary === false && ev.pointerType !== 'mouse') holdInert(ev.pointerId);
+        else beginDrawMove(ev, drawIdOfHit(hit), hit);
         return;
       }
       const head = ev.target.closest && ev.target.closest('.tp3d-annot-card__head');
@@ -2784,7 +2872,7 @@ export function createAnnotationTool({
       const hit = ev.target.closest && ev.target.closest('.tp3d-annot-draw__hit');
       if (hit && layer.contains(hit)) {
         // A click on the stroke's line selects it like its row does; nothing is written.
-        if (drawHitWanted()) {
+        if (drawHitWanted() && !navigationKeys(ev)) {
           select(drawIdOfHit(hit), { toggle: true });
           refocusViewportIfLost();
         }

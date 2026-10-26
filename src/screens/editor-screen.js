@@ -2200,6 +2200,11 @@ export function createInteractionManager({
     function prepareSceneMutation() {
       return operationsBusy();
     }
+    // Annotation Present owns the viewport as a view: nothing below selects, drags, grabs a gizmo, highlights or edits cargo
+    // while it lasts. OrbitControls is separate from these handlers, so the camera keeps orbiting, panning and zooming.
+    function presentingAnnotations() {
+      return Boolean(AnnotationTool && typeof AnnotationTool.isPresenting === 'function' && AnnotationTool.isPresenting());
+    }
     function showOperationsBusyToast() {
       UIComponents.showToast(scenePreviewOnly()
         ? 'Use "Apply this option" in AutoPack Results before editing cargo.'
@@ -2815,6 +2820,8 @@ export function createInteractionManager({
      */
     function onKeyDown(ev) {
       if (UIComponents.modalOwnership?.blocksKeyboardEvent(ev)) return;
+      // Present is a view: no cargo key turns, nudges, drops or deletes anything. Escape stays with the Annotations tool.
+      if (presentingAnnotations() && ev.key !== 'Escape') return;
       // KeyboardManager consumes Escape while deselecting. Preserve the existing
       // continuation that releases an active drag/hold (including camera controls).
       // Modal-owned events above must never enter that continuation.
@@ -2911,6 +2918,11 @@ export function createInteractionManager({
       if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerMove(ev); return; }
       // The armed Annotations tool (Callout, Re-attach) owns the pointer the same way.
       if (AnnotationTool && AnnotationTool.isActive()) { AnnotationTool.onPointerMove(ev); return; }
+      // Present: no hover emphasis and no grab cursor over cargo.
+      if (presentingAnnotations()) {
+        if (hoveredId) resetHover();
+        return;
+      }
       updatePointer(ev);
 
       if (gizmoDragging && draggingId) {
@@ -2953,6 +2965,8 @@ export function createInteractionManager({
       // Measurement Mode owns primary presses: they never select, drag or grab a gizmo handle.
       if (MeasurementTool && MeasurementTool.isActive()) { MeasurementTool.onPointerDown(ev); return; }
       if (AnnotationTool && AnnotationTool.isActive()) { AnnotationTool.onPointerDown(ev); return; }
+      // Present: a press never selects, drags or grabs a gizmo handle; the camera controls take it from here.
+      if (presentingAnnotations()) return;
       updatePointer(ev);
 
       // V3A: gizmo handles take grab priority over case picking.
@@ -2999,6 +3013,11 @@ export function createInteractionManager({
       }
       if (MeasurementTool && MeasurementTool.isActive()) { if (ev) MeasurementTool.onPointerUp(ev); return; }
       if (AnnotationTool && AnnotationTool.isActive()) { if (ev) AnnotationTool.onPointerUp(ev); return; }
+      // Present: a release never selects or deselects. A press that began before Present is dropped, never taken as a click.
+      if (presentingAnnotations()) {
+        pressed = null;
+        return;
+      }
       if (!pressed && !draggingId) return;
 
       if (draggingId) {
@@ -3967,6 +3986,8 @@ export function createInteractionManager({
       resetHover,
       setSelectionOrientationConstraint,
       hasProvisionalPose: () => Boolean(draggingId || gizmoDragging || gizmoPending || revertHolds > 0),
+      // True while Annotation Present owns the viewport: the app-level cargo shortcuts (KeyboardManager) wait for it too.
+      isCargoReadOnly: presentingAnnotations,
     };
   })();
 
@@ -5300,6 +5321,8 @@ export function createEditorScreen({
           // A read-only question: does Measurement Mode own the scene's gestures right now? Saved callouts stay
           // drawn but take no input while it does.
           isSceneToolOwnedElsewhere: () => Boolean(MeasurementTool && MeasurementTool.isActive()),
+          // Present starts with no cargo highlighted or hovered (the pointer is over the panel, not the canvas, when it begins).
+          resetCargoHover: () => { if (InteractionManager && typeof InteractionManager.resetHover === 'function') InteractionManager.resetHover(); },
         });
         btnAnnotations.addEventListener('click', ev => {
           ev.stopPropagation();

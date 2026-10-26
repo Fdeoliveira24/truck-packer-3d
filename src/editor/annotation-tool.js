@@ -52,7 +52,9 @@
  *   - Present is a viewing mode of this session only: never saved, never a property of a record, and it writes nothing.
  *     The panel, selection handles, end grips, previews and card buttons are hidden, and the layer goes inert, while the saved
  *     annotations stay drawn per the Show and Callouts settings and the selection is kept (so Show Selected still shows it).
- *     The camera keeps navigating. An "Exit presentation view" control, a sibling of the inert layer, sits bottom center and
+ *     The camera keeps navigating, but cargo is read-only: the Editor's pointer and keyboard routing asks `isPresenting()` and
+ *     never selects, drags, highlights or edits cargo meanwhile (OrbitControls is untouched), and Present will not start over a
+ *     live drag or held case. An "Exit presentation view" control, a sibling of the inert layer, sits bottom center and
  *     rides above the AutoPack Results card; it and Escape end Present. Present will not start over an unfinished gesture,
  *     asks before it drops an editor with unsaved changes, and ends (the panel returns) on a Load Plan, workspace or screen
  *     change, Settings > Show Annotations off, an operation or preview that pauses annotations, or Measurement Mode.
@@ -161,6 +163,7 @@ const PANEL_MAX_HEIGHT_INSET_PX = 140;
 const PRESENT_EXIT_BOTTOM_PX = 14; // the Exit control's distance from the layer's bottom edge (the Editor's own corner controls use the same)
 const PRESENT_EXIT_GAP_PX = 6; // the clear gap it keeps above whatever holds the spot (AutoPack Results, the review button)
 const PRESENT_BUSY_NOTICE = 'Finish or cancel what you are placing before presenting.';
+const PRESENT_HELD_NOTICE = 'Place or cancel the held case before presenting.';
 const PRESENT_EXIT_LABEL = 'Exit presentation view';
 const MIN_RAY_LENGTH = 1e-6;
 const HELD_POSE_NOTICE = 'Place or cancel the held case before working with annotations on cargo.';
@@ -1944,6 +1947,8 @@ export function createAnnotationTool({
     const reason = blockedReason();
     if (reason) return blockedMessage(reason);
     if (sceneOwnedElsewhere()) return 'Finish measuring before presenting.';
+    // A live drag, gizmo stroke or held case is never abandoned or committed by starting Present: it is finished or cancelled first.
+    if (provisionalPoseActive()) return PRESENT_HELD_NOTICE;
     if (stroke || pinDrag || cardDrag || editorDrag || reattachId || arrowTail) return PRESENT_BUSY_NOTICE;
     return '';
   }
@@ -1986,6 +1991,8 @@ export function createAnnotationTool({
     hover = null;
     press = null;
     presenting = true;
+    CaseScene.setHover(null);
+    if (typeof els.resetCargoHover === 'function') els.resetCargoHover();
     applyViewGate();
     updateCursor();
     if (els.panel) els.panel.hidden = true; // hidden, not closed: its place, size and state come back as they were
@@ -4700,6 +4707,8 @@ export function createAnnotationTool({
     isActive,
     hasDraft: () => Boolean(draft),
     // 'off' | 'armed' | 'move' | 'stroking' | 'frozen': read-only, for the Editor and tests.
+    // Read-only, for the Editor's interaction routing: while true, cargo is never selected, dragged, highlighted or edited from the viewport.
+    isPresenting: () => presenting,
     drawingState: () => (stroke ? stroke.phase : (tool === 'draw' ? (drawView === 'move' ? 'move' : 'armed') : 'off')),
     selectedId: () => selectedId,
     onPointerDown,

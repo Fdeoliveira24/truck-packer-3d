@@ -5590,3 +5590,152 @@ test('annotation Present mode is a view-only session state: it hides the panel a
   await afterSession('leaving the Editor');
   assert.deepEqual(errors, []);
 });
+
+// Present is a view: the Editor's own pointer and keyboard routing leaves cargo alone while it lasts (hover, selection, drag,
+// gizmo, the cargo shortcuts), so the annotation selection Show Selected follows is never disturbed, and ordinary editing
+// returns the moment it ends. The camera is OrbitControls' business and keeps working.
+test('annotation Present mode keeps cargo read-only: clicks, drags, hover and the cargo shortcuts change nothing, Show Selected stays put, the camera still navigates, and editing returns on exit', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1280, height: 800 });
+  const [shown] = await seed(page, [{ title: 'On case A', ...TOP_OF_A }, { title: 'On the ground', ground: [520, 10] }]);
+  await cameraSettled(page);
+  await watchWrites(page);
+  // Hover emphasis goes through CaseScene.setHover: record what is ever highlighted.
+  await page.evaluate(() => {
+    window.__hovers = [];
+    const scene = window.probe.CaseScene;
+    const set = scene.setHover;
+    scene.setHover = function setHover(id) { window.__hovers.push(id); return set.apply(this, [id]); };
+  });
+  const cargoAt = id => page.evaluate(name => window.probe.cargoPoint(name), id);
+  const cargoSelection = () => page.evaluate(() => window.probe.selection());
+  const camera = () => page.evaluate(() => window.probe.camera());
+  const cursor = () => page.evaluate(() => document.querySelector('#viewport canvas').style.cursor);
+  const hovered = () => page.evaluate(() => window.__hovers.filter(Boolean));
+  const enter = async () => {
+    await page.click(PRESENT);
+    await page.waitForFunction(() => document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+    await frames(page, 3);
+  };
+  const onlyEscape = async () => {
+    await page.keyboard.press('Escape');
+    await page.waitForFunction(() => !document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+    await frames(page, 3);
+  };
+
+  // 1. Show Selected: the selected callout stays painted, and nothing the pointer does over the viewport changes that.
+  await page.click(`${rowFor(shown.id)} .tp3d-annot-row__select`);
+  await showButton(page, 'Selected').click();
+  await page.waitForFunction(() => window.probe.AnnotationTool.selectedId() !== null);
+  await frames(page, 3);
+  const withSelection = await painted(page);
+  assert.deepEqual([withSelection.pins.length, withSelection.cards.length], [1, 1], 'Selected paints the selected callout and its card');
+  const start = await dataOf(page);
+  await enter();
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isPresenting()), true);
+  await page.evaluate(() => { window.__hovers.length = 0; });
+  const ground = await freePoint(page, [[200, 0, 100], [350, 0, 90], [420, 0, 60]]);
+  for (const [label, at] of [['cargo B', await cargoAt('cargo-b')], ['empty viewport', ground], ['cargo A', await cargoAt('cargo-a')]]) {
+    await click(page, at);
+    await frames(page, 3);
+    assert.deepEqual(await cargoSelection(), [], `a click on ${label} selects no cargo`);
+    assert.equal((await dataOf(page)).selected, shown.id, `a click on ${label} leaves the annotation selected`);
+    assert.deepEqual(await painted(page), withSelection, `a click on ${label} leaves Show Selected painting the same annotation`);
+  }
+  // Hover: no highlight and no grab cursor over cargo.
+  const over = await cargoAt('cargo-b');
+  await page.mouse.move(over.x - 30, over.y);
+  await page.mouse.move(over.x, over.y, { steps: 6 });
+  await page.waitForTimeout(120);
+  await frames(page, 4);
+  assert.notEqual(await cursor(), 'grab', 'no grab cursor over cargo');
+  assert.deepEqual(await hovered(), [], 'no cargo is highlighted');
+
+  // 2. A drag that starts on cargo navigates the camera and moves nothing; the wheel and a double-click still work.
+  const cameraBefore = await camera();
+  await orbit(page, over, 90, 25);
+  assert.notEqual(await camera(), cameraBefore, 'a drag over cargo orbits the camera');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), start.cases, 'and moves no cargo');
+  assert.deepEqual(await cargoSelection(), [], 'nor selects any');
+  assert.equal((await dataOf(page)).selected, shown.id);
+  const afterOrbit = await camera();
+  await page.mouse.wheel(0, -240);
+  await cameraSettled(page);
+  assert.notEqual(await camera(), afterOrbit, 'the wheel still zooms');
+  const afterWheel = await camera();
+  await page.mouse.dblclick(...Object.values(await cargoAt('cargo-b')));
+  await cameraSettled(page);
+  assert.notEqual(await camera(), afterWheel, 'a double-click still focuses the camera');
+  assert.deepEqual(await dataOf(page), { ...start }, 'the records, cargo, lastEdited and the annotation selection are unchanged');
+  assert.deepEqual(await cargoSelection(), []);
+  assert.equal(await writes(page), 0);
+  assert.deepEqual(await hovered(), [], 'and still nothing was highlighted');
+  assert.deepEqual((await painted(page)).pins.length, 1, 'Show Selected still paints the callout');
+  await onlyEscape();
+  assert.equal((await dataOf(page)).selected, shown.id, 'Escape ended Present and kept the selection');
+  await showButton(page, 'All').click();
+
+  // 3. Ordinary editing is back at once: a click selects cargo (and so deselects the annotation) and a bare key moves it.
+  await click(page, await cargoAt('cargo-b'));
+  await page.waitForFunction(() => window.probe.selection().includes('cargo-b'));
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.selectedId()), null, 'selecting cargo deselects the annotation as before');
+  await page.focus('#viewport');
+  const beforeNudge = await page.evaluate(() => window.probe.casesJson());
+  await page.keyboard.press('ArrowRight');
+  await page.waitForFunction(before => window.probe.casesJson() !== before, beforeNudge);
+  assert.deepEqual(await cargoSelection(), ['cargo-b']);
+
+  // 4. The cargo shortcuts cannot touch the selected cargo while presenting.
+  const editedCargo = await page.evaluate(() => ({ cases: window.probe.casesJson(), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited, ids: window.probe.cargoIds(), records: JSON.stringify(window.probe.annotations()) }));
+  await enter();
+  await page.focus('#viewport');
+  for (const key of ['r', 't', 'e', 'f', 'ArrowLeft', 'ArrowUp', 'ArrowDown', 'Shift+ArrowRight', 'Alt+ArrowUp', 'Alt+Shift+ArrowDown', 'Enter', 'Delete', 'Backspace', 'Control+d', 'Meta+d', 'Control+v', 'Control+a', 'Control+z', 'Control+Shift+z', 'Meta+z']) {
+    await page.keyboard.press(key);
+  }
+  await frames(page, 3);
+  assert.deepEqual(await page.evaluate(() => ({ cases: window.probe.casesJson(), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited, ids: window.probe.cargoIds(), records: JSON.stringify(window.probe.annotations()) })), editedCargo, 'no key rotated, nudged, deleted, duplicated, pasted or undid anything');
+  assert.deepEqual(await cargoSelection(), ['cargo-b'], 'the cargo selection is exactly as it was');
+  assert.equal(await writes(page), 0);
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isPresenting()), true, 'none of them ended Present either');
+  await onlyEscape();
+  assert.deepEqual(await cargoSelection(), ['cargo-b'], 'Escape ended Present only: the cargo is still selected');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isPresenting()), false);
+
+  // 5. After exit: the same keys edit again, selection follows the click, and a drag moves cargo.
+  await page.focus('#viewport');
+  await page.keyboard.press('ArrowLeft');
+  await page.waitForFunction(before => window.probe.casesJson() !== before, editedCargo.cases);
+  // (Cargo B has no marker over its centre; cargo A's callout sits there, so a click at A's centre would pick the marker.)
+  await click(page, await freePoint(page, [[200, 0, 100], [350, 0, 90], [420, 0, 60], [100, 0, 90]]));
+  await page.waitForFunction(() => window.probe.selection().length === 0);
+  await click(page, await cargoAt('cargo-b'));
+  await page.waitForFunction(() => window.probe.selection().includes('cargo-b'));
+  const beforeDrag = await page.evaluate(() => window.probe.casesJson());
+  // The view has moved since the start, so one direction can be refused (a collision or the truck's wall): try a few.
+  let moved = false;
+  let grabbed = false;
+  for (const [dx, dy] of [[50, 30], [60, 0], [-50, 0], [0, 40], [0, -40]]) {
+    const grab = await cargoAt('cargo-b');
+    await page.mouse.move(grab.x, grab.y);
+    await page.mouse.down();
+    await page.mouse.move(grab.x + dx, grab.y + dy, { steps: 8 });
+    grabbed = grabbed || await page.evaluate(() => window.probe.InteractionManager.hasProvisionalPose());
+    await page.mouse.up();
+    moved = await page.waitForFunction(before => window.probe.casesJson() !== before, beforeDrag, { timeout: 2000 }).then(() => true, () => false);
+    if (moved) break;
+  }
+  assert.equal(grabbed, true, 'a drag on cargo grabs it again');
+  assert.equal(moved, true, 'and the drop commits as before');
+  await page.focus('#viewport');
+
+  // 6. A live drag or held case is never abandoned or committed by starting Present: it refuses until that is finished.
+  await page.evaluate(() => { window.__hold = window.probe.InteractionManager.hasProvisionalPose; window.probe.InteractionManager.hasProvisionalPose = () => true; });
+  const heldCargo = await page.evaluate(() => window.probe.casesJson());
+  await page.click(PRESENT);
+  await page.waitForFunction(() => /held case/i.test(window.probe.hint()));
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isPresenting()), false, 'a held case refuses Present');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), heldCargo, 'and nothing was placed or returned');
+  await page.evaluate(() => { window.probe.InteractionManager.hasProvisionalPose = window.__hold; });
+  assert.deepEqual(errors, []);
+});

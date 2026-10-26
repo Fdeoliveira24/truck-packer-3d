@@ -2865,6 +2865,48 @@ export function moveArrowEndpoint(packId, annotationId, which, anchor) {
     (edited, pack) => CoreAnnotations.arrowPlacementProblem(edited, anchorResolutionContext(pack), which));
 }
 
+/**
+ * Create one freehand stroke from a finished gesture. `anchor` is the first vertex (a Measurement anchor on
+ * the surface the gesture started on), `face` the cargo face for a cargo anchor, and `rawPoints` the sampled
+ * surface-local `[u, v, ...]` positions after it. The raw samples are simplified within the stated error
+ * budget and quantized (CoreAnnotations.prepareDrawStroke); a stroke that cannot fit is refused as
+ * `too-complex`, never truncated. The stroke must also resolve Valid now (the anchor resolves and one
+ * patch holds every vertex) and run at least MIN_DRAW_LENGTH_INCHES. Exactly one record is written, or nothing.
+ * @param {string} packId
+ * @param {{ anchor?: any, face?: string, rawPoints?: number[], color?: string, width?: string }} [input]
+ * @returns {{ ok: true, annotation: any, pack: any, tolerance: number }
+ *   | { ok: false, reason: 'pack-not-found' | 'limit' | 'points-limit' | 'invalid' | 'too-short' | 'too-complex' | 'unresolved' }}
+ */
+export function addDraw(packId, { anchor, face, rawPoints, color, width } = {}) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
+  if (current.length >= CoreAnnotations.MAX_ANNOTATIONS_PER_PACK) return { ok: false, reason: 'limit' };
+  const prepared = CoreAnnotations.prepareDrawStroke({ anchor, face, rawPoints });
+  if ('reason' in prepared) return { ok: false, reason: prepared.reason };
+  const record = CoreAnnotations.createDrawRecord({
+    id: Utils.uuid(), anchor, face, points: prepared.points, color, width, now: Date.now(),
+  });
+  const checked = CoreAnnotations.validateAnnotationCollection([record]);
+  if (!checked.ok) return { ok: false, reason: 'invalid' };
+  const annotation = checked.annotations[0];
+  if (CoreAnnotations.drawVertexTotal(current) + CoreAnnotations.drawVertexCount(annotation) > CoreAnnotations.MAX_DRAW_VERTICES_PER_PACK) {
+    return { ok: false, reason: 'points-limit' };
+  }
+  const problem = CoreAnnotations.drawPlacementProblem(annotation, anchorResolutionContext(previousPack));
+  if (problem) return { ok: false, reason: problem };
+  return { ok: true, annotation, pack: commitAnnotations(previousPack, [...current, annotation]), tolerance: prepared.tolerance };
+}
+
+/**
+ * Edit a stroke's color, width or visibility. Its surface, face and vertices are carried over untouched, so
+ * no placement rule applies and a stroke that needs review can still be restyled or hidden.
+ */
+export function updateDraw(packId, annotationId, patch) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_DRAW,
+    (record, now) => CoreAnnotations.editDrawRecord(record, patch, now));
+}
+
 /** Deliberate, individual deletion (also removes an unreadable recovery record). Cargo is never touched. */
 export function deleteAnnotation(packId, annotationId) {
   const previousPack = getById(packId);
@@ -2882,7 +2924,7 @@ export function deleteAnnotation(packId, annotationId) {
  * Put back a record that deleteAnnotation returned (the panel's one-level Undo). The record goes through
  * the same strict gate as import, keeps its ID and returns to its position, and is refused if the plan
  * changed in a way that makes that wrong (the ID is taken again, or the cap is reached).
- * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'exists' | 'limit' | 'invalid' }}
+ * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'exists' | 'limit' | 'points-limit' | 'invalid' }}
  */
 export function restoreAnnotation(packId, record, index) {
   const previousPack = getById(packId);
@@ -2892,6 +2934,9 @@ export function restoreAnnotation(packId, record, index) {
   const checked = CoreAnnotations.validateAnnotationCollection([record]);
   if (!checked.ok) return { ok: false, reason: 'invalid' };
   if (current.some(existing => existing.id === checked.annotations[0].id)) return { ok: false, reason: 'exists' };
+  if (CoreAnnotations.drawVertexTotal(current) + CoreAnnotations.drawVertexTotal(checked.annotations) > CoreAnnotations.MAX_DRAW_VERTICES_PER_PACK) {
+    return { ok: false, reason: 'points-limit' };
+  }
   const at = Math.max(0, Math.min(Number.isInteger(index) ? index : current.length, current.length));
   const next = [...current.slice(0, at), checked.annotations[0], ...current.slice(at)];
   return { ok: true, pack: commitAnnotations(previousPack, next) };

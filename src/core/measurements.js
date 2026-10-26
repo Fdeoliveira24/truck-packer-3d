@@ -460,9 +460,13 @@ export function distanceToCargoSurface(local, signature) {
 export function isLocalPointOnCargoSurface(local, signature) {
   const distance = distanceToCargoSurface(local, signature);
   if (distance === null) return false;
-  const tolerance = SURFACE_TOLERANCE_INCHES +
+  return distance <= cargoSurfaceTolerance(signature);
+}
+
+/** The documented on-surface tolerance (inches) for one cargo signature: absolute plus a relative part. */
+function cargoSurfaceTolerance(signature) {
+  return SURFACE_TOLERANCE_INCHES +
     SURFACE_RELATIVE_TOLERANCE * Math.max(signature.length, signature.width, signature.height);
-  return distance <= tolerance;
 }
 
 function validateAnchor(anchor, label) {
@@ -1173,6 +1177,267 @@ export function resolveAnchor(anchor, context) {
   if (context.isInstanceAmbiguous && context.isInstanceAmbiguous(anchor.instanceId)) return unresolved('cargo-ambiguous');
   const instance = context.getInstance ? context.getInstance(anchor.instanceId) : null;
   return resolveCargoAnchor(anchor, { instance, caseData: instance && context.getCase ? context.getCase(instance.caseId) : null });
+}
+
+// ============================================================================
+// SECTION: DRAW SURFACES (freehand strokes: one flat face or one convex patch)
+// ============================================================================
+// A stroke is a polyline drawn on exactly ONE flat, convex patch: a face of a box, a flat end cap of a
+// cylinder or drum, one usable-zone floor rectangle, one physical wall or ceiling rectangle, or the ground.
+// Its first vertex is the stroke's Measurement anchor (so the cargo identity policy, truck evidence and
+// surface protections are exactly those of every other anchor); later vertices are absolute surface-local
+// `(u, v)` inches in the frame below. Nothing here moves, snaps or substitutes a vertex: a stroke is
+// either wholly on its patch or it is not Valid.
+
+/**
+ * How far (inches, per axis for a rectangle, Euclidean for the cap polygon) a stroke vertex may sit outside
+ * its patch and still count as on it. A real pick is on the surface, and quantizing it to 0.01 in moves it
+ * by at most 0.01 / sqrt(2) = 0.00707 in, so this is the smallest round value that never rejects an honest
+ * stroke that ends on a patch edge. It is deliberately separate from the cargo-surface tolerance, the
+ * floor tolerance, the 0.01 in quantum and the simplification error.
+ */
+export const DRAW_FOOTPRINT_TOLERANCE_INCHES = 0.01;
+
+/** Which world frame (a FACE_FRAME key) each non-cargo surface is drawn in. Floors share the ground's. */
+const WORLD_DRAW_FRAME = Object.freeze({
+  ground: '+y',
+  ceiling: '+y',
+  'wall-left': '+z',
+  'wall-right': '-z',
+  'wall-front': '+x',
+  'wall-rear': '-x',
+});
+const AXIS_INDEX = Object.freeze({ x: 0, y: 1, z: 2 });
+
+function isRoundSignature(signature) {
+  const shape = String((signature && signature.shape) || '').trim().toLowerCase();
+  return shape === 'cylinder' || shape === 'drum';
+}
+
+/** `{ normal, sign, u, v }` of a cargo face: the axis it faces, which side, and its two in-plane axes. Null for an unknown face. */
+export function cargoFaceFrame(face) {
+  return BOX_FACES.includes(face) ? { ...FACE_FRAME[face] } : null;
+}
+
+/** All six faces of a box; only the two flat end caps (+x, -x) of a cylinder or drum (its side wall is curved). */
+export function isCargoFaceSupported(face, signature) {
+  if (!BOX_FACES.includes(face) || !isRecord(signature)) return false;
+  return isRoundSignature(signature) ? face === '+x' || face === '-x' : true;
+}
+
+/**
+ * The flat patch of a cargo face in the face's own `(u, v)` inches (centre origin), plus the signed plane
+ * coordinate along the face normal. A box face is the exact rectangle; a cap is the 24-sided polygon the
+ * Editor actually builds (circumradius = half of the smaller of width and height), never the circle around
+ * it. Null when the face is not supported for the signature.
+ * @returns {{ kind: 'rect', uMin: number, uMax: number, vMin: number, vMax: number, plane: number }
+ *   | { kind: 'ngon', radius: number, plane: number } | null}
+ */
+export function cargoFacePatch(face, signature) {
+  if (!isCargoFaceSupported(face, signature)) return null;
+  if (!['length', 'width', 'height'].every(key => isPositiveNumber(signature[key]))) return null;
+  const frame = FACE_FRAME[face];
+  const half = halfExtents(signature);
+  const plane = frame.sign * half[frame.normal];
+  if (isRoundSignature(signature)) return { kind: 'ngon', radius: Math.min(signature.width, signature.height) / 2, plane };
+  return { kind: 'rect', uMin: -half[frame.u], uMax: half[frame.u], vMin: -half[frame.v], vMax: half[frame.v], plane };
+}
+
+/** Whether a cargo-local point lies on the plane of a face, within the same tolerance as every cargo anchor. */
+export function isCargoPointOnFacePlane(face, local, signature) {
+  const patch = cargoFacePatch(face, signature);
+  if (!patch || !isRecord(local)) return false;
+  const value = local[FACE_FRAME[face].normal];
+  return isFiniteNumber(value) && Math.abs(value - patch.plane) <= cargoSurfaceTolerance(signature);
+}
+
+/**
+ * Whether `(u, v)` lies on a patch, within `tolerance`: per axis for a rectangle, and for a cap by its
+ * Euclidean distance to the polygon (so a point inside the circle around the cap but outside the
+ * polygon is outside).
+ */
+export function patchContains(patch, u, v, tolerance = DRAW_FOOTPRINT_TOLERANCE_INCHES) {
+  if (!patch || !isFiniteNumber(u) || !isFiniteNumber(v)) return false;
+  if (patch.kind === 'ngon') return polygonSignedDistance(v, u, patch.radius) <= tolerance;
+  return u >= patch.uMin - tolerance && u <= patch.uMax + tolerance &&
+    v >= patch.vMin - tolerance && v <= patch.vMax + tolerance;
+}
+
+/** Whether EVERY vertex of a flat `[u0, v0, u1, v1, ...]` list is on the one patch. */
+export function patchContainsAll(patch, flat, tolerance = DRAW_FOOTPRINT_TOLERANCE_INCHES) {
+  if (!patch || !Array.isArray(flat) || !flat.length || flat.length % 2) return false;
+  for (let i = 0; i < flat.length; i += 2) if (!patchContains(patch, flat[i], flat[i + 1], tolerance)) return false;
+  return true;
+}
+
+/** The patch boundary as a flat counter-clockwise `[u, v, ...]` outline (4 vertices, or the cap's 24), for exact clipping. */
+export function patchOutline(patch) {
+  if (!patch) return null;
+  if (patch.kind === 'ngon') {
+    const outline = [];
+    // Vertex i of the mesh is (y, z) = (sin, cos) of i * step; a cap's (u, v) is (z, y).
+    for (let i = 0; i < CARGO_CYLINDER_SEGMENTS; i++) outline.push(CYLINDER_VERTEX[i][1] * patch.radius, CYLINDER_VERTEX[i][0] * patch.radius);
+    return outline;
+  }
+  return [patch.uMin, patch.vMin, patch.uMax, patch.vMin, patch.uMax, patch.vMax, patch.uMin, patch.vMax];
+}
+
+/**
+ * The frame a stroke is drawn in, as a key into the face table: the stored face for cargo, `+y` for any
+ * floor, the ground and the ceiling, and the wall's own plane for a wall. Null where no stroke may be
+ * drawn (open space, a malformed anchor, or cargo without a known face).
+ */
+export function drawFrameKey(anchor, face) {
+  if (!isRecord(anchor)) return null;
+  if (anchor.kind === 'cargo') return BOX_FACES.includes(face) ? face : null;
+  if (anchor.kind === 'floor') return '+y';
+  if (anchor.kind === 'space' && Object.hasOwn(WORLD_DRAW_FRAME, anchor.surface)) return WORLD_DRAW_FRAME[anchor.surface];
+  return null;
+}
+
+/** The anchor's own point in the frame its stroke lives in: cargo-local for cargo, world for every other kind. */
+function drawAnchorPoint(anchor) {
+  if (anchor.kind === 'cargo') return isRecord(anchor.local) ? anchor.local : null;
+  return isRecord(anchor.position) ? anchor.position : null;
+}
+
+/** `(u, v)` of a stroke's first vertex (the anchor itself) in the stroke's frame, at the anchor's stored 4-decimal precision. */
+export function drawAnchorUV(anchor, face) {
+  const key = drawFrameKey(anchor, face);
+  const point = isRecord(anchor) ? drawAnchorPoint(anchor) : null;
+  if (!key || !point) return null;
+  const frame = FACE_FRAME[key];
+  const u = point[frame.u];
+  const v = point[frame.v];
+  return isFiniteNumber(u) && isFiniteNumber(v) ? { u, v } : null;
+}
+
+/**
+ * A surface-local `(u, v)` as a point in the anchor's frame (cargo-local or world), at the anchor's own
+ * coordinate along the surface normal, so every vertex of a stroke lies in the one plane its first vertex
+ * is in. Null when the frame is unknown.
+ */
+export function drawLift(anchor, face, u, v) {
+  const key = drawFrameKey(anchor, face);
+  const point = isRecord(anchor) ? drawAnchorPoint(anchor) : null;
+  if (!key || !point) return null;
+  const frame = FACE_FRAME[key];
+  const lifted = { x: 0, y: 0, z: 0 };
+  lifted[frame.normal] = point[frame.normal];
+  lifted[frame.u] = u;
+  lifted[frame.v] = v;
+  return lifted;
+}
+
+/**
+ * What a stroke's anchor and face must satisfy on their own, with no Load Plan around them. Run after
+ * validateAnchor. Cargo: the new local-point encoding, a face this cargo supports, the point on that
+ * face's plane and inside its footprint. Floor: nothing more. Ground: on the ground plane. A wall or the
+ * ceiling must remember the usable zones it was placed on. Open space and a `face` on anything but cargo
+ * are refused. Whether a world stroke's vertices share one patch needs the current truck, so it is judged
+ * at resolution (resolveDrawVertices) and at write time, not here.
+ * @returns {string | null}
+ */
+export function validateDrawSurface(anchor, face, label = 'anchor') {
+  if (!isRecord(anchor)) return `${label} must be an object`;
+  if (anchor.kind === 'cargo') {
+    if (!isRecord(anchor.local)) return `${label} must use a cargo-local point`;
+    if (!isCargoFaceSupported(face, anchor.signature)) return 'face is not supported for this cargo';
+    if (!isCargoPointOnFacePlane(face, anchor.local, anchor.signature)) return `${label} is not on the plane of its face`;
+    const uv = drawAnchorUV(anchor, face);
+    return uv && patchContains(cargoFacePatch(face, anchor.signature), uv.u, uv.v) ? null : `${label} is outside its face`;
+  }
+  if (face !== undefined) return 'face is only allowed on cargo';
+  if (anchor.kind === 'floor') return null;
+  if (anchor.kind === 'space') {
+    if (anchor.surface === 'free') return 'open space cannot carry a drawing';
+    if (anchor.surface === 'ground') return Math.abs(anchor.position.y) <= FLOOR_EPSILON ? null : `${label} is not on the ground`;
+    return isRecord(anchor.truck) && anchor.truck.zones !== undefined ? null : `${label}.truck.zones is required`;
+  }
+  return `${label}.kind is invalid`;
+}
+
+/** @returns {{ kind: 'rect', uMin: number, uMax: number, vMin: number, vMax: number, plane: number }} */
+function rectPatch(uMin, uMax, vMin, vMax, plane) {
+  return { kind: 'rect', uMin, uMax, vMin, vMax, plane };
+}
+
+/**
+ * The permitted convex patches of a world stroke, in the stroke's `(u, v)` frame, from the CURRENT layout:
+ *  - floor: every usable-zone floor with the anchor's label whose elevation is within the floor tolerance
+ *    of the anchor's (a Wheel Well top is a different patch from the main floor beside it, and a second
+ *    main-floor zone is a different patch from the first);
+ *  - ground: one patch far larger than any truck, at elevation 0, apart from the truck floor;
+ *  - wall or ceiling: every physical shell face of that kind lying in the anchor's plane.
+ * Nothing is identified by position in a list, so reordering the zones changes nothing. Empty for cargo.
+ * @returns {Array<{ kind: 'rect', uMin: number, uMax: number, vMin: number, vMax: number, plane: number }>}
+ */
+export function drawSurfacePatches(anchor, context) {
+  if (!isRecord(anchor) || anchor.kind === 'cargo' || !isRecord(anchor.position)) return [];
+  if (anchor.kind === 'floor') {
+    const floors = Array.isArray(context && context.floors) ? context.floors : [];
+    return floors
+      .filter(floor => floor.surface === anchor.surface && Math.abs(floor.elevation - anchor.position.y) <= FLOOR_EPSILON)
+      .map(floor => rectPatch(floor.xMin, floor.xMax, floor.zMin, floor.zMax, floor.elevation));
+  }
+  if (anchor.surface === 'ground') {
+    const reach = MAX_ANCHOR_COORDINATE_INCHES;
+    return [rectPatch(-reach, reach, -reach, reach, 0)];
+  }
+  const key = drawFrameKey(anchor, undefined);
+  if (!key || !TRUCK_BOUND_SURFACES.has(anchor.surface)) return [];
+  const frame = FACE_FRAME[key];
+  const [normalAxis, uAxis, vAxis] = [AXIS_INDEX[frame.normal], AXIS_INDEX[frame.u], AXIS_INDEX[frame.v]];
+  const zones = context && context.zones !== undefined ? context.zones : (context && context.truck && context.truck.zones);
+  return getTruckShellFaces(context && context.truck, zones)
+    .filter(face => face.surface === anchor.surface &&
+      Math.abs(face.min[normalAxis] - anchor.position[frame.normal]) <= FLOOR_EPSILON)
+    .map(face => rectPatch(face.min[uAxis], face.max[uAxis], face.min[vAxis], face.max[vAxis], face.min[normalAxis]));
+}
+
+/**
+ * Resolve a stroke against the Load Plan: the world position of every vertex, or why there is none.
+ * The first vertex is the anchor, so everything `resolveAnchor` decides (missing or ambiguous cargo, a
+ * changed Case, a changed truck, a changed floor) decides here first and is passed through unchanged. Then
+ * one patch must hold EVERY vertex within the footprint tolerance, otherwise the stroke Needs Review
+ * (`stroke-off-surface`) and no position is offered: a vertex is never relocated, snapped or substituted.
+ * @param {Record<string, any>} anchor
+ * @param {string | undefined} face
+ * @param {number[]} points flat surface-local `[u, v, ...]` of vertices 1..n
+ * @param {Parameters<typeof resolveAnchor>[1]} context
+ * @returns {{ status: string, reason: string | null, vertices: Array<{x:number,y:number,z:number}> | null }}
+ */
+export function resolveDrawVertices(anchor, face, points, context) {
+  const resolution = resolveAnchor(anchor, context);
+  if (resolution.status !== MEASUREMENT_STATUS.VALID) return { status: resolution.status, reason: resolution.reason, vertices: null };
+  const first = drawAnchorUV(anchor, face);
+  if (!first || !Array.isArray(points) || points.length < 2 || points.length % 2 || !points.every(isFiniteNumber)) {
+    return { ...unresolved('point-invalid'), vertices: null };
+  }
+  const uv = [first.u, first.v, ...points];
+  let patches;
+  let toPoint;
+  if (anchor.kind === 'cargo') {
+    const patch = cargoFacePatch(face, anchor.signature);
+    if (!patch) return { ...unresolved('surface-unsupported'), vertices: null };
+    const instance = context.getInstance ? context.getInstance(anchor.instanceId) : null;
+    const caseData = instance && context.getCase ? context.getCase(instance.caseId) : null;
+    const pose = instance && caseData ? resolveCargoPose(instance, caseData) : null;
+    if (!pose) return { ...unresolved('pose-invalid'), vertices: null };
+    patches = [patch];
+    toPoint = (u, v) => cargoLocalToWorld(pose, drawLift(anchor, face, u, v));
+  } else {
+    patches = drawSurfacePatches(anchor, context);
+    toPoint = (u, v) => drawLift(anchor, face, u, v);
+  }
+  if (!patches.some(patch => patchContainsAll(patch, uv))) return { ...needsReview('stroke-off-surface'), vertices: null };
+  const vertices = [];
+  for (let i = 0; i < uv.length; i += 2) {
+    const point = toPoint(uv[i], uv[i + 1]);
+    if (!isFinitePoint(point)) return { ...unresolved('point-invalid'), vertices: null };
+    vertices.push({ x: point.x, y: point.y, z: point.z });
+  }
+  return { status: MEASUREMENT_STATUS.VALID, reason: null, vertices };
 }
 
 function resolvedMeasurement(record, reason = 'unreadable') {

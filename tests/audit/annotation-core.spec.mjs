@@ -180,7 +180,7 @@ test('lenient normalization never drops, coerces or truncates what it cannot rea
   assert.deepEqual(A.normalizeAnnotations(null), []);
   const good = callout('good');
   const malformed = { id: 'bad', type: 'callout', title: '', anchor: { kind: 'mystery' } };
-  const future = { id: 'drw', type: 'draw', schemaVersion: 1, points: [] };
+  const future = { id: 'sk', type: 'sketch', schemaVersion: 1, points: [] };
   const newer = { ...good, id: 'newer', schemaVersion: 9 };
   const list = [good, malformed, 'garbage', 42, null, future, newer];
   const frozen = JSON.stringify(list);
@@ -192,9 +192,9 @@ test('lenient normalization never drops, coerces or truncates what it cannot rea
   assert.deepEqual(out[1].original, malformed, 'the original is kept verbatim for recovery');
   assert.deepEqual(out[2].original, 'garbage');
   assert.deepEqual(out[4].original, null);
-  assert.equal(out[5].reason, 'Saved by a newer version of the app.', 'a record of a later release is preserved and explained');
+  assert.equal(out[5].reason, 'The saved annotation could not be read.', 'a record of a type this version does not know is preserved and explained');
   assert.deepEqual(out[5].original, future);
-  assert.equal(out[6].reason, 'Saved by a newer version of the app.');
+  assert.equal(out[6].reason, 'Saved by a newer version of the app.', 'a later schemaVersion is a newer version');
   assert.equal(new Set(out.map(r => r.id)).size, out.length, 'recovery IDs are unique');
   // The wrapper is itself stable: normalizing normalized data changes nothing.
   assert.equal(A.normalizeAnnotations(out), out);
@@ -421,7 +421,7 @@ test('lenient normalization keeps a valid arrow, wraps every unreadable one verb
   assert.equal(out[1].reason, 'The saved annotation could not be read.', 'a malformed arrow is damaged, not "from a newer version"');
   assert.equal(out[2].reason, 'The saved annotation could not be read.');
   assert.equal(out[3].reason, 'Saved by a newer version of the app.', 'a later schemaVersion is');
-  assert.equal(out[6].reason, 'Saved by a newer version of the app.', 'draw stays a future type until V1B.2');
+  assert.equal(out[6].reason, 'The saved annotation could not be read.', 'a malformed draw is damaged, and no longer a reserved future type');
   assert.equal(out[7].type, A.ANNOTATION_TYPE_CALLOUT);
   assert.equal(new Set(out.map(r => r.id)).size, out.length);
   assert.equal(A.normalizeAnnotations(out), out, 'idempotent');
@@ -451,7 +451,7 @@ test('an unreadable wrapper stays inert even when its original is a valid arrow 
   assert.deepEqual(A.normalizeAnnotations([calloutWrapper]), [calloutWrapper]);
 });
 
-test('strict validation accepts arrows and wrappers, rejects anything unreadable, draw or unknown, and shares the 200 cap', () => {
+test('strict validation accepts arrows and wrappers, rejects anything unreadable or of an unknown type, and shares the 200 cap', () => {
   const good = arrow('g', onCargo('inst-1'), ground(40, 5));
   const dangling = arrow('d', onCargo('gone'), FLOOR_ANCHOR);
   const wrapper = A.normalizeAnnotations([{ id: 'x' }])[0];
@@ -463,7 +463,8 @@ test('strict validation accepts arrows and wrappers, rejects anything unreadable
   assert.match(err({ ...good, label: 'x' }), /annotations\[1\] record has an unsupported field/);
   assert.match(err({ ...good, schemaVersion: 2 }), /annotations\[1\] schemaVersion/);
   assert.match(err({ ...good, end: good.start }), /annotations\[1\] start and end are the same point/);
-  assert.match(err({ id: 'drw', type: 'draw', schemaVersion: 1, points: [] }), /annotations\[1\] type is not supported/, 'draw is not accepted until V1B.2');
+  assert.match(err({ id: 'drw', type: 'draw', schemaVersion: 1, points: [] }), /annotations\[1\] color is invalid/, 'a malformed draw is refused by the draw rules');
+  assert.match(err({ id: 'sk', type: 'sketch', schemaVersion: 1, points: [] }), /annotations\[1\] type is not supported/, 'a type this version does not know is refused');
   assert.match(A.validateAnnotationCollection([callout('c'), { ...good, id: 'c' }]).error, /duplicate annotation id "c"/);
   const callouts = n => Array.from({ length: n }, (_, i) => callout(`c${i}`, ground(i, 1)));
   assert.equal(A.validateAnnotationCollection([...callouts(199), good]).annotations.length, 200, 'callouts and arrows share one cap');
@@ -1073,4 +1074,740 @@ test('an arrow outside the viewport is not drawn, one crossing its edge is cut t
     assert.equal(Boolean(result.head), paths.head !== '');
   }
   assert.ok(drawn > 1000, 'the sweep draws plenty of arrows, so the checks above are not vacuous');
+});
+
+// ============================================================================
+// SECTION: FREEHAND STROKES (V1B.2) — surfaces, record, gates, identity, resolution
+// ============================================================================
+
+const BOX = { id: 'box', name: 'Box', shape: 'box', dimensions: { length: 48, width: 40, height: 30 } };
+const DRUM = { id: 'drum', name: 'Drum', shape: 'cylinder', dimensions: { length: 60, width: 24, height: 24 } };
+const placedAt = (id, caseId, position = { x: 100, y: 50, z: 10 }, rotation = { x: 0, y: 0, z: 0 }) => ({
+  id, caseId, placement: 'packed', transform: { position, rotation, scale: { x: 1, y: 1, z: 1 } },
+});
+const zoneOf = ([x0, y0, z0, x1, y1, z1]) => ({ min: { x: x0, y: y0, z: z0 }, max: { x: x1, y: y1, z: z1 } });
+const RECT_TRUCK = { length: 636, width: 102, height: 98, shapeMode: 'rect' };
+const RECT_ZONES = [zoneOf([0, 0, -51, 636, 98, 51])];
+const WELL_TRUCK = { length: 636, width: 102, height: 98, shapeMode: 'wheelWells' };
+const WELL_ZONES = [[0, 0, -51, 150, 98, 51], [150, 0, -36, 400, 98, 36], [150, 34, -51, 400, 98, -36], [150, 34, 36, 400, 98, 51], [400, 0, -51, 636, 98, 51]].map(zoneOf);
+const DECK_TRUCK = { length: 636, width: 102, height: 98, shapeMode: 'frontBonus' };
+const DECK_ZONES = [[0, 0, -51, 500, 98, 51], [500, 66, -51, 636, 98, 51]].map(zoneOf);
+const lcg = seed => {
+  let state = seed >>> 0;
+  return () => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0) / 4294967296);
+};
+
+/** The real resolution context for the fixtures: cargo `b1` (a box) and `d1` (a cylinder) on a truck. */
+const drawContext = ({ truck = RECT_TRUCK, zones = RECT_ZONES, instances = {}, ...overrides } = {}) => {
+  const cases = new Map([[BOX.id, BOX], [DRUM.id, DRUM]]);
+  const placed = new Map([['b1', placedAt('b1', 'box')], ['d1', placedAt('d1', 'drum')], ...Object.entries(instances)]);
+  return {
+    getInstance: id => placed.get(id) ?? null, getCase: id => cases.get(id) ?? null,
+    floors: M.buildFloorSurfaces(truck, zones), truck, zones, ...overrides,
+  };
+};
+const boxAnchor = local => M.buildCargoAnchor({ instanceId: 'b1', local, caseData: BOX });
+const drumAnchor = local => M.buildCargoAnchor({ instanceId: 'd1', local, caseData: DRUM });
+const floorAt = (x, z, surface = 'main', y = 0) => M.buildFloorAnchor({ surface, point: { x, y, z } });
+const wallAt = (surface, point, truck = RECT_TRUCK, zones = RECT_ZONES) => M.buildSpaceAnchor({ surface, point, truck, zones });
+const draw = (id, anchor, points, extra = {}) => A.createDrawRecord({ id, anchor, points, now: 1000, ...extra });
+// The verified contract examples.
+const TOP_STROKE = () => draw('top', boxAnchor({ x: -14.25, y: 15, z: -6.5 }), [-10.4, -6.1, -6.8, -5.2, -2.1, -3.9, 3.35, -1.2, 9.8, 0.75], { face: '+y' });
+const SIDE_STROKE = () => draw('side', boxAnchor({ x: -18, y: -5.5, z: 20 }), [-12.5, -3.25, -6, 0.5, 0, 3.75, 7.25, 6.5], { face: '+z' });
+const CAP_STROKE = () => draw('cap', drumAnchor({ x: 30, y: 3.5, z: -4.25 }), [-2.1, 5.2, 0.6, 6.4, 3.25, 5.9, 5.75, 3.1], { face: '+x' });
+const FLOOR_STROKE = () => draw('floor', floorAt(120.5, -20.25), [130.1, -18.4, 140.75, -12.2, 152, -9.9]);
+const WALL_STROKE = () => draw('wall', wallAt('wall-left', { x: 200, y: 40, z: 51 }), [215.5, 42.25, 230, 47.5]);
+const statusOf = (record, context = drawContext()) => {
+  const r = A.resolveAnnotation(record, context);
+  return `${r.status}${r.reason ? `:${r.reason}` : ''}`;
+};
+const without = (record, key) => { const { [key]: _gone, ...rest } = record; return rest; };
+
+test('a stroke is exactly the contracted record: one anchor, a face for cargo only, grid vertices and nothing derived', () => {
+  assert.deepEqual([A.MAX_DRAW_VERTICES_PER_STROKE, A.MAX_DRAW_VERTICES_PER_PACK, A.MAX_DRAW_RECORD_BYTES, A.MIN_DRAW_LENGTH_INCHES, A.DRAW_MAX_RAW_VERTICES],
+    [256, 3000, 8192, 1, 1024]);
+  assert.equal(A.DRAW_QUANTUM_INCHES, 0.01);
+  assert.equal(1 / A.DRAW_QUANTUM_INCHES, 100, 'the grid constant and its integer form agree');
+  assert.deepEqual([...A.DRAW_SIMPLIFY_TOLERANCES], [0.1, 0.2, 0.4], 'the loosest simplification is 0.4 in');
+  assert.deepEqual([A.ANNOTATION_SCHEMA_VERSION, A.MAX_ANNOTATIONS_PER_PACK], [1, 200], 'the schema version and the shared cap are unchanged');
+  assert.ok(M.DRAW_FOOTPRINT_TOLERANCE_INCHES >= A.DRAW_QUANTUM_INCHES / Math.SQRT2, 'an honest vertex quantized onto a patch edge is never rejected');
+  const cargo = TOP_STROKE();
+  const world = FLOOR_STROKE();
+  assert.deepEqual(Object.keys(cargo), ['id', 'type', 'schemaVersion', 'color', 'width', 'hidden', 'anchor', 'face', 'points', 'createdAt', 'updatedAt']);
+  assert.deepEqual(Object.keys(world), ['id', 'type', 'schemaVersion', 'color', 'width', 'hidden', 'anchor', 'points', 'createdAt', 'updatedAt'], 'no face off cargo');
+  assert.deepEqual([cargo.type, cargo.schemaVersion, cargo.color, cargo.width, cargo.hidden], ['draw', 1, 'ink', 'regular', false]);
+  assert.deepEqual([...A.DRAW_WIDTHS], ['thin', 'regular', 'bold']);
+  for (const record of [cargo, SIDE_STROKE(), CAP_STROKE(), world, WALL_STROKE()]) {
+    assert.equal(A.validateDrawRecord(record), null, record.id);
+    const [stored] = A.normalizeAnnotations([record]);
+    assert.deepEqual(stored, record, `${record.id}: normalizing keeps every field`);
+    assert.deepEqual(Object.keys(stored), Object.keys(record), `${record.id}: and the record's own key order`);
+    assert.equal(JSON.stringify(A.normalizeAnnotations([stored])[0]), JSON.stringify(stored), `${record.id}: the stored spelling is a fixed point`);
+    for (const derived of ['status', 'point', 'vertices', 'length', 'bounds', 'number']) assert.equal(Object.hasOwn(record, derived), false, derived);
+  }
+  assert.equal(A.drawVertexCount(cargo), 6, 'the anchor is vertex 0');
+});
+
+test('stroke validation names the first problem: record, display flags, surface, face and every vertex rule', () => {
+  const cargo = TOP_STROKE();
+  const floor = FLOOR_STROKE();
+  const cap = CAP_STROKE();
+  const wall = WALL_STROKE();
+  const problem = record => A.validateDrawRecord(record) || '';
+  const cases = [
+    ['not an object', null, /record must be an object/],
+    ['id', { ...cargo, id: '' }, /id is invalid/],
+    ['type', { ...cargo, type: 'sketch' }, /type is not supported/],
+    ['schemaVersion', { ...cargo, schemaVersion: 2 }, /schemaVersion is not supported/],
+    ['unknown key', { ...cargo, label: 'x' }, /unsupported field/],
+    ['color', { ...cargo, color: 'magenta' }, /color is invalid/],
+    ['width', { ...cargo, width: 'huge' }, /width is invalid/],
+    ['hidden', { ...cargo, hidden: 'no' }, /display flags/],
+    ['timestamps', { ...cargo, updatedAt: NaN }, /timestamps/],
+    ['anchor', { ...cargo, anchor: { kind: 'mystery' } }, /anchor\.kind/],
+    ['cargo without a face', without(cargo, 'face'), /face is not supported/],
+    ['unknown face', { ...cargo, face: 'up' }, /face is not supported/],
+    ['prototype name as a face', { ...cargo, face: 'constructor' }, /face is not supported/],
+    ['face off the anchor plane', { ...cargo, face: '+z' }, /not on the plane of its face/],
+    ['legacy face + (u, v) cargo anchor', { ...cargo, anchor: { kind: 'cargo', instanceId: 'b1', face: '+y', u: 0.5, v: 0.5, signature: cargo.anchor.signature } }, /cargo-local point/],
+    ['face on a floor stroke', { ...floor, face: '+y' }, /only allowed on cargo/],
+    ['face on a wall stroke', { ...wall, face: '+z' }, /only allowed on cargo/],
+    ['cylinder side face', { ...cap, face: '+y', anchor: drumAnchor({ x: 0, y: 12, z: 0 }) }, /face is not supported/],
+    ['cylinder cap on the other cap plane', { ...cap, face: '-x' }, /not on the plane of its face/],
+    ['open space', draw('free', M.buildSpaceAnchor({ surface: 'free', point: { x: 1, y: 2, z: 3 } }), [2, 2, 3, 3]), /open space/],
+    ['ground off the ground plane', draw('g', M.buildSpaceAnchor({ surface: 'ground', point: { x: 1, y: 5, z: 3 } }), [2, 2, 3, 3]), /not on the ground/],
+    ['wall that does not remember its zones', { ...wall, anchor: { ...wall.anchor, truck: { length: 636, width: 102, height: 98, shapeMode: 'rect' } } }, /truck\.zones is required/],
+    ['no vertices after the anchor', { ...floor, points: [] }, /points is invalid/],
+    ['points not a list', { ...floor, points: 'abc' }, /points is invalid/],
+    ['half a vertex', { ...floor, points: [1, 2, 3] }, /points is invalid/],
+    ['non-finite vertex', { ...floor, points: [1, NaN] }, /grid/],
+    ['infinite vertex', { ...floor, points: [1, Infinity] }, /grid/],
+    ['string vertex', { ...floor, points: [1, '2'] }, /grid/],
+    ['vertex beyond the coordinate bound', { ...floor, points: [1000000.01, 2] }, /grid/],
+    ['vertex off the 0.01 grid', { ...floor, points: [10.005, 2] }, /grid/],
+    ['repeated vertex', { ...floor, points: [130.1, -18.4, 130.1, -18.4] }, /repeat a vertex/],
+    ['first vertex equal to the anchor', { ...floor, points: [120.5, -20.25, 130, 5] }, /repeat a vertex/],
+    ['too many vertices', { ...floor, points: Array.from({ length: 512 }, (_, i) => (i % 2 ? 1 : i + 1)) }, /too many vertices/],
+    ['vertex off the box face', { ...cargo, points: [-10.4, -6.1, 24.5, 0] }, /leave the face/],
+    ['vertex inside the cap circle but off its polygon', { ...cap, points: [11.85, 1.56] }, /leave the face/],
+  ];
+  for (const [label, record, expected] of cases) assert.match(A.validateDrawRecord(record) || '', expected, label);
+  assert.equal(problem(cargo), '');
+  // Edges: a vertex exactly on a face edge and one within the footprint tolerance are on the face; one past it is not.
+  const edge = u => ({ ...cargo, points: [u, 0] });
+  assert.equal(A.validateDrawRecord(edge(24)), null, 'on the edge');
+  assert.equal(A.validateDrawRecord(edge(24.01)), null, 'within the 0.01 in footprint tolerance');
+  assert.match(A.validateDrawRecord(edge(24.02)), /leave the face/);
+  assert.equal(A.validateDrawRecord({ ...cap, points: [11.78, 1.55] }), null, 'inside the polygon at radius 11.88');
+  assert.equal(A.validateDrawRecord({ ...cap, points: [12, 0, 11.9, 0.5] }), null, 'a polygon vertex is on the cap');
+  assert.match(A.validateDrawRecord({ ...cap, points: [12, 0, 11.99, 0.5] }), /leave the face/, 'but a point just outside the edge next to it is not');
+  assert.equal(A.validateDrawRecord({ ...floor, points: Array.from({ length: 510 }, (_, i) => (i % 2 ? 0 : (i / 2 + 1) / 10)) }), null, '256 vertices is the most');
+});
+
+test('normalization of a stroke is canonical and idempotent: key order, color case, negative zero, JSON round trip', () => {
+  const base = TOP_STROKE();
+  const scrambled = {
+    updatedAt: 1000, points: [-0, -6.1, 5, 5], face: '+y', anchor: base.anchor, hidden: false, width: 'thin', color: '#ABCDEF', schemaVersion: 1, type: 'draw', id: 'scrambled', createdAt: 1000,
+  };
+  const [out] = A.normalizeAnnotations([scrambled]);
+  assert.deepEqual(Object.keys(out), ['id', 'type', 'schemaVersion', 'color', 'width', 'hidden', 'anchor', 'face', 'points', 'createdAt', 'updatedAt']);
+  assert.equal(out.color, '#abcdef');
+  assert.equal(Object.is(out.points[0], 0), true, 'negative zero becomes zero');
+  assert.equal(Object.is(scrambled.points[0], -0), true, 'the stored input is not mutated');
+  const again = A.normalizeAnnotations([out]);
+  assert.deepEqual(again, [out]);
+  assert.equal(A.normalizeAnnotations(again), again, 'the normalized list is its own normalization');
+  assert.deepEqual(A.normalizeAnnotations(JSON.parse(JSON.stringify(again))), again, 'a JSON round trip changes nothing');
+  assert.equal(JSON.stringify(A.normalizeAnnotations(JSON.parse(JSON.stringify(again)))), JSON.stringify(again), 'byte for byte');
+  // A non-canonical anchor spelling (a legacy key order) is written canonically but never changes meaning.
+  const reordered = { ...base, anchor: { local: base.anchor.local, signature: base.anchor.signature, instanceId: 'b1', kind: 'cargo' } };
+  assert.equal(JSON.stringify(A.normalizeAnnotations([reordered])[0].anchor), JSON.stringify(A.normalizeAnnotations([base])[0].anchor));
+});
+
+test('callout and arrow canonical output is byte-for-byte what V1B.1 wrote', () => {
+  const truck = RECT_TRUCK;
+  const cargo = M.buildCargoAnchor({ instanceId: 'inst-1', local: { x: 24, y: 2, z: 3 }, caseData: CASE });
+  const wall = M.buildSpaceAnchor({ surface: 'wall-left', point: { x: 200, y: 40, z: 51 }, truck, zones: RECT_ZONES });
+  const callout1 = A.createCalloutRecord({ id: 'c1', anchor: cargo, title: 'Fragile', description: 'Handle with care', color: '#ABCDEF', keepExpanded: true, offset: { dx: 12.34, dy: -5 }, now: 1000 });
+  const arrow1 = A.createArrowRecord({ id: 'a1', start: wall, end: M.buildFloorAnchor({ surface: 'main', point: { x: 120.5, y: 0, z: -20.25 } }), color: 'red', width: 'bold', now: 2000 });
+  const callout2 = A.createCalloutRecord({ id: 'c2', anchor: ground(5, 5), title: 'Ground', now: 3 });
+  // Captured from the V1B.1 implementation (main at df4d7f8) before the drawing foundation was added.
+  assert.equal(JSON.stringify(A.normalizeAnnotations([callout1, arrow1, callout2])), '[{"id":"c1","type":"callout","title":"Fragile","description":"Handle with care","color":"#abcdef","keepExpanded":true,"hidden":false,"anchor":{"kind":"cargo","instanceId":"inst-1","signature":{"shape":"box","length":48,"width":24,"height":32},"local":{"x":24,"y":2,"z":3}},"offset":{"dx":12.3,"dy":-5},"createdAt":1000,"updatedAt":1000,"schemaVersion":1},{"id":"a1","type":"arrow","schemaVersion":1,"color":"red","width":"bold","hidden":false,"start":{"kind":"space","surface":"wall-left","position":{"x":200,"y":40,"z":51},"truck":{"length":636,"width":102,"height":98,"shapeMode":"rect","zones":[[0,0,-51,636,98,51]]}},"end":{"kind":"floor","surface":"main","position":{"x":120.5,"y":0,"z":-20.25}},"createdAt":2000,"updatedAt":2000},{"id":"c2","type":"callout","title":"Ground","description":null,"color":"ink","keepExpanded":false,"hidden":false,"anchor":{"kind":"space","surface":"ground","position":{"x":5,"y":0,"z":5}},"offset":null,"createdAt":3,"updatedAt":3,"schemaVersion":1}]');
+});
+
+// ----------------------------------------------------------------------------
+// Geometry: cargo faces and caps
+// ----------------------------------------------------------------------------
+
+test('all six box faces: the signed plane, the in-plane axes and the exact rectangle, and a stroke lands on each one', () => {
+  const signature = M.getCargoGeometrySignature(BOX);
+  // Half extents: x 24 (length), y 15 (height), z 20 (width). u and v are the face's two in-plane axes.
+  const table = [
+    ['+x', 24, [-20, 20, -15, 15], (u, v) => ({ x: 24, y: v, z: u })],
+    ['-x', -24, [-20, 20, -15, 15], (u, v) => ({ x: -24, y: v, z: u })],
+    ['+y', 15, [-24, 24, -20, 20], (u, v) => ({ x: u, y: 15, z: v })],
+    ['-y', -15, [-24, 24, -20, 20], (u, v) => ({ x: u, y: -15, z: v })],
+    ['+z', 20, [-24, 24, -15, 15], (u, v) => ({ x: u, y: v, z: 20 })],
+    ['-z', -20, [-24, 24, -15, 15], (u, v) => ({ x: u, y: v, z: -20 })],
+  ];
+  assert.equal(M.cargoFacePatch('up', signature), null);
+  assert.equal(M.cargoFaceFrame('toString'), null, 'a prototype name is not a face');
+  const pose = M.resolveCargoPose(placedAt('b1', 'box', { x: 100, y: 50, z: 10 }, { x: 0.3, y: 1.1, z: -0.4 }), BOX);
+  for (const [face, plane, [uMin, uMax, vMin, vMax], local] of table) {
+    assert.deepEqual(M.cargoFacePatch(face, signature), { kind: 'rect', uMin, uMax, vMin, vMax, plane }, face);
+    assert.equal(M.isCargoFaceSupported(face, signature), true);
+    assert.equal(M.isCargoPointOnFacePlane(face, local(1, 2), signature), true);
+    assert.equal(M.isCargoPointOnFacePlane(face, local(1, 2).x === 24 ? { x: 23, y: 2, z: 1 } : { ...local(1, 2), [M.cargoFaceFrame(face).normal]: plane * 0.9 }, signature), false, `${face}: a point inside the cargo is not on the plane`);
+    const stroke = draw(`face${face}`, boxAnchor(local(1.5, -2.25)), [3.25, 4.5, 6, 1.75, uMax, vMax], { face });
+    assert.equal(A.validateDrawRecord(stroke), null, face);
+    const rotated = placedAt('b1', 'box', { x: 100, y: 50, z: 10 }, { x: 0.3, y: 1.1, z: -0.4 });
+    const resolved = A.resolveAnnotation(stroke, drawContext({ instances: { b1: rotated } }));
+    assert.equal(resolved.status, 'valid', face);
+    const expected = [[1.5, -2.25], [3.25, 4.5], [6, 1.75], [uMax, vMax]].map(([u, v]) => M.cargoLocalToWorld(pose, local(u, v)));
+    assert.deepEqual(resolved.vertices, expected, `${face}: every vertex is the face point carried by the committed pose`);
+    assert.deepEqual(resolved.vertices[0], M.resolveAnchor(stroke.anchor, drawContext({ instances: { b1: rotated } })).point, `${face}: vertex 0 is the anchor exactly`);
+    const outline = M.patchOutline(M.cargoFacePatch(face, signature));
+    assert.deepEqual(outline, [uMin, vMin, uMax, vMin, uMax, vMax, uMin, vMax], `${face}: counter-clockwise rectangle`);
+  }
+});
+
+test('cylinder and drum end caps are the real 24-sided footprint; the curved side wall and free choices of face are refused', () => {
+  const signature = M.getCargoGeometrySignature(DRUM);
+  const drum = M.getCargoGeometrySignature({ ...DRUM, shape: 'drum' });
+  for (const sig of [signature, drum]) {
+    assert.deepEqual(M.cargoFacePatch('+x', sig), { kind: 'ngon', radius: 12, plane: 30 });
+    assert.deepEqual(M.cargoFacePatch('-x', sig), { kind: 'ngon', radius: 12, plane: -30 });
+    for (const face of ['+y', '-y', '+z', '-z']) assert.deepEqual([M.isCargoFaceSupported(face, sig), M.cargoFacePatch(face, sig)], [false, null], face);
+  }
+  const wide = M.getCargoGeometrySignature({ ...DRUM, dimensions: { length: 60, width: 30, height: 20 } });
+  assert.equal(M.cargoFacePatch('+x', wide).radius, 10, 'the radius is half of the smaller of width and height');
+  const outline = M.patchOutline(M.cargoFacePatch('+x', signature));
+  assert.equal(outline.length, 48, 'the 24 vertices the Editor builds');
+  assert.deepEqual([outline[0], outline[1]], [12, 0], 'a vertex lies on the +u axis');
+  // Parity with the surface test every cargo anchor already uses: on a cap's plane the two agree everywhere.
+  const patch = M.cargoFacePatch('+x', signature);
+  let compared = 0;
+  for (let degrees = 0; degrees < 360; degrees += 1.7) {
+    for (let r = 10.5; r <= 13; r += 0.0137) {
+      const [u, v] = [r * Math.cos(degrees * Math.PI / 180), r * Math.sin(degrees * Math.PI / 180)];
+      const onSurface = M.distanceToCargoSurface({ x: 30, y: v, z: u }, signature) <= M.DRAW_FOOTPRINT_TOLERANCE_INCHES;
+      assert.equal(M.patchContains(patch, u, v), onSurface, `r=${r.toFixed(3)} at ${degrees.toFixed(1)} degrees`);
+      compared++;
+    }
+  }
+  assert.ok(compared > 20000);
+  // The facet middle is at the apothem (12 cos 7.5 degrees), the vertex at the circumradius.
+  const apothem = 12 * Math.cos(Math.PI / 24);
+  const facet = r => [r * Math.cos(Math.PI / 24), r * Math.sin(Math.PI / 24)];
+  assert.equal(M.patchContains(patch, ...facet(apothem + 0.009)), true, 'within the footprint tolerance of the facet');
+  assert.equal(M.patchContains(patch, ...facet(apothem + 0.011)), false, 'just outside it');
+  assert.equal(M.patchContains(patch, ...facet(11.95)), false, 'inside the circle, outside the polygon (0.05 in)');
+  assert.equal(M.patchContains(patch, ...facet(11.88)), true);
+  assert.equal(M.patchContains(patch, 12, 0), true, 'a polygon vertex');
+  assert.equal(M.patchContains(patch, 12.2, 0), false);
+  // Both caps carry strokes, and a stroke on one cap cannot be moved to the other face of the drum.
+  const capMinus = draw('cap-', drumAnchor({ x: -30, y: -2, z: 5 }), [4, -1, 1, -4], { face: '-x' });
+  assert.equal(A.validateDrawRecord(capMinus), null);
+  assert.equal(A.validateDrawRecord(CAP_STROKE()), null);
+  assert.equal(statusOf(CAP_STROKE()), 'valid');
+  assert.equal(statusOf(capMinus), 'valid');
+  const [cap] = [CAP_STROKE()];
+  const resolved = A.resolveAnnotation(cap, drawContext());
+  assert.deepEqual(resolved.vertices.map(v => v.x), Array(5).fill(130), 'all on the cap plane x = 100 + 30');
+  assert.match(A.validateDrawRecord({ ...cap, anchor: drumAnchor({ x: 0, y: 12, z: 0 }), face: '+x' }), /not on the plane of its face/);
+  assert.equal(M.drawAnchorUV(cap.anchor, '+x').u, -4.25, 'a cap is drawn in (z, y)');
+});
+
+// ----------------------------------------------------------------------------
+// Geometry: truck floor, walls, ceiling and ground
+// ----------------------------------------------------------------------------
+
+test('a world stroke is Valid only while ONE current patch holds every vertex: floor, wall, ceiling and ground examples', () => {
+  const ctx = drawContext();
+  const record = FLOOR_STROKE();
+  assert.equal(statusOf(record, ctx), 'valid');
+  assert.deepEqual(A.resolveAnnotation(record, ctx).vertices[0], { x: 120.5, y: 0, z: -20.25 });
+  assert.equal(statusOf(WALL_STROKE(), ctx), 'valid');
+  assert.deepEqual(A.resolveAnnotation(WALL_STROKE(), ctx).vertices.map(v => v.z), [51, 51, 51], 'on the wall plane');
+  // A stroke that leaves its patch is flagged, never clipped or moved.
+  const offFloor = draw('off', floorAt(620, 0), [630, 5, 640, 10]);
+  assert.equal(A.validateDrawRecord(offFloor), null, 'structurally valid: patch membership needs the truck');
+  const flagged = A.resolveAnnotation(offFloor, ctx);
+  assert.deepEqual([flagged.status, flagged.reason, flagged.vertices, flagged.point], ['needs-review', 'stroke-off-surface', null, null]);
+  assert.equal(statusOf(draw('high', wallAt('wall-left', { x: 200, y: 90, z: 51 }), [210, 97, 220, 99]), ctx), 'needs-review:stroke-off-surface', 'past the ceiling');
+  // Ceiling and the two end walls use their own frames.
+  const ceiling = draw('ceiling', wallAt('ceiling', { x: 300, y: 98, z: 10 }), [320, 20, 340, -30]);
+  assert.equal(statusOf(ceiling, ctx), 'valid');
+  assert.deepEqual(A.resolveAnnotation(ceiling, ctx).vertices.map(v => v.y), [98, 98, 98]);
+  assert.equal(statusOf(draw('r', wallAt('wall-rear', { x: 0, y: 30, z: 10 }), [20, 40, -30, 60]), ctx), 'valid');
+  assert.deepEqual(A.resolveAnnotation(draw('r', wallAt('wall-rear', { x: 0, y: 30, z: 10 }), [20, 40, -30, 60]), ctx).vertices.map(v => [v.x, v.z, v.y]), [[0, 10, 30], [0, 20, 40], [0, -30, 60]]);
+  assert.equal(statusOf(draw('f', wallAt('wall-front', { x: 636, y: 30, z: 10 }), [20, 40, -30, 60]), ctx), 'valid');
+  assert.equal(statusOf(draw('rt', wallAt('wall-right', { x: 200, y: 30, z: -51 }), [250, 60]), ctx), 'valid');
+  // Ground is a separate surface from the truck floor: its own plane, far larger than the truck.
+  const onGround = draw('gr', M.buildSpaceAnchor({ surface: 'ground', point: { x: -50, y: 0, z: 200 } }), [-20, 150, 300, 40, 700, -300]);
+  assert.equal(statusOf(onGround, ctx), 'valid', 'ground reaches far past the truck');
+  assert.equal(statusOf(draw('cross', floorAt(10, 0), [-20, 0]), ctx), 'needs-review:stroke-off-surface', 'a floor stroke does not continue onto the ground');
+  assert.equal(statusOf(draw('cross2', M.buildSpaceAnchor({ surface: 'ground', point: { x: -10, y: 0, z: 0 } }), [10, 0]), ctx), 'valid', 'and a ground stroke is not limited to the truck footprint');
+  assert.deepEqual(M.drawSurfacePatches(onGround.anchor, ctx), [{ kind: 'rect', uMin: -1e6, uMax: 1e6, vMin: -1e6, vMax: 1e6, plane: 0 }]);
+});
+
+test('same patch versus crossed patch: seams between zones, wheel-well tops and deck pieces split a stroke, whatever the zone order', () => {
+  const ctx = drawContext({ truck: WELL_TRUCK, zones: WELL_ZONES });
+  const reversed = drawContext({ truck: WELL_TRUCK, zones: [...WELL_ZONES].reverse() });
+  const shuffled = drawContext({ truck: WELL_TRUCK, zones: [WELL_ZONES[3], WELL_ZONES[0], WELL_ZONES[4], WELL_ZONES[2], WELL_ZONES[1]] });
+  const anchorMain = floorAt(100, 0);
+  const patches = M.drawSurfacePatches(anchorMain, ctx);
+  assert.equal(patches.length, 3, 'three separate main-floor rectangles: rear, corridor and front');
+  assert.deepEqual(patches.map(p => [p.uMin, p.uMax, p.vMin, p.vMax, p.plane]).sort((a, b) => a[0] - b[0]),
+    [[0, 150, -51, 51, 0], [150, 400, -36, 36, 0], [400, 636, -51, 51, 0]]);
+  const cases = [
+    ['inside the rear patch', draw('s1', anchorMain, [120, 10, 140, -30]), 'valid'],
+    ['across the seam into the corridor', draw('s2', anchorMain, [140, 0, 160, 0]), 'needs-review:stroke-off-surface'],
+    ['a corridor stroke', draw('s3', floorAt(200, 0), [250, 20, 300, -20]), 'valid'],
+    ['a corridor stroke into the wheel-well side', draw('s4', floorAt(200, 0), [250, 20, 260, 45]), 'needs-review:stroke-off-surface'],
+    ['inside one wheel-well top', draw('s5', floorAt(200, 43, 'well-top', 34), [250, 48, 300, 40]), 'valid'],
+    ['from a wheel-well top down to the floor beside it', draw('s6', floorAt(200, 43, 'well-top', 34), [250, 30]), 'needs-review:stroke-off-surface'],
+    ['a well-top stroke onto the other well-top', draw('s7', floorAt(200, 43, 'well-top', 34), [250, -40]), 'needs-review:stroke-off-surface'],
+  ];
+  for (const [label, record, expected] of cases) {
+    assert.equal(A.validateDrawRecord(record), null, label);
+    for (const [name, context] of [['zones', ctx], ['reversed', reversed], ['shuffled', shuffled]]) {
+      assert.equal(statusOf(record, context), expected, `${label} (${name})`);
+    }
+  }
+  // Front Overhang: the main floor and the raised deck are separate; so are the wall pieces above and beside them.
+  const deck = drawContext({ truck: DECK_TRUCK, zones: DECK_ZONES });
+  assert.equal(statusOf(draw('d1', floorAt(550, 0, 'deck', 66), [600, 20]), deck), 'valid');
+  assert.equal(statusOf(draw('d2', floorAt(550, 0, 'deck', 66), [480, 20]), deck), 'needs-review:stroke-off-surface', 'off the deck onto the main floor');
+  assert.equal(statusOf(draw('d3', wallAt('wall-left', { x: 300, y: 40, z: 51 }, DECK_TRUCK, DECK_ZONES), [350, 60]), deck), 'valid');
+  assert.equal(statusOf(draw('d4', wallAt('wall-left', { x: 490, y: 80, z: 51 }, DECK_TRUCK, DECK_ZONES), [510, 85]), deck), 'needs-review:stroke-off-surface', 'across the seam between the main wall and the deck wall');
+  assert.equal(statusOf(draw('d5', wallAt('wall-left', { x: 520, y: 80, z: 51 }, DECK_TRUCK, DECK_ZONES), [600, 90]), deck), 'valid', 'within the deck wall piece');
+  // No patch is identified by its position in a list.
+  assert.deepEqual(M.drawSurfacePatches(anchorMain, reversed).map(p => p.uMin).sort((a, b) => a - b), patches.map(p => p.uMin).sort((a, b) => a - b));
+});
+
+test('a stroke follows every anchor decision first: cargo, Case, truck and floor changes pass through and offer no vertices', () => {
+  const stroke = TOP_STROKE();
+  const cases = [
+    ['cargo removed', drawContext({ getInstance: () => null }), 'unresolved:cargo-missing'],
+    ['Case removed', drawContext({ getCase: () => null }), 'unresolved:case-missing'],
+    ['Case resized', drawContext({ getCase: () => ({ ...BOX, dimensions: { ...BOX.dimensions, height: 31 } }) }), 'needs-review:case-changed'],
+    ['Case reshaped', drawContext({ getCase: () => ({ ...BOX, shape: 'cylinder' }) }), 'needs-review:case-changed'],
+    ['pose unreadable', drawContext({ getInstance: () => placedAt('b1', 'box', { x: NaN, y: 0, z: 0 }) }), 'unresolved:pose-invalid'],
+    ['ambiguous cargo ID', drawContext({ isInstanceAmbiguous: id => id === 'b1' }), 'unresolved:cargo-ambiguous'],
+  ];
+  for (const [label, ctx, expected] of cases) {
+    assert.equal(statusOf(stroke, ctx), expected, label);
+    assert.equal(A.resolveAnnotation(stroke, ctx).vertices, null, `${label}: no vertices are offered`);
+  }
+  assert.equal(statusOf(stroke), 'valid', 'control');
+  // Wall strokes: a changed truck is flagged, not relocated.
+  const longer = drawContext({ truck: { ...RECT_TRUCK, length: 600 }, zones: [zoneOf([0, 0, -51, 600, 98, 51])] });
+  assert.equal(statusOf(WALL_STROKE(), longer), 'needs-review:truck-changed');
+  assert.equal(statusOf(WALL_STROKE(), drawContext({ truck: WELL_TRUCK, zones: WELL_ZONES })), 'needs-review:truck-changed');
+  // Floor strokes: a floor that is no longer there, or no longer the same kind, is flagged; a floor that only moved within its tolerance is not.
+  assert.equal(statusOf(FLOOR_STROKE(), drawContext({ zones: [zoneOf([0, 40, -51, 636, 98, 51])] })), 'needs-review:floor-changed');
+  assert.equal(statusOf(FLOOR_STROKE(), drawContext({ floors: [] })), 'unresolved:floor-missing');
+  // The floor may disappear under the LATER vertices while the anchor is still on it: that is a stroke problem, not an anchor problem.
+  const narrower = drawContext({ zones: [zoneOf([0, 0, -51, 140, 98, 51])] });
+  assert.equal(statusOf(FLOOR_STROKE(), narrower), 'needs-review:stroke-off-surface');
+  // Never fabricated: Needs Review and Unresolved carry no position at all.
+  for (const [record, ctx] of [[FLOOR_STROKE(), narrower], [TOP_STROKE(), drawContext({ getInstance: () => null })]]) {
+    const r = A.resolveAnnotation(record, ctx);
+    assert.deepEqual([r.point, r.vertices], [null, null]);
+  }
+  for (const reason of ['stroke-off-surface', 'surface-unsupported']) assert.ok(A.describeAnnotationReason(reason).length > 30, reason);
+  // Defensive: a face this cargo cannot carry (which validation already refuses) never resolves onto the cylinder wall.
+  const forged = { ...CAP_STROKE(), face: '+y' };
+  const forgedResult = A.resolveAnnotation(forged, drawContext());
+  assert.deepEqual([forgedResult.status, forgedResult.vertices], ['unresolved', null]);
+});
+
+// ----------------------------------------------------------------------------
+// The drawing pipeline: simplification, quantization, limits
+// ----------------------------------------------------------------------------
+
+const jitterLine = (count, amplitude, seed = 7) => {
+  const rand = lcg(seed);
+  const raw = [];
+  for (let i = 1; i <= count; i++) raw.push(-14.25 + i * 0.04, -6.5 + (rand() * 2 - 1) * amplitude);
+  return raw;
+};
+const TOP_ANCHOR = () => boxAnchor({ x: -14.25, y: 15, z: -6.5 });
+
+test('prepareDrawStroke: vertex 0 is the anchor, vertices are rounded from their own absolute value and a repeat after rounding is dropped', () => {
+  const prepared = A.prepareDrawStroke({ anchor: TOP_ANCHOR(), face: '+y', rawPoints: [-10.404, -6.096, -6.8, -5.2, -2.1, -3.9, 3.349, -1.2, 9.8, 0.754] });
+  assert.equal(prepared.ok, true);
+  assert.equal(prepared.tolerance, 0.1, 'the smallest tolerance is tried first');
+  assert.ok(prepared.points.every(value => Math.round(value * 100) / 100 === value), 'every vertex sits on the 0.01 in grid');
+  assert.deepEqual(prepared.points.slice(-2), [9.8, 0.75], 'the last sample is kept and rounded');
+  assert.equal(prepared.vertexCount, 1 + prepared.points.length / 2);
+  // Rounding never drifts: the error of every kept vertex is at most half a quantum, however long the stroke.
+  const zig = [];
+  for (let i = 1; i <= 200; i++) zig.push(-14.25 + i * 0.0123, -6.5 + (i % 2 ? 1.7 : -1.7));
+  const long = A.prepareDrawStroke({ anchor: TOP_ANCHOR(), face: '+y', rawPoints: zig });
+  assert.equal(long.ok, true);
+  assert.equal(long.points.length / 2, 200, 'a zigzag keeps every vertex at this tolerance');
+  long.points.forEach((value, i) => {
+    assert.equal(value, Math.round(zig[i] * 100) / 100 + 0, `vertex ${Math.floor(i / 2) + 1}`);
+    assert.ok(Math.abs(value - zig[i]) <= 0.005 + 1e-9, 'no cumulative error');
+  });
+  // Consecutive duplicates after rounding go; a later return to an earlier point stays (a closed shape is fine).
+  const dup = A.prepareDrawStroke({ anchor: TOP_ANCHOR(), face: '+y', rawPoints: [-14.2501, -6.5001, -10, -6, -10.001, -6.003, -14.25, -6.5] });
+  assert.deepEqual(dup, { ok: true, points: [-10, -6, -14.25, -6.5], tolerance: 0.1, vertexCount: 3 });
+  assert.equal(A.validateDrawRecord(draw('closed', TOP_ANCHOR(), dup.points, { face: '+y' })), null, 'the loop closes on the anchor');
+  assert.deepEqual(A.prepareDrawStroke({ anchor: TOP_ANCHOR(), face: '+y', rawPoints: [-14.2501, -6.4999, -14.25, -6.5] }), { ok: false, reason: 'too-short' }, 'nothing but the anchor remains');
+});
+
+test('the 0.01 in grid check accepts every two-decimal value and rounding always lands on it, within half a quantum', () => {
+  const offGrid = value => /grid/.test(A.validateDrawRecord({ ...FLOOR_STROKE(), points: [value, 7] }) || '');
+  for (let k = -100000000; k <= 100000000; k += 97) assert.equal(offGrid(k / 100), false, `${k / 100} is on the grid`);
+  assert.equal(offGrid(0.005), true);
+  assert.equal(offGrid(1.005), true);
+  const rand = lcg(5);
+  const anchor = TOP_ANCHOR();
+  for (let i = 0; i < 20000; i++) {
+    const raw = (rand() - 0.5) * 2e6;
+    const prepared = A.prepareDrawStroke({ anchor, face: '+y', rawPoints: [raw, 3] });
+    assert.equal(prepared.ok, true);
+    assert.equal(offGrid(prepared.points[0]), false, `${prepared.points[0]} from ${raw}`);
+    assert.ok(Math.abs(prepared.points[0] - raw) <= 0.005 + 1e-9);
+  }
+});
+
+test('simplification only loosens when the stroke does not fit, never past 0.4 in, and never truncates', () => {
+  const anchor = TOP_ANCHOR();
+  const run = rawPoints => A.prepareDrawStroke({ anchor, face: '+y', rawPoints });
+  const within = (raw, out, tolerance) => {
+    const polyline = [-14.25, -6.5, ...out.points];
+    for (let i = 0; i < raw.length; i += 2) assert.ok(L.distanceToPolyline(polyline, raw[i], raw[i + 1]) <= tolerance + 0.0071, `sample ${i / 2}`);
+  };
+  const easy = jitterLine(600, 0.15);
+  const first = run(easy);
+  assert.deepEqual([first.ok, first.tolerance], [true, 0.1]);
+  assert.ok(first.vertexCount <= 256);
+  within(easy, first, 0.1);
+  const second = jitterLine(900, 0.15);
+  const out2 = run(second);
+  assert.deepEqual([out2.ok, out2.tolerance], [true, 0.2], '337 vertices at 0.1 in does not fit, 131 at 0.2 in does');
+  within(second, out2, 0.2);
+  const third = jitterLine(900, 0.35);
+  const out3 = run(third);
+  assert.deepEqual([out3.ok, out3.tolerance], [true, 0.4], 'the loosest step, and the most a drawn line ever moves');
+  within(third, out3, 0.4);
+  assert.ok(out3.vertexCount <= A.MAX_DRAW_VERTICES_PER_STROKE);
+  // Past that the answer is explicit: no record, no points, no partial result.
+  const saw = [];
+  for (let i = 1; i <= 600; i++) saw.push(-14.25 + i * 0.05, -6.5 + (i % 2 ? 3 : -3));
+  const refused = run(saw);
+  assert.deepEqual(refused, { ok: false, reason: 'too-complex' });
+  assert.equal(Object.hasOwn(refused, 'points'), false);
+  // The raw cap: 1,024 samples are accepted for simplification, one more is refused outright.
+  const atCap = run(jitterLine(1024, 0.15));
+  assert.equal(atCap.ok, true);
+  assert.deepEqual(run(jitterLine(1025, 0.15)), { ok: false, reason: 'too-complex' });
+  // Exactly at the vertex limit: 255 samples that all survive make a 256-vertex stroke; one more cannot.
+  const survive = n => { const raw = []; for (let i = 1; i <= n; i++) raw.push(-14.25 + i * 0.12, -6.5 + (i % 2 ? 1.5 : -1.5)); return raw; };
+  assert.equal(run(survive(255)).vertexCount, 256);
+  assert.deepEqual(run(survive(256)), { ok: false, reason: 'too-complex' });
+});
+
+test('prepareDrawStroke refuses malformed gestures and unusable surfaces without a record', () => {
+  const anchor = TOP_ANCHOR();
+  const bad = [
+    ['no points', { anchor, face: '+y' }], ['not a list', { anchor, face: '+y', rawPoints: 'abc' }], ['empty', { anchor, face: '+y', rawPoints: [] }],
+    ['half a vertex', { anchor, face: '+y', rawPoints: [1, 2, 3] }], ['NaN', { anchor, face: '+y', rawPoints: [1, NaN] }],
+    ['Infinity', { anchor, face: '+y', rawPoints: [1, Infinity] }], ['beyond the bound', { anchor, face: '+y', rawPoints: [1, 1e6 + 1] }],
+    ['no anchor', { face: '+y', rawPoints: [1, 2] }], ['unknown face', { anchor, face: 'up', rawPoints: [1, 2] }],
+    ['open space', { anchor: M.buildSpaceAnchor({ surface: 'free', point: { x: 1, y: 1, z: 1 } }), rawPoints: [1, 2] }],
+  ];
+  for (const [label, input] of bad) assert.deepEqual(A.prepareDrawStroke(input), { ok: false, reason: 'invalid' }, label);
+  assert.deepEqual(A.prepareDrawStroke(), { ok: false, reason: 'invalid' });
+});
+
+test('stroke vertex limits: 256 per stroke, 3,000 per Load Plan in strict checks only, recovery records excluded, 200 records shared', () => {
+  const floorStroke = (id, vertices) => draw(id, floorAt(100, 0), Array.from({ length: (vertices - 1) * 2 }, (_, i) => (i % 2 ? ((i >> 1) % 2 ? 4 : -4) : 101 + (i >> 1) * 0.2)));
+  assert.equal(A.drawVertexCount(floorStroke('v256', 256)), 256);
+  assert.equal(A.validateDrawRecord(floorStroke('v256', 256)), null);
+  assert.match(A.validateDrawRecord(floorStroke('v257', 257)), /too many vertices/);
+  // Too long a stroke is kept whole as a recovery record: its vertices are never truncated to fit.
+  const oversized = floorStroke('v257', 257);
+  const [wrapped] = A.normalizeAnnotations([oversized]);
+  assert.equal(wrapped.type, A.ANNOTATION_TYPE_UNREADABLE);
+  assert.deepEqual(wrapped.original, oversized);
+  assert.equal(wrapped.original.points.length, 512);
+  const full = Array.from({ length: 11 }, (_, i) => floorStroke(`full${i}`, 256)); // 2,816
+  const exact = A.validateAnnotationCollection([...full, floorStroke('rest', 184)]);
+  assert.equal(exact.ok, true, '3,000 vertices exactly');
+  assert.equal(A.drawVertexTotal(exact.annotations), 3000);
+  const over = A.validateAnnotationCollection([...full, floorStroke('rest', 185)]);
+  assert.equal(over.ok, false);
+  assert.match(over.error, /too many drawing vertices \(3001; maximum 3000\)/);
+  // Lenient handling never turns a valid stroke into a recovery record for a collection-level reason.
+  const lenient = A.normalizeAnnotations([...full, floorStroke('rest', 185)]);
+  assert.deepEqual(lenient.map(r => r.type), Array(12).fill('draw'));
+  assert.equal(A.normalizeAnnotations(lenient), lenient);
+  // A recovery record's original does not count: only valid strokes do.
+  const wrapper = A.normalizeAnnotations([{ id: 'x', type: 'draw' }])[0];
+  const bigWrapper = { id: 'w', type: 'unreadable', schemaVersion: 1, reason: 'x', original: floorStroke('inner', 256) };
+  assert.equal(A.validateAnnotationCollection([...full, floorStroke('rest', 184), wrapper, bigWrapper]).ok, true);
+  assert.equal(A.drawVertexTotal([...full, bigWrapper, null, 'x']), 2816);
+  // The 200-record cap is shared with every other type.
+  const callouts = n => Array.from({ length: n }, (_, i) => callout(`k${i}`, ground(i, 1)));
+  assert.equal(A.validateAnnotationCollection([...callouts(199), floorStroke('s', 2)]).annotations.length, 200);
+  assert.match(A.validateAnnotationCollection([...callouts(200), floorStroke('s', 2)]).error, /too many annotations \(201; maximum 200\)/);
+});
+
+test('the record byte limit counts UTF-8 bytes of the canonical record, not characters, and a record that exceeds it is unreadable', () => {
+  const bytes = record => Buffer.byteLength(JSON.stringify(A.normalizeAnnotations([record])[0]), 'utf8');
+  const multibyte = { ...TOP_STROKE(), anchor: { ...TOP_STROKE().anchor, instanceId: 'é中😀-b1' } };
+  assert.equal(A.validateDrawRecord(multibyte), null);
+  const exact = bytes(multibyte);
+  assert.ok(exact > JSON.stringify(multibyte).length - 5, 'sanity: the canonical form is what is measured');
+  assert.ok(JSON.stringify(A.normalizeAnnotations([multibyte])[0]).length < exact, 'characters and bytes differ for this record');
+  assert.equal(A.validateDrawRecord(multibyte, { maxBytes: exact }), null, 'exactly at the limit');
+  assert.match(A.validateDrawRecord(multibyte, { maxBytes: exact - 1 }), /larger than/);
+  const ascii = { ...TOP_STROKE() };
+  const asciiBytes = bytes(ascii);
+  assert.equal(A.validateDrawRecord(ascii, { maxBytes: asciiBytes }), null);
+  assert.match(A.validateDrawRecord(ascii, { maxBytes: asciiBytes - 1 }), /larger than/);
+  // The measured form is the canonical one: a record stored with extra whitespace in its color or scrambled keys is judged by its stored shape.
+  assert.equal(A.validateDrawRecord({ ...ascii, color: '#ABCDEF' }, { maxBytes: asciiBytes + 8 }), null);
+  // The default is 8,192 bytes, and no valid 256-vertex stroke comes near it: the rule is a backstop.
+  const wall = wallAt('ceiling', { x: 300, y: 98, z: 10 });
+  const maximal = draw('x'.repeat(64), wall, Array.from({ length: 510 }, (_, i) => (i % 2 ? 999999.99 - (i >> 1) : -999999.99 + (i >> 1))), { color: '#ABCDEF' });
+  assert.equal(A.validateDrawRecord(maximal), null);
+  assert.ok(bytes(maximal) < A.MAX_DRAW_RECORD_BYTES, `${bytes(maximal)} bytes`);
+  // An oversized or malformed record is kept verbatim, never shortened, and strict checks refuse it.
+  const tiny = { ...ascii };
+  const original = JSON.parse(JSON.stringify(tiny));
+  const wrapped = A.normalizeAnnotations([{ ...tiny, points: [...tiny.points, 5000000, 1] }])[0];
+  assert.equal(wrapped.type, 'unreadable');
+  assert.deepEqual(wrapped.original.points.slice(-2), [5000000, 1], 'the out-of-range vertex is preserved, not clamped');
+  assert.deepEqual(tiny, original);
+});
+
+test('malformed and duplicate strokes are kept verbatim as recovery records and never converted back', () => {
+  const good = TOP_STROKE();
+  const broken = { ...good, id: 'broken', points: [1, 2, 3] };
+  const offFace = { ...good, id: 'off', points: [-10.4, -6.1, 24.5, 0] };
+  const twin = { ...good };
+  const newer = { ...good, id: 'newer', schemaVersion: 2 };
+  const list = [good, broken, offFace, twin, newer, { ...good, id: 'extra', label: 'x' }];
+  const frozen = JSON.stringify(list);
+  const out = A.normalizeAnnotations(list);
+  assert.equal(JSON.stringify(list), frozen, 'the stored input is not mutated');
+  assert.deepEqual(out.map(r => r.type), ['draw', 'unreadable', 'unreadable', 'unreadable', 'unreadable', 'unreadable']);
+  assert.deepEqual(out.slice(1).map((r, i) => r.original), list.slice(1), 'every original is preserved verbatim');
+  assert.deepEqual(out.slice(1).map(r => r.reason), [
+    'The saved annotation could not be read.', 'The saved annotation could not be read.', 'Duplicate annotation ID in this Load Plan.',
+    'Saved by a newer version of the app.', 'The saved annotation could not be read.']);
+  assert.equal(new Set(out.map(r => r.id)).size, out.length);
+  assert.equal(A.validateAnnotationCollection(list).ok, false);
+  assert.deepEqual(A.validateAnnotationCollection(out).annotations, out, 'the wrappers themselves are accepted verbatim');
+  assert.match(A.validateAnnotationCollection([good, twin]).error, /duplicate annotation id "top"/);
+  // A wrapper an older build made around a perfectly valid stroke stays inert.
+  const wrapper = { id: 'w', type: 'unreadable', schemaVersion: 1, reason: 'Saved by a newer version of the app.', original: good };
+  assert.deepEqual(A.normalizeAnnotations([wrapper]), [wrapper]);
+  assert.equal(A.resolveAnnotation(A.normalizeAnnotations([wrapper])[0], drawContext()).reason, 'unreadable');
+  assert.equal(statusOf(good), 'valid', 'control');
+});
+
+// ----------------------------------------------------------------------------
+// Presentation edits and write-time placement
+// ----------------------------------------------------------------------------
+
+test('a style edit changes only color, width, visibility and the update time; the surface, face and vertices are carried over byte for byte', () => {
+  const base = SIDE_STROKE();
+  const edited = A.editDrawRecord(base, { color: '#ABCDEF', width: 'bold', hidden: true, anchor: ground(1, 1), face: '+y', points: [1, 2], id: 'other', createdAt: 5 }, 2000);
+  assert.deepEqual([edited.color, edited.width, edited.hidden, edited.updatedAt], ['#abcdef', 'bold', true, 2000]);
+  const stored = A.normalizeAnnotations([base])[0];
+  assert.equal(JSON.stringify(edited.anchor), JSON.stringify(stored.anchor));
+  assert.equal(JSON.stringify([edited.face, edited.points, edited.id, edited.createdAt]), JSON.stringify([stored.face, stored.points, stored.id, stored.createdAt]), 'a patch cannot move or re-attach a stroke');
+  assert.equal(A.validateDrawRecord(edited), null);
+  assert.equal(A.editDrawRecord(base, { width: 'huge' }, 2000), null);
+  assert.equal(A.editDrawRecord(base, { color: 'magenta' }, 2000), null);
+  assert.equal(A.editDrawRecord(base, {}, NaN), null);
+  assert.equal(A.editDrawRecord({ ...base, type: 'arrow' }, { hidden: true }, 1), null);
+  assert.deepEqual(A.editDrawRecord(base, {}, 1000), stored, 'an empty patch changes nothing');
+  // A stroke that needs review, or whose cargo is gone, can still be restyled: nothing about the layout is consulted.
+  assert.equal(statusOf(edited, drawContext({ getInstance: () => null })), 'unresolved:cargo-missing');
+  assert.equal(A.editDrawRecord(edited, { hidden: false }, 3000).hidden, false);
+});
+
+test('a stroke may be written only when it resolves now and runs at least an inch along its resolved path', () => {
+  const ctx = drawContext();
+  assert.equal(A.drawPlacementProblem(TOP_STROKE(), ctx), null);
+  assert.equal(A.drawPlacementProblem(FLOOR_STROKE(), ctx), null);
+  assert.equal(A.drawPlacementProblem(draw('short', floorAt(100, 0), [100.5, 0.5]), ctx), 'too-short', 'a 0.71 in stroke');
+  assert.equal(A.drawPlacementProblem(draw('edge', floorAt(100, 0), [101, 0]), ctx), null, 'exactly one inch');
+  assert.equal(A.drawPlacementProblem(draw('away2', floorAt(100, 0), [100.9, 0, 100, 0]), ctx), null, 'path length, not displacement: out and back is 1.8 in of line');
+  assert.equal(A.drawPlacementProblem(draw('off', floorAt(620, 0), [630, 5, 640, 10]), ctx), 'unresolved');
+  assert.equal(A.drawPlacementProblem(TOP_STROKE(), drawContext({ getInstance: () => null })), 'unresolved');
+  assert.equal(A.drawPlacementProblem(WALL_STROKE(), drawContext({ truck: WELL_TRUCK, zones: WELL_ZONES })), 'unresolved');
+});
+
+// ----------------------------------------------------------------------------
+// Cargo identity
+// ----------------------------------------------------------------------------
+
+test('a stroke follows its cargo through remapping by its anchor alone; the face and vertices never change', () => {
+  const stroke = draw('s', boxAnchor({ x: -18, y: -5.5, z: 20 }), [-12.5, -3.25, -6, 0.5], { face: '+z' });
+  const padded = { ...stroke, anchor: { ...stroke.anchor, instanceId: ' b1 ' } };
+  const list = [padded, FLOOR_STROKE(), draw('far', drumAnchor({ x: 30, y: 3.5, z: -4.25 }), [-2.1, 5.2], { face: '+x' })];
+  const remapped = A.remapAnnotationInstanceIds(list, new Map([['b1', 'new-1']]));
+  assert.equal(remapped[0].anchor.instanceId, 'new-1', 'a trimmed-equal ID follows the map');
+  assert.deepEqual([remapped[0].face, remapped[0].points], ['+z', [-12.5, -3.25, -6, 0.5]], 'the stroke is otherwise untouched');
+  assert.equal(JSON.stringify({ ...remapped[0].anchor, instanceId: 'x' }), JSON.stringify({ ...A.normalizeAnnotations([padded])[0].anchor, instanceId: 'x' }), 'only the instance changed');
+  assert.equal(remapped[1], A.normalizeAnnotations(list)[1], 'a floor stroke has no instance to change');
+  assert.equal(remapped[2].anchor.instanceId, 'd1', 'an unmapped anchor is never guessed');
+  assert.equal(A.remapAnnotationInstanceIds(list, new Map()), A.normalizeAnnotations(list), 'nothing changed: the normalized list itself');
+  assert.equal(A.validateAnnotationCollection(remapped).ok, true, 'and the result is still a valid collection');
+  // Never attached to the wrong cargo: the stroke is resolved only through its own anchor's identity.
+  const ctx = drawContext({ instances: { 'new-1': placedAt('new-1', 'box', { x: 400, y: 50, z: 0 }) } });
+  assert.equal(A.resolveAnnotation(remapped[0], ctx).vertices[0].x, 400 - 18);
+  assert.equal(statusOf(remapped[0], drawContext({ isInstanceAmbiguous: id => id === 'new-1', instances: { 'new-1': placedAt('new-1', 'box') } })), 'unresolved:cargo-ambiguous');
+});
+
+test('a stroke on a contested ID is withheld whole and verbatim, a wrapper is never reached, and the survivor inherits nothing', () => {
+  const identity = M.canonicalizeInstanceIds(['cargo', ' cargo '], () => 'minted', [true, false]);
+  assert.deepEqual([...identity.contestedKeys], ['cargo']);
+  const contested = draw('contested', M.buildCargoAnchor({ instanceId: ' cargo ', local: { x: 1, y: 15, z: 2 }, caseData: BOX }), [3, 4, 5, 6], { face: '+y' });
+  const fine = FLOOR_STROKE();
+  const elsewhere = draw('else', M.buildCargoAnchor({ instanceId: 'elsewhere', local: { x: 1, y: 15, z: 2 }, caseData: BOX }), [3, 4, 5, 6], { face: '+y' });
+  const wrapper = { id: 'w', type: 'unreadable', schemaVersion: 1, reason: 'x', original: contested };
+  const raw = [contested, fine, elsewhere, wrapper];
+  const carried = A.carryAnnotationsThroughIdentity(raw, identity);
+  assert.equal(carried[0].type, A.ANNOTATION_TYPE_UNREADABLE);
+  assert.deepEqual(carried[0].original, contested, 'the original record is preserved verbatim');
+  assert.deepEqual(carried.slice(1).map(r => r.type), ['draw', 'draw', 'unreadable']);
+  assert.equal(carried[2].anchor.instanceId, 'elsewhere', 'a dangling reference is left as it is');
+  assert.deepEqual(carried[3], wrapper, 'an existing wrapper is not inspected');
+  assert.equal(A.carryAnnotationsThroughIdentity(carried, identity)[0].type, A.ANNOTATION_TYPE_UNREADABLE, 'idempotent');
+  assert.equal(A.resolveAnnotation(carried[0], drawContext()).reason, 'unreadable', 'never Valid on the surviving cargo');
+  const clean = M.canonicalizeInstanceIds(['a', 'b'], () => 'minted');
+  assert.equal(A.carryAnnotationsThroughIdentity(raw, clean), A.remapAnnotationInstanceIds(raw, clean.idMap));
+});
+
+// ----------------------------------------------------------------------------
+// Pure helpers in annotation-layout.js
+// ----------------------------------------------------------------------------
+
+const SQUARE = [-12, -12, 12, -12, 12, 12, -12, 12];
+
+test('simplifyPolyline: every dropped vertex is within the tolerance of the result, the result is a deterministic subset and the ends stay', () => {
+  const rand = lcg(42);
+  for (let trial = 0; trial < 60; trial++) {
+    const count = 3 + Math.floor(rand() * 400);
+    const flat = [];
+    let [x, y] = [rand() * 100 - 50, rand() * 100 - 50];
+    for (let i = 0; i < count; i++) {
+      x += (rand() - 0.5) * 2;
+      y += (rand() - 0.5) * 2;
+      flat.push(x, y);
+    }
+    for (const tolerance of [0, 0.05, 0.1, 0.4, 3]) {
+      const out = L.simplifyPolyline(flat, tolerance);
+      assert.deepEqual(out, L.simplifyPolyline(flat, tolerance), 'deterministic');
+      assert.deepEqual(out.slice(0, 2), flat.slice(0, 2));
+      assert.deepEqual(out.slice(-2), flat.slice(-2));
+      const kept = new Set();
+      for (let i = 0; i < out.length; i += 2) kept.add(`${out[i]},${out[i + 1]}`);
+      for (let i = 0; i < flat.length; i += 2) {
+        if (!kept.has(`${flat[i]},${flat[i + 1]}`)) assert.ok(L.distanceToPolyline(out, flat[i], flat[i + 1]) <= tolerance + 1e-9, `trial ${trial} tolerance ${tolerance}`);
+      }
+      assert.ok(out.length <= flat.length);
+      if (tolerance > 0 && tolerance < 3) assert.ok(L.simplifyPolyline(flat, 3).length <= out.length, 'a looser tolerance never keeps more of these walks');
+    }
+  }
+});
+
+test('simplifyPolyline handles degenerate and extreme input without NaN, recursion or a changed shape', () => {
+  assert.deepEqual(L.simplifyPolyline([], 0.1), []);
+  assert.deepEqual(L.simplifyPolyline([1, 2], 0.1), [1, 2]);
+  assert.deepEqual(L.simplifyPolyline([1, 2, 1, 2], 0.1), [1, 2, 1, 2], 'two identical points stay two points');
+  assert.deepEqual(L.simplifyPolyline([0, 0, 1, 0, 2, 0, 3, 0, 4, 0], 0), [0, 0, 4, 0], 'collinear points go even at zero tolerance');
+  assert.deepEqual(L.simplifyPolyline([5, 5, 5, 5, 5, 5, 5, 5], 0.1), [5, 5, 5, 5], 'a stroke that never moved collapses to its ends');
+  assert.deepEqual(L.simplifyPolyline([0, 0, 10, 0, 10, 10, 0, 10, 0, 0], 0.1), [0, 0, 10, 0, 10, 10, 0, 10, 0, 0], 'a closed loop keeps its far corners');
+  assert.deepEqual(L.simplifyPolyline([0, 0, 5, 3, 0, 0], 0.1), [0, 0, 5, 3, 0, 0], 'out and back keeps the turn');
+  assert.deepEqual(L.simplifyPolyline([0, 0, 5, 0.05, 10, 0], 0.1), [0, 0, 10, 0]);
+  // Large coordinates and a small tolerance: relative arithmetic keeps a 0.3 in bump at one million inches.
+  const far = L.simplifyPolyline([999000, 999000, 999500, 999000.3, 1000000, 999000], 0.1);
+  assert.equal(far.length, 6);
+  assert.equal(L.simplifyPolyline([999000, 999000, 999500, 999000.05, 1000000, 999000], 0.1).length, 4);
+  assert.equal(L.simplifyPolyline([0, 0, 1, 1e9, 2, 0], 0.1), null, 'beyond the coordinate bound');
+  for (const bad of [null, 'abc', [1], [1, NaN], [1, Infinity], [1, '2', 3, 4], {}]) assert.equal(L.simplifyPolyline(bad, 0.1), null, String(bad));
+  for (const tolerance of [-1, NaN, Infinity, '0.1', undefined]) assert.equal(L.simplifyPolyline([0, 0, 1, 1, 2, 0], tolerance), null, String(tolerance));
+  const many = Array.from({ length: (L.SIMPLIFY_MAX_INPUT_VERTICES + 1) * 2 }, (_, i) => i);
+  assert.equal(L.simplifyPolyline(many, 0.1), null, 'more than the input cap is refused, not sampled');
+  const long = [];
+  for (let i = 0; i < L.SIMPLIFY_MAX_INPUT_VERTICES; i++) long.push(i * 0.5, (i % 2) * 5);
+  assert.equal(L.simplifyPolyline(long, 0.1).length, long.length, 'the longest accepted input keeps a full zigzag (and recurses without a stack)');
+  assert.equal(L.distanceToPolyline([], 1, 1), Infinity);
+  assert.equal(L.distanceToPolyline([0, 0], 3, 4), 5);
+  assert.equal(L.distanceToPolyline([0, 0, 10, 0], 5, 3), 3);
+  assert.equal(L.distanceToPolyline([0, 0, 10, 0], 13, 4), 5, 'beyond the end it is the distance to the end');
+  assert.equal(L.distanceToPolyline([0, 0, 10, 0], NaN, 0), Infinity);
+});
+
+test('simplifyPolylineToBudget tries the stated tolerances in order and says too-complex instead of truncating or loosening further', () => {
+  const noisy = [-14.25, -6.5, ...jitterLine(900, 0.35)];
+  const fit = L.simplifyPolylineToBudget(noisy, { maxVertices: 256, tolerances: [0.1, 0.2, 0.4] });
+  assert.deepEqual([fit.ok, fit.tolerance], [true, 0.4]);
+  assert.ok(fit.vertexCount <= 256 && fit.points.length === fit.vertexCount * 2);
+  const stingy = L.simplifyPolylineToBudget(noisy, { maxVertices: 256, tolerances: [0.1, 0.2] });
+  assert.deepEqual(stingy, { ok: false, reason: 'too-complex' }, 'the largest tolerance offered is the limit');
+  assert.deepEqual(L.simplifyPolylineToBudget([0, 0, 1, 1], { maxVertices: 256, tolerances: [0.1] }).points, [0, 0, 1, 1]);
+  assert.equal(L.simplifyPolylineToBudget([0, 0, 1, 1, 2, 5], { maxVertices: 2, tolerances: [0.1, 0.4] }).reason, 'too-complex');
+  for (const budget of [{}, { maxVertices: 1, tolerances: [0.1] }, { maxVertices: 256, tolerances: [] }, { maxVertices: 256, tolerances: [-1] }, { maxVertices: 2.5, tolerances: [0.1] }, undefined]) {
+    assert.deepEqual(L.simplifyPolylineToBudget([0, 0, 1, 1], budget), { ok: false, reason: 'invalid' });
+  }
+  assert.deepEqual(L.simplifyPolylineToBudget([0, NaN], { maxVertices: 256, tolerances: [0.1] }), { ok: false, reason: 'invalid' });
+});
+
+test('clipSegmentToConvex returns the exact boundary point for a rectangle and for the 24-sided cap, in either winding', () => {
+  const point = (x, y) => ({ x, y });
+  const clip = (a, b, outline = SQUARE) => L.clipSegmentToConvex(a, b, outline);
+  assert.deepEqual(clip(point(0, 0), point(24, 0)), { t0: 0, t1: 0.5, a: point(0, 0), b: point(12, 0) }, 'leaves through the right edge');
+  assert.deepEqual(clip(point(0, 0), point(6, 6)), { t0: 0, t1: 1, a: point(0, 0), b: point(6, 6) }, 'wholly inside is returned unchanged');
+  assert.deepEqual(clip(point(-30, 4), point(30, 4)), { t0: 0.3, t1: 0.7, a: point(-12, 4), b: point(12, 4) }, 'crosses the whole shape');
+  const into = clip(point(-20, 0), point(0, 0));
+  assert.deepEqual([into.t0, into.a], [0.4, point(-12, 0)], 'enters from outside');
+  assert.equal(clip(point(-20, 20), point(20, 20)), null, 'misses it, parallel to an edge');
+  assert.equal(clip(point(13, -20), point(13, 20)), null, 'parallel and just outside');
+  assert.equal(clip(point(30, 30), point(40, 31)), null);
+  assert.equal(clip(point(-20, -20), point(-20, 20)), null);
+  assert.deepEqual(clip(point(12, -20), point(12, 20)).a, point(12, -12), 'along an edge is inside it');
+  const corner = clip(point(-24, 0), point(0, -24));
+  assert.deepEqual([corner.t0 === corner.t1, corner.a], [true, point(-12, -12)], 'a diagonal that only touches a corner is a single point');
+  const reversed = SQUARE.map((_, i) => SQUARE[(SQUARE.length - 2 - (i & ~1)) + (i & 1)]);
+  assert.deepEqual(clip(point(0, 0), point(24, 0), reversed), clip(point(0, 0), point(24, 0)), 'clockwise gives the same answer');
+  assert.deepEqual(clip(point(0, 0), point(0, 0)), { t0: 0, t1: 1, a: point(0, 0), b: point(0, 0) }, 'a zero-length segment inside');
+  assert.equal(clip(point(40, 0), point(40, 0)), null, 'and outside');
+  for (const bad of [null, [], [0, 0, 1, 1], [0, 0, 1, 1, 2, 2], [0, 0, NaN, 1, 1, 0], 'abc']) assert.equal(L.clipSegmentToConvex(point(0, 0), point(1, 1), bad), null, String(bad));
+  assert.equal(L.clipSegmentToConvex(point(0, 0), point(NaN, 1), SQUARE), null);
+  assert.equal(L.clipSegmentToConvex(null, point(1, 1), SQUARE), null);
+  // The cap polygon: along the vertex axis it ends at the circumradius, along a facet normal at the apothem.
+  const cap = M.patchOutline({ kind: 'ngon', radius: 12, plane: 30 });
+  const axis = L.clipSegmentToConvex(point(0, 0), point(20, 0), cap);
+  assert.ok(Math.abs(axis.t1 - 0.6) < 1e-12 && Math.abs(axis.b.x - 12) < 1e-12);
+  const direction = [Math.cos(Math.PI / 24), Math.sin(Math.PI / 24)];
+  const facet = L.clipSegmentToConvex(point(0, 0), point(20 * direction[0], 20 * direction[1]), cap);
+  assert.ok(Math.abs(Math.hypot(facet.b.x, facet.b.y) - 11.8973) < 1e-4, `${Math.hypot(facet.b.x, facet.b.y)}`);
+  assert.ok(Math.abs(Math.hypot(facet.b.x, facet.b.y) - 12 * Math.cos(Math.PI / 24)) < 1e-12);
+  // Every clipped end lies on the patch boundary: on the patch, and any step further is off it.
+  const patch = M.cargoFacePatch('+x', M.getCargoGeometrySignature(DRUM));
+  const rand = lcg(11);
+  let hits = 0;
+  for (let i = 0; i < 400; i++) {
+    const a = point((rand() - 0.5) * 40, (rand() - 0.5) * 40);
+    const b = point((rand() - 0.5) * 40, (rand() - 0.5) * 40);
+    const r = L.clipSegmentToConvex(a, b, cap);
+    if (!r) continue;
+    hits++;
+    assert.ok(M.patchContains(patch, r.a.x, r.a.y, 1e-9) && M.patchContains(patch, r.b.x, r.b.y, 1e-9), 'both ends are on the patch');
+    if (r.t1 < 1) assert.equal(M.patchContains(patch, a.x + (b.x - a.x) * (r.t1 + 1e-4), a.y + (b.y - a.y) * (r.t1 + 1e-4), 1e-9), false, 'just past the exit is off it');
+    if (r.t0 > 0) assert.equal(M.patchContains(patch, a.x + (b.x - a.x) * (r.t0 - 1e-4), a.y + (b.y - a.y) * (r.t0 - 1e-4), 1e-9), false, 'just before the entry is off it');
+  }
+  assert.ok(hits > 100);
 });

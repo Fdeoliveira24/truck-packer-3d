@@ -5270,3 +5270,323 @@ test('callout editor in a short window keeps its header clear of the toolbar and
     await page.close();
   }
 });
+
+// ============================================================================
+// Annotations V1B.2: Present, a viewing mode of this session. The panel and every editing control step aside, the saved
+// annotations stay painted, and an "Exit presentation view" control (outside the inert layer) and Escape bring it all back.
+// Nothing is saved, so no record, cargo, camera or lastEdited value may change.
+// ============================================================================
+const PRESENT = '.tp3d-annot-panel__present';
+const EXIT = '.tp3d-annot-present-exit';
+// What is painted: the arrow and stroke paths and the markers and cards that show (selection styling is not part of it).
+const painted = page => page.evaluate(() => {
+  const paths = selector => [...document.querySelectorAll(selector)].map(el => el.getAttribute('d')).filter(Boolean);
+  const live = selector => [...document.querySelectorAll(selector)].filter(el => !el.hidden);
+  return {
+    shafts: paths('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__shaft'),
+    heads: paths('.tp3d-annot-svg .tp3d-annot-arrow:not(.is-preview) .tp3d-annot-arrow__head'),
+    lines: paths('.tp3d-annot-svg .tp3d-annot-draws .tp3d-annot-draw:not(.is-preview) .tp3d-annot-draw__line'),
+    pins: live('.tp3d-annot-pin:not(.is-draft)').map(el => el.querySelector('.tp3d-annot-pin__badge').textContent),
+    cards: live('.tp3d-annot-card').map(el => el.getAttribute('aria-label')),
+  };
+});
+// Editing chrome: end handles, selection styling and the buttons on a selected callout's card.
+const chromeOf = page => page.evaluate(() => ({
+  handles: document.querySelectorAll('.tp3d-annot-handle:not([hidden])').length,
+  selected: document.querySelectorAll('.tp3d-annot-pin.is-selected, .tp3d-annot-card.is-selected, .tp3d-annot-arrow.is-selected, .tp3d-annot-draw.is-selected').length,
+  cardButtons: [...document.querySelectorAll('.tp3d-annot-card__btn')].filter(el => !el.hidden && el.closest('.tp3d-annot-card') && !el.closest('.tp3d-annot-card').hidden).length,
+}));
+const dataOf = page => page.evaluate(() => ({
+  records: JSON.stringify(window.probe.annotations()),
+  cases: window.probe.casesJson(),
+  edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited,
+  selected: window.probe.AnnotationTool.selectedId(),
+}));
+const presentState = page => page.evaluate(() => {
+  const exit = document.querySelector('.tp3d-annot-present-exit');
+  const layer = document.querySelector('.tp3d-annot-layer');
+  return {
+    exitShown: Boolean(exit) && !exit.hidden,
+    exitFocused: Boolean(exit) && document.activeElement === exit,
+    presenting: layer.classList.contains('is-presenting'),
+    inert: layer.inert,
+    panelHidden: document.getElementById('editor-annotation-panel').hidden,
+    panelOpen: window.probe.AnnotationTool.isPanelOpen(),
+  };
+});
+const NOT_PRESENTING = { exitShown: false, exitFocused: false, presenting: false, inert: false, panelHidden: false, panelOpen: true };
+
+test('annotation Present mode is a view-only session state: it hides the panel and editing controls but not the annotations, keeps the selection and camera navigation, never writes, and ends cleanly', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1280, height: 800 });
+  const [callout] = await seed(page, [{ title: 'On cargo', ...TOP_OF_A }, { title: 'On ground', ground: [520, 10] }]);
+  const arrow = await seedArrow(page, [100, 70], [260, 80]);
+  await seedDraw(page);
+  await cameraSettled(page);
+  await watchWrites(page);
+  const select = id => page.click(`${rowFor(id)} .tp3d-annot-row__select`);
+  const isPresenting = () => page.evaluate(() => document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+  const enter = async () => {
+    await page.click(PRESENT);
+    await page.waitForFunction(() => document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+    await frames(page, 3);
+  };
+  const leave = async () => {
+    await page.click(EXIT);
+    await page.waitForFunction(() => !document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+    await frames(page, 3);
+  };
+  const settleLeft = async () => {
+    await page.waitForFunction(() => !document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+    await frames(page, 3);
+  };
+  const activeIs = selector => page.evaluate(sel => Boolean(document.activeElement && document.activeElement.matches(sel)), selector);
+  const start = await dataOf(page);
+
+  // The Present button fits the 300px panel's Show row.
+  assert.deepEqual(await page.evaluate(() => {
+    const button = document.querySelector('.tp3d-annot-panel__present');
+    const row = button.parentElement;
+    const panel = document.getElementById('editor-annotation-panel').getBoundingClientRect();
+    const r = button.getBoundingClientRect();
+    return { overflow: row.scrollWidth - row.clientWidth, inside: r.left >= panel.left && r.right <= panel.right, name: button.textContent };
+  }), { overflow: 0, inside: true, name: 'Present' });
+  assert.equal(await unobstructed(page, PRESENT), true, 'and it is reachable');
+
+  // 1. An arrow is selected: Present hides the panel and the editing chrome, keeps what is painted, and writes nothing.
+  await select(arrow.id);
+  await page.waitForFunction(id => window.probe.AnnotationTool.selectedId() === id, arrow.id);
+  await frames(page, 3);
+  const editing = { painted: await painted(page), chrome: await chromeOf(page), camera: await page.evaluate(() => window.probe.camera()), panel: await boxOf(page, '#editor-annotation-panel') };
+  assert.equal(editing.chrome.handles, 2, 'the selected arrow shows its end handles while editing');
+  assert.ok(editing.chrome.selected > 0);
+  assert.deepEqual([editing.painted.shafts.length, editing.painted.lines.length, editing.painted.pins.length], [1, 1, 2], 'there is something to present');
+  const resultsBefore = await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults') ?? null));
+  await enter();
+  assert.deepEqual(await presentState(page), { exitShown: true, exitFocused: true, presenting: true, inert: true, panelHidden: true, panelOpen: true }, 'the panel is hidden (not closed), the layer is a view and the Exit control has focus');
+  assert.deepEqual(await painted(page), editing.painted, 'the same annotations are painted');
+  assert.deepEqual(await chromeOf(page), { handles: 0, selected: 0, cardButtons: 0 }, 'no end handles and no selection styling');
+  assert.deepEqual(await dataOf(page), { ...start, selected: arrow.id }, 'the records, cargo and lastEdited are untouched and the selection is kept');
+  assert.equal(await page.evaluate(() => window.probe.camera()), editing.camera, 'entering does not move the camera');
+  assert.equal(await writes(page), 0);
+  assert.equal(await unobstructed(page, EXIT), true, 'the Exit control takes an ordinary click');
+  const exitBox = await boxOf(page, EXIT);
+  const wrapBox = await boxOf(page, '.canvas-wrap');
+  assert.ok(Math.abs(exitBox.x + exitBox.w / 2 - (wrapBox.x + wrapBox.w / 2)) <= 2 && exitBox.b <= wrapBox.b - 8 && exitBox.y > wrapBox.y + wrapBox.h / 2, 'it sits at the bottom centre');
+
+  // 2. The camera keeps navigating: orbit and zoom work, and neither deselects nor writes.
+  const canvas = await boxOf(page, '#viewport canvas');
+  await orbit(page, { x: canvas.x + canvas.w * 0.3, y: canvas.y + canvas.h * 0.7 }, 80, 20);
+  const orbited = await page.evaluate(() => window.probe.camera());
+  assert.notEqual(orbited, editing.camera, 'the camera orbits while presenting');
+  await page.mouse.wheel(0, -240);
+  await cameraSettled(page);
+  assert.notEqual(await page.evaluate(() => window.probe.camera()), orbited, 'and zooms');
+  assert.equal(await isPresenting(), true, 'navigating does not end Present');
+  await page.focus('#viewport');
+  await page.keyboard.press('Delete');
+  await frames(page, 2);
+  assert.deepEqual(await dataOf(page), { ...start, selected: arrow.id }, 'Delete deletes nothing while presenting');
+  assert.equal(await writes(page), 0);
+
+  // 3. Escape ends Present first (the selection stays); the next Escape is the ordinary one and deselects.
+  await page.keyboard.press('Escape');
+  await settleLeft();
+  assert.deepEqual(await presentState(page), NOT_PRESENTING);
+  assert.equal((await dataOf(page)).selected, arrow.id, 'the selection survived Present');
+  assert.equal((await chromeOf(page)).handles, 2, 'the end handles are back');
+  assert.deepEqual(await boxOf(page, '#editor-annotation-panel'), editing.panel, 'the panel is back where it was');
+  assert.equal(await page.evaluate(() => document.activeElement !== document.body), true, 'focus did not fall to the page');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.drawingState()), 'off', 'no tool was re-armed');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => window.probe.AnnotationTool.selectedId() === null);
+
+  // 4. Keyboard: Enter on Present, then Enter on Exit; focus returns to Present.
+  await select(arrow.id);
+  await page.focus(PRESENT);
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+  assert.equal(await activeIs(EXIT), true, 'focus moved to Exit');
+  await page.keyboard.press('Enter');
+  await settleLeft();
+  assert.equal(await activeIs(PRESENT), true, 'focus is back on Present');
+
+  // 5. Show Selected: the internally selected arrow stays painted without its handles, and Show and Callouts settings are kept.
+  await showButton(page, 'Selected').click();
+  await frames(page, 3);
+  const onlySelected = await painted(page);
+  assert.deepEqual([onlySelected.pins, onlySelected.shafts.length, onlySelected.lines.length], [[], 1, 0], 'Selected paints only the selected arrow');
+  await enter();
+  assert.deepEqual(await painted(page), onlySelected, 'Present still paints the selected arrow');
+  assert.deepEqual(await chromeOf(page), { handles: 0, selected: 0, cardButtons: 0 });
+  assert.equal((await dataOf(page)).selected, arrow.id);
+  await leave();
+  assert.equal(await page.locator('.tp3d-annot-seg--show [aria-pressed="true"]').textContent(), 'Selected', 'Show is as it was');
+  assert.equal(await page.locator('.tp3d-annot-seg--display [aria-pressed="true"]').textContent(), 'Markers', 'and so is Callouts');
+  await showButton(page, 'All').click();
+
+  // 6. A selected callout keeps its card but loses the buttons on it.
+  await select(callout.id);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-card:not([hidden])').length === 1);
+  await frames(page, 3);
+  const calloutView = await painted(page);
+  assert.equal((await chromeOf(page)).cardButtons, 2, 'the selected callout card shows Edit and Collapse');
+  await enter();
+  assert.deepEqual(await painted(page), calloutView, 'the card and markers are the same');
+  assert.deepEqual(await chromeOf(page), { handles: 0, selected: 0, cardButtons: 0 }, 'but not its buttons or selection styling');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-pin[aria-pressed="true"]')), null);
+  await leave();
+  await page.keyboard.press('Escape');
+  // The toolbar's Annotations button brings the panel back instead of closing it.
+  await enter();
+  await page.click('#btn-editor-annotations');
+  await settleLeft();
+  assert.deepEqual(await presentState(page), NOT_PRESENTING, 'the toolbar button leaves Present and shows the panel');
+
+  // 7. Entry restrictions. An armed tool with nothing under way is put down; anything unfinished refuses.
+  await armDraw(page);
+  assert.equal(await rotateEnabled(page), false);
+  await enter();
+  assert.equal(await rotateEnabled(page), true, 'putting the Draw tool down gives the camera back');
+  await leave();
+  assert.equal(await drawState(page), 'off', 'and it stays down');
+  assert.equal(await page.locator('.tp3d-annot-seg__btn[data-tool="draw"]').getAttribute('aria-pressed'), 'false');
+  const refused = async why => {
+    await page.evaluate(() => document.querySelector('.tp3d-annot-panel__present').click());
+    await page.waitForFunction(() => /finish or cancel/i.test(window.probe.hint()));
+    assert.equal(await isPresenting(), false, `${why}: Present is refused`);
+    assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), false, `${why}: the panel stays`);
+  };
+  await armArrow(page);
+  await click(page, await freePoint(page, [[200, 0, 100], [350, 0, 90], [420, 0, 60]]));
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-arrow__tail')?.style.display !== 'none');
+  await refused('a pending arrow');
+  assert.equal(await tailShown(page), true, 'the pending arrow tail is untouched');
+  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape');
+  await select(arrow.id);
+  await page.click('.tp3d-annot-handle[data-end="end"]:not([hidden])');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 're-attach is waiting for a surface');
+  await refused('a re-attach');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 'the re-attach is untouched');
+  await page.keyboard.press('Escape');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), false);
+  await page.keyboard.press('Escape');
+  await armDraw(page);
+  await dragThrough(page, FLOOR_STROKE, { release: false });
+  assert.equal(await drawState(page), 'stroking');
+  await refused('a stroke');
+  assert.equal(await drawState(page), 'stroking', 'the stroke is untouched');
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  await page.keyboard.press('Escape');
+  assert.equal(await drawState(page), 'off');
+  assert.deepEqual(await dataOf(page), { ...start, selected: null }, 'nothing was written by any of it');
+  assert.equal(await writes(page), 0);
+
+  // 8. Unsaved edits are never discarded silently: declining changes nothing, accepting closes the editor.
+  await page.click(`${rowFor(callout.id)} .tp3d-annot-row__edit`);
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Unsaved title');
+  await page.click(PRESENT);
+  await dialogButton(page, 'Keep editing').click();
+  assert.equal(await isPresenting(), false, 'declining does not present');
+  assert.equal(await editorClosed(page), false, 'the editor is still open');
+  assert.equal(await page.inputValue('.tp3d-annot-editor__input'), 'Unsaved title', 'with its unsaved text');
+  await page.click(PRESENT);
+  await dialogButton(page, 'Discard and present').click();
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-layer').classList.contains('is-presenting'));
+  assert.equal(await editorClosed(page), true, 'accepting closes the editor');
+  assert.equal(await page.evaluate(() => window.probe.annotations().find(r => r.type === 'callout' && r.title !== 'On ground').title), 'On cargo', 'the unsaved text was never saved');
+  await leave();
+  assert.equal(await editorClosed(page), true, 'leaving does not reopen it');
+  await page.click(`${rowFor(callout.id)} .tp3d-annot-row__edit`);
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await enter();
+  assert.equal(await page.evaluate(() => document.querySelectorAll('.modal-overlay, .modal').length), 0, 'a clean editor closes without asking');
+  assert.equal(await editorClosed(page), true);
+  await leave();
+  assert.deepEqual(await dataOf(page), { ...start, selected: callout.id }, 'editing selected the callout; nothing else differs from the start');
+  assert.equal(await writes(page), 0, 'no annotation was written during any of it');
+  assert.equal(await page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults') ?? null)), resultsBefore, 'AutoPack Results state is untouched');
+
+  // 9. Beside real AutoPack Results: Exit rides above the card (expanded or minimized), also in a narrow window.
+  await page.click('#btn-autopack');
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults') && !window.probe.OperationLifecycle.isBusy(), null, { timeout: 120000 });
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  await page.waitForFunction(() => !document.querySelector('.toast'), null, { timeout: 30000 });
+  if (await page.evaluate(() => window.probe.StateStore.get('autoPackResults').minimized)) await page.locator('[data-focus-key="results-toggle"]').click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === false);
+  const resultsState = () => page.evaluate(() => JSON.stringify(window.probe.StateStore.get('autoPackResults')));
+  const beside = async label => {
+    // The card (expanded or minimized) and the restore button, whichever of them shows.
+    const shown = (await Promise.all([boxOf(page, '[data-role="autopack-results-panel"]'), boxOf(page, '#btn-autopack-results-reopen')])).filter(box => box && box.w > 0 && box.h > 0);
+    const exit = await boxOf(page, EXIT);
+    const wrap = await boxOf(page, '.canvas-wrap');
+    assert.ok(shown.length > 0, `${label}: Results shows`);
+    shown.forEach(box => assert.equal(overlaps(exit, box), false, `${label}: Exit does not touch Results`));
+    assert.equal(await unobstructed(page, EXIT), true, `${label}: Exit takes an ordinary click`);
+    assert.ok(exit.x >= wrap.x && exit.r <= wrap.r && exit.y >= wrap.y && exit.b <= wrap.b, `${label}: Exit is inside the viewport`);
+  };
+  const resultsAtStart = await resultsState();
+  await enter();
+  await beside('expanded Results');
+  assert.equal(await resultsState(), resultsAtStart, 'Present did not touch Results');
+  await leave();
+  await page.locator('[data-focus-key="results-toggle"]').click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === true);
+  await enter();
+  await beside('minimized Results');
+  await leave();
+  await page.locator('[data-focus-key="results-toggle"]').click();
+  await page.waitForFunction(() => window.probe.StateStore.get('autoPackResults').minimized === false);
+  await page.setViewportSize({ width: 960, height: 680 });
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-layer').classList.contains('is-compact'));
+  await frames(page, 4);
+  assert.equal(await unobstructed(page, PRESENT), true, 'in a narrow window Present is reachable in the sheet');
+  await enter();
+  await beside('narrow window');
+  await leave();
+
+  // 10. Everything that ends the session or pauses annotations ends Present, with the panel back and no orphan Exit control.
+  await page.evaluate(() => { window.__op = window.probe.OperationLifecycle.beginOperation('autopacking'); });
+  await page.waitForFunction(() => /paused/.test(window.probe.hint()));
+  await page.evaluate(() => { window.probe.OperationLifecycle.finishOperation(window.__op); });
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  await enter();
+  await page.evaluate(() => { window.__op = window.probe.OperationLifecycle.beginOperation('autopacking'); });
+  await settleLeft();
+  assert.deepEqual(await presentState(page), NOT_PRESENTING, 'an operation ends Present');
+  await page.evaluate(() => { window.probe.OperationLifecycle.finishOperation(window.__op); });
+  await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
+  const afterSession = async label => {
+    assert.deepEqual(await presentState(page), { ...NOT_PRESENTING, panelHidden: true, panelOpen: false }, `${label}: the panel is closed and nothing is left presenting`);
+    await page.click('#btn-editor-annotations');
+    await page.waitForFunction(() => window.probe.AnnotationTool.isPanelOpen());
+    await frames(page, 2);
+    assert.deepEqual(await presentState(page), NOT_PRESENTING, `${label}: the panel reopens normally`);
+    assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-panel__present').disabled), false, `${label}: Present is usable again`);
+  };
+  await enter();
+  await setShowAnnotations(page, false);
+  await page.waitForFunction(() => !window.probe.AnnotationTool.isPanelOpen());
+  assert.deepEqual(await presentState(page), { ...NOT_PRESENTING, panelHidden: true, panelOpen: false }, 'Show Annotations off ends Present and closes the panel');
+  await setShowAnnotations(page, true);
+  await afterSession('Show Annotations back on');
+  await enter();
+  await page.evaluate(() => window.probe.StateStore.replace(window.probe.StateStore.snapshot()));
+  await page.waitForFunction(() => !window.probe.AnnotationTool.isPanelOpen());
+  await afterSession('a replaced workspace');
+  await enter();
+  await page.evaluate(() => { const copy = window.probe.PackLibrary.duplicate('fixture-pack'); window.probe.StateStore.set({ currentPackId: copy.id }, { skipHistory: true }); });
+  await page.waitForFunction(() => !window.probe.AnnotationTool.isPanelOpen());
+  await page.evaluate(() => window.probe.StateStore.set({ currentPackId: 'fixture-pack' }, { skipHistory: true }));
+  await afterSession('another Load Plan');
+  await enter();
+  await page.evaluate(() => window.probe.StateStore.set({ currentScreen: 'packs' }, { skipHistory: true }));
+  await page.waitForFunction(() => !window.probe.AnnotationTool.isPanelOpen());
+  await page.evaluate(() => window.probe.StateStore.set({ currentScreen: 'editor' }, { skipHistory: true }));
+  await afterSession('leaving the Editor');
+  assert.deepEqual(errors, []);
+});

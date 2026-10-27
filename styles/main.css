@@ -5200,40 +5200,6 @@ body.tp3d-shared-modal-lock #app .nav {
   opacity: 0.65;
 }
 
-/* Direct selection and movement: each shown drawing carries one transparent hit path along its own line, wide enough to grab and
-   never drawn. The layer and the SVG stay click-through; only this path takes input, and only while the layer says nothing else
-   owns the pointer (no armed tool, gesture, Present or Measurement - see drawHitWanted). */
-.tp3d-annot-svg .tp3d-annot-draw__hit {
-  fill: none;
-  stroke: transparent;
-  stroke-width: 14px;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  pointer-events: none;
-}
-
-.tp3d-annot-layer.is-draw-hit:not(.is-view-only) .tp3d-annot-svg .tp3d-annot-draw__hit {
-  pointer-events: stroke;
-  cursor: grab;
-}
-
-/* A finger that starts on a hit path must not become a page pan or pinch, or the browser cancels the pointer on its first move.
-   Chromium ignored touch-action on the path itself and honours it on the SVG root. Only graphics live in the SVG, so no scrolling
-   area loses its touch panning. */
-.tp3d-annot-layer:is(.is-draw-hit, .is-draw-moving):not(.is-view-only) .tp3d-annot-svg {
-  touch-action: none;
-}
-
-.tp3d-annot-layer.is-draw-moving .tp3d-annot-svg .tp3d-annot-draw__hit {
-  cursor: grabbing;
-}
-
-@media (pointer: coarse) {
-  .tp3d-annot-svg .tp3d-annot-draw__hit {
-    stroke-width: 24px;
-  }
-}
-
 /* Being carried: the selected edge and a slightly lighter line. A position the whole drawing cannot take swaps the edge for the
    error colour and dims the line; releasing there leaves the drawing exactly where it was. */
 .tp3d-annot-svg .tp3d-annot-draw.is-moving .tp3d-annot-draw__under {

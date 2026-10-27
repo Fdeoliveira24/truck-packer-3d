@@ -231,8 +231,9 @@ const DRAW_FROZEN_TEXT = Object.freeze({
 });
 const MOVE_GRID_STEPS = 100; // a whole-stroke move is snapped to the 0.01 in grid the stored vertices live on
 const AXIS_INDEX = Object.freeze({ x: 0, y: 1, z: 2 });
-const NAV_INPUT_EVENTS = Object.freeze(['keydown', 'keyup', 'pointerdown', 'pointermove', 'pointerup', 'pointercancel']); // each carries the live Shift / Ctrl / Cmd flags
-const INERT_POINTER_EVENTS = Object.freeze(['pointerdown', 'pointermove', 'pointerup', 'pointercancel']);
+// How far from the centre of a saved stroke's line (px) a press still takes the stroke: a finger needs more room than a mouse.
+const DRAW_HIT_REACH_PX = Object.freeze({ mouse: 7, pen: 9, touch: 12 });
+const HELD_POINTER_EVENTS = Object.freeze(['pointerdown', 'pointermove', 'pointerup', 'pointercancel']);
 const DRAW_MOVE_TEXT = Object.freeze({
   ok: 'Release to move the drawing here. Esc cancels.',
   off: 'Part of the drawing would leave its surface. Release to leave it where it was, or press Esc.',
@@ -288,7 +289,7 @@ export function createAnnotationTool({
   let drawStyle = { color: 'ink', width: DEFAULT_DRAW_WIDTH, style: DEFAULT_LINE_STYLE }; // what the next new drawing looks like (this session only; apart from arrows)
   let drawView = 'draw'; // while the Draw tool is armed: 'draw' (a primary drag draws) or 'move' (a primary drag orbits)
   let stroke = null; // the unsaved freehand gesture, see beginStroke
-  let viewGate = null; // { controls, prior } while this tool holds OrbitControls' rotation off for Draw mode
+  let viewGate = null; // { controls, prior } while this tool holds OrbitControls' rotation off (Draw mode, or a press a saved drawing took)
   let draft = null; // the editor card: a new callout or an edit of an existing one
   let selectedId = null;
   let display = 'markers'; // view-level: 'markers' | 'labels' | 'cards'; not saved with the Load Plan
@@ -302,7 +303,7 @@ export function createAnnotationTool({
   let drawableIds = new Set(); // callouts, arrows and drawings the overlay may draw (Valid and not hidden)
   let pinDrag = null; // { id, which (arrow end, else null), pointerId, startX, startY, moved, dirty, candidate, poseKey, target }
   let cardDrag = null; // { id, pointerId, startX, startY, startRect, marker, moved, rect, offset }
-  let moveDrag = null; // a saved drawing being carried along its surface, see beginDrawMove
+  let moveDrag = null; // a saved drawing being carried along its surface, see beginDrawPress
   let editorDrag = null;
   let press = null; // { x, y } of a primary press that began on the canvas while a scene tool is armed
   let hover = null;
@@ -342,8 +343,8 @@ export function createAnnotationTool({
   let lastGeometryRevision = NaN; // CaseScene's count of syncs that changed what stands in the scene
   let selfClearing = false;
   let lastOwnedElsewhere = false; // another scene tool (Measurement Mode) owned gestures on the previous frame
-  let navModifier = false; // Shift, Ctrl or Cmd is held: a press is camera navigation, so a saved stroke's hit path steps aside
-  const inertPointers = new Set(); // fingers set aside (a second finger on a stroke's line, or the one a second finger cancelled): their events end here until they lift
+  let heldPointer = null; // { pointerId, pointerType } from a press a saved drawing took until that pointer lifts: the camera's rotation stays off
+  let interruptEvent = null; // the press of a second finger that ended a drawing's move: the Editor must not take that same press for cargo
   let titleRevealPending = false; // the editor just opened: show its title field if the card is shorter than its content
   const views = new Map(); // annotation id -> { pin, chip, badge, card, ... } DOM + per-frame state
   const arrowViews = new Map(); // arrow id -> { graphic, grips, start/end world + screen, front, ... } DOM + per-frame state
@@ -732,7 +733,6 @@ export function createAnnotationTool({
       });
     }
     if (doc) doc.addEventListener('keydown', onKeyDownCapture, true);
-    attachInputState();
     if (els.layer) attachLayerEvents(els.layer);
     if (typeof ResizeObserver === 'function' && els.layer) {
       layerObserver = new ResizeObserver(() => { visDirty = true; });
@@ -746,7 +746,8 @@ export function createAnnotationTool({
   function destroy() {
     resetSession();
     if (doc) doc.removeEventListener('keydown', onKeyDownCapture, true);
-    detachInputState();
+    cancelMoveDrag();
+    releaseHeldPointer();
     if (layerObserver) layerObserver.disconnect();
     layerObserver = null;
     if (layerParts && layerParts.svg.parentNode) layerParts.svg.parentNode.removeChild(layerParts.svg);
@@ -959,9 +960,9 @@ export function createAnnotationTool({
     handleSceneClick(ev.clientX, ev.clientY);
   }
 
-  /** A double-click must neither start two callouts nor focus the camera on cargo. */
+  /** A double-click must neither start two callouts nor focus the camera on cargo, and the same on a saved stroke's line (two clicks select, then deselect it). */
   function onDoubleClick(ev) {
-    if (!isActive()) return false;
+    if (!isActive() && !(ev && drawHitReachable() && drawHitIdAt(ev.clientX, ev.clientY))) return false;
     if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
     return true;
   }
@@ -1007,13 +1008,17 @@ export function createAnnotationTool({
   // ==========================================================================
   // SECTION: DRAW / MOVE VIEW (who owns the camera's rotation)
   // ==========================================================================
-  /** Whether a primary drag on the canvas should draw right now (so OrbitControls must not rotate on it). Derived, never stored. */
+  /**
+   * Whether a primary drag on the canvas should draw right now (so OrbitControls must not rotate on it), or a press a saved drawing
+   * took is still down (a drag on its line carries the drawing, so it must not also orbit). Derived, never stored.
+   */
   function drawGateWanted() {
+    if (heldPointer && inEditor()) return true;
     return toolShown && panelOpen && tool === 'draw' && drawView === 'draw' && inEditor() && !sceneOwnedElsewhere() && !blockedReason();
   }
 
   /**
-   * Make OrbitControls' rotation match the Draw gate: off while a primary drag draws, back exactly as found otherwise. Derived
+   * Make OrbitControls' rotation match the gate: off while a primary drag draws or carries a drawing, back exactly as found otherwise. Derived
    * and idempotent: called after every state change that could matter and on every frame, so it also catches a controls
    * instance that was replaced. It touches `enableRotate` and nothing else (zoom, pan, damping, mouse and touch maps and
    * cargo dragging are left alone). What it restores is what it found: a rotation that was already off stays off, and a
@@ -2457,7 +2462,7 @@ export function createAnnotationTool({
   // SECTION: DRAWING SELECT + MOVE (a saved stroke is carried rigidly along the surface it is on)
   // ==========================================================================
   /**
-   * Whether a stroke's hit path may take the pointer right now (the layer's CSS gate). Derived, never stored: no armed tool or re-attach
+   * Whether a saved stroke may take a press right now. Derived, never stored: no armed tool or re-attach
    * (those own the canvas gestures), no unsaved stroke, open editor or other drag, no Present, no Measurement, not Show Off and
    * not paused. Each of those either owns the pointer or leaves the strokes out of reach.
    */
@@ -2466,21 +2471,9 @@ export function createAnnotationTool({
       !presenting && !sceneOwnedElsewhere() && showMode !== 'off' && !blockedReason();
   }
 
-  /** The same, and no move already under way: what a new press on a hit path needs. */
+  /** The same, and no move already under way: what a new press on a stroke needs. */
   function drawHitWanted() {
     return !moveDrag && drawHitReachable();
-  }
-
-  /** A saved stroke's hit path takes input only while nothing else owns the pointer (drawHitWanted): the layer's classes are the CSS gate. */
-  function syncDrawHitClasses() {
-    if (!els.layer) return;
-    const carrying = Boolean(moveDrag && moveDrag.moved);
-    // While a stroke is carried the pointer is captured by its own hit path, so no other stroke can be grabbed meanwhile. A press that has
-    // not yet become a drag keeps the gate open: the release must still land on the same path for the click to select it.
-    // A held Shift, Ctrl or Cmd turns the press into camera navigation, which only reaches OrbitControls if it lands on the canvas, so
-    // the paths are out of reach until the key is released. A press that already began keeps its gate.
-    toggleClass(els.layer, 'is-draw-hit', drawHitReachable() && !carrying && (Boolean(moveDrag) || !navModifier));
-    toggleClass(els.layer, 'is-draw-moving', carrying);
   }
 
   /** Shift, Ctrl or Cmd: OrbitControls pans on a primary press that carries any of them, so it is never a stroke gesture. */
@@ -2489,46 +2482,86 @@ export function createAnnotationTool({
   }
 
   /**
-   * Keep navModifier true to the keys held now. A hit path lives in the overlay, not on the canvas: a press that lands on it never reaches
-   * OrbitControls, so the path has to be out of reach BEFORE the press. Every key and pointer event carries the current flags, so any of
-   * them corrects a missed key-up; losing focus or the page clears it.
+   * The saved stroke whose line is at a client position, or ''. A stroke is tested on the screen geometry its last projection already
+   * traced (the extent of its view), so nothing is projected or allocated here: a stroke is skipped by its padded bounding box before
+   * any of its segments is read, so a press or a hover costs one comparison per stroke plus a scan of the strokes under the pointer.
+   * Only what the overlay shows as clear can be taken (valid, shown, in front and measured), and where lines cross the one painted on
+   * top wins, as it looks: the views are in the order their groups were added to the SVG.
    */
-  function onNavInput(ev) {
-    const held = navigationKeys(ev);
-    if (held === navModifier) return;
-    navModifier = held;
-    syncDrawHitClasses();
+  function drawHitIdAt(clientX, clientY, pointerType = 'mouse') {
+    if (!drawViews.size || !els.layer) return '';
+    const rect = els.layer.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    const reach = DRAW_HIT_REACH_PX[pointerType] || DRAW_HIT_REACH_PX.mouse;
+    let found = '';
+    drawViews.forEach((view, id) => {
+      const shape = view.extent;
+      if (!view.shown || !view.front || !view.measured || !shape.count) return;
+      if (x < shape.left - reach || x > shape.right + reach || y < shape.top - reach || y > shape.bottom + reach) return;
+      if (!drawableIds.has(id) || !isShownByMode(id)) return;
+      if (nearTrace(shape, x, y, reach)) found = id;
+    });
+    return found;
   }
 
-  /** Focus left the page: no key is known to be held any more, and a finger that was waiting to lift is forgotten. */
-  function onInputLost() {
-    releaseInert();
-    if (!navModifier) return;
-    navModifier = false;
-    syncDrawHitClasses();
+  /** Whether (x, y) is within `reach` of a traced stroke: its points are x, y pairs, and a NaN pair ends a sub-path. A dot is one point twice. */
+  function nearTrace(shape, x, y, reach) {
+    const xy = shape.xy;
+    const limit = reach * reach;
+    let ax = NaN;
+    let ay = NaN;
+    for (let i = 0; i < shape.count; i += 2) {
+      const bx = xy[i];
+      const by = xy[i + 1];
+      if (Number.isNaN(bx)) {
+        ax = NaN;
+        continue;
+      }
+      if (!Number.isNaN(ax)) {
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len = dx * dx + dy * dy;
+        let t = len > 0 ? ((x - ax) * dx + (y - ay) * dy) / len : 0;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        const ex = ax + t * dx - x;
+        const ey = ay + t * dy - y;
+        if (ex * ex + ey * ey <= limit) return true;
+      }
+      ax = bx;
+      ay = by;
+    }
+    return false;
   }
 
-  function onInputVisibility() {
-    if (doc && doc.visibilityState === 'hidden') onInputLost();
+  /**
+   * The Editor's canvas pointerdown asks first: does a saved stroke's line take this press? Only a plain primary press does (Shift,
+   * Ctrl and Cmd are camera navigation, the other buttons orbit and pan, and a second finger is a pinch). The press reaches the canvas
+   * natively, so OrbitControls has read it already (its listener is on the same canvas and runs first): what keeps the camera still is
+   * the rotation gate held until this pointer lifts, never the Editor's early return. True when the stroke takes the press: nothing
+   * below it may select, drag or grab for it.
+   */
+  function claimPress(ev) {
+    if (!ev) return false;
+    if (ev === interruptEvent) { // the finger that ended a move is a camera finger now
+      interruptEvent = null;
+      return true;
+    }
+    if (ev.button !== 0 || ev.isPrimary === false || navigationKeys(ev) || (ev.pointerType !== 'touch' && ev.buttons !== 1)) return false;
+    if (heldPointer || !drawHitWanted()) return false;
+    const id = drawHitIdAt(ev.clientX, ev.clientY, ev.pointerType);
+    return Boolean(id) && beginDrawPress(ev, id);
   }
 
-  function attachInputState() {
-    for (const type of NAV_INPUT_EVENTS) window.addEventListener(type, onNavInput, { capture: true, passive: true });
-    window.addEventListener('blur', onInputLost);
-    if (doc) doc.addEventListener('visibilitychange', onInputVisibility);
+  /** Whether the pointer is one whose press a saved stroke took and has not yet let go: the Editor's hover and cargo handling leave it alone. */
+  function ownsPointer(ev) {
+    return Boolean(heldPointer && ev && ev.pointerId === heldPointer.pointerId);
   }
 
-  function detachInputState() {
-    for (const type of NAV_INPUT_EVENTS) window.removeEventListener(type, onNavInput, { capture: true });
-    window.removeEventListener('blur', onInputLost);
-    if (doc) doc.removeEventListener('visibilitychange', onInputVisibility);
-    navModifier = false;
-    releaseInert();
-  }
-
-  function drawIdOfHit(hit) {
-    const group = hit && hit.closest ? hit.closest('.tp3d-annot-draw') : null;
-    return group && group.dataset ? group.dataset.annotId : '';
+  /** Whether the pointer is over a stroke's line that a plain press would take (for the grab cursor); touch has no hover. */
+  function hoverDrawing(ev) {
+    if (!ev || heldPointer || ev.pointerType === 'touch' || navigationKeys(ev) || !drawHitWanted()) return false;
+    return Boolean(drawHitIdAt(ev.clientX, ev.clientY, ev.pointerType));
   }
 
   function snapInches(value) {
@@ -2541,42 +2574,40 @@ export function createAnnotationTool({
   }
 
   /**
-   * A primary press on a saved stroke's hit path. Nothing is written or selected here: a click selects (the layer's click
-   * handler), a drag past the threshold carries the whole stroke along the plane it is on. The press position on that plane is the
-   * baseline every later position is measured from, never an accumulated delta. Refused quietly when the stroke cannot be moved
-   * (the click that follows still selects it).
+   * A plain primary press that a saved stroke's line took (see claimPress). Nothing is written or selected here: a release without a
+   * drag selects the stroke, a drag past the threshold carries the whole stroke along the plane it is on. The press position on that
+   * plane is the baseline every later position is measured from, never an accumulated delta. A stroke that cannot be carried right
+   * now (a held pose, a surface that cannot be read) still takes the press, so no cargo under it is touched; its release selects it
+   * or explains why it cannot be.
    */
-  function beginDrawMove(ev, id, target) {
-    // A press with Shift, Ctrl or Cmd is navigation: the path is normally out of reach then (navModifier), and a press that still lands here
-    // (a key held through a focus change) is refused rather than taken as a move.
-    if (ev.button !== 0 || ev.isPrimary === false || navigationKeys(ev) || !drawHitWanted()) return;
-    keyboardModality = false;
+  function beginDrawPress(ev, id) {
     const record = recordById(id);
     const result = resultById(id);
     const pack = currentPack();
-    if (!pack || !isDraw(record) || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden || !isShownByMode(id)) return;
-    if (provisionalPoseActive()) return; // select() refuses the click that follows, and says why
-    const surface = picker.beginDrawSurface({ anchor: record.anchor, face: record.face }, pack);
+    const target = getCanvas();
+    if (!pack || !target || !isDraw(record) || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden || !isShownByMode(id)) return false;
+    keyboardModality = false;
+    holdPointer(ev);
+    const surface = provisionalPoseActive() ? null : picker.beginDrawSurface({ anchor: record.anchor, face: record.face }, pack);
     const base = surface ? picker.sampleDrawPlane(surface, ev.clientX, ev.clientY) : null;
     const view = drawViews.get(id);
-    if (!surface || !view || !base || base.status !== 'ok') return;
+    const movable = Boolean(surface && view && base && base.status === 'ok');
     moveDrag = {
       id, pointerId: ev.pointerId, pointerType: ev.pointerType || 'mouse', startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY, target,
-      moved: false, dirty: false, packId: pack.id, epoch: sessionEpoch, surface, base: { u: base.u, v: base.v },
-      shape: moveShapeOf(record), poseKey: cargoPoseKey(pack, record.anchor), layoutKey: layoutKey(pack), poseStamp: view.poseStamp,
+      movable, stray: false, moved: false, dirty: false, packId: pack.id, epoch: sessionEpoch, surface, base: movable ? { u: base.u, v: base.v } : null,
+      shape: moveShapeOf(record), poseKey: cargoPoseKey(pack, record.anchor), layoutKey: layoutKey(pack), poseStamp: view ? view.poseStamp : 0,
       du: 0, dv: 0, rev: 0, valid: true, reason: '', kind: 'ok', verdictKey: '',
     };
     lastClient = { x: ev.clientX, y: ev.clientY };
     attachMoveListeners(target);
-    syncDrawHitClasses();
     ensureLoop();
+    return true;
   }
 
   function attachMoveListeners(target) {
     window.addEventListener('pointermove', onMoveDragMove);
     window.addEventListener('pointerup', onMoveDragUp);
     window.addEventListener('pointercancel', onMoveDragCancel);
-    window.addEventListener('pointerdown', onMoveDragOtherPointer, true);
     window.addEventListener('blur', onMoveDragInterrupted);
     if (doc) doc.addEventListener('visibilitychange', onMoveDragVisibility);
     if (target) target.addEventListener('lostpointercapture', onMoveDragLost);
@@ -2586,47 +2617,52 @@ export function createAnnotationTool({
     window.removeEventListener('pointermove', onMoveDragMove);
     window.removeEventListener('pointerup', onMoveDragUp);
     window.removeEventListener('pointercancel', onMoveDragCancel);
-    window.removeEventListener('pointerdown', onMoveDragOtherPointer, true);
     window.removeEventListener('blur', onMoveDragInterrupted);
     if (doc) doc.removeEventListener('visibilitychange', onMoveDragVisibility);
     if (target) target.removeEventListener('lostpointercapture', onMoveDragLost);
   }
 
-  function onMoveDragOtherPointer(ev) {
-    const drag = moveDrag;
-    if (!drag || ev.pointerId === drag.pointerId) return;
-    cancelMoveDrag('Move cancelled.');
-    // This finger's press went to the overlay, so OrbitControls and the cargo handlers never saw it go down: its later moves would be
-    // read against the other finger's press (an orbit that jumps, a cargo drag). It stays inert until it lifts.
-    if (drag.pointerType !== 'mouse') holdInert(drag.pointerId);
-  }
-
   /**
-   * Set a finger aside until it lifts. OrbitControls only learns of a pointer from a press on the canvas, so a finger whose press went to
-   * a stroke's hit path cannot pinch with another: its moves would be read as the other finger's. Seamless takeover would need that
-   * press re-sent to the canvas, which is a pointer-router change; until then the finger is ignored and the other one navigates.
+   * Keep the camera's rotation off from a press a saved stroke took until that pointer lifts, however the move ends meanwhile (Escape, a
+   * blur, a changed plan): a pointer still down is a gesture OrbitControls already began, and it would start rotating the moment the gate
+   * lifted. The window sees every pointer event first (capture), so a stale hold or a second finger is dealt with before OrbitControls
+   * reads that press.
    */
-  function holdInert(pointerId) {
-    if (!inertPointers.size) for (const type of INERT_POINTER_EVENTS) window.addEventListener(type, onInertPointer, true);
-    inertPointers.add(pointerId);
+  function holdPointer(ev) {
+    releaseHeldPointer();
+    heldPointer = { pointerId: ev.pointerId, pointerType: ev.pointerType || 'mouse' };
+    for (const type of HELD_POINTER_EVENTS) window.addEventListener(type, onHeldPointer, { capture: true, passive: true });
+    applyViewGate();
   }
 
-  /** Release one set-aside finger, or all of them (focus lost, tool destroyed). */
-  function releaseInert(pointerId) {
-    if (!inertPointers.size) return;
-    if (pointerId === undefined) inertPointers.clear();
-    else inertPointers.delete(pointerId);
-    if (!inertPointers.size) for (const type of INERT_POINTER_EVENTS) window.removeEventListener(type, onInertPointer, true);
+  function releaseHeldPointer() {
+    if (!heldPointer) return;
+    heldPointer = null;
+    for (const type of HELD_POINTER_EVENTS) window.removeEventListener(type, onHeldPointer, { capture: true });
+    applyViewGate();
   }
 
-  function onInertPointer(ev) {
-    if (!inertPointers.has(ev.pointerId)) return;
-    if (ev.type === 'pointerdown') { // the id came round again: a new finger, not the one that was set aside
-      releaseInert(ev.pointerId);
+  function onHeldPointer(ev) {
+    const held = heldPointer;
+    if (!held) return;
+    if (ev.type === 'pointerdown') {
+      if (ev.pointerId === held.pointerId) { // the id came round again: the release of the old press was lost
+        releaseHeldPointer();
+      } else if (ev.pointerType === 'touch' && held.pointerType === 'touch') {
+        // A second finger is a pinch: the move ends without a write and the gate lifts BEFORE OrbitControls reads this press, which it
+        // then takes natively together with the first finger it already tracks. This same press must not start a cargo drag either.
+        if (moveDrag) cancelMoveDrag('Move cancelled.');
+        interruptEvent = ev;
+        releaseHeldPointer();
+      }
       return;
     }
-    ev.stopImmediatePropagation();
-    if (ev.type !== 'pointermove') releaseInert(ev.pointerId);
+    if (ev.pointerId !== held.pointerId) return;
+    if (ev.type === 'pointermove') {
+      if (ev.pointerType !== 'touch' && ev.buttons === 0) releaseHeldPointer(); // released where no event could say so
+      return;
+    }
+    releaseHeldPointer(); // pointerup or pointercancel
   }
 
   function onMoveDragInterrupted() {
@@ -2648,8 +2684,9 @@ export function createAnnotationTool({
   function onMoveDragMove(ev) {
     const drag = moveDrag;
     if (!drag || ev.pointerId !== drag.pointerId) return;
-    // A button other than the primary joining the press, or the primary no longer held (the release was lost), ends the move.
-    if (ev.pointerType === 'mouse' && ev.buttons !== 1) {
+    // A button other than the primary joining the press (a pen's barrel button included), or the primary no longer held (the release
+    // was lost), ends the move.
+    if (ev.pointerType !== 'touch' && ev.buttons !== 1) {
       cancelMoveDrag('Move cancelled.');
       return;
     }
@@ -2658,9 +2695,12 @@ export function createAnnotationTool({
     lastClient = { x: ev.clientX, y: ev.clientY };
     if (!drag.moved) {
       if (Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < PIN_DRAG_THRESHOLD_PX) return;
+      if (!drag.movable) { // a stroke that cannot be carried does not take a drag as a click either
+        drag.stray = true;
+        return;
+      }
       drag.moved = true;
       drag.rev = 1;
-      syncDrawHitClasses();
       try {
         if (drag.target && typeof drag.target.setPointerCapture === 'function') drag.target.setPointerCapture(ev.pointerId);
       } catch (_) {
@@ -2709,7 +2749,7 @@ export function createAnnotationTool({
   /** Each frame while a stroke is carried: anything that changed under it ends the move, then the pointer's latest position is judged once. */
   function advanceMove() {
     const drag = moveDrag;
-    if (!drag) return;
+    if (!drag || !drag.movable) return;
     if (provisionalPoseActive()) {
       cancelMoveDrag(HELD_POSE_NOTICE);
       return;
@@ -2737,10 +2777,20 @@ export function createAnnotationTool({
     // can notify, so no trailing cancellation can reach a move that already ended.
     const judged = finished.moved ? judgeMove(finished, ev.clientX, ev.clientY) : null;
     endMoveDrag();
-    if (!finished.moved) return; // an ordinary click: the click handler selects
+    if (!finished.moved) { // an ordinary click
+      clickDrawing(finished);
+      return;
+    }
     suppressNextClick();
     commitMove(finished, judged);
     refreshOverlay(); // the moved drawing, or the one a refused move left where it was, is on screen now rather than a frame later
+  }
+
+  /** A press that never became a drag is a click: it selects the stroke like its list row does (or deselects it, if it already was). Nothing is written. */
+  function clickDrawing(finished) {
+    if (finished.stray || !recordById(finished.id) || !drawableIds.has(finished.id) || !drawHitWanted()) return;
+    select(finished.id, { toggle: true });
+    refocusViewportIfLost();
   }
 
   /**
@@ -2797,7 +2847,6 @@ export function createAnnotationTool({
       // Already released.
     }
     visDirty = true;
-    syncDrawHitClasses();
     updateCursor();
   }
 
@@ -2846,13 +2895,6 @@ export function createAnnotationTool({
         beginPinDrag({ button: ev.button, pointerId: ev.pointerId, clientX: ev.clientX, clientY: ev.clientY, currentTarget: pin, target: pin }, pin.dataset.annotId);
         return;
       }
-      const hit = ev.target.closest && ev.target.closest('.tp3d-annot-draw__hit');
-      if (hit && layer.contains(hit)) {
-        // Another finger is already down (this one is not the primary): a line is not something to pinch with, and a move needs one finger.
-        if (ev.isPrimary === false && ev.pointerType !== 'mouse') holdInert(ev.pointerId);
-        else beginDrawMove(ev, drawIdOfHit(hit), hit);
-        return;
-      }
       const head = ev.target.closest && ev.target.closest('.tp3d-annot-card__head');
       if (head && !ev.target.closest('button')) {
         const card = head.closest('.tp3d-annot-card');
@@ -2878,15 +2920,6 @@ export function createAnnotationTool({
       if (pin && layer.contains(pin)) {
         if (pin.dataset.annotId === DRAFT_ID) return;
         select(pin.dataset.annotId, { toggle: true });
-        return;
-      }
-      const hit = ev.target.closest && ev.target.closest('.tp3d-annot-draw__hit');
-      if (hit && layer.contains(hit)) {
-        // A click on the stroke's line selects it like its row does; nothing is written.
-        if (drawHitWanted() && !navigationKeys(ev)) {
-          select(drawIdOfHit(hit), { toggle: true });
-          refocusViewportIfLost();
-        }
         return;
       }
       const head = ev.target.closest && ev.target.closest('.tp3d-annot-card__head');
@@ -3699,7 +3732,6 @@ export function createAnnotationTool({
     if (els.layer) {
       toggleClass(els.layer, 'is-view-only', owned);
       toggleClass(els.layer, 'is-presenting', presenting);
-      syncDrawHitClasses();
       // Present is a view too: markers and cards take no input, so a click or drag goes to the canvas underneath.
       const inert = owned || presenting;
       if ('inert' in els.layer && els.layer.inert !== inert) els.layer.inert = inert;
@@ -3760,7 +3792,6 @@ export function createAnnotationTool({
   }
 
   function updateCursor() {
-    syncDrawHitClasses(); // who owns the pointer decides both the cursor and whether a saved stroke's line may take it
     const canvas = getCanvas();
     if (!canvas || sceneOwnedElsewhere()) return; // the tool that owns the scene owns the cursor
     let cursor = 'default';
@@ -3852,23 +3883,19 @@ export function createAnnotationTool({
   // SECTION: DRAWINGS (one SVG path per stroke in the overlay; never a Three.js object, never a texture)
   // ==========================================================================
   /** The two paths of one stroke: a neutral halo under the colored line. A stroke is one path however many vertices it has. */
-  function makeDrawGraphic(extraClass = '', hittable = false) {
+  function makeDrawGraphic(extraClass = '') {
     const group = svgEl('g', `tp3d-annot-draw ${extraClass}`.trim());
     const under = svgEl('path', 'tp3d-annot-draw__under');
     const line = svgEl('path', 'tp3d-annot-draw__line');
     group.append(under, line);
-    // A saved stroke also carries ONE transparent hit path over the same geometry: the only part of the overlay that takes pointer
-    // input, and only while the layer allows it (see drawHitWanted). It adds no visible stroke of its own.
-    const hit = hittable ? svgEl('path', 'tp3d-annot-draw__hit') : null;
-    if (hit) group.append(hit);
-    return { group, under, line, hit, colorKey: null, widthKey: '', patternKey: '' };
+    return { group, under, line, colorKey: null, widthKey: '', patternKey: '' };
   }
 
   /**
    * Show `d` (or nothing, for an empty string) on a stroke graphic. The line width is constant on screen, so it never scales
    * with zoom. Only what changed is written: a new color or selection touches classes and one custom property, never the path.
    */
-  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false, moving = false, invalid = false, hit = false, span = Infinity }) {
+  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false, moving = false, invalid = false, span = Infinity }) {
     if (graphic.colorKey !== color) {
       graphic.colorKey = color;
       applyColor(graphic.group, color);
@@ -3880,7 +3907,6 @@ export function createAnnotationTool({
     toggleClass(graphic.group, 'is-move-invalid', moving && invalid);
     setPath(graphic.under, d);
     setPath(graphic.line, d);
-    if (graphic.hit) setPath(graphic.hit, hit ? d : '');
     if (!d) return;
     setAttr(graphic.group, 'data-line-style', style);
     const px = ARROW_SHAFT_PX[width] || ARROW_SHAFT_PX.regular;
@@ -3933,12 +3959,12 @@ export function createAnnotationTool({
   function getDrawView(id) {
     let view = drawViews.get(id);
     if (!view) {
-      const graphic = makeDrawGraphic('', true);
+      const graphic = makeDrawGraphic();
       graphic.group.dataset.annotId = id;
       layerParts.drawGroup.appendChild(graphic.group);
       view = {
         id, graphic, record: null, local: null, world: null, stamp: NaN, poseStamp: 0, d: '', visible: [],
-        front: false, measured: false, measuredAt: -1, shown: false, moved: null, dragKey: 0, extent: { span: Infinity },
+        front: false, measured: false, measuredAt: -1, shown: false, moved: null, dragKey: 0, extent: newDrawExtent(),
       };
       drawViews.set(id, view);
       visDirty = true;
@@ -3979,15 +4005,51 @@ export function createAnnotationTool({
   }
 
   /**
+   * What a stroke's projection leaves for later reading: how large it is on screen (`span`, which sizes its edge and pattern) and the points
+   * of the drawn path in layer pixels (`xy`, with its padded bounds), which is all a press needs to find the line. One per stroke view, rewritten
+   * by each projection and grown, never reallocated, so reading it costs nothing per event.
+   */
+  function newDrawExtent() {
+    return { span: Infinity, count: 0, xy: new Float32Array(64), left: 0, top: 0, right: 0, bottom: 0 };
+  }
+
+  function resetTrace(shape) {
+    shape.span = 0;
+    shape.count = 0;
+    shape.left = Infinity;
+    shape.top = Infinity;
+    shape.right = -Infinity;
+    shape.bottom = -Infinity;
+  }
+
+  /** Append a traced point (a NaN pair ends a sub-path and has no bounds). */
+  function pushTrace(shape, x, y) {
+    if (shape.count + 2 > shape.xy.length) {
+      const grown = new Float32Array(shape.xy.length * 2);
+      grown.set(shape.xy);
+      shape.xy = grown;
+    }
+    shape.xy[shape.count] = x;
+    shape.xy[shape.count + 1] = y;
+    shape.count += 2;
+    if (Number.isNaN(x)) return;
+    if (x < shape.left) shape.left = x;
+    if (x > shape.right) shape.right = x;
+    if (y < shape.top) shape.top = y;
+    if (y > shape.bottom) shape.bottom = y;
+  }
+
+  /**
    * Project a polyline (flat world-unit x, y, z) to an SVG path in layer pixels. A perspective camera cannot project what is
    * at or behind its near plane, so each segment is cut there first; each is then cut to the view plus a margin, so every
    * coordinate is finite and small however close the camera is. A cut that leaves a gap starts a new sub-path. `visible`
    * receives the index of every vertex that is on screen (what the occlusion samples are chosen from). One vertex draws a dot.
+   * `extent`, when given, is rewritten with the stroke's size on screen and the points of the path it returns (see newDrawExtent).
    */
   function projectDrawPath(points, camera, width, height, visible, extent = null) {
     const count = Math.floor(points.length / 3);
     visible.length = 0;
-    if (extent) extent.span = 0;
+    if (extent) resetTrace(extent);
     if (!count) return '';
     camera.updateMatrixWorld(true);
     const e = camera.matrixWorldInverse.elements;
@@ -4036,8 +4098,16 @@ export function createAnnotationTool({
         }
         const clip = drawable ? clipSegmentToConvex(cameraToLayer(a, camera, width, height), cameraToLayer(b, camera, width, height), outline) : null;
         if (clip) {
-          if (!(Math.abs(clip.a.x - lastX) < 0.05 && Math.abs(clip.a.y - lastY) < 0.05)) parts.push(`M${fixed(clip.a.x)} ${fixed(clip.a.y)}`);
+          const jump = !(Math.abs(clip.a.x - lastX) < 0.05 && Math.abs(clip.a.y - lastY) < 0.05);
+          if (jump) parts.push(`M${fixed(clip.a.x)} ${fixed(clip.a.y)}`);
           parts.push(`L${fixed(clip.b.x)} ${fixed(clip.b.y)}`);
+          if (extent) {
+            if (jump) {
+              if (extent.count) pushTrace(extent, NaN, NaN);
+              pushTrace(extent, clip.a.x, clip.a.y);
+            }
+            pushTrace(extent, clip.b.x, clip.b.y);
+          }
           lastX = clip.b.x;
           lastY = clip.b.y;
         }
@@ -4047,6 +4117,10 @@ export function createAnnotationTool({
     if (extent && maxX >= minX) extent.span = Math.hypot(maxX - minX, maxY - minY);
     if (!parts.length && count === 1 && visible.length) {
       const screen = cameraToLayer(previous, camera, width, height);
+      if (extent) {
+        pushTrace(extent, screen.x, screen.y);
+        pushTrace(extent, screen.x, screen.y);
+      }
       return `M${fixed(screen.x)} ${fixed(screen.y)}L${fixed(screen.x)} ${fixed(screen.y)}`;
     }
     return parts.join('');
@@ -4184,15 +4258,11 @@ export function createAnnotationTool({
   }
 
   function paintDraws(entries) {
-    const grabbable = drawHitReachable();
     entries.forEach(({ record, view, selected }) => {
       const moving = Boolean(moveDrag && moveDrag.moved && moveDrag.id === record.id);
-      // Hidden behind cargo (or not yet measured) a stroke has no hit path: it stays reachable from its list row and never takes
-      // input meant for the cargo in front of it.
-      const hit = moving || (grabbable && view.front && view.measured);
       paintDraw(view.graphic, view.d, {
         color: record.color, width: record.width, style: lineStyleOf(record), selected: selected && !presenting,
-        occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, hit, span: view.extent.span,
+        occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, span: view.extent.span,
       });
     });
   }
@@ -5304,6 +5374,10 @@ export function createAnnotationTool({
     // 'idle' | 'pressed' (a press on a saved drawing, not yet a drag) | 'moving' | 'blocked' (carried to a place it cannot take): read-only, for tests.
     moveState: () => (moveDrag ? (moveDrag.moved ? (moveDrag.valid ? 'moving' : 'blocked') : 'pressed') : 'idle'),
     selectedId: () => selectedId,
+    // For the Editor's canvas routing: does a saved drawing's line take this press, is this the pointer it holds, is the pointer over a line.
+    claimPress,
+    ownsPointer,
+    hoverDrawing,
     onPointerDown,
     onPointerMove,
     onPointerCancel,

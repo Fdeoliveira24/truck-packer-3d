@@ -2223,6 +2223,7 @@ export function createInteractionManager({
     let domEl = null;
     let focusClickPackId = null;
     let hoveredId = null;
+    let drawingHover = false; // the pointer is over a saved Drawing's line (grab cursor), which a plain press would take ahead of cargo
     let pressed = null;
     let draggingId = null;
     let gizmoDragging = false;
@@ -2920,9 +2921,11 @@ export function createInteractionManager({
       if (AnnotationTool && AnnotationTool.isActive()) { AnnotationTool.onPointerMove(ev); return; }
       // Present: no hover emphasis and no grab cursor over cargo.
       if (presentingAnnotations()) {
-        if (hoveredId) resetHover();
+        if (hoveredId || drawingHover) resetHover();
         return;
       }
+      // A press a saved Drawing's line took is that Drawing's until the pointer lifts: no cargo hover, drag or cursor meanwhile.
+      if (AnnotationTool && typeof AnnotationTool.ownsPointer === 'function' && AnnotationTool.ownsPointer(ev)) return;
       updatePointer(ev);
 
       if (gizmoDragging && draggingId) {
@@ -2946,12 +2949,15 @@ export function createInteractionManager({
       if (now - lastRaycastTime < RAYCAST_THROTTLE) return;
       lastRaycastTime = now;
 
-      const hit = raycastFirst();
+      // A saved Drawing's line is ahead of cargo for a plain press, so it is ahead of it for hover too.
+      const overDrawing = Boolean(AnnotationTool && typeof AnnotationTool.hoverDrawing === 'function' && AnnotationTool.hoverDrawing(ev));
+      const hit = overDrawing ? null : raycastFirst();
       const nextHover = hit ? hit.instanceId : null;
-      if (nextHover !== hoveredId) {
+      if (nextHover !== hoveredId || overDrawing !== drawingHover) {
         hoveredId = nextHover;
+        drawingHover = overDrawing;
         CaseScene.setHover(hoveredId);
-        domEl.style.cursor = hoveredId ? 'grab' : 'default';
+        domEl.style.cursor = (hoveredId || drawingHover) ? 'grab' : 'default';
       }
     }
 
@@ -2967,6 +2973,10 @@ export function createInteractionManager({
       if (AnnotationTool && AnnotationTool.isActive()) { AnnotationTool.onPointerDown(ev); return; }
       // Present: a press never selects, drags or grabs a gizmo handle; the camera controls take it from here.
       if (presentingAnnotations()) return;
+      // A saved Drawing's line takes a plain primary press ahead of the gizmo and of cargo. OrbitControls has read this press already (its
+      // listener is on this canvas too and registered first), so returning here does not stop it: the tool holds the camera's rotation off
+      // itself until the pointer lifts. Shift/Ctrl/Cmd, the other buttons and a second finger are never the Drawing's.
+      if (AnnotationTool && typeof AnnotationTool.claimPress === 'function' && AnnotationTool.claimPress(ev)) return;
       updatePointer(ev);
 
       // V3A: gizmo handles take grab priority over case picking.
@@ -3908,7 +3918,7 @@ export function createInteractionManager({
       dragGroupPreviewBlocked = false;
       surfaceFollowingDrag = false;
       pressed = null;
-      domEl.style.cursor = hoveredId ? 'grab' : 'default';
+      domEl.style.cursor = (hoveredId || drawingHover) ? 'grab' : 'default';
       CaseScene.setDragging(null);
     }
 
@@ -3977,6 +3987,7 @@ export function createInteractionManager({
     // Measurement Mode and the Annotations tool take over (and later return) the pointer: drop stale hover emphasis.
     function resetHover() {
       hoveredId = null;
+      drawingHover = false;
       CaseScene.setHover(null);
       if (domEl) domEl.style.cursor = 'default';
     }

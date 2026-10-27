@@ -2648,13 +2648,15 @@ export function createAnnotationTool({
     if (ev.type === 'pointerdown') {
       if (ev.pointerId === held.pointerId) { // the id came round again: the release of the old press was lost
         releaseHeldPointer();
-      } else if (ev.pointerType === 'touch' && held.pointerType === 'touch') {
-        // A second finger is a pinch: the move ends without a write and the gate lifts BEFORE OrbitControls reads this press, which it
-        // then takes natively together with the first finger it already tracks. This same press must not start a cargo drag either.
-        if (moveDrag) cancelMoveDrag('Move cancelled.');
-        interruptEvent = ev;
-        releaseHeldPointer();
+        return;
       }
+      // A different pointer pressed. The gate is not per pointer and the held press may still be physically down, so this is an ownership
+      // conflict: the move ends without a write and the gate lifts BEFORE OrbitControls reads this press, which it then takes natively.
+      if (moveDrag) cancelMoveDrag('Move cancelled.');
+      // A second finger is a pinch with the first one OrbitControls already tracks, so this same press must not start a cargo drag either;
+      // a pointer of another kind is an ordinary fresh press, left to the Editor as ever.
+      if (ev.pointerType === 'touch' && held.pointerType === 'touch') interruptEvent = ev;
+      releaseHeldPointer();
       return;
     }
     if (ev.pointerId !== held.pointerId) return;

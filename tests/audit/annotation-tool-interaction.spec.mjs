@@ -6742,6 +6742,185 @@ test('annotation drawing touch: one finger on a line selects and carries it, a s
   assert.deepEqual(errors, []);
 });
 
+test('annotation drawing mixed pointers: a different kind of pointer pressing during a drawing press ends that move without a write and hands the camera on, whichever came first, and two fingers stay a pinch', { timeout: 420000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  // Real touch through the browser's own pipeline (Chrome's touch emulation) beside the real mouse; it is not a claim about any device.
+  const fingersOn = async target => {
+    const cdp = await target.context().newCDPSession(target);
+    await cdp.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
+    const down = new Map();
+    const send = type => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: [...down].map(([id, p]) => ({ x: p.x, y: p.y, id })) });
+    const finger = {
+      async press(id, p) { down.set(id, p); await send('touchStart'); },
+      async move(id, p) { down.set(id, p); await send('touchMove'); },
+      async lift(id) { down.delete(id); await send('touchEnd'); },
+      async drag(id, from, to, steps = 8) { for (let i = 1; i <= steps; i += 1) await finger.move(id, { x: from.x + (to.x - from.x) * i / steps, y: from.y + (to.y - from.y) * i / steps }); },
+    };
+    return finger;
+  };
+  const fatalOverlay = target => target.evaluate(() => Boolean(document.querySelector('.system-overlay.active .error-card')));
+  const held = (target, id) => target.evaluate(pid => window.probe.AnnotationTool.ownsPointer({ pointerId: pid }), id);
+
+  // The same two pairs of pointers on bare canvas with no drawing at all: what OrbitControls does by itself. A finger landing while a
+  // mouse button is down is an OrbitControls error of its own (r185.1 reads a second pointer it never tracked) and the app answers any
+  // uncaught error with its fatal-error overlay, so that pair is the yardstick for the one sequence that cannot be clean.
+  const ref = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(ref.page);
+  await aimStill(ref.page, ...FLOOR_AIM);
+  const open = await point(ref.page, 170, 0, -10).then(p => ({ x: p.x - 170, y: p.y + 60 })); // bare canvas
+  const refFinger = await fingersOn(ref.page);
+  let seen = ref.errors.length;
+  await refFinger.press(1, open);
+  await ref.page.mouse.move(open.x + 40, open.y);
+  await ref.page.mouse.down();
+  await ref.page.mouse.move(open.x + 100, open.y + 20, { steps: 6 });
+  await ref.page.mouse.up();
+  await refFinger.lift(1);
+  const fingerThenMouse = ref.errors.length - seen;
+  seen = ref.errors.length;
+  await ref.page.mouse.move(open.x, open.y);
+  await ref.page.mouse.down();
+  await ref.page.mouse.move(open.x + 30, open.y + 10, { steps: 4 });
+  await refFinger.press(2, { x: open.x + 100, y: open.y });
+  await refFinger.lift(2);
+  await ref.page.mouse.up();
+  const mouseThenFinger = ref.errors.length - seen;
+  const fatalWithoutDrawing = await fatalOverlay(ref.page);
+  assert.equal(fingerThenMouse, 0, 'reference: a mouse press after a finger is no error');
+  assert.ok(mouseThenFinger > 0 && fatalWithoutDrawing, 'reference: a finger after a mouse press is an OrbitControls error and the fatal overlay with no drawing present');
+  await ref.page.close();
+
+  const { page, errors } = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  await watchWrites(page);
+  await watchPointer(page);
+  const finger = await fingersOn(page);
+  await aimStill(page, ...FLOOR_AIM);
+  const makeFloor = () => seedFloorDraw(page, [150, -30], [190, 10, 230, -20]);
+  let line = await freshDrawing(page, null, makeFloor);
+  const onLine = await point(page, 170, 0, -10);
+  const along = await point(page, 190, 0, 0);
+  assert.equal(await lineUnder(page, onLine), true);
+  const carry = async (id, from, to) => { // the line is being carried by this finger
+    await finger.press(id, from);
+    await finger.drag(id, from, to, 6);
+    await page.waitForFunction(moving);
+    const pointer = await pointerId(page);
+    assert.equal(await held(page, pointer), true, 'the press is held');
+    assert.equal(await rotationEnabled(page), false, 'and rotation is off for it');
+    return pointer;
+  };
+  const endedWithoutWrite = async (pointer, drawn, label, { said = true } = {}) => {
+    await page.waitForFunction(idle);
+    if (said) assert.match(await page.evaluate(() => window.probe.hint()), /move cancelled/i, label);
+    assert.equal(await held(page, pointer), false, `${label}: the hold ended`);
+    assert.equal((await moveLook(page, line.id)).d, drawn, `${label}: the line is drawn where it was`);
+    assert.equal(await writes(page), 0, `${label}: nothing written`);
+  };
+
+  // 1. A finger carries the line, then the mouse presses elsewhere: a fresh gesture that orbits natively.
+  let drawn = (await moveLook(page, line.id)).d;
+  let before = await gestureLook(page, line.id);
+  seen = errors.length;
+  let pointer = await carry(1, onLine, along);
+  await page.mouse.move(open.x, open.y);
+  await page.mouse.down();
+  await endedWithoutWrite(pointer, drawn, 'finger then mouse');
+  assert.equal(await rotationEnabled(page), true, 'finger then mouse: rotation is handed back');
+  await page.mouse.move(open.x + 60, open.y + 20, { steps: 8 });
+  await page.mouse.up();
+  await cameraSettled(page);
+  assert.notEqual(await page.evaluate(() => window.probe.camera()), before.camera, 'finger then mouse: the mouse orbits');
+  await finger.drag(1, along, { x: along.x + 30, y: along.y + 20 }, 4); // the original finger is still down: its later moves and its release commit nothing
+  await finger.lift(1);
+  await page.waitForTimeout(150);
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)).filter(key => key !== 'camera'), [], 'finger then mouse: nothing but the camera changed, and nothing was written later');
+  assert.equal(errors.length - seen, fingerThenMouse, 'finger then mouse: no error beyond the reference');
+
+  // 1b. The claim gives back what it found: a rotation another owner had off stays off, and an armed Draw keeps its own restriction.
+  line = await freshDrawing(page, line, makeFloor);
+  await aimStill(page, ...FLOOR_AIM);
+  drawn = (await moveLook(page, line.id)).d;
+  await page.evaluate(() => { window.probe.SceneManager.getControls().enableRotate = false; });
+  pointer = await carry(2, onLine, along);
+  await page.mouse.move(open.x, open.y);
+  await page.mouse.down();
+  await endedWithoutWrite(pointer, drawn, 'prior value');
+  assert.equal(await rotationEnabled(page), false, 'prior value: a rotation that was already off stays off');
+  await page.mouse.up();
+  await finger.lift(2);
+  await page.evaluate(() => { window.probe.SceneManager.getControls().enableRotate = true; });
+  line = await freshDrawing(page, line, makeFloor);
+  await aimStill(page, ...FLOOR_AIM);
+  drawn = (await moveLook(page, line.id)).d;
+  pointer = await carry(3, onLine, along);
+  await page.click('.tp3d-annot-seg__btn[data-tool="draw"]'); // a mouse press on the panel while the finger holds the line, then Draw is armed
+  await endedWithoutWrite(pointer, drawn, 'Draw armed', { said: false }); // arming Draw replaces the status line with its own hint
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() !== 'off');
+  assert.equal(await rotationEnabled(page), false, 'Draw armed: its own restriction holds');
+  assert.equal(await escapeConsumed(page), true);
+  await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
+  assert.equal(await rotationEnabled(page), true, 'Draw ended: rotation is back');
+  await finger.lift(3);
+  await page.waitForTimeout(150);
+  assert.equal(await writes(page), 0);
+
+  // 2. Two fingers stay a pinch: the move ends, the camera takes both natively, and nothing is written.
+  line = await freshDrawing(page, line, makeFloor);
+  await aimStill(page, ...FLOOR_AIM);
+  drawn = (await moveLook(page, line.id)).d;
+  before = await gestureLook(page, line.id);
+  pointer = await carry(4, onLine, along);
+  await finger.press(5, open);
+  await endedWithoutWrite(pointer, drawn, 'two fingers');
+  for (let i = 1; i <= 8; i += 1) {
+    await finger.move(4, { x: along.x - 8 * i, y: along.y - 2 * i });
+    await finger.move(5, { x: open.x + 8 * i, y: open.y + 2 * i });
+  }
+  assert.equal(await controlsState(page), 5, 'two fingers: OrbitControls is in its own two-finger gesture');
+  await finger.lift(5);
+  await finger.lift(4);
+  await cameraSettled(page);
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)).filter(key => key !== 'camera'), [], 'two fingers: nothing but the camera changed');
+  assert.equal(await controlsState(page), -1);
+
+  // The drawing itself is whole afterwards.
+  await aimStill(page, ...FLOOR_AIM);
+  await watchWrites(page);
+  await page.mouse.move(onLine.x, onLine.y);
+  await page.mouse.down();
+  await page.mouse.move(along.x, along.y, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForFunction(() => window.__writes === 1);
+
+  // 3. The mouse carries the line, then a finger presses elsewhere. That pair is OrbitControls' own error (and the app's fatal overlay)
+  // with or without a drawing, so it comes last; what the drawing does about it is still checked: it lets go and writes nothing.
+  line = await freshDrawing(page, line, makeFloor);
+  await aimStill(page, ...FLOOR_AIM);
+  drawn = (await moveLook(page, line.id)).d;
+  before = await gestureLook(page, line.id);
+  seen = errors.length;
+  await page.mouse.move(onLine.x, onLine.y);
+  await page.mouse.down();
+  await page.mouse.move(along.x, along.y, { steps: 8 });
+  await page.waitForFunction(moving);
+  pointer = await pointerId(page);
+  assert.equal(await held(page, pointer), true);
+  assert.equal(await rotationEnabled(page), false);
+  await finger.press(6, open);
+  await endedWithoutWrite(pointer, drawn, 'mouse then finger');
+  assert.equal(await rotationEnabled(page), true, 'mouse then finger: rotation is handed back');
+  await finger.lift(6);
+  await page.mouse.move(along.x + 40, along.y + 30, { steps: 4 }); // the mouse is still down: its later moves and its release commit nothing
+  await page.mouse.up();
+  await page.waitForTimeout(150);
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)).filter(key => key !== 'camera'), [], 'mouse then finger: nothing but the camera changed, and nothing was written later');
+  assert.equal(errors.length - seen, mouseThenFinger, 'mouse then finger: exactly the errors the same pointers raise with no drawing (OrbitControls, not the drawing)');
+  assert.equal(await fatalOverlay(page), fatalWithoutDrawing, 'and the same fatal overlay');
+  assert.ok(errors.every(message => /reading 'x'/.test(message)), `no error but OrbitControls' own: ${errors.join(' | ')}`);
+});
+
 // ============================================================================
 // SECTION: DRAWING LINE AND SELECTION APPEARANCE (V1B.2 Gate B.4.2)
 // ============================================================================

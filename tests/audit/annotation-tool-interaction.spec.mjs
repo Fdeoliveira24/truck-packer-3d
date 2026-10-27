@@ -6943,6 +6943,172 @@ const drawLook = page => page.evaluate(() => Object.fromEntries([...document.que
     }];
   })));
 
+test('annotation drawing missed release: a press that reuses the id of a press whose end was never heard abandons that move, so the later release writes nothing, the camera is free and the next drawing gesture is a normal one', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  // Events the page never hears: this capture listener is added before the drawing's own window listeners (those come with the press), so
+  // it stops each one first. Between the last move of the old press and the new press nothing reaches the page, as when a release is lost.
+  await page.evaluate(() => {
+    window.__lose = false;
+    for (const type of ['pointerup', 'pointercancel', 'pointermove', 'lostpointercapture']) window.addEventListener(type, ev => { if (window.__lose) ev.stopImmediatePropagation(); }, true);
+  });
+  await watchWrites(page);
+  await watchPointer(page);
+  await aimStill(page, ...FLOOR_AIM);
+  const line = await freshDrawing(page, null, () => seedFloorDraw(page, [150, -30], [190, 10, 230, -20]));
+  const onLine = await point(page, 170, 0, -10);
+  const along = await point(page, 190, 0, 0);
+  const open = { x: onLine.x - 170, y: onLine.y + 60 }; // bare canvas
+  const state = () => page.evaluate(() => ({ stored: JSON.stringify(window.probe.annotations()), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited, cases: window.probe.casesJson() }));
+  const held = id => page.evaluate(pid => window.probe.AnnotationTool.ownsPointer({ pointerId: pid }), id);
+  const seeded = await state();
+
+  await page.mouse.move(onLine.x, onLine.y);
+  await page.mouse.down();
+  await page.mouse.move(along.x, along.y, { steps: 8 });
+  await page.waitForFunction(moving);
+  const id = await pointerId(page);
+  assert.equal(await held(id), true, 'the press is held');
+  assert.equal(await rotationEnabled(page), false, 'and the camera cannot turn under it');
+  // Its release, the capture that ends with it and every move after are never heard.
+  await page.evaluate(() => { window.__lose = true; });
+  await page.mouse.up();
+  await page.mouse.move(open.x, open.y);
+  assert.equal(await moveState(page), 'moving', 'nothing was heard, so the move is still open');
+  assert.equal(await held(id), true, 'and so is the hold');
+  const camBefore = await page.evaluate(() => window.probe.camera());
+  // The id comes round again on a press elsewhere, on bare canvas.
+  await page.evaluate(() => { window.__lose = false; });
+  await page.mouse.down();
+  assert.equal(await pointerId(page), id, 'the same pointer id');
+  assert.equal(await moveState(page), 'idle', 'the abandoned move ended at that press, it was not left to be finished by it');
+  assert.equal(await held(id), false, 'and its hold with it');
+  assert.equal(await rotationEnabled(page), true, 'the camera is handed back before it reads this press');
+  await page.mouse.move(open.x + 60, open.y + 20, { steps: 8 });
+  await page.mouse.up();
+  await cameraSettled(page);
+  assert.notEqual(await page.evaluate(() => window.probe.camera()), camBefore, 'the fresh press is an ordinary orbit');
+  assert.deepEqual(await state(), seeded, 'the abandoned move wrote nothing: the record, lastEdited and the cargo are exactly as seeded');
+  assert.equal(await writes(page), 0, 'no write at all');
+  assert.equal(await moveState(page), 'idle');
+  assert.equal(await held(id), false, 'no pointer is still owned');
+  assert.equal(await rotationEnabled(page), true);
+  // The next drawing gesture is an ordinary one: it goes through the usual checks and writes once.
+  await aimStill(page, ...FLOOR_AIM);
+  const before = await gestureLook(page, line.id);
+  await page.mouse.move(onLine.x, onLine.y);
+  await page.mouse.down();
+  await page.mouse.move(along.x, along.y, { steps: 8 });
+  await page.waitForFunction(moving);
+  await page.mouse.up();
+  await page.waitForFunction(() => window.__writes === 1);
+  assert.deepEqual(changedBy(before, await gestureLook(page, line.id)).sort(), ['record', 'selected', 'writes'], 'the next drag moves the line, once');
+  assert.equal(await held(id), false);
+  assert.equal(await rotationEnabled(page), true);
+  assert.equal(await moveState(page), 'idle');
+  assert.deepEqual(errors, []);
+});
+
+test('annotation drawing clipped: a stroke whose segment crosses the view with both vertices outside it is measured from the part that is drawn, is out of reach while cargo hides it and in reach when it is clear', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  await watchWrites(page);
+  // Every ray the page casts is counted per frame; no mouse is used while a window is read, so these are the strokes' own rays.
+  await page.evaluate(() => {
+    const proto = window.THREE.Raycaster.prototype;
+    const original = proto.intersectObjects;
+    window.__rays = 0;
+    window.__perFrame = [];
+    proto.intersectObjects = function counted(...args) { window.__rays += 1; return original.apply(this, args); };
+    let last = 0;
+    const tick = () => { window.__perFrame.push(window.__rays - last); last = window.__rays; window.requestAnimationFrame(tick); };
+    window.requestAnimationFrame(tick);
+  });
+  const raysSince = async action => {
+    const from = await page.evaluate(() => window.__perFrame.length);
+    await action();
+    await page.waitForTimeout(700);
+    return page.evaluate(start => { const frames = window.__perFrame.slice(start); return { total: frames.reduce((n, v) => n + v, 0), max: Math.max(0, ...frames) }; }, from);
+  };
+  const offScreen = async p => page.evaluate(({ x, y }) => { const r = document.querySelector('#viewport canvas').getBoundingClientRect(); return x < r.left || x > r.right || y < r.top || y > r.bottom; }, p);
+  const drawnPath = id => page.evaluate(sel => document.querySelector(`.tp3d-annot-draws .tp3d-annot-draw[data-annot-id="${sel}"] .tp3d-annot-draw__line`)?.getAttribute('d') || '', id);
+  const HIDDEN_AIM = [[70, 0, -20], [0, 40, 45]]; // cargo-a stands between the camera and the middle of the floor line
+  await aimStill(page, ...HIDDEN_AIM);
+  const line = await seedFloorDraw(page, [2, -20], [630, -20]); // a 628 inch segment: both vertices far outside the view
+  await watchWrites(page);
+  await waitDrawn(page, line.id);
+  const left = await point(page, 2, 0, -20);
+  const right = await point(page, 630, 0, -20);
+  const middle = await point(page, 70, 0, -20);
+  assert.equal(await offScreen(left), true, 'the first vertex is outside the view');
+  assert.equal(await offScreen(right), true, 'and so is the last');
+  assert.equal(await offScreen(middle), false, 'while the segment itself crosses it');
+
+  // 1. Hidden by cargo: drawn, finite, and measured from what is drawn - not clear, not reachable, and it takes no input from the cargo.
+  await page.waitForTimeout(700);
+  await frames(page, 2);
+  const path = await drawnPath(line.id);
+  const numbers = (path.match(/-?\d+(\.\d+)?/g) || []).map(Number);
+  assert.ok(numbers.length === 4 && numbers.every(Number.isFinite), `the clipped path is one finite segment (${path})`);
+  const viewWidth = await page.evaluate(() => document.querySelector('canvas').getBoundingClientRect().width);
+  assert.ok(numbers[0] <= 0 && numbers[2] >= viewWidth && Math.abs(numbers[1] - numbers[3]) < 1, `and runs across the whole view (${path}, ${viewWidth}px)`);
+  assert.equal(await reachAt(page, middle), 'canvas');
+  assert.equal(await lineUnder(page, middle), false, 'cargo hides the visible part: the stroke is not reachable there');
+  const casesBefore = await page.evaluate(() => window.probe.casesJson());
+  await click(page, middle);
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-a'], 'the press is the cargo\'s');
+  assert.notEqual(await page.evaluate(() => window.probe.AnnotationTool.selectedId()), line.id, 'and selects no stroke');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore);
+  assert.equal(await writes(page), 0);
+  await page.keyboard.press('Escape');
+
+  // 2. The camera moves to bare floor: the old evidence is replaced, rays were really cast, and the stroke can be selected.
+  let clearAt = null;
+  const camRays = [];
+  for (const x of [330, 450, 560]) {
+    camRays.push(await raysSince(() => aimStill(page, [x, 0, -20], [0, 40, 45])));
+    const p = await point(page, x, 0, -20);
+    if (await lineUnder(page, p)) { clearAt = { x, p }; break; }
+  }
+  assert.ok(clearAt, 'with nothing in the way the visible part is shown clear and reachable');
+  assert.equal(await offScreen(await point(page, 2, 0, -20)), true, 'still with both vertices outside the view');
+  assert.ok(camRays.at(-1).total >= 1, 'a ray was really cast for it: clear is a measurement, not an absence of samples');
+  await click(page, clearAt.p);
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.selectedId()), line.id, 'its visible part selects it');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'and selects no cargo');
+  assert.equal(await writes(page), 0);
+  await page.keyboard.press('Escape');
+
+  // 3. Back behind the cargo: the clear evidence of the other view is gone.
+  await aimStill(page, ...HIDDEN_AIM);
+  await page.waitForFunction(({ x, y }) => !window.probe.AnnotationTool.hoverDrawing({ clientX: x, clientY: y, pointerType: 'mouse', buttons: 0 }), await point(page, 70, 0, -20), { timeout: 8000 });
+  assert.equal(await lineUnder(page, await point(page, 70, 0, -20)), false, 'moving the camera back hides it again');
+
+  // 4. The budget: a stroke of many long segments, all crossing the view, never costs more than five rays a measurement.
+  await page.evaluate(id => window.probe.PackLibrary.deleteAnnotation('fixture-pack', id), line.id);
+  const zig = await seedFloorDraw(page, [2, -48], [630, -44, 2, -40, 630, -36, 2, -32, 630, -28, 2, -24, 630, -20, 2, -16, 630, -12]);
+  await waitDrawn(page, zig.id);
+  const zigRays = await raysSince(() => aimStill(page, ...HIDDEN_AIM));
+  assert.ok(zigRays.total >= 1, 'it was measured');
+  assert.ok(zigRays.max <= 5, `at most five rays in any frame for one stroke (saw ${zigRays.max})`);
+
+  // 5. An ordinary stroke with vertices in view is unchanged: measured, clear on open floor, reachable.
+  await page.evaluate(id => window.probe.PackLibrary.deleteAnnotation('fixture-pack', id), zig.id);
+  await aimStill(page, ...FLOOR_AIM);
+  const plain = await seedFloorDraw(page, [150, -30], [190, 10, 230, -20]);
+  await waitDrawn(page, plain.id);
+  const plainRays = await raysSince(async () => { await frames(page, 2); });
+  const plainAt = await point(page, 170, 0, -10);
+  await page.waitForFunction(({ x, y }) => window.probe.AnnotationTool.hoverDrawing({ clientX: x, clientY: y, pointerType: 'mouse', buttons: 0 }), plainAt, { timeout: 8000 });
+  assert.equal(await lineUnder(page, plainAt), true, 'an in-view stroke on open floor is reachable');
+  assert.ok(plainRays.max <= 5);
+  assert.deepEqual(errors, []);
+});
+
 test('annotation drawing look: a Dotted line is clean dots with no ring, a Dashed one keeps clear gaps, the selection is a restrained accent edge that keeps the line\'s color and weight, the pattern follows the stroke\'s size on screen, and Arrows are untouched', { timeout: 420000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());

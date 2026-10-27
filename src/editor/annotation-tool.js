@@ -2646,7 +2646,8 @@ export function createAnnotationTool({
     const held = heldPointer;
     if (!held) return;
     if (ev.type === 'pointerdown') {
-      if (ev.pointerId === held.pointerId) { // the id came round again: the release of the old press was lost
+      if (ev.pointerId === held.pointerId) { // the id came round again: the end of the old press was lost, so its move is abandoned, never finished by this press
+        if (moveDrag) cancelMoveDrag('Move cancelled.');
         releaseHeldPointer();
         return;
       }
@@ -3965,7 +3966,7 @@ export function createAnnotationTool({
       graphic.group.dataset.annotId = id;
       layerParts.drawGroup.appendChild(graphic.group);
       view = {
-        id, graphic, record: null, local: null, world: null, stamp: NaN, poseStamp: 0, d: '', visible: [],
+        id, graphic, record: null, local: null, world: null, stamp: NaN, poseStamp: 0, d: '', visible: [], samples: [],
         front: false, measured: false, measuredAt: -1, shown: false, moved: null, dragKey: 0, extent: newDrawExtent(),
       };
       drawViews.set(id, view);
@@ -4047,10 +4048,14 @@ export function createAnnotationTool({
    * coordinate is finite and small however close the camera is. A cut that leaves a gap starts a new sub-path. `visible`
    * receives the index of every vertex that is on screen (what the occlusion samples are chosen from). One vertex draws a dot.
    * `extent`, when given, is rewritten with the stroke's size on screen and the points of the path it returns (see newDrawExtent).
+   * `samples`, when given, is rewritten with world x, y, z of a point in the middle of each drawn segment, but only while no vertex of the
+   * stroke is on screen yet: a segment can cross the view with both its vertices outside it, and those points are what the occlusion
+   * rays use then (see pushClippedSample). It is emptied again when a vertex turns out to be on screen.
    */
-  function projectDrawPath(points, camera, width, height, visible, extent = null) {
+  function projectDrawPath(points, camera, width, height, visible, extent = null, samples = null) {
     const count = Math.floor(points.length / 3);
     visible.length = 0;
+    if (samples) samples.length = 0;
     if (extent) resetTrace(extent);
     if (!count) return '';
     camera.updateMatrixWorld(true);
@@ -4098,8 +4103,11 @@ export function createAnnotationTool({
           if (cut) ({ a, b } = cut);
           else drawable = false;
         }
-        const clip = drawable ? clipSegmentToConvex(cameraToLayer(a, camera, width, height), cameraToLayer(b, camera, width, height), outline) : null;
+        const sa = drawable ? cameraToLayer(a, camera, width, height) : null;
+        const sb = drawable ? cameraToLayer(b, camera, width, height) : null;
+        const clip = drawable ? clipSegmentToConvex(sa, sb, outline) : null;
         if (clip) {
+          if (samples && !visible.length) pushClippedSample(samples, a, b, sa, sb, clip, camera, perspective);
           const jump = !(Math.abs(clip.a.x - lastX) < 0.05 && Math.abs(clip.a.y - lastY) < 0.05);
           if (jump) parts.push(`M${fixed(clip.a.x)} ${fixed(clip.a.y)}`);
           parts.push(`L${fixed(clip.b.x)} ${fixed(clip.b.y)}`);
@@ -4116,6 +4124,7 @@ export function createAnnotationTool({
       }
       previous = current;
     }
+    if (samples && visible.length) samples.length = 0;
     if (extent && maxX >= minX) extent.span = Math.hypot(maxX - minX, maxY - minY);
     if (!parts.length && count === 1 && visible.length) {
       const screen = cameraToLayer(previous, camera, width, height);
@@ -4126,6 +4135,33 @@ export function createAnnotationTool({
       return `M${fixed(screen.x)} ${fixed(screen.y)}L${fixed(screen.x)} ${fixed(screen.y)}`;
     }
     return parts.join('');
+  }
+
+  /**
+   * One occlusion sample for a segment the view clips: the middle of what is drawn of it (the clip's two ends), taken back onto the
+   * segment in camera space and then to the world, so the ray from the camera runs through the very pixel that shows it. A position
+   * along a perspective segment is not linear on screen, so the screen fraction is weighted by the depths of the segment's two ends.
+   * `a` and `b` are the segment's camera-space ends after the near cut, `sa` and `sb` the same on the layer.
+   */
+  function pushClippedSample(samples, a, b, sa, sb, clip, camera, perspective) {
+    const dx = sb.x - sa.x;
+    const dy = sb.y - sa.y;
+    const length = dx * dx + dy * dy;
+    if (!(length > 0)) return;
+    const mx = (clip.a.x + clip.b.x) / 2;
+    const my = (clip.a.y + clip.b.y) / 2;
+    const s = Math.min(1, Math.max(0, ((mx - sa.x) * dx + (my - sa.y) * dy) / length));
+    let t = s;
+    if (perspective) {
+      const weight = (1 - s) * -b.z + s * -a.z;
+      if (!(weight > 0)) return;
+      t = (s * -a.z) / weight;
+    }
+    const x = a.x + t * (b.x - a.x);
+    const y = a.y + t * (b.y - a.y);
+    const z = a.z + t * (b.z - a.z);
+    const m = camera.matrixWorld.elements;
+    samples.push(m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]);
   }
 
   /**
@@ -4197,7 +4233,7 @@ export function createAnnotationTool({
         } else {
           view.world = source;
         }
-        view.d = projectDrawPath(view.world, camera, width, height, view.visible, view.extent);
+        view.d = projectDrawPath(view.world, camera, width, height, view.visible, view.extent, view.samples);
       }
       if (!view.d) {
         hideDrawView(view);
@@ -4216,14 +4252,26 @@ export function createAnnotationTool({
    * evenly from the vertices that are on screen; a stroke with none costs none.
    */
   function computeDrawFront(view, camera, meshes) {
-    const indices = view.visible;
-    const rays = Math.min(DRAW_OCCLUSION_RAYS_PER_STROKE, indices.length);
+    const own = view.visible.length > 0;
+    const available = drawSampleCount(view);
+    const rays = Math.min(DRAW_OCCLUSION_RAYS_PER_STROKE, available);
+    if (!rays) return false; // nothing was tested, so nothing is known to be clear
     for (let k = 0; k < rays; k++) {
-      const i = indices[rays === 1 ? 0 : Math.round((k * (indices.length - 1)) / (rays - 1))];
-      sampleWorld.set(view.world[3 * i], view.world[3 * i + 1], view.world[3 * i + 2]);
+      const nth = rays === 1 ? 0 : Math.round((k * (available - 1)) / (rays - 1));
+      if (own) {
+        const i = view.visible[nth];
+        sampleWorld.set(view.world[3 * i], view.world[3 * i + 1], view.world[3 * i + 2]);
+      } else {
+        sampleWorld.set(view.samples[3 * nth], view.samples[3 * nth + 1], view.samples[3 * nth + 2]);
+      }
       if (!isRayClear(sampleWorld, camera, meshes)) return false;
     }
     return true;
+  }
+
+  /** What a stroke offers the occlusion rays: its own vertices that are on screen, else the middles of the clipped segments that cross it. */
+  function drawSampleCount(view) {
+    return view.visible.length || view.samples.length / 3;
   }
 
   /**
@@ -4249,7 +4297,7 @@ export function createAnnotationTool({
     let rays = DRAW_OCCLUSION_RAYS_PER_TICK;
     const waiting = entries.filter(entry => drawBacklog.has(entry.record.id)).sort((a, b) => a.view.measuredAt - b.view.measuredAt);
     for (const entry of waiting) {
-      const cost = Math.min(DRAW_OCCLUSION_RAYS_PER_STROKE, entry.view.visible.length);
+      const cost = Math.min(DRAW_OCCLUSION_RAYS_PER_STROKE, drawSampleCount(entry.view));
       if (cost > rays) break;
       rays -= cost;
       entry.view.front = meshes.length ? computeDrawFront(entry.view, camera, meshes) : true;

@@ -5025,6 +5025,7 @@ body.tp3d-shared-modal-lock #app .nav {
 
 /* The user's colors, one place: pins, cards, arrows, list badges and swatches read --annot-color / --annot-fg. */
 .tp3d-annot-arrow[data-color='ink'],
+.tp3d-annot-draw[data-color='ink'],
 .tp3d-annot-pin[data-color='ink'],
 .tp3d-annot-card[data-color='ink'],
 .tp3d-annot-row__badge[data-color='ink'],
@@ -5034,6 +5035,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='blue'],
+.tp3d-annot-draw[data-color='blue'],
 .tp3d-annot-pin[data-color='blue'],
 .tp3d-annot-card[data-color='blue'],
 .tp3d-annot-row__badge[data-color='blue'],
@@ -5043,6 +5045,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='green'],
+.tp3d-annot-draw[data-color='green'],
 .tp3d-annot-pin[data-color='green'],
 .tp3d-annot-card[data-color='green'],
 .tp3d-annot-row__badge[data-color='green'],
@@ -5052,6 +5055,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='red'],
+.tp3d-annot-draw[data-color='red'],
 .tp3d-annot-pin[data-color='red'],
 .tp3d-annot-card[data-color='red'],
 .tp3d-annot-row__badge[data-color='red'],
@@ -5061,6 +5065,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-arrow[data-color='violet'],
+.tp3d-annot-draw[data-color='violet'],
 .tp3d-annot-pin[data-color='violet'],
 .tp3d-annot-card[data-color='violet'],
 .tp3d-annot-row__badge[data-color='violet'],
@@ -5123,6 +5128,95 @@ body.tp3d-shared-modal-lock #app .nav {
   stroke-width: 1.75px;
   stroke-dasharray: 4 2.5;
   opacity: 0.85;
+}
+
+/* Dashed and Dotted (set by the owner) draw their own pattern, inline, on the shaft and its halo; the head stays solid. Hidden behind
+   cargo, such a line keeps that pattern and is dimmed instead of getting the Solid line's 7 5 dash above, so a hidden Dashed line is
+   never mistaken for a hidden Solid one and the head reads as one solid, dimmed shape. */
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__shaft,
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__under,
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__under-head {
+  opacity: 0.4;
+}
+
+.tp3d-annot-svg .tp3d-annot-arrow:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-arrow__head {
+  fill: var(--annot-color, var(--annot-ink));
+  fill-opacity: 1;
+  stroke-width: 1px;
+  stroke-dasharray: none;
+  opacity: 0.4;
+}
+
+/* Annotations V1B.2 freehand drawings: one SVG path per stroke (a neutral halo under the colored line), in the same layer and under
+   the arrows. The width is a screen-pixel stroke (set from the width name), so it never scales with zoom. The user's color is
+   --annot-color, as for markers and arrows. */
+.tp3d-annot-svg .tp3d-annot-draw__under {
+  fill: none;
+  stroke: var(--bg-elevated);
+  stroke-opacity: 0.72;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw__line {
+  fill: none;
+  stroke: var(--annot-color, var(--annot-ink));
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+/* Selected: the list row marks the selection too; the line gains a thin brand-orange edge in place of its neutral one (about a pixel
+   a side, set in annotation-tool.js), so the stroke keeps its own colour and weight and a Dashed or Dotted line keeps its pattern.
+   A hidden-behind-cargo stroke keeps its neutral edge so it never looks unobstructed. */
+.tp3d-annot-svg .tp3d-annot-draw.is-selected:not(.is-occluded) .tp3d-annot-draw__under {
+  stroke: var(--accent-primary);
+  stroke-opacity: 0.95;
+}
+
+/* The edge of a Dotted line is a faint hairline on each dot, never a ring: the dots are the line. */
+.tp3d-annot-svg .tp3d-annot-draw[data-line-style='dotted']:not(.is-selected) .tp3d-annot-draw__under {
+  stroke-opacity: 0.5;
+}
+
+/* Hidden by cargo or the truck from where the camera is: dashed and dimmed, selected or not, the same convention as an arrow. */
+.tp3d-annot-svg .tp3d-annot-draw.is-occluded .tp3d-annot-draw__line,
+.tp3d-annot-svg .tp3d-annot-draw.is-occluded .tp3d-annot-draw__under {
+  stroke-dasharray: 7 5;
+  opacity: 0.7;
+}
+
+/* The same rule as for an arrow: a Dashed or Dotted stroke keeps its pattern behind cargo and is dimmed, not dashed again. */
+.tp3d-annot-svg .tp3d-annot-draw:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-draw__line,
+.tp3d-annot-svg .tp3d-annot-draw:is([data-line-style='dashed'], [data-line-style='dotted']).is-occluded .tp3d-annot-draw__under {
+  opacity: 0.4;
+}
+
+/* While drawing: the stroke so far, slightly lighter; frozen where it stopped until the button is released. */
+.tp3d-annot-svg .tp3d-annot-draw.is-preview .tp3d-annot-draw__line {
+  opacity: 0.9;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-preview.is-frozen .tp3d-annot-draw__line {
+  opacity: 0.65;
+}
+
+/* Being carried: the selected edge and a slightly lighter line. A position the whole drawing cannot take swaps the edge for the
+   error colour and dims the line; releasing there leaves the drawing exactly where it was. */
+.tp3d-annot-svg .tp3d-annot-draw.is-moving .tp3d-annot-draw__under {
+  stroke: var(--accent-primary);
+  stroke-opacity: 0.95;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-moving .tp3d-annot-draw__line {
+  opacity: 0.85;
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-moving.is-move-invalid .tp3d-annot-draw__under {
+  stroke: var(--error);
+}
+
+.tp3d-annot-svg .tp3d-annot-draw.is-moving.is-move-invalid .tp3d-annot-draw__line {
+  opacity: 0.45;
 }
 
 /* While placing: the arrow the next click would make, and a dot where the tail is. */
@@ -5583,6 +5677,15 @@ body.tp3d-shared-modal-lock #app .nav {
   min-height: 0;
   padding: 12px 14px;
   overflow-y: auto;
+
+  /* In a short window the body scrolls under the fixed header and footer: a soft edge shows where more of it lies
+     beyond the fold, so a row cut off there (Color, Keep expanded) reads as scrollable, not covered. The `local` layers
+     hide the edge once the body is scrolled to that end (or does not scroll at all). */
+  background:
+    linear-gradient(var(--bg-elevated) 30%, transparent) 0 0 / 100% 16px no-repeat local,
+    linear-gradient(transparent, var(--bg-elevated) 70%) 0 100% / 100% 16px no-repeat local,
+    linear-gradient(rgb(0, 0, 0, 0.16), transparent) 0 0 / 100% 8px no-repeat scroll,
+    linear-gradient(transparent, rgb(0, 0, 0, 0.16)) 0 100% / 100% 8px no-repeat scroll;
 }
 
 .tp3d-annot-editor__field {
@@ -6133,9 +6236,57 @@ body.tp3d-shared-modal-lock #app .nav {
   padding: 0 14px 10px;
 }
 
+/* The Draw / Move View row only exists while the Draw tool is armed; its display rule would otherwise beat `hidden`. */
+.tp3d-annot-panel__drawmode[hidden] {
+  display: none;
+}
+
 .tp3d-annot-panel__view-label {
   width: 52px;
   color: var(--text-secondary);
+}
+
+/* Present sits at the end of the Show row, apart from the All / Selected / Off control it follows. */
+.tp3d-annot-panel__present {
+  flex: none;
+  margin-left: auto;
+}
+
+/* Present is a viewing mode: this pill is the way out. It is a sibling of the (inert) annotation layer, above the viewport
+   toolbar, at the bottom center; annotation-tool.js moves it up over AutoPack Results when that holds the spot. */
+.tp3d-annot-present-exit {
+  position: absolute;
+  top: 0;
+  left: 0;
+  z-index: 7;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  box-shadow: var(--shadow-md);
+  font: inherit;
+  font-size: 12px;
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tp3d-annot-present-exit[hidden] {
+  display: none;
+}
+
+.tp3d-annot-present-exit:hover {
+  background: var(--bg-hover);
+}
+
+.tp3d-annot-present-exit:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 .tp3d-annot-panel__list {
@@ -6325,13 +6476,15 @@ body.tp3d-shared-modal-lock #app .nav {
 
 /* The look of arrows (width and color) for the selected arrow, or for the next one: below the list, so showing it
    never moves a row under the pointer. */
-.tp3d-annot-panel__arrow {
+.tp3d-annot-panel__arrow,
+.tp3d-annot-panel__draw {
   flex: none;
   padding: 10px 0 12px;
   border-top: 1px solid var(--border-subtle);
 }
 
-.tp3d-annot-panel__arrow[hidden] {
+.tp3d-annot-panel__arrow[hidden],
+.tp3d-annot-panel__draw[hidden] {
   display: none;
 }
 
@@ -6344,7 +6497,7 @@ body.tp3d-shared-modal-lock #app .nav {
 }
 
 .tp3d-annot-panel__body.has-arrow-options {
-  scroll-padding-bottom: 116px; /* what scrolling a row or button into view leaves clear of the pinned controls */
+  scroll-padding-bottom: 148px; /* what scrolling a row or button into view leaves clear of the pinned controls */
 }
 
 .tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__list,
@@ -6353,7 +6506,8 @@ body.tp3d-shared-modal-lock #app .nav {
   overflow: visible;
 }
 
-.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__arrow {
+.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__arrow,
+.tp3d-annot-panel__body.has-arrow-options .tp3d-annot-panel__draw {
   position: sticky;
   bottom: 0;
   background: var(--bg-elevated);
@@ -6365,22 +6519,26 @@ body.tp3d-shared-modal-lock #app .nav {
   scroll-padding-bottom: 0;
 }
 
-.tp3d-annot-panel__body.has-arrow-options.is-flow .tp3d-annot-panel__arrow {
+.tp3d-annot-panel__body.has-arrow-options.is-flow .tp3d-annot-panel__arrow,
+.tp3d-annot-panel__body.has-arrow-options.is-flow .tp3d-annot-panel__draw {
   position: static;
 }
 
-.tp3d-annot-panel__arrow-title {
+.tp3d-annot-panel__arrow-title,
+.tp3d-annot-panel__draw-title {
   padding: 0 14px 8px;
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: var(--font-semibold);
 }
 
-.tp3d-annot-panel__arrow-colors {
+.tp3d-annot-panel__arrow-colors,
+.tp3d-annot-panel__draw-colors {
   padding: 0 14px;
 }
 
-.tp3d-annot-panel__arrow-colors .tp3d-annot-editor__label {
+.tp3d-annot-panel__arrow-colors .tp3d-annot-editor__label,
+.tp3d-annot-panel__draw-colors .tp3d-annot-editor__label {
   width: 52px;
   margin-right: 2px;
   font-size: inherit;

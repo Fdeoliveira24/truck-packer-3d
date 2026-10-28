@@ -1,7 +1,8 @@
 /**
  * @file annotation-tool.js
- * @description Annotations controller (V1A callouts, V1B.1 directional arrows): the Annotations panel, callout
- *   and arrow creation and editing, and the on-screen markers, labels, cards and arrows. THREE and DOM
+ * @description Annotations controller (V1A callouts, V1B.1 directional arrows, V1B.2 freehand drawings): the
+ *   Annotations panel, callout, arrow and drawing creation and editing, and the on-screen markers, labels, cards,
+ *   arrows and strokes. THREE and DOM
  *   concerns live here; the data model, validation and
  *   anchor resolution live in core/annotations.js (on the Measurement anchor model), picking is the shared
  *   editor/surface-picker.js, the screen-space layout is core/annotation-layout.js, and persistence is
@@ -22,14 +23,22 @@
  *     effect. Ctrl/Cmd+Z stays cargo history; only an unfinished marker or card drag is cancelled by it.
  *     Deleting a callout offers a one-level Undo button in the panel, independent of cargo history.
  *   - One Escape closes one owner, in this order: a modal, dropdown, text field or popover that owns it
- *     (they keep it), an unfinished drag, the editor card, a pending re-attach, a pending arrow tail, the
- *     armed tool, the annotation selection. Anything else is left to the existing handlers (cargo
- *     deselection, drawers).
+ *     (they keep it), the presentation view, an unfinished drag, the editor card, a pending re-attach, a
+ *     pending arrow tail, the armed tool, the annotation selection. Anything else is left to the existing
+ *     handlers (cargo deselection, drawers).
  *   - An arrow is two surface anchors drawn as an SVG shaft and head in this same layer (never a Three.js
  *     object, so no capture can include it). It is drawn only while both ends resolve and it is long enough
  *     to read; its ends move only by the owner's grip drag or Re-attach. Placing one takes two clicks (tail,
  *     then head): the first click is an unsaved gesture that Escape, closing the panel, Show Off, an
  *     operation, Measurement Mode, a Load Plan change or a cargo pose change all drop without writing.
+ *   - A freehand drawing is one polyline on one flat face or convex patch, stored as one record and drawn as SVG paths in this
+ *     layer. While the Draw tool is armed in Draw mode a primary drag draws instead of orbiting: this tool turns OrbitControls'
+ *     rotation off (only that property, and restores exactly what it found), and Move View gives the camera back. Shift/Ctrl/Cmd +
+ *     drag, the wheel, the other mouse buttons and two-finger touch keep navigating. A stroke is an unsaved gesture owned by the one
+ *     pointer that began it: it freezes at the surface's edge, behind an occluder, at the view's edge or across a gap and never
+ *     resumes, and Escape, pointercancel, a second touch, a blur, a hidden page, a tool or mode switch, an operation, Measurement
+ *     Mode, a Load Plan change, a cargo change or a provisional pose all drop it without writing. Releasing it writes at most one
+ *     record through PackLibrary.addDraw, which owns every rule about the stroke itself (simplification, limits, placement).
  *   - Creating, editing, moving, hiding and deleting are disabled while AutoPack, Unpack, Truck Change, a
  *     Truck Change preview or a transient AutoPack preview is active, and the message names the cause; the
  *     graphics are hidden for the same reasons. The committed scene is the authority, so an open, minimized or
@@ -40,6 +49,15 @@
  *     edit: it never blocks annotations or cancels an unfinished one.
  *   - Annotations stay drawn while the Measurement Tool owns the scene, but only as a view: markers and cards
  *     take no pointer or keyboard input until that mode ends (the Editor wires `isSceneToolOwnedElsewhere`).
+ *   - Present is a viewing mode of this session only: never saved, never a property of a record, and it writes nothing.
+ *     The panel, selection handles, end grips, previews and card buttons are hidden, and the layer goes inert, while the saved
+ *     annotations stay drawn per the Show and Callouts settings and the selection is kept (so Show Selected still shows it).
+ *     The camera keeps navigating, but cargo is read-only: the Editor's pointer and keyboard routing asks `isPresenting()` and
+ *     never selects, drags, highlights or edits cargo meanwhile (OrbitControls is untouched), and Present will not start over a
+ *     live drag or held case. An "Exit presentation view" control, a sibling of the inert layer, sits bottom center and
+ *     rides above the AutoPack Results card; it and Escape end Present. Present will not start over an unfinished gesture,
+ *     asks before it drops an editor with unsaved changes, and ends (the panel returns) on a Load Plan, workspace or screen
+ *     change, Settings > Show Annotations off, an operation or preview that pauses annotations, or Measurement Mode.
  *   - Cargo anchors are only ever picked from, and resolved against, COMMITTED poses; while the Editor
  *     owns a provisional pose a pick on cargo is refused. Overlay positions follow the pose the scene
  *     displays so a marker never floats away from cargo that is being dragged or animated.
@@ -56,10 +74,16 @@ import {
   ANNOTATION_STATUS,
   ANNOTATION_TYPE_ARROW,
   ANNOTATION_TYPE_CALLOUT,
+  ANNOTATION_TYPE_DRAW,
   ANNOTATION_TYPE_UNREADABLE,
   ARROW_WIDTHS,
   CALLOUT_PRESETS,
   DEFAULT_ARROW_WIDTH,
+  DEFAULT_DRAW_WIDTH,
+  DEFAULT_LINE_STYLE,
+  DRAW_MAX_RAW_VERTICES,
+  DRAW_WIDTHS,
+  LINE_STYLES,
   MAX_ANNOTATIONS_PER_PACK,
   MAX_CALLOUT_DESCRIPTION_LENGTH,
   MAX_CALLOUT_TITLE_LENGTH,
@@ -75,12 +99,14 @@ import {
 } from '../core/annotations.js';
 import {
   ARROW_SAMPLE_FRACTIONS,
+  ARROW_SHAFT_PX,
   arrowPathData,
   arrowShape,
   autoPlace,
   cardBudget,
   cardWidth,
   clampRect,
+  clipSegmentToConvex,
   clipSegmentToNear,
   estimateCardHeight,
   fitEditorClear,
@@ -96,6 +122,7 @@ import {
   rectFromOffset,
   VIEWPORT_MARGIN,
 } from '../core/annotation-layout.js';
+import { cargoFaceFrame, drawAnchorUV, drawFrameKey, drawLift, patchContains, patchOutline } from '../core/measurements.js';
 import { createSurfacePicker } from './surface-picker.js';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
@@ -110,6 +137,29 @@ const STATUS_VISIBLE_MS = 3200;
 const UNDO_VISIBLE_MS = 12000;
 const NOTICE_INTERVAL_MS = 1400;
 const OFFSCREEN_MARGIN_PX = 30;
+// Freehand strokes. A sample is taken when the pointer has moved this far on screen since the last one, and a jump
+// larger than the gap limit between two samples freezes the stroke (something may have come between them). The pointer
+// samples queue between frames and are verified a few at a time, so a fast drag never costs more than a frame's budget.
+const DRAW_SAMPLE_MIN_PX = 4;
+const DRAW_MAX_GAP_PX = 160;
+const DRAW_PICKS_PER_FRAME = 8;
+const DRAW_FLUSH_PICKS = 128;
+const DRAW_QUEUE_LIMIT = 64;
+const DRAW_EDGE_MIN_INCHES = 0.02; // an exit point closer than this to the last vertex adds nothing
+const DRAW_CLIP_MARGIN_PX = 40; // strokes are clipped to the view plus this margin, so SVG coordinates stay small and finite
+// A drawing's own look is in screen pixels, but its edge and its pattern follow how large the stroke is on screen: one that spans
+// DRAW_FIT_SPAN_PX or more is drawn at full size, a smaller one down to DRAW_FIT_MIN of it (the line itself never changes weight).
+const DRAW_FIT_SPAN_PX = 140;
+const DRAW_FIT_MIN = 0.7;
+// The extra width (px, both sides together) of the edge under a drawing's line: a neutral one that keeps it legible on any cargo, a
+// fainter one for the dots of a Dotted line (no ring around each dot), and the selection's own accent edge, which grows a little with
+// the line's weight (so a selected Thin, Regular and Bold stay distinguishable) rather than adding the same band to each.
+// Never below DRAW_EDGE_FLOOR.
+const DRAW_EDGE_PX = Object.freeze({ neutral: 3, dotted: 1.5, selected: 1.5 });
+const DRAW_SELECTED_EDGE_PER_PX = 0.3;
+const DRAW_EDGE_FLOOR_PX = 1.5;
+const DRAW_OCCLUSION_RAYS_PER_STROKE = 5;
+const DRAW_OCCLUSION_RAYS_PER_TICK = 60;
 const PIN_RECT_PX = 24;
 // The ray stops this far short of the marker, so the surface the marker sits on never hides it.
 const OCCLUSION_STOP_INCHES = 0.5;
@@ -123,6 +173,11 @@ const PANEL_SHEET_MAX_FRACTION = 0.46; // the compact panel's own max-height (st
 const PANEL_LIMIT_PROPERTY = '--tp3d-annot-panel-limit'; // the desktop panel's extra max-height (styles/main.css)
 const PANEL_MAX_HEIGHT_PX = 520; // the desktop panel's own max-height is min(this, the layer's height - the inset below)
 const PANEL_MAX_HEIGHT_INSET_PX = 140;
+const PRESENT_EXIT_BOTTOM_PX = 14; // the Exit control's distance from the layer's bottom edge (the Editor's own corner controls use the same)
+const PRESENT_EXIT_GAP_PX = 6; // the clear gap it keeps above whatever holds the spot (AutoPack Results, the review button)
+const PRESENT_BUSY_NOTICE = 'Finish or cancel what you are placing before presenting.';
+const PRESENT_HELD_NOTICE = 'Place or cancel the held case before presenting.';
+const PRESENT_EXIT_LABEL = 'Exit presentation view';
 const MIN_RAY_LENGTH = 1e-6;
 const HELD_POSE_NOTICE = 'Place or cancel the held case before working with annotations on cargo.';
 const AMBIGUOUS_CARGO_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so a callout cannot be attached to it.';
@@ -141,10 +196,12 @@ const PAUSED_TEXT = Object.freeze({
   previewingTruckChange: 'Annotations paused during truck change preview.',
 });
 const COLOR_LABELS = Object.freeze({ ink: 'Ink', blue: 'Blue', green: 'Green', red: 'Red', violet: 'Violet' });
+const DRAW_VIEWS = Object.freeze([['draw', 'Draw'], ['move', 'Move View']]);
 const DISPLAY_MODES = Object.freeze([['markers', 'Markers'], ['labels', 'Labels'], ['cards', 'Cards']]);
 const SHOW_MODES = Object.freeze([['all', 'All'], ['selected', 'Selected'], ['off', 'Off']]);
 const DEFAULT_CUSTOM_COLOR = '#e11d8f';
 const ARROW_WIDTH_LABELS = Object.freeze({ thin: 'Thin', regular: 'Regular', bold: 'Bold' });
+const LINE_STYLE_LABELS = Object.freeze({ solid: 'Solid', dashed: 'Dashed', dotted: 'Dotted' });
 const ARROW_END_NAMES = Object.freeze({ start: 'tail', end: 'head' });
 const ARROW_HINT_TAIL = 'Click cargo, the truck or the ground to place the arrow tail.';
 const ARROW_HINT_HEAD = 'Click where the arrow should point. You can orbit first. Esc cancels.';
@@ -162,11 +219,48 @@ const ARROW_END_REASON_TEXT = Object.freeze({
   'point-invalid': 'The position of this end could not be calculated.',
 });
 const arrowEndReason = reason => ARROW_END_REASON_TEXT[reason] || 'This end could not be checked.';
+const DRAW_HINT = 'Drag across cargo, the truck or the ground to draw. Shift, Ctrl or Cmd + drag moves the view.';
+const DRAW_HINT_MOVE = 'Move View: drag to orbit. Choose Draw to draw again.';
+const DRAW_HINT_STROKING = 'Drawing. Release to save it, or press Esc to cancel.';
+const DRAW_FROZEN_TEXT = Object.freeze({
+  edge: 'The drawing stopped at the edge of the surface. Release to save it.',
+  blocked: 'The drawing stopped where something is in the way. Release to save it.',
+  view: 'The drawing stopped at the edge of the view. Release to save it.',
+  gap: 'The drawing stopped because the pointer moved too fast. Release to save it.',
+  limit: 'The drawing reached its length limit. Release to save it.',
+});
+const MOVE_GRID_STEPS = 100; // a whole-stroke move is snapped to the 0.01 in grid the stored vertices live on
+const AXIS_INDEX = Object.freeze({ x: 0, y: 1, z: 2 });
+// How far from the centre of a saved stroke's line (px) a press still takes the stroke: a finger needs more room than a mouse.
+const DRAW_HIT_REACH_PX = Object.freeze({ mouse: 7, pen: 9, touch: 12 });
+const HELD_POINTER_EVENTS = Object.freeze(['pointerdown', 'pointermove', 'pointerup', 'pointercancel']);
+const DRAW_MOVE_TEXT = Object.freeze({
+  ok: 'Release to move the drawing here. Esc cancels.',
+  off: 'Part of the drawing would leave its surface. Release to leave it where it was, or press Esc.',
+  view: 'Move the pointer back over the surface. Release to leave the drawing where it was, or press Esc.',
+});
+const DRAW_MOVE_REFUSED = 'The whole drawing has to stay on its surface, so it was left where it was.';
+const AMBIGUOUS_CARGO_DRAW_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so a drawing cannot be made on it.';
+const UNSUPPORTED_DRAW_NOTICE = 'Drawings go on cargo faces and end caps, the truck and the ground. Curved sides and open space cannot take one.';
+// The shared reason copy says "callout"; a drawing describes its own surface.
+const DRAW_REASON_TEXT = Object.freeze({
+  'cargo-missing': 'The cargo this drawing was on is no longer in this Load Plan. It is kept as drawn; delete it, or restore the cargo to see it again.',
+  'cargo-ambiguous': 'More than one cargo item in this Load Plan has the same ID, so the cargo this drawing belongs to cannot be identified.',
+  'case-missing': 'The Case definition for this cargo is missing, so where this drawing sits cannot be checked.',
+  'case-changed': 'The Case size or shape changed, so this drawing may no longer sit on the right surface.',
+  'pose-invalid': 'The cargo position or orientation could not be read.',
+  'floor-missing': 'The floor surface this drawing was on no longer exists.',
+  'floor-changed': 'The floor under this drawing has changed.',
+  'truck-changed': 'The truck changed after this drawing was made.',
+  'truck-unverified': 'The truck this drawing was made on cannot be confirmed.',
+  'point-invalid': 'The position of this drawing could not be calculated.',
+});
+const drawReason = reason => DRAW_REASON_TEXT[reason] || describeAnnotationReason(reason) || 'This drawing could not be checked.';
 const SHOW_OFF_HINT = 'Annotations are hidden in the view. Choose All or Selected to place, select or edit callouts.';
 const TOOL_DEFS = Object.freeze([
   { key: 'callout', label: 'Callout', icon: 'fa-solid fa-location-dot', available: true },
   { key: 'arrow', label: 'Arrow', icon: 'fa-solid fa-arrow-right', available: true },
-  { key: 'draw', label: 'Draw', icon: 'fa-solid fa-pen', available: false },
+  { key: 'draw', label: 'Draw', icon: 'fa-solid fa-pen', available: true },
 ]);
 
 export function createAnnotationTool({
@@ -187,11 +281,15 @@ export function createAnnotationTool({
   let bound = false;
   let toolShown = true; // Settings > Show Annotations (default On); a visibility switch only, never a data change
   let panelOpen = false;
-  let tool = null; // 'callout' | 'arrow' while that tool is armed
+  let tool = null; // 'callout' | 'arrow' | 'draw' while that tool is armed
   let reattachId = null; // a callout (or an arrow end) whose marker is waiting for a new surface
   let reattachWhich = null; // 'start' | 'end' when that pending re-attach belongs to an arrow
   let arrowTail = null; // the first click of a new arrow, waiting for its head: { anchor, world, poseKey }
-  let arrowStyle = { color: 'ink', width: DEFAULT_ARROW_WIDTH }; // what the next new arrow looks like (this session only)
+  let arrowStyle = { color: 'ink', width: DEFAULT_ARROW_WIDTH, style: DEFAULT_LINE_STYLE }; // what the next new arrow looks like (this session only)
+  let drawStyle = { color: 'ink', width: DEFAULT_DRAW_WIDTH, style: DEFAULT_LINE_STYLE }; // what the next new drawing looks like (this session only; apart from arrows)
+  let drawView = 'draw'; // while the Draw tool is armed: 'draw' (a primary drag draws) or 'move' (a primary drag orbits)
+  let stroke = null; // the unsaved freehand gesture, see beginStroke
+  let viewGate = null; // { controls, prior } while this tool holds OrbitControls' rotation off (Draw mode, or a press a saved drawing took)
   let draft = null; // the editor card: a new callout or an edit of an existing one
   let selectedId = null;
   let display = 'markers'; // view-level: 'markers' | 'labels' | 'cards'; not saved with the Load Plan
@@ -201,9 +299,11 @@ export function createAnnotationTool({
   let results = [];
   let numbers = new Map();
   let arrowNumbers = new Map();
-  let drawableIds = new Set(); // callouts and arrows the overlay may draw (Valid and not hidden)
+  let drawNumbers = new Map();
+  let drawableIds = new Set(); // callouts, arrows and drawings the overlay may draw (Valid and not hidden)
   let pinDrag = null; // { id, which (arrow end, else null), pointerId, startX, startY, moved, dirty, candidate, poseKey, target }
   let cardDrag = null; // { id, pointerId, startX, startY, startRect, marker, moved, rect, offset }
+  let moveDrag = null; // a saved drawing being carried along its surface, see beginDrawPress
   let editorDrag = null;
   let press = null; // { x, y } of a primary press that began on the canvas while a scene tool is armed
   let hover = null;
@@ -229,6 +329,8 @@ export function createAnnotationTool({
   let panelShift = { x: 0, y: 0 }; // display-only shift (px) that keeps the desktop panel off AutoPack Results
   let panelBehindEditor = false; // the desktop panel yields to an open editor card it would otherwise hide (display only)
   let panelParts = null;
+  let presenting = false; // Present: a viewing mode of this session only; the panel and editing controls are hidden, nothing is saved
+  let presentExit = null; // the "Exit presentation view" button: a sibling of the layer, so the inert layer never covers or disables it
   let panelObserver = null;
   let flowObserver = null;
   let suppressToggleClick = false;
@@ -241,9 +343,14 @@ export function createAnnotationTool({
   let lastGeometryRevision = NaN; // CaseScene's count of syncs that changed what stands in the scene
   let selfClearing = false;
   let lastOwnedElsewhere = false; // another scene tool (Measurement Mode) owned gestures on the previous frame
+  let heldPointer = null; // { pointerId, pointerType } from a press a saved drawing took until that pointer lifts: the camera's rotation stays off
+  let interruptEvent = null; // the press of a second finger that ended a drawing's move: the Editor must not take that same press for cargo
   let titleRevealPending = false; // the editor just opened: show its title field if the card is shorter than its content
   const views = new Map(); // annotation id -> { pin, chip, badge, card, ... } DOM + per-frame state
   const arrowViews = new Map(); // arrow id -> { graphic, grips, start/end world + screen, front, ... } DOM + per-frame state
+  const drawViews = new Map(); // drawing id -> { graphic, local/world vertices, path, front, ... } DOM + per-frame state
+  let drawBacklog = new Set(); // drawing ids waiting for an occlusion measurement
+  let lastDrawMeasureAt = 0;
   const rows = new Map();
 
   const picker = createSurfacePicker({
@@ -264,6 +371,8 @@ export function createAnnotationTool({
   const ghostWorld = new THREE.Vector3();
   const tailWorld = new THREE.Vector3();
   const sampleWorld = new THREE.Vector3();
+  const strokeExitWorld = new THREE.Vector3();
+  const strokePreviewVisible = [];
   const cameraSpaceA = new THREE.Vector3();
   const cameraSpaceB = new THREE.Vector3();
   const scratchScreen = { x: 0, y: 0 };
@@ -295,6 +404,9 @@ export function createAnnotationTool({
   const isCallout = record => Boolean(record) && record.type === ANNOTATION_TYPE_CALLOUT;
   const isArrow = record => Boolean(record) && record.type === ANNOTATION_TYPE_ARROW;
   const arrowName = id => `Arrow ${arrowNumbers.get(id) || ''}`.trim();
+  const isDraw = record => Boolean(record) && record.type === ANNOTATION_TYPE_DRAW;
+  const drawName = id => `Drawing ${drawNumbers.get(id) || ''}`.trim();
+  const isStyled = record => isArrow(record) || isDraw(record);
 
   // The refusal wording names what is being placed: an arrow end or a callout marker.
   function annotatingAnArrow() {
@@ -303,6 +415,10 @@ export function createAnnotationTool({
 
   function pickRefusal(blocked) {
     return (annotatingAnArrow() ? PICK_REFUSAL_NOTICE_ARROW : PICK_REFUSAL_NOTICE)[blocked] || '';
+  }
+
+  function drawRefusal(blocked) {
+    return { provisional: HELD_POSE_NOTICE, ambiguous: AMBIGUOUS_CARGO_DRAW_NOTICE, unsupported: UNSUPPORTED_DRAW_NOTICE }[blocked] || '';
   }
 
   /** Fingerprint of the committed pose of the cargo under BOTH ends of an arrow (a gesture is dropped when it changes). */
@@ -477,6 +593,7 @@ export function createAnnotationTool({
     results = [];
     numbers = new Map();
     arrowNumbers = new Map();
+    drawNumbers = new Map();
     drawableIds = new Set();
     disposeOverlay();
   }
@@ -529,9 +646,11 @@ export function createAnnotationTool({
     numbers = calloutNumbers(records);
     arrowNumbers = new Map();
     records.forEach(record => { if (isArrow(record)) arrowNumbers.set(record.id, arrowNumbers.size + 1); });
+    drawNumbers = new Map();
+    records.forEach(record => { if (isDraw(record)) drawNumbers.set(record.id, drawNumbers.size + 1); });
     drawableIds = new Set();
     records.forEach((record, index) => {
-      if ((isCallout(record) || isArrow(record)) && results[index] && results[index].status === ANNOTATION_STATUS.VALID && !record.hidden) drawableIds.add(record.id);
+      if ((isCallout(record) || isArrow(record) || isDraw(record)) && results[index] && results[index].status === ANNOTATION_STATUS.VALID && !record.hidden) drawableIds.add(record.id);
     });
     if (selectedId && !recordById(selectedId)) selectedId = null;
     if (reattachId && !recordById(reattachId)) {
@@ -539,6 +658,10 @@ export function createAnnotationTool({
       reattachWhich = null;
     }
     if (arrowTail && cargoPoseKey(pack, arrowTail.anchor) !== arrowTail.poseKey) cancelArrowTail('The cargo changed, so the new arrow was cancelled.');
+    if (stroke) {
+      if (stroke.packId !== pack.id) cancelStroke();
+      else if (cargoPoseKey(pack, stroke.anchor) !== stroke.poseKey || layoutKey(pack) !== stroke.layoutKey) cancelStroke('The cargo changed, so the drawing was cancelled.');
+    }
     if (draft) {
       if (draft.editId && !recordById(draft.editId)) cancelDraft('The callout was removed, so editing was cancelled.');
       else if (draft.editId && draft.hiddenAtOpen === false && recordById(draft.editId).hidden === true) cancelDraft('The callout was hidden, so editing was cancelled.');
@@ -555,6 +678,15 @@ export function createAnnotationTool({
       cancelPinDrag('The cargo changed, so the move was cancelled.');
     }
     if (cardDrag && !recordById(cardDrag.id)) cancelCardDrag();
+    if (moveDrag) {
+      const record = recordById(moveDrag.id);
+      const result = resultById(moveDrag.id);
+      if (!record || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden || moveShapeOf(record) !== moveDrag.shape) {
+        cancelMoveDrag('The drawing changed, so the move was cancelled.');
+      } else if (moveDrag.packId !== pack.id || cargoPoseKey(pack, record.anchor) !== moveDrag.poseKey || layoutKey(pack) !== moveDrag.layoutKey) {
+        cancelMoveDrag('The cargo changed, so the move was cancelled.');
+      }
+    }
     if (lastDeleted && lastDeleted.packId !== pack.id) clearDeleted();
     visDirty = true;
     renderPanel();
@@ -570,6 +702,7 @@ export function createAnnotationTool({
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
         sessionEpoch += 1;
         showMode = 'all'; // the view mode ends with the Load Plan session it belonged to
+        cancelMoveDrag();
         if (panelOpen || selectedId || draft || records.length) resetSession();
         return;
       }
@@ -580,10 +713,12 @@ export function createAnnotationTool({
         ensureLoop();
       }
       if (changes._undo || changes._redo) {
+        if (moveDrag) cancelMoveDrag('Undo or redo cancelled the move.');
         if (pinDrag) cancelPinDrag('Undo or redo cancelled the move.');
         if (cardDrag) cancelCardDrag();
         if (reattachId) cancelReattach('Undo or redo cancelled the re-attach.');
         if (arrowTail) cancelArrowTail('Undo or redo cancelled the new arrow.');
+        if (stroke) cancelStroke('Undo or redo cancelled the drawing.');
       }
       // Selecting cargo (or clicking empty space) deselects the annotation; our own clearing is not that.
       if (Object.prototype.hasOwnProperty.call(changes, 'selectedInstanceIds') && !selfClearing && selectedId) {
@@ -611,10 +746,14 @@ export function createAnnotationTool({
   function destroy() {
     resetSession();
     if (doc) doc.removeEventListener('keydown', onKeyDownCapture, true);
+    cancelMoveDrag();
+    releaseHeldPointer();
     if (layerObserver) layerObserver.disconnect();
     layerObserver = null;
     if (layerParts && layerParts.svg.parentNode) layerParts.svg.parentNode.removeChild(layerParts.svg);
     layerParts = null;
+    if (presentExit && presentExit.parentNode) presentExit.parentNode.removeChild(presentExit);
+    presentExit = null;
   }
 
   // ==========================================================================
@@ -660,6 +799,9 @@ export function createAnnotationTool({
    */
   function closePanel() {
     const wasOpen = panelOpen;
+    endPresent({ panel: false }); // the panel is closing, so nothing is brought back
+    cancelStroke();
+    cancelMoveDrag();
     cancelPinDrag();
     cancelCardDrag();
     if (draft) cancelDraft();
@@ -687,12 +829,18 @@ export function createAnnotationTool({
     rows.forEach(row => row.el.remove());
     rows.clear();
     syncButton();
+    applyViewGate();
     updateCursor();
     if (wasOpen) refocusViewportIfLost();
     return wasOpen;
   }
 
   function togglePanel() {
+    if (presenting) {
+      // The panel is hidden, not closed: the toolbar button brings it back (and the editing controls) rather than closing it.
+      endPresent();
+      return true;
+    }
     if (panelOpen) {
       closePanel();
       return false;
@@ -737,15 +885,31 @@ export function createAnnotationTool({
       notice(SHOW_OFF_HINT);
       return;
     }
+    cancelStroke();
+    cancelMoveDrag();
     if (draft) cancelDraft();
     cancelArrowTail();
     reattachId = null;
     reattachWhich = null;
     tool = tool === key ? null : key;
+    if (tool === 'draw') drawView = 'draw'; // arming Draw always starts in Draw mode
     hover = null;
     hoverDirty = true;
     press = null;
     selectedId = tool ? null : selectedId;
+    setStatus('', { sticky: true });
+    applyViewGate();
+    updateCursor();
+  }
+
+  /** Draw mode: a primary drag draws. Move View: it orbits, and no stroke can start. Switching ends any unfinished stroke. */
+  function setDrawView(mode) {
+    if (!DRAW_VIEWS.some(([key]) => key === mode) || tool !== 'draw' || mode === drawView) return;
+    cancelStroke();
+    drawView = mode;
+    hover = null;
+    hoverDirty = true;
+    applyViewGate();
     setStatus('', { sticky: true });
     updateCursor();
   }
@@ -762,7 +926,12 @@ export function createAnnotationTool({
   // SECTION: SCENE PICKING (the shared picker; click = place, drag = orbit)
   // ==========================================================================
   function onPointerDown(ev) {
-    if (!isActive() || ev.button !== 0) return;
+    if (!isActive()) return;
+    if (tool === 'draw') {
+      beginStroke(ev);
+      return;
+    }
+    if (ev.button !== 0) return;
     press = { x: ev.clientX, y: ev.clientY };
     lastClient = { x: ev.clientX, y: ev.clientY };
     keyboardModality = false;
@@ -778,19 +947,22 @@ export function createAnnotationTool({
     // A pointer interaction that was part of placing an arrow's head is cancelled with the arrow; nothing is written.
     if (press && arrowTail) cancelArrowTail('Placement cancelled.');
     press = null;
+    // The Editor also routes lostpointercapture here. After a release the stroke is already gone, so that trailing
+    // event finds nothing; during a stroke it means the pointer was taken away.
+    if (stroke) cancelStroke('Drawing cancelled.');
   }
 
   function onPointerUp(ev) {
-    if (!isActive() || !press) return;
+    if (!isActive() || !press) return; // a stroke ends on its own window listener, never here
     const moved = Math.hypot(ev.clientX - press.x, ev.clientY - press.y);
     press = null;
     if (ev.button !== 0 || moved > CLICK_DRAG_THRESHOLD_PX) return; // an orbit/pan drag, not a click
     handleSceneClick(ev.clientX, ev.clientY);
   }
 
-  /** A double-click must neither start two callouts nor focus the camera on cargo. */
+  /** A double-click must neither start two callouts nor focus the camera on cargo, and the same on a saved stroke's line (two clicks select, then deselect it). */
   function onDoubleClick(ev) {
-    if (!isActive()) return false;
+    if (!isActive() && !(ev && drawHitReachable() && drawHitIdAt(ev.clientX, ev.clientY))) return false;
     if (ev && typeof ev.preventDefault === 'function') ev.preventDefault();
     return true;
   }
@@ -834,6 +1006,343 @@ export function createAnnotationTool({
   }
 
   // ==========================================================================
+  // SECTION: DRAW / MOVE VIEW (who owns the camera's rotation)
+  // ==========================================================================
+  /**
+   * Whether a primary drag on the canvas should draw right now (so OrbitControls must not rotate on it), or a press a saved drawing
+   * took is still down (a drag on its line carries the drawing, so it must not also orbit). Derived, never stored.
+   */
+  function drawGateWanted() {
+    if (heldPointer && inEditor()) return true;
+    return toolShown && panelOpen && tool === 'draw' && drawView === 'draw' && inEditor() && !sceneOwnedElsewhere() && !blockedReason();
+  }
+
+  /**
+   * Make OrbitControls' rotation match the gate: off while a primary drag draws or carries a drawing, back exactly as found otherwise. Derived
+   * and idempotent: called after every state change that could matter and on every frame, so it also catches a controls
+   * instance that was replaced. It touches `enableRotate` and nothing else (zoom, pan, damping, mouse and touch maps and
+   * cargo dragging are left alone). What it restores is what it found: a rotation that was already off stays off, and a
+   * value another owner has changed since is theirs.
+   */
+  function applyViewGate() {
+    const controls = typeof SceneManager.getControls === 'function' ? SceneManager.getControls() : null;
+    if (viewGate && viewGate.controls !== controls) releaseViewGate(); // the instance this gate held is gone
+    if (controls && drawGateWanted()) {
+      if (!viewGate) viewGate = { controls, prior: controls.enableRotate };
+      if (controls.enableRotate !== false) controls.enableRotate = false;
+    } else if (viewGate) {
+      releaseViewGate();
+    }
+  }
+
+  function releaseViewGate() {
+    const gate = viewGate;
+    viewGate = null;
+    if (!gate) return;
+    if (gate.controls.enableRotate === false && gate.prior !== false) gate.controls.enableRotate = gate.prior;
+  }
+
+  // ==========================================================================
+  // SECTION: FREEHAND STROKE (armed -> stroking -> frozen -> committing; Escape and every interruption -> armed)
+  // ==========================================================================
+  /**
+   * Fingerprint of everything that decides where a stroke may sit: the truck and every cargo item's identity, Case, pose and
+   * visibility. A stroke records it when it starts and is dropped if it changes, so what is saved is what was drawn over.
+   */
+  function layoutKey(pack) {
+    const cargo = (pack.cases || []).map(inst => (inst
+      ? `${inst.id}:${inst.caseId}:${inst.placement || ''}:${inst.hidden ? 1 : 0}:${JSON.stringify(inst.transform || null)}` : ''));
+    return `${JSON.stringify(pack.truck || null)}|${cargo.join(';')}`;
+  }
+
+  /**
+   * Start a stroke on a primary press, or refuse quietly. A press with a modifier key is navigation (OrbitControls pans on it) and
+   * never draws; Move View never draws; a second finger or another pointer while one stroke is under way ends that stroke.
+   */
+  function beginStroke(ev) {
+    if (stroke) {
+      if (ev.pointerId !== stroke.pointerId) cancelStroke('Drawing cancelled.');
+      return;
+    }
+    if (drawView !== 'draw' || ev.button !== 0 || ev.isPrimary === false || ev.shiftKey || ev.ctrlKey || ev.metaKey) return;
+    lastClient = { x: ev.clientX, y: ev.clientY };
+    keyboardModality = false;
+    const reason = blockedReason();
+    if (reason) {
+      notice(blockedMessage(reason));
+      return;
+    }
+    if (sceneOwnedElsewhere()) return;
+    if (showMode === 'off') {
+      notice(SHOW_OFF_HINT);
+      return;
+    }
+    const pack = currentPack();
+    if (!pack) return;
+    if (provisionalPoseActive()) {
+      notice(HELD_POSE_NOTICE);
+      return;
+    }
+    if (records.length >= MAX_ANNOTATIONS_PER_PACK) {
+      notice(`Limit of ${MAX_ANNOTATIONS_PER_PACK} annotations reached. Delete one to add another.`, 'warning');
+      return;
+    }
+    const outcome = {};
+    const picked = picker.pickDraw(ev.clientX, ev.clientY, outcome);
+    const surface = picked ? picker.beginDrawSurface(picked, pack) : null;
+    if (!surface) {
+      notice(drawRefusal(outcome.blocked) || (picked ? UNSUPPORTED_DRAW_NOTICE : 'Nothing to draw on there. Drag across cargo, the truck or the ground.'));
+      return;
+    }
+    clearCargoSelection();
+    selectedId = null;
+    clearDeleted();
+    const startWorld = picked.world;
+    stroke = {
+      phase: 'stroking', pointerId: ev.pointerId, pointerType: ev.pointerType || 'mouse', packId: pack.id, epoch: sessionEpoch,
+      anchor: picked.anchor, face: surface.face, surface, candidates: surface.patches.slice(),
+      poseKey: cargoPoseKey(pack, picked.anchor), layoutKey: layoutKey(pack), style: { ...drawStyle },
+      raw: [], // surface-local [u, v, ...] after the first vertex, which is the anchor
+      world: [startWorld.x, startWorld.y, startWorld.z], // world units, every vertex including the first, for the preview
+      last: { u: surface.first.u, v: surface.first.v }, lastClient: { x: ev.clientX, y: ev.clientY },
+      queued: { x: ev.clientX, y: ev.clientY }, lastSample: { x: ev.clientX, y: ev.clientY },
+      pending: [], frozen: null, previewKey: '', canvas: getCanvas(),
+    };
+    attachStrokeListeners();
+    const canvas = stroke.canvas;
+    try {
+      if (canvas && typeof canvas.setPointerCapture === 'function') canvas.setPointerCapture(ev.pointerId);
+    } catch (_) {
+      // Capture is a convenience; the window listeners still end the stroke.
+    }
+    hover = null;
+    setStatus('', { sticky: true });
+    visDirty = true;
+    ensureLoop();
+    updateCursor();
+  }
+
+  function attachStrokeListeners() {
+    window.addEventListener('pointermove', onStrokeMove);
+    window.addEventListener('pointerup', onStrokeUp);
+    window.addEventListener('pointercancel', onStrokeCancel);
+    window.addEventListener('pointerdown', onStrokeOtherPointer, true);
+    window.addEventListener('blur', onStrokeInterrupted);
+    if (doc) doc.addEventListener('visibilitychange', onStrokeVisibility);
+  }
+
+  function detachStrokeListeners() {
+    window.removeEventListener('pointermove', onStrokeMove);
+    window.removeEventListener('pointerup', onStrokeUp);
+    window.removeEventListener('pointercancel', onStrokeCancel);
+    window.removeEventListener('pointerdown', onStrokeOtherPointer, true);
+    window.removeEventListener('blur', onStrokeInterrupted);
+    if (doc) doc.removeEventListener('visibilitychange', onStrokeVisibility);
+  }
+
+  function onStrokeOtherPointer(ev) {
+    if (stroke && ev.pointerId !== stroke.pointerId) cancelStroke('Drawing cancelled.');
+  }
+
+  function onStrokeInterrupted() {
+    if (stroke) cancelStroke('Drawing cancelled.');
+  }
+
+  function onStrokeVisibility() {
+    if (stroke && doc && doc.visibilityState === 'hidden') cancelStroke('Drawing cancelled.');
+  }
+
+  function onStrokeCancel(ev) {
+    if (stroke && ev.pointerId === stroke.pointerId) cancelStroke('Drawing cancelled.');
+  }
+
+  function onStrokeMove(ev) {
+    if (!stroke || ev.pointerId !== stroke.pointerId || stroke.phase === 'committing') return;
+    // A button other than the primary joining the press, or the primary no longer held (the release was lost), ends the stroke.
+    if (ev.pointerType === 'mouse' && ev.buttons !== 1) {
+      cancelStroke('Drawing cancelled.');
+      return;
+    }
+    stroke.lastClient = { x: ev.clientX, y: ev.clientY };
+    lastClient = stroke.lastClient;
+    if (stroke.phase !== 'stroking') return;
+    ev.preventDefault();
+    const coalesced = typeof ev.getCoalescedEvents === 'function' ? ev.getCoalescedEvents() : [];
+    (coalesced.length ? coalesced : [ev]).forEach(queueStrokeSample);
+  }
+
+  /** Keep a pointer position as a sample once it is far enough from the last kept one; the queue thins itself rather than grow. */
+  function queueStrokeSample(point) {
+    if (Math.hypot(point.clientX - stroke.queued.x, point.clientY - stroke.queued.y) < DRAW_SAMPLE_MIN_PX) return;
+    stroke.queued = { x: point.clientX, y: point.clientY };
+    stroke.pending.push(stroke.queued);
+    if (stroke.pending.length > DRAW_QUEUE_LIMIT) stroke.pending = stroke.pending.filter((_, i, all) => i % 2 === 1 || i === all.length - 1);
+  }
+
+  /** Verify queued samples against the scene, a bounded number per call. Stops at the first sample that freezes the stroke. */
+  function processStrokeQueue(budget) {
+    for (let done = 0; done < budget; done += 1) {
+      // A sample can freeze or cancel the stroke, so it is looked at again before each one.
+      if (!stroke || stroke.phase !== 'stroking' || !stroke.pending.length) break;
+      const next = stroke.pending.shift();
+      addStrokeSample(next.x, next.y);
+    }
+    if (stroke && stroke.phase !== 'stroking') stroke.pending.length = 0;
+  }
+
+  function addStrokeSample(x, y) {
+    if (Math.hypot(x - stroke.lastSample.x, y - stroke.lastSample.y) > DRAW_MAX_GAP_PX) {
+      freezeStroke('gap');
+      return;
+    }
+    if (stroke.raw.length / 2 >= DRAW_MAX_RAW_VERTICES) {
+      freezeStroke('limit');
+      return;
+    }
+    const sample = picker.sampleDrawSurface(stroke.surface, stroke.candidates, x, y);
+    if (sample.status === 'provisional') {
+      cancelStroke(HELD_POSE_NOTICE);
+    } else if (sample.status === 'ok') {
+      stroke.candidates = stroke.candidates.filter(patch => patchContains(patch, sample.u, sample.v));
+      stroke.raw.push(sample.u, sample.v);
+      stroke.world.push(sample.world.x, sample.world.y, sample.world.z);
+      stroke.last = { u: sample.u, v: sample.v };
+      stroke.lastSample = { x, y };
+    } else if (sample.status === 'edge') {
+      addEdgeExit(sample.u, sample.v);
+      freezeStroke('edge');
+    } else {
+      freezeStroke(sample.status === 'view' ? 'view' : 'blocked');
+    }
+  }
+
+  /**
+   * The stroke ran off its patch: end it exactly on the patch boundary, where the last segment crosses it, so a stroke that is
+   * drawn to a face's edge reaches that edge. The cut uses the exact outline (the 24-sided cap polygon for a drum). The point
+   * is quantized with the rest at save and stays within the footprint tolerance, which was sized for exactly this.
+   */
+  function addEdgeExit(u, v) {
+    let best = null;
+    stroke.candidates.forEach(patch => {
+      const outline = patchOutline(patch);
+      const clip = outline ? clipSegmentToConvex({ x: stroke.last.u, y: stroke.last.v }, { x: u, y: v }, outline) : null;
+      if (clip && (!best || clip.t1 > best.t1)) best = clip;
+    });
+    if (!best || best.t1 >= 1 || Math.hypot(best.b.x - stroke.last.u, best.b.y - stroke.last.v) < DRAW_EDGE_MIN_INCHES) return;
+    const world = picker.drawSurfaceWorld(stroke.surface, best.b.x, best.b.y, strokeExitWorld);
+    if (!world) return;
+    stroke.raw.push(best.b.x, best.b.y);
+    stroke.world.push(world.x, world.y, world.z);
+    stroke.last = { u: best.b.x, v: best.b.y };
+  }
+
+  function freezeStroke(reason) {
+    if (!stroke || stroke.phase !== 'stroking') return;
+    stroke.phase = 'frozen';
+    stroke.frozen = reason;
+    stroke.pending.length = 0;
+    visDirty = true;
+    setStatus(DRAW_FROZEN_TEXT[reason] || DRAW_FROZEN_TEXT.blocked, { sticky: true });
+  }
+
+  function onStrokeUp(ev) {
+    if (!stroke || ev.pointerId !== stroke.pointerId || stroke.phase === 'committing') return;
+    if (stroke.phase === 'stroking') {
+      queueStrokeSample({ clientX: ev.clientX, clientY: ev.clientY });
+      processStrokeQueue(DRAW_FLUSH_PICKS);
+    }
+    if (!stroke) return; // a flushed sample cancelled it
+    const finished = stroke;
+    finished.phase = 'committing';
+    endStroke();
+    commitStroke(finished);
+  }
+
+  /**
+   * Write the finished stroke, once, if everything it was drawn on is still as it was. Every rule about the stroke itself (that
+   * it is long enough, simple enough, within the limits, and still on its surface) is PackLibrary.addDraw's; this only checks that
+   * the session, the plan and the tool are still the ones the stroke belongs to.
+   */
+  function commitStroke(finished) {
+    const reason = blockedReason();
+    if (reason) {
+      notice(blockedMessage(reason));
+      return;
+    }
+    const pack = currentPack();
+    if (!pack || pack.id !== finished.packId || finished.epoch !== sessionEpoch || !toolShown || !panelOpen || tool !== 'draw' ||
+        drawView !== 'draw' || showMode === 'off' || sceneOwnedElsewhere() || provisionalPoseActive()) {
+      setStatus('The drawing was cancelled.');
+      return;
+    }
+    if (cargoPoseKey(pack, finished.anchor) !== finished.poseKey || layoutKey(pack) !== finished.layoutKey) {
+      setStatus('The cargo changed, so the drawing was cancelled.');
+      return;
+    }
+    if (!finished.raw.length) {
+      setStatus('Drag across a surface to draw.');
+      return;
+    }
+    const outcome = PackLibrary.addDraw(pack.id, {
+      anchor: finished.anchor, face: finished.face, rawPoints: finished.raw, color: finished.style.color, width: finished.style.width,
+      style: finished.style.style,
+    });
+    if (!outcome.ok) {
+      const refused = {
+        limit: [`Limit of ${MAX_ANNOTATIONS_PER_PACK} annotations reached. Delete one to add another.`, 'warning'],
+        'points-limit': ['This Load Plan has reached its drawing detail limit. Delete a drawing to add another.', 'warning'],
+        'too-short': ['That drawing is too short. Drag a little farther.', 'info'],
+        'too-complex': ['That drawing is too detailed to save as one stroke. Draw it in smaller pieces.', 'warning'],
+        unresolved: ['That drawing could not be placed on its surface, so it was not saved.', 'warning'],
+      }[outcome.reason];
+      if (refused) notice(refused[0], refused[1]);
+      else UIComponents.showToast('Could not save this drawing.', 'error', { title: 'Annotations' });
+      return;
+    }
+    clearDeleted();
+    hover = null;
+    hoverDirty = true;
+    // The saved drawing is not selected: the tool stays armed and the next drag starts another one.
+    visDirty = true;
+    setStatus('Drawing saved. Drag to draw another, or press Esc to finish.', { tone: 'success' });
+    refreshOverlay();
+  }
+
+  /** Drop the unfinished stroke without writing. Safe to call when none is under way. */
+  function cancelStroke(message = '') {
+    if (!stroke) return;
+    endStroke();
+    visDirty = true;
+    if (message) setStatus(message);
+    else renderPanel();
+    refreshOverlay();
+  }
+
+  /** Release everything a stroke holds. After this no pointer event can reach it, so none can bring it back. */
+  function endStroke() {
+    if (!stroke) return;
+    const { canvas, pointerId } = stroke;
+    detachStrokeListeners();
+    stroke = null;
+    try {
+      if (canvas && typeof canvas.releasePointerCapture === 'function' && canvas.hasPointerCapture(pointerId)) canvas.releasePointerCapture(pointerId);
+    } catch (_) {
+      // Already released.
+    }
+    updateCursor();
+  }
+
+  /** Each frame while a stroke is under way: a held pose ends it, then a bounded number of queued samples are verified. */
+  function advanceStroke() {
+    if (!stroke) return;
+    if (provisionalPoseActive()) {
+      cancelStroke(HELD_POSE_NOTICE);
+      return;
+    }
+    processStrokeQueue(DRAW_PICKS_PER_FRAME);
+  }
+
+  // ==========================================================================
   // SECTION: ARROW PLACEMENT (two clicks: tail, then head)
   // ==========================================================================
   /** The first click holds the tail as an unsaved gesture; the second saves one record. Nothing is written before that. */
@@ -862,7 +1371,7 @@ export function createAnnotationTool({
       notice('That point is too close to the tail. Click farther away to point the arrow.');
       return;
     }
-    const outcome = PackLibrary.addArrow(pack.id, { start: arrowTail.anchor, end: picked.anchor, color: arrowStyle.color, width: arrowStyle.width });
+    const outcome = PackLibrary.addArrow(pack.id, { start: arrowTail.anchor, end: picked.anchor, color: arrowStyle.color, width: arrowStyle.width, style: arrowStyle.style });
     if (!outcome.ok) {
       if (outcome.reason === 'too-short') {
         // Nothing was written and the tail stays: the owner can simply click farther away.
@@ -1296,7 +1805,7 @@ export function createAnnotationTool({
       return;
     }
     const record = recordById(id);
-    if (!currentPack() || !(isCallout(record) || isArrow(record))) return;
+    if (!currentPack() || !(isCallout(record) || isStyled(record))) return;
     // Hiding the callout whose editor is open closes that editor: nothing is saved, and unsaved edits are
     // only discarded after the owner agrees. Declining leaves the editor and the visibility untouched.
     if (!record.hidden && draft && draft.editId === id) {
@@ -1324,24 +1833,28 @@ export function createAnnotationTool({
     if (blockedReason()) return;
     const pack = currentPack();
     const record = recordById(id);
-    if (!pack || !(isCallout(record) || isArrow(record))) return;
+    if (!pack || !(isCallout(record) || isStyled(record))) return;
     clearDeleted();
-    const outcome = isArrow(record)
-      ? PackLibrary.updateArrow(pack.id, id, { hidden: !record.hidden })
-      : PackLibrary.updateCallout(pack.id, id, { hidden: !record.hidden });
-    if (!outcome.ok) UIComponents.showToast(`Could not change this ${isArrow(record) ? 'arrow' : 'callout'}.`, 'error', { title: 'Annotations' });
+    const patch = { hidden: !record.hidden };
+    let outcome;
+    if (isArrow(record)) outcome = PackLibrary.updateArrow(pack.id, id, patch);
+    else if (isDraw(record)) outcome = PackLibrary.updateDraw(pack.id, id, patch);
+    else outcome = PackLibrary.updateCallout(pack.id, id, patch);
+    const noun = isArrow(record) ? 'arrow' : (isDraw(record) ? 'drawing' : 'callout');
+    if (!outcome.ok) UIComponents.showToast(`Could not change this ${noun}.`, 'error', { title: 'Annotations' });
   }
 
   /**
-   * Change the look of arrows. With an arrow selected the change is written to that arrow alone (one record edit, ends
-   * untouched) and the defaults stay as they were; with none selected it sets the look of the next new arrows.
+   * Change the look of arrows (color, weight, line style). With an arrow selected the change is written to that arrow
+   * alone (one record edit, ends untouched) and the defaults stay as they were; with none selected it sets the look of the
+   * next new arrows and writes nothing.
    */
   function setArrowStyle(patch) {
     const record = recordById(selectedId);
     const editing = isArrow(record);
     // A selected arrow is edited on its own; only with none selected does this set what the next new arrows look like.
-    const next = { ...(editing ? record : arrowStyle), ...patch };
-    if (!next.color || !ARROW_WIDTHS.includes(next.width)) return;
+    const next = { ...(editing ? { ...record, style: lineStyleOf(record) } : arrowStyle), ...patch };
+    if (!next.color || !ARROW_WIDTHS.includes(next.width) || !LINE_STYLES.includes(next.style)) return;
     if (editing) {
       const reason = blockedReason();
       if (reason) {
@@ -1355,7 +1868,35 @@ export function createAnnotationTool({
       if (!outcome.ok) UIComponents.showToast('Could not change this arrow.', 'error', { title: 'Annotations' });
       return;
     }
-    arrowStyle = { color: next.color, width: next.width };
+    arrowStyle = { color: next.color, width: next.width, style: next.style };
+    renderPanel();
+    refreshOverlay();
+  }
+
+  /**
+   * Change the look of drawings (color, weight, line style). With a drawing selected the change is written to that drawing
+   * alone (one record edit, vertices untouched) and the defaults stay as they were; with none selected it sets the look of the
+   * next new drawings and writes nothing. Separate from the arrow defaults.
+   */
+  function setDrawStyle(patch) {
+    const record = recordById(selectedId);
+    const editing = isDraw(record);
+    const next = { ...(editing ? { ...record, style: lineStyleOf(record) } : drawStyle), ...patch };
+    if (!next.color || !DRAW_WIDTHS.includes(next.width) || !LINE_STYLES.includes(next.style)) return;
+    if (editing) {
+      const reason = blockedReason();
+      if (reason) {
+        notice(blockedMessage(reason));
+        return;
+      }
+      const pack = currentPack();
+      if (!pack) return;
+      clearDeleted();
+      const outcome = PackLibrary.updateDraw(pack.id, record.id, patch);
+      if (!outcome.ok) UIComponents.showToast('Could not change this drawing.', 'error', { title: 'Annotations' });
+      return;
+    }
+    drawStyle = { color: next.color, width: next.width, style: next.style };
     renderPanel();
     refreshOverlay();
   }
@@ -1426,6 +1967,8 @@ export function createAnnotationTool({
 
   function applyShowMode(mode) {
     if (mode === 'off') {
+      cancelStroke();
+      cancelMoveDrag();
       if (pinDrag) cancelPinDrag();
       if (cardDrag) cancelCardDrag();
       if (draft) cancelDraft();
@@ -1436,6 +1979,7 @@ export function createAnnotationTool({
       hover = null;
       press = null;
       selectedId = null;
+      applyViewGate();
       updateCursor();
     }
     showMode = mode;
@@ -1443,6 +1987,136 @@ export function createAnnotationTool({
     renderPanel();
     refreshOverlay();
     if (mode === 'off') refocusViewportIfLost();
+  }
+
+  // ==========================================================================
+  // SECTION: PRESENT (a viewing mode of this session: nothing in it writes)
+  // ==========================================================================
+  /** Why Present cannot start right now (the text to show), or '' when it can. */
+  function presentRefusal() {
+    const reason = blockedReason();
+    if (reason) return blockedMessage(reason);
+    if (sceneOwnedElsewhere()) return 'Finish measuring before presenting.';
+    // A live drag, gizmo stroke or held case is never abandoned or committed by starting Present: it is finished or cancelled first.
+    if (provisionalPoseActive()) return PRESENT_HELD_NOTICE;
+    if (stroke || pinDrag || cardDrag || editorDrag || reattachId || arrowTail) return PRESENT_BUSY_NOTICE;
+    return '';
+  }
+
+  /**
+   * The Present button. An armed tool with nothing in progress is simply put down; an unfinished stroke, arrow, re-attach or
+   * drag is refused. An editor with unsaved changes is only closed after the owner agrees, and declining changes nothing.
+   */
+  function requestPresent() {
+    if (presenting || !panelOpen || !toolShown || showMode === 'off') return;
+    const refusal = presentRefusal();
+    if (refusal) {
+      notice(refusal);
+      return;
+    }
+    if (draft && draftIsDirty()) {
+      const epoch = sessionEpoch;
+      const openDraft = draft;
+      confirmDiscard({
+        title: 'Discard changes?',
+        message: 'Presenting closes the open callout editor and discards its unsaved changes.',
+        okLabel: 'Discard and present',
+      }).then(confirmed => {
+        // The answer belongs to the session and editor that asked: a Load Plan change, a different editor or Show Off in the
+        // meantime makes it void, and anything that began meanwhile still refuses.
+        if (!confirmed || epoch !== sessionEpoch || draft !== openDraft || presenting || showMode === 'off') return;
+        const late = presentRefusal();
+        if (late) notice(late);
+        else beginPresent();
+      });
+      return;
+    }
+    beginPresent();
+  }
+
+  function beginPresent() {
+    if (presenting || !panelOpen || !toolShown || !inEditor() || !currentPack() || presentRefusal()) return;
+    if (draft) cancelDraft();
+    cancelMoveDrag();
+    tool = null;
+    hover = null;
+    press = null;
+    presenting = true;
+    CaseScene.setHover(null);
+    if (typeof els.resetCargoHover === 'function') els.resetCargoHover();
+    applyViewGate();
+    updateCursor();
+    if (els.panel) els.panel.hidden = true; // hidden, not closed: its place, size and state come back as they were
+    syncInputOwnership();
+    const exit = presentExitControl();
+    if (exit) {
+      exit.hidden = false;
+      exit.focus({ preventScroll: true });
+    }
+    setStatus('', { sticky: true });
+    visDirty = true;
+    refreshOverlay();
+  }
+
+  /**
+   * Leave Present: the Exit control goes, the layer takes input again and the panel returns where it was. Nothing was written, so
+   * there is nothing to undo; the selection, Show and Callouts settings are what they were. `panel: false` leaves the panel hidden
+   * (it is closing); `focus` puts keyboard focus back on the Present button. Returns whether Present was on.
+   */
+  function endPresent({ panel = true, focus = false } = {}) {
+    if (!presenting) return false;
+    const exitHadFocus = Boolean(presentExit && doc && presentExit.contains(doc.activeElement));
+    presenting = false;
+    if (presentExit) presentExit.hidden = true;
+    syncInputOwnership();
+    visDirty = true;
+    if (!panel) return true;
+    if (panelOpen && els.panel) els.panel.hidden = false;
+    renderPanel();
+    refreshOverlay();
+    const button = panelParts && panelParts.presentButton;
+    if ((focus || exitHadFocus) && button && !button.disabled && panelOpen) button.focus({ preventScroll: true });
+    else refocusViewportIfLost();
+    return true;
+  }
+
+  /** The "Exit presentation view" button, built the first time Present starts. It is a sibling of the layer, which is inert while presenting. */
+  function presentExitControl() {
+    if (presentExit && presentExit.isConnected) return presentExit;
+    const host = els.layer && els.layer.parentElement;
+    if (!host || !doc) return null;
+    const button = htmlEl('button', 'tp3d-annot-present-exit');
+    button.type = 'button';
+    button.hidden = true;
+    button.title = `${PRESENT_EXIT_LABEL} (Esc)`;
+    button.append(iconEl('fa-solid fa-xmark'), htmlEl('span', '', PRESENT_EXIT_LABEL));
+    button.addEventListener('click', () => endPresent({ focus: true }));
+    host.appendChild(button);
+    presentExit = button;
+    return button;
+  }
+
+  /**
+   * Bottom center of the layer, lifted over whatever already holds that spot (the AutoPack Results card or its restore button, the
+   * review button): a blocker only ever moves it up, so it stays where the owner looks for it, clear of every control that matters.
+   */
+  function placePresentExit(blockers, viewport) {
+    const button = presentExitControl();
+    if (!button) return;
+    if (button.hidden) button.hidden = false;
+    const w = button.offsetWidth;
+    const h = button.offsetHeight;
+    if (!w || !h) return;
+    let rect = { x: (viewport.width - w) / 2, y: viewport.height - PRESENT_EXIT_BOTTOM_PX - h, w, h };
+    for (let pass = 0; pass <= blockers.length; pass += 1) {
+      const current = rect;
+      const hit = blockers.find(box => overlapArea(current, box) > 0);
+      if (!hit) break;
+      rect = { ...current, y: hit.y - PRESENT_EXIT_GAP_PX - h };
+    }
+    rect = clampRect(rect, viewport);
+    const transform = `translate(${rect.x.toFixed(1)}px, ${rect.y.toFixed(1)}px)`;
+    if (button.style.transform !== transform) button.style.transform = transform;
   }
 
   /**
@@ -1463,6 +2137,7 @@ export function createAnnotationTool({
     if (draft && draft.editId === id) cancelDraft();
     if (pinDrag && pinDrag.id === id) cancelPinDrag();
     if (cardDrag && cardDrag.id === id) cancelCardDrag();
+    if (moveDrag && moveDrag.id === id) cancelMoveDrag();
     if (reattachId === id) {
       reattachId = null;
       reattachWhich = null;
@@ -1504,7 +2179,7 @@ export function createAnnotationTool({
       setStatus(outcome.reason === 'limit' ? 'The annotation limit is reached, so it could not be restored.' : 'It could not be restored.');
       return;
     }
-    if (pending.record.type === ANNOTATION_TYPE_CALLOUT || pending.record.type === ANNOTATION_TYPE_ARROW) adoptSelection(pending.record.id);
+    if (pending.record.type === ANNOTATION_TYPE_CALLOUT || pending.record.type === ANNOTATION_TYPE_ARROW || pending.record.type === ANNOTATION_TYPE_DRAW) adoptSelection(pending.record.id);
     setStatus('Restored.', { tone: 'success' });
   }
 
@@ -1784,6 +2459,429 @@ export function createAnnotationTool({
   }
 
   // ==========================================================================
+  // SECTION: DRAWING SELECT + MOVE (a saved stroke is carried rigidly along the surface it is on)
+  // ==========================================================================
+  /**
+   * Whether a saved stroke may take a press right now. Derived, never stored: no armed tool or re-attach
+   * (those own the canvas gestures), no unsaved stroke, open editor or other drag, no Present, no Measurement, not Show Off and
+   * not paused. Each of those either owns the pointer or leaves the strokes out of reach.
+   */
+  function drawHitReachable() {
+    return toolShown && inEditor() && !tool && !reattachId && !stroke && !draft && !pinDrag && !cardDrag &&
+      !presenting && !sceneOwnedElsewhere() && showMode !== 'off' && !blockedReason();
+  }
+
+  /** The same, and no move already under way: what a new press on a stroke needs. */
+  function drawHitWanted() {
+    return !moveDrag && drawHitReachable();
+  }
+
+  /** Shift, Ctrl or Cmd: OrbitControls pans on a primary press that carries any of them, so it is never a stroke gesture. */
+  function navigationKeys(ev) {
+    return Boolean(ev && (ev.shiftKey || ev.ctrlKey || ev.metaKey));
+  }
+
+  /**
+   * The saved stroke whose line is at a client position, or ''. A stroke is tested on the screen geometry its last projection already
+   * traced (the extent of its view), so nothing is projected or allocated here: a stroke is skipped by its padded bounding box before
+   * any of its segments is read, so a press or a hover costs one comparison per stroke plus a scan of the strokes under the pointer.
+   * Only what the overlay shows as clear can be taken (valid, shown, in front and measured), and where lines cross the one painted on
+   * top wins, as it looks: the views are in the order their groups were added to the SVG.
+   */
+  function drawHitIdAt(clientX, clientY, pointerType = 'mouse') {
+    if (!drawViews.size || !els.layer) return '';
+    const rect = els.layer.getBoundingClientRect();
+    const x = clientX - rect.left;
+    const y = clientY - rect.top;
+    const reach = DRAW_HIT_REACH_PX[pointerType] || DRAW_HIT_REACH_PX.mouse;
+    let found = '';
+    drawViews.forEach((view, id) => {
+      const shape = view.extent;
+      if (!view.shown || !view.front || !view.measured || !shape.count) return;
+      if (x < shape.left - reach || x > shape.right + reach || y < shape.top - reach || y > shape.bottom + reach) return;
+      if (!drawableIds.has(id) || !isShownByMode(id)) return;
+      if (nearTrace(shape, x, y, reach)) found = id;
+    });
+    return found;
+  }
+
+  /** Whether (x, y) is within `reach` of a traced stroke: its points are x, y pairs, and a NaN pair ends a sub-path. A dot is one point twice. */
+  function nearTrace(shape, x, y, reach) {
+    const xy = shape.xy;
+    const limit = reach * reach;
+    let ax = NaN;
+    let ay = NaN;
+    for (let i = 0; i < shape.count; i += 2) {
+      const bx = xy[i];
+      const by = xy[i + 1];
+      if (Number.isNaN(bx)) {
+        ax = NaN;
+        continue;
+      }
+      if (!Number.isNaN(ax)) {
+        const dx = bx - ax;
+        const dy = by - ay;
+        const len = dx * dx + dy * dy;
+        let t = len > 0 ? ((x - ax) * dx + (y - ay) * dy) / len : 0;
+        t = t < 0 ? 0 : (t > 1 ? 1 : t);
+        const ex = ax + t * dx - x;
+        const ey = ay + t * dy - y;
+        if (ex * ex + ey * ey <= limit) return true;
+      }
+      ax = bx;
+      ay = by;
+    }
+    return false;
+  }
+
+  /**
+   * The Editor's canvas pointerdown asks first: does a saved stroke's line take this press? Only a plain primary press does (Shift,
+   * Ctrl and Cmd are camera navigation, the other buttons orbit and pan, and a second finger is a pinch). The press reaches the canvas
+   * natively, so OrbitControls has read it already (its listener is on the same canvas and runs first): what keeps the camera still is
+   * the rotation gate held until this pointer lifts, never the Editor's early return. True when the stroke takes the press: nothing
+   * below it may select, drag or grab for it.
+   */
+  function claimPress(ev) {
+    if (!ev) return false;
+    if (ev === interruptEvent) { // the finger that ended a move is a camera finger now
+      interruptEvent = null;
+      return true;
+    }
+    if (ev.button !== 0 || ev.isPrimary === false || navigationKeys(ev) || (ev.pointerType !== 'touch' && ev.buttons !== 1)) return false;
+    if (heldPointer || !drawHitWanted()) return false;
+    const id = drawHitIdAt(ev.clientX, ev.clientY, ev.pointerType);
+    return Boolean(id) && beginDrawPress(ev, id);
+  }
+
+  /** Whether the pointer is one whose press a saved stroke took and has not yet let go: the Editor's hover and cargo handling leave it alone. */
+  function ownsPointer(ev) {
+    return Boolean(heldPointer && ev && ev.pointerId === heldPointer.pointerId);
+  }
+
+  /** Whether the pointer is over a stroke's line that a plain press would take (for the grab cursor); touch has no hover. */
+  function hoverDrawing(ev) {
+    if (!ev || heldPointer || ev.pointerType === 'touch' || navigationKeys(ev) || !drawHitWanted()) return false;
+    return Boolean(drawHitIdAt(ev.clientX, ev.clientY, ev.pointerType));
+  }
+
+  function snapInches(value) {
+    return Math.round(value * MOVE_GRID_STEPS) / MOVE_GRID_STEPS + 0;
+  }
+
+  /** What fixes a stroke's place: the surface it is on, the face and every vertex (a style edit leaves it alone). */
+  function moveShapeOf(record) {
+    return JSON.stringify([record.anchor, record.face, record.points]);
+  }
+
+  /**
+   * A plain primary press that a saved stroke's line took (see claimPress). Nothing is written or selected here: a release without a
+   * drag selects the stroke, a drag past the threshold carries the whole stroke along the plane it is on. The press position on that
+   * plane is the baseline every later position is measured from, never an accumulated delta. A stroke that cannot be carried right
+   * now (a held pose, a surface that cannot be read) still takes the press, so no cargo under it is touched; its release selects it
+   * or explains why it cannot be.
+   */
+  function beginDrawPress(ev, id) {
+    const record = recordById(id);
+    const result = resultById(id);
+    const pack = currentPack();
+    const target = getCanvas();
+    if (!pack || !target || !isDraw(record) || !result || result.status !== ANNOTATION_STATUS.VALID || record.hidden || !isShownByMode(id)) return false;
+    keyboardModality = false;
+    holdPointer(ev);
+    const surface = provisionalPoseActive() ? null : picker.beginDrawSurface({ anchor: record.anchor, face: record.face }, pack);
+    const base = surface ? picker.sampleDrawPlane(surface, ev.clientX, ev.clientY) : null;
+    const view = drawViews.get(id);
+    const movable = Boolean(surface && view && base && base.status === 'ok');
+    moveDrag = {
+      id, pointerId: ev.pointerId, pointerType: ev.pointerType || 'mouse', startX: ev.clientX, startY: ev.clientY, lastX: ev.clientX, lastY: ev.clientY, target,
+      movable, stray: false, moved: false, dirty: false, packId: pack.id, epoch: sessionEpoch, surface, base: movable ? { u: base.u, v: base.v } : null,
+      shape: moveShapeOf(record), poseKey: cargoPoseKey(pack, record.anchor), layoutKey: layoutKey(pack), poseStamp: view ? view.poseStamp : 0,
+      du: 0, dv: 0, rev: 0, valid: true, reason: '', kind: 'ok', verdictKey: '',
+    };
+    lastClient = { x: ev.clientX, y: ev.clientY };
+    attachMoveListeners(target);
+    ensureLoop();
+    return true;
+  }
+
+  function attachMoveListeners(target) {
+    window.addEventListener('pointermove', onMoveDragMove);
+    window.addEventListener('pointerup', onMoveDragUp);
+    window.addEventListener('pointercancel', onMoveDragCancel);
+    window.addEventListener('blur', onMoveDragInterrupted);
+    if (doc) doc.addEventListener('visibilitychange', onMoveDragVisibility);
+    if (target) target.addEventListener('lostpointercapture', onMoveDragLost);
+  }
+
+  function detachMoveListeners(target) {
+    window.removeEventListener('pointermove', onMoveDragMove);
+    window.removeEventListener('pointerup', onMoveDragUp);
+    window.removeEventListener('pointercancel', onMoveDragCancel);
+    window.removeEventListener('blur', onMoveDragInterrupted);
+    if (doc) doc.removeEventListener('visibilitychange', onMoveDragVisibility);
+    if (target) target.removeEventListener('lostpointercapture', onMoveDragLost);
+  }
+
+  /**
+   * Keep the camera's rotation off from a press a saved stroke took until that pointer lifts, however the move ends meanwhile (Escape, a
+   * blur, a changed plan): a pointer still down is a gesture OrbitControls already began, and it would start rotating the moment the gate
+   * lifted. The window sees every pointer event first (capture), so a stale hold or a second finger is dealt with before OrbitControls
+   * reads that press.
+   */
+  function holdPointer(ev) {
+    releaseHeldPointer();
+    heldPointer = { pointerId: ev.pointerId, pointerType: ev.pointerType || 'mouse' };
+    for (const type of HELD_POINTER_EVENTS) window.addEventListener(type, onHeldPointer, { capture: true, passive: true });
+    applyViewGate();
+  }
+
+  function releaseHeldPointer() {
+    if (!heldPointer) return;
+    heldPointer = null;
+    for (const type of HELD_POINTER_EVENTS) window.removeEventListener(type, onHeldPointer, { capture: true });
+    applyViewGate();
+  }
+
+  function onHeldPointer(ev) {
+    const held = heldPointer;
+    if (!held) return;
+    if (ev.type === 'pointerdown') {
+      if (ev.pointerId === held.pointerId) { // the id came round again: the end of the old press was lost, so its move is abandoned, never finished by this press
+        if (moveDrag) cancelMoveDrag('Move cancelled.');
+        releaseHeldPointer();
+        return;
+      }
+      // A different pointer pressed. The gate is not per pointer and the held press may still be physically down, so this is an ownership
+      // conflict: the move ends without a write and the gate lifts BEFORE OrbitControls reads this press, which it then takes natively.
+      if (moveDrag) cancelMoveDrag('Move cancelled.');
+      // A second finger is a pinch with the first one OrbitControls already tracks, so this same press must not start a cargo drag either;
+      // a pointer of another kind is an ordinary fresh press, left to the Editor as ever.
+      if (ev.pointerType === 'touch' && held.pointerType === 'touch') interruptEvent = ev;
+      releaseHeldPointer();
+      return;
+    }
+    if (ev.pointerId !== held.pointerId) return;
+    if (ev.type === 'pointermove') {
+      if (ev.pointerType !== 'touch' && ev.buttons === 0) releaseHeldPointer(); // released where no event could say so
+      return;
+    }
+    releaseHeldPointer(); // pointerup or pointercancel
+  }
+
+  function onMoveDragInterrupted() {
+    if (moveDrag) cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragVisibility() {
+    if (moveDrag && doc && doc.visibilityState === 'hidden') cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragCancel(ev) {
+    if (moveDrag && ev.pointerId === moveDrag.pointerId) cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragLost(ev) {
+    if (moveDrag && ev.pointerId === moveDrag.pointerId) cancelMoveDrag('Move cancelled.');
+  }
+
+  function onMoveDragMove(ev) {
+    const drag = moveDrag;
+    if (!drag || ev.pointerId !== drag.pointerId) return;
+    // A button other than the primary joining the press (a pen's barrel button included), or the primary no longer held (the release
+    // was lost), ends the move.
+    if (ev.pointerType !== 'touch' && ev.buttons !== 1) {
+      cancelMoveDrag('Move cancelled.');
+      return;
+    }
+    drag.lastX = ev.clientX;
+    drag.lastY = ev.clientY;
+    lastClient = { x: ev.clientX, y: ev.clientY };
+    if (!drag.moved) {
+      if (Math.hypot(ev.clientX - drag.startX, ev.clientY - drag.startY) < PIN_DRAG_THRESHOLD_PX) return;
+      if (!drag.movable) { // a stroke that cannot be carried does not take a drag as a click either
+        drag.stray = true;
+        return;
+      }
+      drag.moved = true;
+      drag.rev = 1;
+      try {
+        if (drag.target && typeof drag.target.setPointerCapture === 'function') drag.target.setPointerCapture(ev.pointerId);
+      } catch (_) {
+        // Capture is a convenience; the window listeners still end the move.
+      }
+      CaseScene.setHover(null);
+      updateCursor();
+      renderPanel();
+    }
+    ev.preventDefault();
+    drag.dirty = true;
+  }
+
+  /**
+   * Where the pointer is on the stroke's own plane and whether the WHOLE stroke may sit there. The offset is measured from the press
+   * and snapped to the grid; the verdict is the writer's own (a valid record, and every vertex on the one cargo face, cap, floor or
+   * wall patch it belongs to), asked without writing. An unreadable position (the ray misses the plane) is a position the stroke
+   * cannot take. `provisional` means the Editor now holds a scene-only pose.
+   */
+  function judgeMove(drag, x, y) {
+    const sample = picker.sampleDrawPlane(drag.surface, x, y);
+    if (sample.status === 'provisional') return { status: 'provisional' };
+    if (sample.status !== 'ok') return { status: 'off', du: drag.du, dv: drag.dv, valid: false, reason: 'view' };
+    const du = snapInches(sample.u - drag.base.u);
+    const dv = snapInches(sample.v - drag.base.v);
+    const verdict = PackLibrary.checkDrawMove(drag.packId, drag.id, du, dv);
+    return { status: 'ok', du, dv, valid: Boolean(verdict.ok), reason: verdict.ok ? '' : verdict.reason };
+  }
+
+  /** Take a verdict into the live move: the preview geometry follows the offset, and the panel line follows the kind of verdict. */
+  function applyMoveJudgement(drag, judged) {
+    if (judged.du !== drag.du || judged.dv !== drag.dv) {
+      drag.du = judged.du;
+      drag.dv = judged.dv;
+      drag.rev += 1;
+    }
+    drag.valid = judged.valid;
+    drag.reason = judged.reason;
+    const kind = judged.valid ? 'ok' : (judged.reason === 'view' ? 'view' : 'off');
+    if (kind !== drag.kind) {
+      drag.kind = kind;
+      renderPanel();
+    }
+  }
+
+  /** Each frame while a stroke is carried: anything that changed under it ends the move, then the pointer's latest position is judged once. */
+  function advanceMove() {
+    const drag = moveDrag;
+    if (!drag || !drag.movable) return;
+    if (provisionalPoseActive()) {
+      cancelMoveDrag(HELD_POSE_NOTICE);
+      return;
+    }
+    const view = drawViews.get(drag.id);
+    if (!view || !drawableIds.has(drag.id) || !isShownByMode(drag.id)) {
+      cancelMoveDrag('The drawing changed, so the move was cancelled.');
+      return;
+    }
+    if (view.poseStamp !== drag.poseStamp) {
+      cancelMoveDrag('The cargo changed, so the move was cancelled.');
+      return;
+    }
+    if (!drag.moved || !drag.dirty) return;
+    drag.dirty = false;
+    const judged = judgeMove(drag, drag.lastX, drag.lastY);
+    if (judged.status === 'provisional') cancelMoveDrag(HELD_POSE_NOTICE);
+    else applyMoveJudgement(drag, judged);
+  }
+
+  function onMoveDragUp(ev) {
+    const finished = moveDrag;
+    if (!finished || ev.pointerId !== finished.pointerId) return;
+    // The release position decides, not the last frame's: judged on the finished gesture, which is cleared before anything below
+    // can notify, so no trailing cancellation can reach a move that already ended.
+    const judged = finished.moved ? judgeMove(finished, ev.clientX, ev.clientY) : null;
+    endMoveDrag();
+    if (!finished.moved) { // an ordinary click
+      clickDrawing(finished);
+      return;
+    }
+    suppressNextClick();
+    commitMove(finished, judged);
+    refreshOverlay(); // the moved drawing, or the one a refused move left where it was, is on screen now rather than a frame later
+  }
+
+  /** A press that never became a drag is a click: it selects the stroke like its list row does (or deselects it, if it already was). Nothing is written. */
+  function clickDrawing(finished) {
+    if (finished.stray || !recordById(finished.id) || !drawableIds.has(finished.id) || !drawHitWanted()) return;
+    select(finished.id, { toggle: true });
+    refocusViewportIfLost();
+  }
+
+  /**
+   * Write the finished move, once, if everything it was measured against is still as it was. Whether the moved stroke is valid and
+   * still sits wholly on its surface is PackLibrary.moveDraw's rule; this only checks the session, the plan and the tool are still
+   * the ones the move belongs to, and explains a refusal. A refused or cancelled move leaves the stored stroke exactly as it was.
+   */
+  function commitMove(finished, judged) {
+    const reason = blockedReason();
+    if (reason) {
+      notice(blockedMessage(reason));
+      return;
+    }
+    const pack = currentPack();
+    const record = recordById(finished.id);
+    if (!pack || pack.id !== finished.packId || finished.epoch !== sessionEpoch || !toolShown || showMode === 'off' || presenting ||
+        sceneOwnedElsewhere() || provisionalPoseActive() || !record || moveShapeOf(record) !== finished.shape) {
+      setStatus('The drawing changed, so the move was cancelled.');
+      return;
+    }
+    if (cargoPoseKey(pack, record.anchor) !== finished.poseKey || layoutKey(pack) !== finished.layoutKey) {
+      setStatus('The cargo changed, so the move was cancelled.');
+      return;
+    }
+    if (!judged || judged.status !== 'ok' || !judged.valid) {
+      notice(DRAW_MOVE_REFUSED);
+      return;
+    }
+    if (!judged.du && !judged.dv) {
+      setStatus('The drawing was left where it was.');
+      return;
+    }
+    clearDeleted();
+    const outcome = PackLibrary.moveDraw(pack.id, finished.id, judged.du, judged.dv);
+    if (!outcome.ok) {
+      if (outcome.reason === 'invalid' || outcome.reason === 'unresolved') notice(DRAW_MOVE_REFUSED);
+      else UIComponents.showToast('Could not move this drawing.', 'error', { title: 'Annotations' });
+      return;
+    }
+    adoptSelection(finished.id);
+    visDirty = true;
+    setStatus(outcome.unchanged ? 'The drawing was left where it was.' : 'Drawing moved.', { tone: 'success' });
+  }
+
+  /** Release everything a move holds. After this no pointer event can reach it, so none can bring it back. */
+  function endMoveDrag() {
+    if (!moveDrag) return;
+    const { target, pointerId } = moveDrag;
+    detachMoveListeners(target);
+    moveDrag = null;
+    try {
+      if (target && typeof target.releasePointerCapture === 'function' && target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+    } catch (_) {
+      // Already released.
+    }
+    visDirty = true;
+    updateCursor();
+  }
+
+  /** Abandon the move: the stored stroke was never touched, so showing it where it is IS the restore. */
+  function cancelMoveDrag(message = '') {
+    if (!moveDrag) return;
+    const moved = moveDrag.moved;
+    endMoveDrag();
+    if (moved || message) setStatus(message);
+    refreshOverlay();
+  }
+
+  /**
+   * The stroke's vertices shifted by the live offset, in the frame they are stored in (scene units). A scratch copy: the record, the
+   * view's own geometry and the cargo are never changed, so cancelling needs no restore.
+   */
+  function movedLocal(view, record) {
+    const axes = cargoFaceFrame(drawFrameKey(record.anchor, record.face));
+    if (!axes || !view.local) return view.local;
+    if (!view.moved || view.moved.length !== view.local.length) view.moved = new Float64Array(view.local.length);
+    view.moved.set(view.local);
+    const scale = picker.toWorldScale();
+    const iu = AXIS_INDEX[axes.u];
+    const iv = AXIS_INDEX[axes.v];
+    for (let i = 0; i < view.moved.length; i += 3) {
+      view.moved[i + iu] += moveDrag.du * scale;
+      view.moved[i + iv] += moveDrag.dv * scale;
+    }
+    return view.moved;
+  }
+
+  // ==========================================================================
   // SECTION: OVERLAY EVENTS (markers and cards are ordinary DOM above the canvas)
   // ==========================================================================
   function attachLayerEvents(layer) {
@@ -1855,7 +2953,7 @@ export function createAnnotationTool({
   // SECTION: KEYBOARD OWNERSHIP (capture phase)
   // ==========================================================================
   function ownsEscape() {
-    return Boolean(pinDrag || cardDrag || draft || reattachId || arrowTail || tool || selectedId);
+    return Boolean(presenting || stroke || moveDrag || pinDrag || cardDrag || draft || reattachId || arrowTail || tool || selectedId);
   }
 
   function onKeyDownCapture(ev) {
@@ -1877,7 +2975,7 @@ export function createAnnotationTool({
       return;
     }
     if (key === 'delete' || key === 'backspace') {
-      if (!selectedId || draft || isTypingTarget(ev.target)) return;
+      if (!selectedId || draft || presenting || isTypingTarget(ev.target)) return; // Present is view-only: nothing is deleted
       const target = ev.target;
       const owned = target === els.viewport || Boolean(els.layer && els.layer.contains(target)) ||
         Boolean(els.panel && els.panel.contains(target));
@@ -1889,8 +2987,9 @@ export function createAnnotationTool({
       return;
     }
     // Undo / Redo mid-drag cancels only that drag; cargo history is untouched.
-    if (key === 'z' && (ev.metaKey || ev.ctrlKey) && !ev.altKey && (pinDrag || cardDrag) && !isTypingTarget(ev.target)) {
-      if (pinDrag) cancelPinDrag('Move cancelled.');
+    if (key === 'z' && (ev.metaKey || ev.ctrlKey) && !ev.altKey && (pinDrag || cardDrag || moveDrag) && !isTypingTarget(ev.target)) {
+      if (moveDrag) cancelMoveDrag('Move cancelled.');
+      else if (pinDrag) cancelPinDrag('Move cancelled.');
       else cancelCardDrag();
       ev.preventDefault();
     }
@@ -1898,7 +2997,17 @@ export function createAnnotationTool({
 
   /** One Escape press closes exactly one owner. */
   function closeOneOwner() {
-    if (pinDrag) {
+    if (presenting) {
+      // Present has nothing else under way (it never starts over a gesture), so leaving it is the whole Escape; the selection stays.
+      endPresent();
+      return;
+    }
+    if (stroke) {
+      // An unfinished stroke goes before the armed Draw tool does.
+      cancelStroke('Drawing cancelled.');
+    } else if (moveDrag) {
+      cancelMoveDrag('Move cancelled.');
+    } else if (pinDrag) {
       cancelPinDrag('Move cancelled.');
     } else if (cardDrag) {
       cancelCardDrag();
@@ -1909,12 +3018,13 @@ export function createAnnotationTool({
     } else if (arrowTail) {
       cancelArrowTail('Arrow cancelled.');
     } else if (tool) {
-      const wasArrow = tool === 'arrow';
+      const wasSaving = tool === 'arrow' || tool === 'draw';
       tool = null;
       hover = null;
+      applyViewGate();
       updateCursor();
       // "Click to start another, or press Esc to finish" ends with the tool it was about.
-      if (wasArrow) setStatus('');
+      if (wasSaving) setStatus('');
       else renderPanel();
     } else if (selectedId) {
       selectedId = null;
@@ -2079,7 +3189,7 @@ export function createAnnotationTool({
       if (def.available) {
         button.addEventListener('click', () => setTool(def.key));
       } else {
-        // Arrows and drawings arrive in a later release: clearly unavailable, never pretending to work.
+        // A tool that is not shipped yet is clearly unavailable, never pretending to work.
         button.disabled = true;
         button.title = `${def.label} is not available yet`;
         button.setAttribute('aria-label', `${def.label} (not available yet)`);
@@ -2087,6 +3197,21 @@ export function createAnnotationTool({
       toolGroup.appendChild(button);
       return { key: def.key, button, available: def.available };
     });
+
+    // Draw / Move View: who owns a primary drag while the Draw tool is armed. Shown only then.
+    const drawModeRow = htmlEl('div', 'tp3d-annot-panel__view tp3d-annot-panel__drawmode');
+    drawModeRow.hidden = true;
+    drawModeRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Drag'));
+    const drawModeGroup = segmented('Drag action', 'tp3d-annot-seg--small tp3d-annot-seg--drawmode');
+    const drawModeButtons = DRAW_VIEWS.map(([key, label]) => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
+      button.type = 'button';
+      button.dataset.drawView = key;
+      button.addEventListener('click', () => setDrawView(key));
+      drawModeGroup.appendChild(button);
+      return { key, button };
+    });
+    drawModeRow.appendChild(drawModeGroup);
 
     const hint = htmlEl('div', 'tp3d-annot-panel__hint');
     hint.setAttribute('role', 'status');
@@ -2103,6 +3228,10 @@ export function createAnnotationTool({
 
     const show = htmlEl('div', 'tp3d-annot-panel__view');
     show.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Show'));
+    const presentButton = htmlEl('button', 'tp3d-annot-btn tp3d-annot-btn--small tp3d-annot-panel__present', 'Present');
+    presentButton.type = 'button';
+    presentButton.title = 'Hide the panel and editing controls to show the annotations';
+    presentButton.addEventListener('click', requestPresent);
     const showGroup = segmented('Show annotations', 'tp3d-annot-seg--small tp3d-annot-seg--show');
     const showButtons = SHOW_MODES.map(([key, label]) => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
@@ -2111,7 +3240,7 @@ export function createAnnotationTool({
       showGroup.appendChild(button);
       return { key, button };
     });
-    show.appendChild(showGroup);
+    show.append(showGroup, presentButton);
 
     const view = htmlEl('div', 'tp3d-annot-panel__view');
     view.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Callouts'));
@@ -2125,18 +3254,19 @@ export function createAnnotationTool({
     });
     view.appendChild(displayGroup);
 
-    const empty = htmlEl('div', 'tp3d-annot-panel__empty', 'No annotations yet. A callout marks a spot on cargo, the truck or the ground; an arrow points from one place to another. Annotations are notes only and do not change the load.');
+    const empty = htmlEl('div', 'tp3d-annot-panel__empty', 'No annotations yet. A callout marks a spot, an arrow points from one place to another, and a drawing is a freehand line. Annotations are notes only and do not change the load.');
     const warning = htmlEl('div', 'tp3d-annot-panel__notice', "Some saved annotations couldn't be read. The original data is kept until you delete it.");
     warning.hidden = true;
     const list = htmlEl('ul', 'tp3d-annot-panel__list');
-    body.append(toolGroup, hint, undoBar, show, view, warning, empty, list);
+    body.append(toolGroup, drawModeRow, hint, undoBar, show, view, warning, empty, list);
 
     els.panel.replaceChildren(head, body);
     rows.clear();
     panelParts = {
       root: els.panel, head, toggle: toggleButton, chevron, count, body,
-      toolButtons, hint, undoBar, undoText, showButtons, displayButtons, empty, warning, list,
+      toolButtons, drawModeRow, drawModeButtons, hint, undoBar, undoText, showButtons, presentButton, displayButtons, empty, warning, list,
       arrowOptions: null, arrowTitle: null, widthButtons: [], arrowColors: null,
+      drawOptions: null, drawTitle: null, drawWidthButtons: [], drawStyleButtons: [], drawColors: null,
     };
     return panelParts;
   }
@@ -2201,10 +3331,11 @@ export function createAnnotationTool({
     row.el.dataset.annotId = record.id;
     const callout = isCallout(record);
     const arrow = isArrow(record);
-    const supported = callout || arrow;
+    const draw = isDraw(record);
+    const supported = callout || arrow || draw;
     const status = supported && result ? result.status : ANNOTATION_STATUS.UNRESOLVED;
     const valid = status === ANNOTATION_STATUS.VALID;
-    const title = callout ? record.title : (arrow ? arrowName(record.id) : 'Unreadable annotation');
+    const title = callout ? record.title : (arrow ? arrowName(record.id) : (draw ? drawName(record.id) : 'Unreadable annotation'));
     setText(row.name, title);
     let sub;
     if (!supported) sub = 'Data could not be read';
@@ -2229,6 +3360,10 @@ export function createAnnotationTool({
       applyColor(row.badge, record.color);
       toggleClass(row.badge, 'is-flagged', !valid);
       if (!row.badge.firstChild || row.badge.firstChild.nodeType !== 1) row.badge.replaceChildren(iconEl('fa-solid fa-arrow-right'));
+    } else if (draw) {
+      applyColor(row.badge, record.color);
+      toggleClass(row.badge, 'is-flagged', !valid);
+      if (!row.badge.firstChild || row.badge.firstChild.nodeType !== 1) row.badge.replaceChildren(iconEl('fa-solid fa-pen'));
     } else {
       applyColor(row.badge, '');
       toggleClass(row.badge, 'is-flagged', true);
@@ -2237,7 +3372,7 @@ export function createAnnotationTool({
     row.select.disabled = !supported || viewOff;
     setAttr(row.select, 'aria-pressed', selected ? 'true' : 'false');
     setAttr(row.select, 'aria-label', `${callout ? `Callout ${number}: ` : ''}${title}, ${sub}${selected ? ', selected' : ''}`);
-    row.select.title = callout ? 'Select to show its card' : (arrow ? 'Select to edit its ends, color and width' : '');
+    row.select.title = callout ? 'Select to show its card' : (arrow ? 'Select to edit its ends, color and width' : (draw ? 'Select to edit its color and width' : ''));
 
     setHidden(row.eye, !supported);
     setHidden(row.edit, !callout);
@@ -2255,7 +3390,10 @@ export function createAnnotationTool({
     setAttr(row.remove, 'aria-label', `Delete ${title}`);
 
     // A callout reports one reason and one Re-attach; an arrow reports each end that cannot be placed on its own.
-    const issue = !supported ? describeAnnotationReason('unreadable') : (arrow || valid ? '' : describeAnnotationReason(result ? result.reason : 'unreadable'));
+    const issueReason = result ? result.reason : 'unreadable';
+    let issue = '';
+    if (!supported) issue = describeAnnotationReason('unreadable');
+    else if (!arrow && !valid) issue = draw ? drawReason(issueReason) : describeAnnotationReason(issueReason);
     setText(row.issueText, issue);
     setHidden(row.issueText, !issue);
     setHidden(row.reattach, !callout || valid);
@@ -2279,6 +3417,7 @@ export function createAnnotationTool({
   /** Context-sensitive guidance: empty unless something is relevant right now. */
   function guidanceText(blockedNow) {
     if (blockedNow) return blockedMessage(blockedNow);
+    if (moveDrag && moveDrag.moved) return DRAW_MOVE_TEXT[moveDrag.kind];
     if (statusMessage) return statusMessage;
     if (showMode === 'off') return SHOW_OFF_HINT;
     if (pinDrag && pinDrag.moved) return pinDrag.which ? 'Drag the handle onto a surface. Esc cancels.' : 'Drag the marker onto a surface. Esc cancels.';
@@ -2292,19 +3431,21 @@ export function createAnnotationTool({
         ? 'Editing callout. Drag its marker or card to move them. Esc cancels.'
         : 'Add a title, then save. Click the scene or drag the marker to move it. Esc cancels.';
     }
+    if (stroke) return stroke.phase === 'frozen' ? (DRAW_FROZEN_TEXT[stroke.frozen] || DRAW_FROZEN_TEXT.blocked) : DRAW_HINT_STROKING;
+    if (tool === 'draw') return drawView === 'move' ? DRAW_HINT_MOVE : DRAW_HINT;
     if (tool === 'callout') return 'Click cargo, the truck or the ground to place a callout.';
     if (tool === 'arrow') return arrowTail ? ARROW_HINT_HEAD : ARROW_HINT_TAIL;
     if (records.length >= MAX_ANNOTATIONS_PER_PACK) return `Limit of ${MAX_ANNOTATIONS_PER_PACK} annotations reached. Delete one to add another.`;
-    if (!records.length) return 'Choose Callout or Arrow, then click cargo, the truck or the ground.';
+    if (!records.length) return 'Choose Callout, Arrow or Draw, then click or drag on cargo, the truck or the ground.';
     return '';
   }
 
   /** Colour of the dot beside the guidance: orange while a gesture is under way or something needs attention, green after a save. */
   function guidanceTone(blockedNow) {
-    if (blockedNow) return 'active';
+    if (blockedNow || (moveDrag && moveDrag.moved)) return 'active';
     if (showMode === 'off' && !statusMessage) return 'active';
     if (statusMessage) return statusTone || (tool || draft || reattachId ? 'active' : '');
-    if (tool || draft || reattachId || (pinDrag && pinDrag.moved) || records.length >= MAX_ANNOTATIONS_PER_PACK) return 'active';
+    if (tool || draft || reattachId || stroke || (pinDrag && pinDrag.moved) || records.length >= MAX_ANNOTATIONS_PER_PACK) return 'active';
     return '';
   }
 
@@ -2330,7 +3471,13 @@ export function createAnnotationTool({
       setAttr(button, 'aria-pressed', tool === key ? 'true' : 'false');
       button.disabled = (Boolean(blockedNow) && tool !== key) || showMode === 'off';
     });
+    setHidden(parts.drawModeRow, tool !== 'draw' || showMode === 'off');
+    parts.drawModeButtons.forEach(({ key, button }) => {
+      setAttr(button, 'aria-pressed', drawView === key ? 'true' : 'false');
+      button.disabled = Boolean(blockedNow);
+    });
     parts.showButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', showMode === key ? 'true' : 'false'));
+    parts.presentButton.disabled = showMode === 'off' || Boolean(blockedNow); // nothing to present while Off or paused
     parts.displayButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', display === key ? 'true' : 'false'));
 
     const hintText = guidanceText(blockedNow);
@@ -2343,13 +3490,16 @@ export function createAnnotationTool({
     setHidden(parts.undoBar, !lastDeleted);
     if (lastDeleted) {
       const deletedType = lastDeleted.record.type;
-      setText(parts.undoText, deletedType === ANNOTATION_TYPE_CALLOUT ? 'Callout deleted. Cargo is unchanged.'
-        : (deletedType === ANNOTATION_TYPE_ARROW ? 'Arrow deleted. Cargo is unchanged.' : 'Unreadable annotation deleted.'));
+      let deletedText = 'Unreadable annotation deleted.';
+      if (deletedType === ANNOTATION_TYPE_CALLOUT) deletedText = 'Callout deleted. Cargo is unchanged.';
+      else if (deletedType === ANNOTATION_TYPE_ARROW) deletedText = 'Arrow deleted. Cargo is unchanged.';
+      else if (deletedType === ANNOTATION_TYPE_DRAW) deletedText = 'Drawing deleted. Cargo is unchanged.';
+      setText(parts.undoText, deletedText);
       parts.undoBar.querySelector('button').disabled = Boolean(blockedNow);
     }
     setHidden(parts.empty, records.length > 0);
     setHidden(parts.warning, !records.some(record => record.type === ANNOTATION_TYPE_UNREADABLE));
-    renderArrowOptions(parts, blockedNow);
+    renderLookOptions(parts, blockedNow);
 
     const seen = new Set();
     records.forEach((record, index) => {
@@ -2381,7 +3531,8 @@ export function createAnnotationTool({
   function syncPanelFlow() {
     const parts = panelParts;
     if (!parts || parts.root !== els.panel || els.panel.hidden || !parts.root.offsetHeight) return;
-    const footerHeight = parts.arrowOptions && !parts.arrowOptions.hidden ? parts.arrowOptions.offsetHeight : 0;
+    const footer = [parts.arrowOptions, parts.drawOptions].find(options => options && !options.hidden);
+    const footerHeight = footer ? footer.offsetHeight : 0;
     toggleClass(parts.body, 'is-flow', panelBodyFlows({
       panelHeight: parts.root.offsetHeight,
       contentHeight: panelContentHeight(parts),
@@ -2398,8 +3549,8 @@ export function createAnnotationTool({
     const options = htmlEl('div', 'tp3d-annot-panel__arrow');
     const title = htmlEl('div', 'tp3d-annot-panel__arrow-title');
     const widthRow = htmlEl('div', 'tp3d-annot-panel__view');
-    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Width'));
-    const widthGroup = segmented('Arrow width', 'tp3d-annot-seg--small tp3d-annot-seg--width');
+    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Weight'));
+    const widthGroup = segmented('Arrow weight', 'tp3d-annot-seg--small tp3d-annot-seg--width');
     const widthButtons = ARROW_WIDTHS.map(key => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', ARROW_WIDTH_LABELS[key]);
       button.type = 'button';
@@ -2409,18 +3560,112 @@ export function createAnnotationTool({
       return { key, button };
     });
     widthRow.appendChild(widthGroup);
+    const styleRow = htmlEl('div', 'tp3d-annot-panel__view');
+    styleRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Style'));
+    const styleGroup = segmented('Arrow line style', 'tp3d-annot-seg--small tp3d-annot-seg--line');
+    const styleButtons = LINE_STYLES.map(key => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', LINE_STYLE_LABELS[key]);
+      button.type = 'button';
+      button.dataset.lineStyle = key;
+      button.addEventListener('click', () => setArrowStyle({ style: key }));
+      styleGroup.appendChild(button);
+      return { key, button };
+    });
+    styleRow.appendChild(styleGroup);
     const colors = buildColorPicker({
       ariaLabel: 'Arrow color',
       getColor: () => { const selectedArrow = recordById(selectedId); return isArrow(selectedArrow) ? selectedArrow.color : arrowStyle.color; },
       onPick: color => setArrowStyle({ color }),
     });
     colors.root.classList.add('tp3d-annot-panel__arrow-colors');
-    options.append(title, widthRow, colors.root);
+    options.append(title, widthRow, styleRow, colors.root);
     parts.body.appendChild(options);
     parts.arrowOptions = options;
     parts.arrowTitle = title;
     parts.widthButtons = widthButtons;
+    parts.styleButtons = styleButtons;
     parts.arrowColors = colors;
+  }
+
+  /** The look controls of whichever styled annotation is in play: arrows or drawings (never both at once). */
+  function renderLookOptions(parts, blockedNow) {
+    const arrowShown = renderArrowOptions(parts, blockedNow);
+    const drawShown = renderDrawOptions(parts, blockedNow);
+    toggleClass(parts.body, 'has-arrow-options', arrowShown || drawShown);
+  }
+
+  /**
+   * The drawing look controls (width and color), built the first time they are needed. They edit the selected drawing, or what
+   * the next one will look like, and sit below the list like the arrow controls. Their classes are their own so nothing that
+   * addresses the arrow controls can reach them.
+   */
+  function buildDrawOptions(parts) {
+    const options = htmlEl('div', 'tp3d-annot-panel__draw');
+    const title = htmlEl('div', 'tp3d-annot-panel__draw-title');
+    const widthRow = htmlEl('div', 'tp3d-annot-panel__view');
+    widthRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Weight'));
+    const widthGroup = segmented('Drawing weight', 'tp3d-annot-seg--small tp3d-annot-seg--draw-width');
+    const widthButtons = DRAW_WIDTHS.map(key => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', ARROW_WIDTH_LABELS[key]);
+      button.type = 'button';
+      button.dataset.drawWidth = key;
+      button.addEventListener('click', () => setDrawStyle({ width: key }));
+      widthGroup.appendChild(button);
+      return { key, button };
+    });
+    widthRow.appendChild(widthGroup);
+    const styleRow = htmlEl('div', 'tp3d-annot-panel__view');
+    styleRow.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Style'));
+    const styleGroup = segmented('Drawing line style', 'tp3d-annot-seg--small tp3d-annot-seg--draw-line');
+    const styleButtons = LINE_STYLES.map(key => {
+      const button = htmlEl('button', 'tp3d-annot-seg__btn', LINE_STYLE_LABELS[key]);
+      button.type = 'button';
+      button.dataset.drawLineStyle = key;
+      button.addEventListener('click', () => setDrawStyle({ style: key }));
+      styleGroup.appendChild(button);
+      return { key, button };
+    });
+    styleRow.appendChild(styleGroup);
+    const colors = buildColorPicker({
+      ariaLabel: 'Drawing color',
+      getColor: () => { const selectedDraw = recordById(selectedId); return isDraw(selectedDraw) ? selectedDraw.color : drawStyle.color; },
+      onPick: color => setDrawStyle({ color }),
+    });
+    colors.root.classList.add('tp3d-annot-panel__draw-colors');
+    options.append(title, widthRow, styleRow, colors.root);
+    parts.body.appendChild(options);
+    parts.drawOptions = options;
+    parts.drawTitle = title;
+    parts.drawWidthButtons = widthButtons;
+    parts.drawStyleButtons = styleButtons;
+    parts.drawColors = colors;
+  }
+
+  /** The drawing look controls: shown while the Draw tool is armed or a drawing is selected, for that drawing or for the next one. */
+  function renderDrawOptions(parts, blockedNow) {
+    const selectedDraw = recordById(selectedId);
+    const editing = isDraw(selectedDraw) ? selectedDraw : null;
+    const visible = (Boolean(editing) || tool === 'draw') && showMode !== 'off';
+    if (!visible) {
+      if (parts.drawOptions) setHidden(parts.drawOptions, true);
+      return false;
+    }
+    if (!parts.drawOptions) buildDrawOptions(parts);
+    setHidden(parts.drawOptions, false);
+    const color = editing ? editing.color : drawStyle.color;
+    const width = editing ? editing.width : drawStyle.width;
+    const lineStyle = editing ? lineStyleOf(editing) : drawStyle.style;
+    setText(parts.drawTitle, editing ? `${drawName(editing.id)} look` : 'New drawings look');
+    parts.drawColors.sync(color);
+    parts.drawWidthButtons.forEach(({ key, button }) => {
+      setAttr(button, 'aria-pressed', width === key ? 'true' : 'false');
+      button.disabled = Boolean(blockedNow);
+    });
+    parts.drawStyleButtons.forEach(({ key, button }) => {
+      setAttr(button, 'aria-pressed', lineStyle === key ? 'true' : 'false');
+      button.disabled = Boolean(blockedNow);
+    });
+    return true;
   }
 
   /** The arrow look controls: shown while the Arrow tool is armed or an arrow is selected, for that arrow or for the next one. */
@@ -2428,21 +3673,26 @@ export function createAnnotationTool({
     const selectedArrow = recordById(selectedId);
     const editing = isArrow(selectedArrow) ? selectedArrow : null;
     const visible = (Boolean(editing) || tool === 'arrow') && showMode !== 'off';
-    toggleClass(parts.body, 'has-arrow-options', visible);
     if (!visible) {
       if (parts.arrowOptions) setHidden(parts.arrowOptions, true);
-      return;
+      return false;
     }
     if (!parts.arrowOptions) buildArrowOptions(parts);
     setHidden(parts.arrowOptions, false);
     const color = editing ? editing.color : arrowStyle.color;
     const width = editing ? editing.width : arrowStyle.width;
+    const lineStyle = editing ? lineStyleOf(editing) : arrowStyle.style;
     setText(parts.arrowTitle, editing ? `${arrowName(editing.id)} look` : 'New arrows look');
     parts.arrowColors.sync(color);
     parts.widthButtons.forEach(({ key, button }) => {
       setAttr(button, 'aria-pressed', width === key ? 'true' : 'false');
       button.disabled = Boolean(blockedNow);
     });
+    parts.styleButtons.forEach(({ key, button }) => {
+      setAttr(button, 'aria-pressed', lineStyle === key ? 'true' : 'false');
+      button.disabled = Boolean(blockedNow);
+    });
+    return true;
   }
 
   /** React to a change in what (if anything) makes annotations read-only. A blocking operation cancels unfinished edits. */
@@ -2451,6 +3701,8 @@ export function createAnnotationTool({
     if (reason === lastBlockedReason) return reason;
     lastBlockedReason = reason;
     if (reason) {
+      cancelStroke(blockedMessage(reason));
+      cancelMoveDrag(blockedMessage(reason));
       if (pinDrag) cancelPinDrag(blockedMessage(reason));
       if (cardDrag) cancelCardDrag();
       if (reattachId) cancelReattach(blockedMessage(reason));
@@ -2465,7 +3717,9 @@ export function createAnnotationTool({
       clearDeleted();
       selectedId = null; // hidden graphics leave nothing selected
       visDirty = true;
+      endPresent(); // nothing is drawn while paused, so the Exit control must not be left behind
     }
+    applyViewGate();
     renderPanel();
     refreshOverlay();
     return reason;
@@ -2480,11 +3734,17 @@ export function createAnnotationTool({
     const owned = sceneOwnedElsewhere();
     if (els.layer) {
       toggleClass(els.layer, 'is-view-only', owned);
-      if ('inert' in els.layer && els.layer.inert !== owned) els.layer.inert = owned;
+      toggleClass(els.layer, 'is-presenting', presenting);
+      // Present is a view too: markers and cards take no input, so a click or drag goes to the canvas underneath.
+      const inert = owned || presenting;
+      if ('inert' in els.layer && els.layer.inert !== inert) els.layer.inert = inert;
     }
     if (owned === lastOwnedElsewhere) return;
     lastOwnedElsewhere = owned;
     if (!owned) return;
+    endPresent();
+    cancelStroke();
+    cancelMoveDrag();
     cancelPinDrag();
     cancelCardDrag();
     if (draft) cancelDraft();
@@ -2494,6 +3754,7 @@ export function createAnnotationTool({
     tool = null;
     hover = null;
     press = null;
+    applyViewGate();
     renderPanel();
   }
 
@@ -2507,7 +3768,7 @@ export function createAnnotationTool({
 
   function wantsLoop() {
     return bound && toolShown && inEditor() && Boolean(currentPack()) &&
-      (panelOpen || draft || tool || reattachId || pinDrag || cardDrag || drawableIds.size > 0);
+      (panelOpen || presenting || draft || tool || reattachId || pinDrag || cardDrag || stroke || moveDrag || drawableIds.size > 0);
   }
 
   function ensureLoop() {
@@ -2537,7 +3798,12 @@ export function createAnnotationTool({
     const canvas = getCanvas();
     if (!canvas || sceneOwnedElsewhere()) return; // the tool that owns the scene owns the cursor
     let cursor = 'default';
-    if (isActive()) cursor = pinDrag && pinDrag.moved ? 'grabbing' : (hover ? 'crosshair' : 'default');
+    if (isActive()) {
+      if (pinDrag && pinDrag.moved) cursor = 'grabbing';
+      else if (tool === 'draw') cursor = drawView === 'draw' ? 'crosshair' : 'default';
+      else cursor = hover ? 'crosshair' : 'default';
+    }
+    if (moveDrag && moveDrag.moved) cursor = 'grabbing';
     if (cursor === lastCursor) return;
     lastCursor = cursor;
     canvas.style.cursor = cursor;
@@ -2545,16 +3811,20 @@ export function createAnnotationTool({
 
   function frame(now) {
     const reason = syncBlocked();
+    applyViewGate();
+    advanceStroke();
+    advanceMove();
     if (pinDrag && pinDrag.moved) {
       if (pinDrag.dirty && lastClient) {
         pinDrag.dirty = false;
         pinDrag.candidate = reason ? null : pick(lastClient.x, lastClient.y);
       }
-    } else if (isActive() && hoverDirty && lastClient && now - lastHoverPickAt >= HOVER_PICK_INTERVAL_MS) {
+    } else if (isActive() && !stroke && hoverDirty && lastClient && now - lastHoverPickAt >= HOVER_PICK_INTERVAL_MS) {
       hoverDirty = false;
       lastHoverPickAt = now;
-      hover = reason ? null : pick(lastClient.x, lastClient.y);
-    } else if (!isActive() && hover) {
+      if (reason || (tool === 'draw' && drawView !== 'draw')) hover = null;
+      else hover = tool === 'draw' ? picker.pickDraw(lastClient.x, lastClient.y) : pick(lastClient.x, lastClient.y);
+    } else if ((!isActive() || stroke) && hover) {
       hover = null;
     }
     render(now);
@@ -2578,6 +3848,9 @@ export function createAnnotationTool({
     const draftLeader = svgEl('path', 'tp3d-annot-svg__leader is-selected');
     // Arrows sit under everything else the SVG draws (leaders, hover mark, ghost); pins and cards are HTML above it all.
     const arrowGroup = svgEl('g', 'tp3d-annot-arrows');
+    // Drawings sit under the arrows, and the stroke being drawn is above the saved ones.
+    const drawGroup = svgEl('g', 'tp3d-annot-draws');
+    const drawPreview = makeDrawGraphic('is-preview');
     const preview = makeArrowGraphic('is-preview');
     const previewTailUnder = svgEl('circle', 'tp3d-annot-arrow__tail-under');
     const previewTail = svgEl('circle', 'tp3d-annot-arrow__tail');
@@ -2586,7 +3859,7 @@ export function createAnnotationTool({
     previewTailUnder.style.display = 'none';
     previewTail.style.display = 'none';
     preview.group.append(previewTailUnder, previewTail);
-    svg.append(arrowGroup, preview.group, ghost, hoverUnder, hoverMark, draftLeaderUnder, draftLeader);
+    svg.append(drawGroup, drawPreview.group, arrowGroup, preview.group, ghost, hoverUnder, hoverMark, draftLeaderUnder, draftLeader);
     els.layer.prepend(svg);
     const tip = htmlEl('div', 'tp3d-annot-tip');
     tip.hidden = true;
@@ -2604,9 +3877,461 @@ export function createAnnotationTool({
     layerParts = {
       svg, hoverUnder, hoverMark, ghost, tip, overflow, overflowText: overflow.querySelector('span'),
       draftLeaderUnder, draftLeader, draftPin, leaders: new Map(), keys: { hover: '', ghost: '', draftLeader: '' },
-      arrowGroup, preview, previewTail, previewTailUnder,
+      arrowGroup, preview, previewTail, previewTailUnder, drawGroup, drawPreview,
     };
     return layerParts;
+  }
+
+  // ==========================================================================
+  // SECTION: DRAWINGS (one SVG path per stroke in the overlay; never a Three.js object, never a texture)
+  // ==========================================================================
+  /** The two paths of one stroke: a neutral halo under the colored line. A stroke is one path however many vertices it has. */
+  function makeDrawGraphic(extraClass = '') {
+    const group = svgEl('g', `tp3d-annot-draw ${extraClass}`.trim());
+    const under = svgEl('path', 'tp3d-annot-draw__under');
+    const line = svgEl('path', 'tp3d-annot-draw__line');
+    group.append(under, line);
+    return { group, under, line, colorKey: null, widthKey: '', patternKey: '' };
+  }
+
+  /**
+   * Show `d` (or nothing, for an empty string) on a stroke graphic. The line width is constant on screen, so it never scales
+   * with zoom. Only what changed is written: a new color or selection touches classes and one custom property, never the path.
+   */
+  function paintDraw(graphic, d, { color, width = DEFAULT_DRAW_WIDTH, style = DEFAULT_LINE_STYLE, selected = false, occluded = false, frozen = false, moving = false, invalid = false, span = Infinity }) {
+    if (graphic.colorKey !== color) {
+      graphic.colorKey = color;
+      applyColor(graphic.group, color);
+    }
+    toggleClass(graphic.group, 'is-selected', selected);
+    toggleClass(graphic.group, 'is-occluded', occluded);
+    toggleClass(graphic.group, 'is-frozen', frozen);
+    toggleClass(graphic.group, 'is-moving', moving);
+    toggleClass(graphic.group, 'is-move-invalid', moving && invalid);
+    setPath(graphic.under, d);
+    setPath(graphic.line, d);
+    if (!d) return;
+    setAttr(graphic.group, 'data-line-style', style);
+    const px = ARROW_SHAFT_PX[width] || ARROW_SHAFT_PX.regular;
+    // The edge under the line: the accent edge while selected (a hidden stroke keeps its neutral one, so it never looks unobstructed),
+    // otherwise the neutral one. Both follow the stroke's size on screen, in steps so a zoom does not rewrite styles every frame.
+    const fit = drawFit(span);
+    const edge = selected && !occluded
+      ? DRAW_EDGE_PX.selected + px * DRAW_SELECTED_EDGE_PER_PX
+      : (style === 'dotted' ? DRAW_EDGE_PX.dotted : DRAW_EDGE_PX.neutral);
+    const halo = Math.max(DRAW_EDGE_FLOOR_PX, Math.round(edge * fit * 4) / 4);
+    const key = `${px}|${halo}|${style}|${fit}`;
+    if (graphic.widthKey === key) return;
+    graphic.widthKey = key;
+    setStyleProp(graphic.line, 'strokeWidth', `${px}px`);
+    setStyleProp(graphic.under, 'strokeWidth', `${px + halo}px`);
+    paintDrawPattern(graphic, style, px, fit);
+  }
+
+  /** 1 for a stroke that spans DRAW_FIT_SPAN_PX on screen or more, down to DRAW_FIT_MIN for a small one, in steps of a tenth. */
+  function drawFit(span) {
+    if (!(span < DRAW_FIT_SPAN_PX)) return 1;
+    const fit = DRAW_FIT_MIN + (1 - DRAW_FIT_MIN) * Math.max(0, span) / DRAW_FIT_SPAN_PX;
+    return Math.round(fit * 10) / 10;
+  }
+
+  /**
+   * A drawing's Dashed or Dotted pattern on its line and its edge. Dashes and dot spacing grow with the weight and follow `fit` (never
+   * below a clear gap), so a small stroke keeps its rhythm instead of showing three huge marks. A dot is a zero-length dash with round
+   * caps, so its diameter is the line's own weight; Solid sets nothing, which leaves the stylesheet in charge.
+   */
+  function paintDrawPattern(graphic, style, px, fit) {
+    const key = `${style}|${px}|${fit}`;
+    if (graphic.patternKey === key) return;
+    graphic.patternKey = key;
+    let dash = '';
+    let cap = '';
+    if (style === 'dashed') {
+      dash = `${Math.max(px * 4 * fit, px * 2)} ${Math.max(px * 2.5 * fit, 4)}`;
+      cap = 'butt';
+    } else if (style === 'dotted') {
+      dash = `0.01 ${Math.max(Math.max(px * 2.6, px + 7) * fit, px + 3.5)}`;
+      cap = 'round';
+    }
+    [graphic.line, graphic.under].forEach(path => {
+      setStyleProp(path, 'strokeDasharray', dash);
+      setStyleProp(path, 'strokeLinecap', cap);
+    });
+  }
+
+  function getDrawView(id) {
+    let view = drawViews.get(id);
+    if (!view) {
+      const graphic = makeDrawGraphic();
+      graphic.group.dataset.annotId = id;
+      layerParts.drawGroup.appendChild(graphic.group);
+      view = {
+        id, graphic, record: null, local: null, world: null, stamp: NaN, poseStamp: 0, d: '', visible: [], samples: [],
+        front: false, measured: false, measuredAt: -1, shown: false, moved: null, dragKey: 0, extent: newDrawExtent(),
+      };
+      drawViews.set(id, view);
+      visDirty = true;
+    }
+    return view;
+  }
+
+  function hideDrawView(view) {
+    paintDraw(view.graphic, '', { color: view.graphic.colorKey });
+    view.shown = false;
+  }
+
+  function removeDrawView(id) {
+    const view = drawViews.get(id);
+    if (!view) return;
+    view.graphic.group.remove();
+    drawViews.delete(id);
+    drawBacklog.delete(id);
+  }
+
+  const sameNumbers = (a, b) => a.length === b.length && a.every((value, i) => value === b[i]);
+
+  /** Every vertex of a stroke in the frame it is stored in, as scene units: the cargo's own frame for cargo, the world's for the rest. Null if any cannot be built. */
+  function drawLocalPoints(record) {
+    const first = drawAnchorUV(record.anchor, record.face);
+    if (!first || !Array.isArray(record.points)) return null;
+    const scale = picker.toWorldScale();
+    const count = 1 + record.points.length / 2;
+    const out = new Float64Array(count * 3);
+    for (let i = 0; i < count; i++) {
+      const lifted = drawLift(record.anchor, record.face, i === 0 ? first.u : record.points[2 * (i - 1)], i === 0 ? first.v : record.points[2 * (i - 1) + 1]);
+      if (!lifted) return null;
+      out[3 * i] = lifted.x * scale;
+      out[3 * i + 1] = lifted.y * scale;
+      out[3 * i + 2] = lifted.z * scale;
+    }
+    return out.every(Number.isFinite) ? out : null;
+  }
+
+  /**
+   * What a stroke's projection leaves for later reading: how large it is on screen (`span`, which sizes its edge and pattern) and the points
+   * of the drawn path in layer pixels (`xy`, with its padded bounds), which is all a press needs to find the line. One per stroke view, rewritten
+   * by each projection and grown, never reallocated, so reading it costs nothing per event.
+   */
+  function newDrawExtent() {
+    return { span: Infinity, count: 0, xy: new Float32Array(64), left: 0, top: 0, right: 0, bottom: 0 };
+  }
+
+  function resetTrace(shape) {
+    shape.span = 0;
+    shape.count = 0;
+    shape.left = Infinity;
+    shape.top = Infinity;
+    shape.right = -Infinity;
+    shape.bottom = -Infinity;
+  }
+
+  /** Append a traced point (a NaN pair ends a sub-path and has no bounds). */
+  function pushTrace(shape, x, y) {
+    if (shape.count + 2 > shape.xy.length) {
+      const grown = new Float32Array(shape.xy.length * 2);
+      grown.set(shape.xy);
+      shape.xy = grown;
+    }
+    shape.xy[shape.count] = x;
+    shape.xy[shape.count + 1] = y;
+    shape.count += 2;
+    if (Number.isNaN(x)) return;
+    if (x < shape.left) shape.left = x;
+    if (x > shape.right) shape.right = x;
+    if (y < shape.top) shape.top = y;
+    if (y > shape.bottom) shape.bottom = y;
+  }
+
+  /**
+   * Project a polyline (flat world-unit x, y, z) to an SVG path in layer pixels. A perspective camera cannot project what is
+   * at or behind its near plane, so each segment is cut there first; each is then cut to the view plus a margin, so every
+   * coordinate is finite and small however close the camera is. A cut that leaves a gap starts a new sub-path. `visible`
+   * receives the index of every vertex that is on screen (what the occlusion samples are chosen from). One vertex draws a dot.
+   * `extent`, when given, is rewritten with the stroke's size on screen and the points of the path it returns (see newDrawExtent).
+   * `samples`, when given, is rewritten with world x, y, z of a point in the middle of each drawn segment, but only while no vertex of the
+   * stroke is on screen yet: a segment can cross the view with both its vertices outside it, and those points are what the occlusion
+   * rays use then (see pushClippedSample). It is emptied again when a vertex turns out to be on screen.
+   */
+  function projectDrawPath(points, camera, width, height, visible, extent = null, samples = null) {
+    const count = Math.floor(points.length / 3);
+    visible.length = 0;
+    if (samples) samples.length = 0;
+    if (extent) resetTrace(extent);
+    if (!count) return '';
+    camera.updateMatrixWorld(true);
+    const e = camera.matrixWorldInverse.elements;
+    const perspective = Boolean(camera.isPerspectiveCamera);
+    const nearZ = -(camera.near + 0.001);
+    const m = DRAW_CLIP_MARGIN_PX;
+    const outline = [-m, -m, width + m, -m, width + m, height + m, -m, height + m];
+    const fixed = value => value.toFixed(1);
+    const parts = [];
+    let lastX = NaN;
+    let lastY = NaN;
+    let previous = null;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i < count; i++) {
+      const x = points[3 * i];
+      const y = points[3 * i + 1];
+      const z = points[3 * i + 2];
+      const current = {
+        x: e[0] * x + e[4] * y + e[8] * z + e[12],
+        y: e[1] * x + e[5] * y + e[9] * z + e[13],
+        z: e[2] * x + e[6] * y + e[10] * z + e[14],
+      };
+      const inFront = !perspective || current.z <= nearZ;
+      if (inFront) {
+        const screen = cameraToLayer(current, camera, width, height);
+        if (screen.x >= 0 && screen.x <= width && screen.y >= 0 && screen.y <= height) visible.push(i);
+        // How large the stroke is on screen, from every vertex in front of the camera (not the clipped path, so panning never changes it).
+        if (extent) {
+          minX = Math.min(minX, screen.x);
+          maxX = Math.max(maxX, screen.x);
+          minY = Math.min(minY, screen.y);
+          maxY = Math.max(maxY, screen.y);
+        }
+      }
+      if (previous) {
+        let a = previous;
+        let b = current;
+        let drawable = true;
+        if (perspective) {
+          const cut = clipSegmentToNear(a, b, nearZ);
+          if (cut) ({ a, b } = cut);
+          else drawable = false;
+        }
+        const sa = drawable ? cameraToLayer(a, camera, width, height) : null;
+        const sb = drawable ? cameraToLayer(b, camera, width, height) : null;
+        const clip = drawable ? clipSegmentToConvex(sa, sb, outline) : null;
+        if (clip) {
+          if (samples && !visible.length) pushClippedSample(samples, a, b, sa, sb, clip, camera, perspective);
+          const jump = !(Math.abs(clip.a.x - lastX) < 0.05 && Math.abs(clip.a.y - lastY) < 0.05);
+          if (jump) parts.push(`M${fixed(clip.a.x)} ${fixed(clip.a.y)}`);
+          parts.push(`L${fixed(clip.b.x)} ${fixed(clip.b.y)}`);
+          if (extent) {
+            if (jump) {
+              if (extent.count) pushTrace(extent, NaN, NaN);
+              pushTrace(extent, clip.a.x, clip.a.y);
+            }
+            pushTrace(extent, clip.b.x, clip.b.y);
+          }
+          lastX = clip.b.x;
+          lastY = clip.b.y;
+        }
+      }
+      previous = current;
+    }
+    if (samples && visible.length) samples.length = 0;
+    if (extent && maxX >= minX) extent.span = Math.hypot(maxX - minX, maxY - minY);
+    if (!parts.length && count === 1 && visible.length) {
+      const screen = cameraToLayer(previous, camera, width, height);
+      if (extent) {
+        pushTrace(extent, screen.x, screen.y);
+        pushTrace(extent, screen.x, screen.y);
+      }
+      return `M${fixed(screen.x)} ${fixed(screen.y)}L${fixed(screen.x)} ${fixed(screen.y)}`;
+    }
+    return parts.join('');
+  }
+
+  /**
+   * One occlusion sample for a segment the view clips: the middle of what is drawn of it (the clip's two ends), taken back onto the
+   * segment in camera space and then to the world, so the ray from the camera runs through the very pixel that shows it. A position
+   * along a perspective segment is not linear on screen, so the screen fraction is weighted by the depths of the segment's two ends.
+   * `a` and `b` are the segment's camera-space ends after the near cut, `sa` and `sb` the same on the layer.
+   */
+  function pushClippedSample(samples, a, b, sa, sb, clip, camera, perspective) {
+    const dx = sb.x - sa.x;
+    const dy = sb.y - sa.y;
+    const length = dx * dx + dy * dy;
+    if (!(length > 0)) return;
+    const mx = (clip.a.x + clip.b.x) / 2;
+    const my = (clip.a.y + clip.b.y) / 2;
+    const s = Math.min(1, Math.max(0, ((mx - sa.x) * dx + (my - sa.y) * dy) / length));
+    let t = s;
+    if (perspective) {
+      const weight = (1 - s) * -b.z + s * -a.z;
+      if (!(weight > 0)) return;
+      t = (s * -a.z) / weight;
+    }
+    const x = a.x + t * (b.x - a.x);
+    const y = a.y + t * (b.y - a.y);
+    const z = a.z + t * (b.z - a.z);
+    const m = camera.matrixWorld.elements;
+    samples.push(m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14]);
+  }
+
+  /**
+   * Which saved strokes are drawn this frame, and their paths. A stroke is drawn only while it is Valid, not hidden, shown by
+   * the Show mode and projects onto the view. Its geometry is rebuilt only when the camera, the cargo it sits on, the viewport
+   * or its vertices changed; a color, width or selection change reuses the path it already has.
+   */
+  function collectDraws(camera, width, height, camSig) {
+    const entries = [];
+    const live = new Set();
+    records.forEach(record => {
+      if (!isDraw(record)) return;
+      live.add(record.id);
+      const known = drawViews.get(record.id);
+      if (!drawableIds.has(record.id) || !isShownByMode(record.id)) {
+        if (known) hideDrawView(known);
+        return;
+      }
+      const view = known || getDrawView(record.id);
+      if (view.record !== record) {
+        const local = drawLocalPoints(record);
+        const same = Boolean(local) && Boolean(view.local) && view.face === record.face && view.kind === record.anchor.kind && sameNumbers(view.local, local);
+        if (!same) {
+          view.local = local;
+          view.face = record.face;
+          view.kind = record.anchor.kind;
+          view.stamp = NaN;
+          view.measured = false;
+        }
+        view.record = record;
+      }
+      let group = null;
+      if (view.local && record.anchor.kind === 'cargo') {
+        group = cargoGroupFor(record.anchor);
+        if (group) {
+          group.updateMatrixWorld(true);
+          const elements = group.matrixWorld.elements;
+          let poseStamp = 0;
+          for (let i = 0; i < 16; i++) poseStamp += elements[i] * (i + 1.7);
+          view.poseStamp = poseStamp;
+        }
+      } else {
+        view.poseStamp = 0;
+      }
+      if (!view.local || (record.anchor.kind === 'cargo' && !group)) {
+        hideDrawView(view);
+        return;
+      }
+      const stamp = camSig + view.poseStamp * 3.1 + width * 0.013 + height * 0.017;
+      // A stroke being carried is drawn from a shifted copy of its own vertices; the revision says when the offset changed.
+      const carried = Boolean(moveDrag && moveDrag.moved && moveDrag.id === record.id);
+      const dragKey = carried ? moveDrag.rev : 0;
+      if (stamp !== view.stamp || dragKey !== view.dragKey) {
+        view.stamp = stamp;
+        view.dragKey = dragKey;
+        const source = carried ? movedLocal(view, record) : view.local;
+        if (group) {
+          const matrix = group.matrixWorld.elements;
+          const count = source.length / 3;
+          if (!view.world || view.world.length !== source.length || view.world === view.local) view.world = new Float64Array(source.length);
+          for (let i = 0; i < count; i++) {
+            const x = source[3 * i];
+            const y = source[3 * i + 1];
+            const z = source[3 * i + 2];
+            view.world[3 * i] = matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12];
+            view.world[3 * i + 1] = matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13];
+            view.world[3 * i + 2] = matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14];
+          }
+        } else {
+          view.world = source;
+        }
+        view.d = projectDrawPath(view.world, camera, width, height, view.visible, view.extent, view.samples);
+      }
+      if (!view.d) {
+        hideDrawView(view);
+        return;
+      }
+      view.shown = true;
+      entries.push({ record, view, selected: record.id === selectedId });
+    });
+    [...drawViews.keys()].forEach(id => { if (!live.has(id)) removeDrawView(id); });
+    return entries;
+  }
+
+  /**
+   * Whether any of a few sample vertices of a stroke is hidden behind cargo or the truck from where the camera is: one hidden
+   * sample marks the whole stroke occluded, the same convention as an arrow. At most DRAW_OCCLUSION_RAYS_PER_STROKE rays, chosen
+   * evenly from the vertices that are on screen; a stroke with none costs none.
+   */
+  function computeDrawFront(view, camera, meshes) {
+    const own = view.visible.length > 0;
+    const available = drawSampleCount(view);
+    const rays = Math.min(DRAW_OCCLUSION_RAYS_PER_STROKE, available);
+    if (!rays) return false; // nothing was tested, so nothing is known to be clear
+    for (let k = 0; k < rays; k++) {
+      const nth = rays === 1 ? 0 : Math.round((k * (available - 1)) / (rays - 1));
+      if (own) {
+        const i = view.visible[nth];
+        sampleWorld.set(view.world[3 * i], view.world[3 * i + 1], view.world[3 * i + 2]);
+      } else {
+        sampleWorld.set(view.samples[3 * nth], view.samples[3 * nth + 1], view.samples[3 * nth + 2]);
+      }
+      if (!isRayClear(sampleWorld, camera, meshes)) return false;
+    }
+    return true;
+  }
+
+  /** What a stroke offers the occlusion rays: its own vertices that are on screen, else the middles of the clipped segments that cross it. */
+  function drawSampleCount(view) {
+    return view.visible.length || view.samples.length / 3;
+  }
+
+  /**
+   * Refresh the occlusion of drawn strokes. A stroke is measured when it first appears and again after the scene or camera
+   * moved (the same signal that drives callouts and arrows), no more often than OCCLUSION_INTERVAL_MS, at most
+   * DRAW_OCCLUSION_RAYS_PER_TICK rays per measurement, oldest measurement first, so a crowded plan catches up over a few ticks
+   * instead of casting every ray at once. A stroke that has never been measured is drawn as hidden until it is.
+   */
+  function measureDraws(entries, camera, now, due) {
+    const present = new Set(entries.map(entry => entry.record.id));
+    drawBacklog.forEach(id => { if (!present.has(id)) drawBacklog.delete(id); });
+    if (due) present.forEach(id => drawBacklog.add(id));
+    let fresh = false;
+    entries.forEach(entry => {
+      if (entry.view.measured) return;
+      drawBacklog.add(entry.record.id);
+      fresh = true;
+    });
+    if (!drawBacklog.size || (!fresh && now - lastDrawMeasureAt < OCCLUSION_INTERVAL_MS)) return;
+    lastDrawMeasureAt = now;
+    const meshes = CaseScene.getRaycastMeshes().filter(mesh => mesh.parent && mesh.parent.visible !== false);
+    meshes.forEach(mesh => mesh.updateWorldMatrix(true, false));
+    let rays = DRAW_OCCLUSION_RAYS_PER_TICK;
+    const waiting = entries.filter(entry => drawBacklog.has(entry.record.id)).sort((a, b) => a.view.measuredAt - b.view.measuredAt);
+    for (const entry of waiting) {
+      const cost = Math.min(DRAW_OCCLUSION_RAYS_PER_STROKE, drawSampleCount(entry.view));
+      if (cost > rays) break;
+      rays -= cost;
+      entry.view.front = meshes.length ? computeDrawFront(entry.view, camera, meshes) : true;
+      entry.view.measured = true;
+      entry.view.measuredAt = now;
+      drawBacklog.delete(entry.record.id);
+    }
+  }
+
+  function paintDraws(entries) {
+    entries.forEach(({ record, view, selected }) => {
+      const moving = Boolean(moveDrag && moveDrag.moved && moveDrag.id === record.id);
+      paintDraw(view.graphic, view.d, {
+        color: record.color, width: record.width, style: lineStyleOf(record), selected: selected && !presenting,
+        occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, span: view.extent.span,
+      });
+    });
+  }
+
+  /** The stroke being drawn: its samples so far as one path, repainted at most once per frame (this runs from the frame's render). */
+  function renderStrokePreview(parts, camera, width, height, camSig) {
+    const preview = parts.drawPreview;
+    if (!stroke) {
+      paintDraw(preview, '', { color: preview.colorKey });
+      return;
+    }
+    const key = `${camSig}|${stroke.world.length}|${width}|${height}`;
+    if (stroke.previewKey !== key) {
+      stroke.previewKey = key;
+      stroke.previewPath = projectDrawPath(stroke.world, camera, width, height, strokePreviewVisible);
+    }
+    paintDraw(preview, stroke.previewPath, {
+      color: stroke.style.color, width: stroke.style.width, style: stroke.style.style, frozen: stroke.phase === 'frozen',
+    });
   }
 
   // ==========================================================================
@@ -2620,18 +4345,47 @@ export function createAnnotationTool({
     const shaft = svgEl('path', 'tp3d-annot-arrow__shaft');
     const head = svgEl('path', 'tp3d-annot-arrow__head');
     group.append(under, underHead, shaft, head);
-    return { group, under, underHead, shaft, head, colorKey: null };
+    return { group, under, underHead, shaft, head, colorKey: null, patternKey: '' };
   }
 
   function setStyleProp(el, name, value) {
     if (el.style[name] !== value) el.style[name] = value;
   }
 
+  /** The line style a stored arrow or drawing shows: a record with no `style` has always been solid. */
+  function lineStyleOf(record) {
+    return record && LINE_STYLES.includes(record.style) ? record.style : DEFAULT_LINE_STYLE;
+  }
+
+  /**
+   * Draw a line (and its halo) in its style at `px` screen pixels. Dashes and the dot spacing grow with the weight, so a Bold
+   * line is never a Thin pattern thickened. Dots are zero-length dashes with round caps; Solid sets nothing, which leaves the
+   * stylesheet in charge (including its dashed look for a Solid line hidden behind cargo).
+   */
+  function paintLinePattern(graphic, style, px, line, halo) {
+    const key = `${style}|${px}`;
+    if (graphic.patternKey === key) return;
+    graphic.patternKey = key;
+    let dash = '';
+    let cap = '';
+    if (style === 'dashed') {
+      dash = `${px * 4} ${Math.max(px * 2.5, 5)}`;
+      cap = 'butt';
+    } else if (style === 'dotted') {
+      dash = `0.01 ${Math.max(px * 2.6, px + 7)}`;
+      cap = 'round';
+    }
+    [line, halo].forEach(path => {
+      setStyleProp(path, 'strokeDasharray', dash);
+      setStyleProp(path, 'strokeLinecap', cap);
+    });
+  }
+
   /**
    * Show `shape` (from `arrowShape`, or null to clear) on a graphic. The width is constant on screen; a selected arrow
    * swaps its neutral halo (2 px a side) for a 1 px orange edge, and a hidden one (dashed, hollow head) keeps its neutral halo.
    */
-  function paintArrow(graphic, shape, { color, selected = false, occluded = false }) {
+  function paintArrow(graphic, shape, { color, style = DEFAULT_LINE_STYLE, selected = false, occluded = false }) {
     if (graphic.colorKey !== color) {
       graphic.colorKey = color;
       applyColor(graphic.group, color);
@@ -2644,10 +4398,13 @@ export function createAnnotationTool({
     setPath(graphic.underHead, data.head);
     setPath(graphic.head, data.head);
     if (!shape) return;
+    setAttr(graphic.group, 'data-line-style', style);
     const halo = selected && !occluded ? 2 : 4;
     setStyleProp(graphic.shaft, 'strokeWidth', `${shape.shaftWidth}px`);
     setStyleProp(graphic.under, 'strokeWidth', `${shape.shaftWidth + halo}px`);
     setStyleProp(graphic.underHead, 'strokeWidth', `${halo}px`);
+    // Only the shaft and its halo take the pattern; the head and its halo stay solid so the direction always reads.
+    paintLinePattern(graphic, style, shape.shaftWidth, graphic.shaft, graphic.under);
   }
 
   function getArrowView(id) {
@@ -2777,8 +4534,9 @@ export function createAnnotationTool({
   /** Paint every drawn arrow. Two end handles exist only on the selected arrow, and not while a tool or re-attach owns the scene. */
   function drawArrows(entries, width, height) {
     const gripsAllowed = !isActive() && !sceneOwnedElsewhere();
-    entries.forEach(({ record, view, projection, selected }) => {
-      paintArrow(view.graphic, projection.shape, { color: record.color, selected, occluded: !view.front });
+    entries.forEach(({ record, view, projection, selected: isSelected }) => {
+      const selected = isSelected && !presenting; // Present draws the saved look: no selected edge, no end handles
+      paintArrow(view.graphic, projection.shape, { color: record.color, style: lineStyleOf(record), selected, occluded: !view.front });
       view.shown = true;
       ['start', 'end'].forEach(which => {
         const screen = which === 'start' ? projection.tail : projection.head;
@@ -2817,7 +4575,7 @@ export function createAnnotationTool({
     const target = hover && hover.world && !(pinDrag && pinDrag.moved) ? hover.world : null;
     const far = target && tailWorld.distanceTo(target) / picker.toWorldScale() >= MIN_ARROW_LENGTH_INCHES;
     const projection = far ? projectArrow(tailWorld, target, camera, width, height, viewport, arrowStyle.width) : null;
-    paintArrow(preview, projection ? projection.shape : null, { color: arrowStyle.color });
+    paintArrow(preview, projection ? projection.shape : null, { color: arrowStyle.color, style: arrowStyle.style });
   }
 
   function makePin(id) {
@@ -2909,8 +4667,12 @@ export function createAnnotationTool({
   function disposeOverlay() {
     [...views.keys()].forEach(removeView);
     [...arrowViews.keys()].forEach(removeArrowView);
+    [...drawViews.keys()].forEach(removeDrawView);
+    drawBacklog = new Set();
     if (editorParts) setHidden(editorParts.root, true);
     if (layerParts) {
+      paintDraw(layerParts.drawPreview, '', { color: layerParts.drawPreview.colorKey });
+      if (stroke) stroke.previewKey = '';
       paintArrow(layerParts.preview, null, { color: arrowStyle.color });
       layerParts.previewTail.style.display = 'none';
       layerParts.previewTailUnder.style.display = 'none';
@@ -3150,9 +4912,11 @@ export function createAnnotationTool({
     });
     [...views.keys()].forEach(id => { if (!live.has(id)) removeView(id); });
     const arrowEntries = collectArrows(camera, width, height, viewport);
+    const camSig = cameraSignature(camera);
+    const drawEntries = collectDraws(camera, width, height, camSig);
 
     // 2. Facing and occlusion, refreshed only after something moved and at most every OCCLUSION_INTERVAL_MS.
-    let signature = cameraSignature(camera);
+    let signature = camSig;
     entries.forEach((entry, i) => {
       const p = entry.view.world;
       signature += (i + 1) * (p.x * 1.1 + p.y * 1.3 + p.z * 1.7);
@@ -3161,6 +4925,9 @@ export function createAnnotationTool({
       const a = entry.view.startWorld;
       const b = entry.view.endWorld;
       signature += (i + 1.5) * (a.x * 0.9 + a.y * 1.2 + a.z * 1.6) + (i + 2.5) * (b.x * 1.3 + b.y * 0.8 + b.z * 1.1);
+    });
+    drawEntries.forEach((entry, i) => {
+      signature += (i + 3.5) * entry.view.poseStamp * 0.37;
     });
     if (signature !== lastSignature) {
       lastSignature = signature;
@@ -3196,6 +4963,13 @@ export function createAnnotationTool({
       });
     }
     drawArrows(arrowEntries, width, height);
+    // Strokes have their own measurement and ray budget; a plan with only strokes still consumes the shared signal here.
+    measureDraws(drawEntries, camera, now, due);
+    if (due) {
+      visDirty = false;
+      lastVisAt = now;
+    }
+    paintDraws(drawEntries);
 
     // 3. Which cards are shown: selected, kept expanded and (in Cards mode) every visible one, within a budget.
     const editingId = draft && draft.editId;
@@ -3214,6 +4988,7 @@ export function createAnnotationTool({
     const pinRects = entries.map(entry => ({ id: entry.record.id, x: entry.view.screen.x - PIN_RECT_PX / 2, y: entry.view.screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }));
     const resultsBox = resultsObstacles();
     fitPanel(resultsBox, viewport);
+    if (presenting) placePresentExit(resultsBox.concat(statusObstacle()), viewport);
     const panelBox = panelObstacle(resultsBox);
     const labelIds = display === 'markers' ? new Set() : fitLabels(
       entries.filter(entry => entry.view.front && !shownIds.has(entry.record.id))
@@ -3222,8 +4997,9 @@ export function createAnnotationTool({
       panelBox ? pinRects.concat(panelBox.map(box => ({ id: '', ...box }))) : pinRects, width);
     entries.forEach(entry => {
       const showLabel = labelIds.has(entry.record.id);
+      // Present keeps the selection (Show Selected still follows it) but draws none of its chrome: the saved look only.
       updatePin(entry.view, entry, {
-        selected: entry.selected,
+        selected: entry.selected && !presenting,
         hollow: !entry.view.front && !entry.selected,
         dragging: entry.dragging,
         chipText: showLabel ? entry.record.title : '',
@@ -3235,7 +5011,7 @@ export function createAnnotationTool({
     const activeLeaders = new Set();
     shown.forEach(entry => {
       const { view, record } = entry;
-      const size = updateCardContent(view, entry, cardW, !view.front, entry.selected);
+      const size = updateCardContent(view, entry, cardW, !view.front, entry.selected && !presenting);
       const marker = { x: view.screen.x, y: view.screen.y };
       let rect;
       if (cardDrag && cardDrag.id === record.id && cardDrag.rect) {
@@ -3256,7 +5032,7 @@ export function createAnnotationTool({
       const d = line ? `M${line.x1.toFixed(1)} ${line.y1.toFixed(1)}L${line.x2.toFixed(1)} ${line.y2.toFixed(1)}` : '';
       setPath(leader.under, d);
       setPath(leader.line, d);
-      toggleClass(leader.line, 'is-selected', entry.selected);
+      toggleClass(leader.line, 'is-selected', entry.selected && !presenting);
     });
     entries.forEach(entry => {
       if (shownIds.has(entry.record.id)) return;
@@ -3274,12 +5050,13 @@ export function createAnnotationTool({
     });
 
     // 5. The overflow notice, the new-callout marker and editor card, the hover mark and its tip, the drag ghost.
-    setHidden(parts.overflow, overflow <= 0);
+    setHidden(parts.overflow, overflow <= 0 || presenting);
     if (overflow > 0) {
       setText(parts.overflowText, `${overflow} more ${overflow === 1 ? 'callout is' : 'callouts are'} shown without a card. Zoom in or hide some to see their cards.`);
     }
     renderDraft(parts, camera, width, height, viewport, pinRects, panelBox, resultsBox);
     renderArrowPreview(parts, camera, width, height, viewport);
+    renderStrokePreview(parts, camera, width, height, camSig);
     renderHover(parts, camera, width, height);
     renderGhost(parts, camera, width, height, entries);
   }
@@ -3355,7 +5132,8 @@ export function createAnnotationTool({
     // yields while the card is open) rather than covering Save. A card the owner positioned only yields to Results.
     const markerBox = screen ? [{ x: screen.x - PIN_RECT_PX / 2, y: screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }] : [];
     const panelRects = panelRectsNow();
-    const placement = fitEditorClear({ rect, viewport, panel: panelRects, status: statusObstacle(), results: resultsBox, marker: markerBox, controls: controlsObstacle(), ownerPlaced });
+    // The toolbar is a hard obstacle like the status button: a card never opens with its header under it.
+    const placement = fitEditorClear({ rect, viewport, panel: panelRects, status: statusObstacle().concat(toolbarObstacle()), results: resultsBox, marker: markerBox, controls: controlsObstacle(), ownerPlaced });
     const fit = placement.fit;
     // A panel the owner is dragging stays under their pointer; it yields once it is dropped.
     const panelDragging = Boolean(els.panel && els.panel.classList.contains('is-dragging'));
@@ -3426,6 +5204,17 @@ export function createAnnotationTool({
     if (!els.layer || !doc) return [];
     const stack = doc.getElementById('editor-zoom-controls');
     return layerRects([stack && !(stack.closest && stack.closest('[hidden]')) ? stack : null]);
+  }
+
+  /**
+   * The floating Editor toolbar (Cases, AutoPack, ...) across the top of the viewport. It is drawn above this layer, so
+   * an editor card or sheet that reaches it has its header underneath; both keep clear of it like the Annotations panel
+   * does (the panel's own region starts below it).
+   */
+  function toolbarObstacle() {
+    if (!els.layer || !doc) return [];
+    const toolbar = doc.getElementById('viewport-toolbar');
+    return layerRects([toolbar && !(toolbar.closest && toolbar.closest('[hidden]')) ? toolbar : null]);
   }
 
   /** The Editor's "Load plan needs review" button, when it shows. */
@@ -3518,9 +5307,9 @@ export function createAnnotationTool({
     return changed;
   }
 
-  /** The narrow-viewport sheet, moved clear of the Results card and limited in height before any button is hidden. True when it changed. */
+  /** The narrow-viewport sheet, moved clear of the Results card and the toolbar and limited in height before any button is hidden. True when it changed. */
   function fitEditorSheet(parts, viewport, resultsBox, natural) {
-    const fit = fitSheet({ viewport, blockers: resultsBox, height: natural });
+    const fit = fitSheet({ viewport, blockers: resultsBox.concat(toolbarObstacle()), height: natural });
     const maxHeight = fit.moved ? `${fit.maxHeight}px` : '';
     const bottom = fit.moved ? `${fit.bottom}px` : '';
     const changed = parts.root.style.maxHeight !== maxHeight || parts.root.style.bottom !== bottom;
@@ -3546,7 +5335,7 @@ export function createAnnotationTool({
   }
 
   function renderHover(parts, camera, width, height) {
-    const show = isActive() && hover && hover.world && !(pinDrag && pinDrag.moved) && !blockedReason();
+    const show = isActive() && !stroke && hover && hover.world && !(pinDrag && pinDrag.moved) && !blockedReason();
     if (!show) {
       if (parts.keys.hover !== '') {
         parts.keys.hover = '';
@@ -3628,7 +5417,17 @@ export function createAnnotationTool({
     isPanelOpen: () => panelOpen,
     isActive,
     hasDraft: () => Boolean(draft),
+    // 'off' | 'armed' | 'move' | 'stroking' | 'frozen': read-only, for the Editor and tests.
+    // Read-only, for the Editor's interaction routing: while true, cargo is never selected, dragged, highlighted or edited from the viewport.
+    isPresenting: () => presenting,
+    drawingState: () => (stroke ? stroke.phase : (tool === 'draw' ? (drawView === 'move' ? 'move' : 'armed') : 'off')),
+    // 'idle' | 'pressed' (a press on a saved drawing, not yet a drag) | 'moving' | 'blocked' (carried to a place it cannot take): read-only, for tests.
+    moveState: () => (moveDrag ? (moveDrag.moved ? (moveDrag.valid ? 'moving' : 'blocked') : 'pressed') : 'idle'),
     selectedId: () => selectedId,
+    // For the Editor's canvas routing: does a saved drawing's line take this press, is this the pointer it holds, is the pointer over a line.
+    claimPress,
+    ownsPointer,
+    hoverDrawing,
     onPointerDown,
     onPointerMove,
     onPointerCancel,

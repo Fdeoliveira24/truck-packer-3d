@@ -2,8 +2,10 @@
  * @file annotation-layout.js
  * @description Pure screen-space layout for Annotations V1 (no THREE, no DOM): where a callout card sits
  *   relative to its marker, viewport clamping, the stored-offset round trip, the automatic placement used
- *   until a card is dragged, the leader line, and the card budget. Directional arrows live at the end of the
- *   file: near-plane clipping in camera space and the bounded 2D shape (shaft and head) of one arrow.
+ *   until a card is dragged, the leader line, and the card budget. Directional arrows live further down:
+ *   near-plane clipping in camera space and the bounded 2D shape (shaft and head) of one arrow. The end of
+ *   the file holds the freehand-stroke geometry, which works in surface inches rather than pixels: polyline
+ *   simplification with an explicit error budget, and exact clipping of a segment to a convex footprint.
  *
  *   Everything here works in CSS pixels inside the viewport overlay. The card's position is
  *   `marker + offset`, so it follows the marker through orbit, zoom and pan; a stored offset is never
@@ -545,3 +547,155 @@ export function arrowPathData(shape) {
 
 /** Where along an arrow (0 = tail, 1 = head) occlusion is sampled: the two ends and the middle. */
 export const ARROW_SAMPLE_FRACTIONS = Object.freeze([0, 0.5, 1]);
+
+// ============================================================================
+// Freehand strokes (surface inches; no THREE, no DOM)
+// ============================================================================
+/** The simplifier refuses a longer raw polyline outright; it never samples one down to fit. */
+export const SIMPLIFY_MAX_INPUT_VERTICES = 4096;
+/** Coordinates beyond this are not geometry: squaring them could overflow the distance arithmetic. */
+const SIMPLIFY_MAX_COORDINATE = 1e7;
+
+/** A flat `[x0, y0, x1, y1, ...]` list of bounded, finite numbers. */
+const isFlatPolyline = flat => Array.isArray(flat) && flat.length % 2 === 0 &&
+  flat.every(value => finite(value) && Math.abs(value) <= SIMPLIFY_MAX_COORDINATE);
+
+/** Distance from a point to the SEGMENT a-b (not the infinite line); a zero-length segment is just its point. */
+function distanceToSegment(px, py, ax, ay, bx, by) {
+  // Work relative to `a` so large absolute coordinates cost no precision.
+  const dx = bx - ax;
+  const dy = by - ay;
+  const wx = px - ax;
+  const wy = py - ay;
+  const lengthSq = dx * dx + dy * dy;
+  if (!(lengthSq > 0)) return Math.hypot(wx, wy);
+  const t = Math.min(1, Math.max(0, (wx * dx + wy * dy) / lengthSq));
+  return Math.hypot(wx - t * dx, wy - t * dy);
+}
+
+/**
+ * Distance from a point to a polyline given as a flat list. A single vertex is a point; an empty list or any
+ * non-finite input yields Infinity, so a caller comparing against a tolerance can never read it as close.
+ * @param {number[]} flat
+ */
+export function distanceToPolyline(flat, x, y) {
+  if (!isFlatPolyline(flat) || !flat.length || !finite(x) || !finite(y)) return Infinity;
+  if (flat.length === 2) return Math.hypot(x - flat[0], y - flat[1]);
+  let nearest = Infinity;
+  for (let i = 0; i + 3 < flat.length; i += 2) {
+    nearest = Math.min(nearest, distanceToSegment(x, y, flat[i], flat[i + 1], flat[i + 2], flat[i + 3]));
+  }
+  return nearest;
+}
+
+/**
+ * Ramer-Douglas-Peucker simplification of a flat `[x, y, ...]` polyline. Deterministic: the split point of a
+ * range is its farthest vertex from the chord (the lowest index on a tie), the first and last vertex are
+ * always kept, and the result does not depend on evaluation order. Every dropped vertex is within `tolerance`
+ * of the simplified polyline (distance to the chord SEGMENT, so a closed loop whose ends coincide keeps its
+ * far side). Iterative, so a long input cannot overflow the stack. Nothing is ever moved or smoothed: the
+ * result is a subset of the input vertices, so the error is exactly the dropped-vertex distance and nothing
+ * else (quantizing the survivors is a separate, later step).
+ * @param {number[]} flat
+ * @param {number} tolerance inches, finite and not negative
+ * @returns {number[] | null} null for malformed input or more than SIMPLIFY_MAX_INPUT_VERTICES vertices
+ */
+export function simplifyPolyline(flat, tolerance) {
+  if (!isFlatPolyline(flat) || !finite(tolerance) || tolerance < 0) return null;
+  const count = flat.length / 2;
+  if (count > SIMPLIFY_MAX_INPUT_VERTICES) return null;
+  if (count <= 2) return flat.slice();
+  const keep = new Uint8Array(count);
+  keep[0] = 1;
+  keep[count - 1] = 1;
+  const ranges = [[0, count - 1]];
+  while (ranges.length) {
+    const [first, last] = ranges.pop();
+    let farthest = -1;
+    let worst = tolerance;
+    for (let i = first + 1; i < last; i++) {
+      const d = distanceToSegment(flat[2 * i], flat[2 * i + 1], flat[2 * first], flat[2 * first + 1], flat[2 * last], flat[2 * last + 1]);
+      if (d > worst) {
+        worst = d;
+        farthest = i;
+      }
+    }
+    if (farthest !== -1) {
+      keep[farthest] = 1;
+      ranges.push([first, farthest], [farthest, last]);
+    }
+  }
+  const out = [];
+  for (let i = 0; i < count; i++) if (keep[i]) out.push(flat[2 * i], flat[2 * i + 1]);
+  return out;
+}
+
+/**
+ * Simplify within an explicit budget: try the tolerances in the given (ascending) order and return the first
+ * result of at most `maxVertices` vertices. When even the last tolerance cannot get there the answer is an
+ * explicit `too-complex`; the polyline is never truncated and never simplified past the largest tolerance
+ * offered, so the caller states the largest error it will accept up front.
+ * @param {number[]} flat
+ * @param {{ maxVertices: number, tolerances: number[] }} budget
+ * @returns {{ ok: true, points: number[], tolerance: number, vertexCount: number } | { ok: false, reason: 'invalid' | 'too-complex' }}
+ */
+export function simplifyPolylineToBudget(flat, { maxVertices, tolerances } = /** @type {any} */ ({})) {
+  if (!isFlatPolyline(flat) || !Number.isInteger(maxVertices) || maxVertices < 2 ||
+      !Array.isArray(tolerances) || !tolerances.length || !tolerances.every(t => finite(t) && t >= 0)) {
+    return { ok: false, reason: 'invalid' };
+  }
+  if (flat.length / 2 > SIMPLIFY_MAX_INPUT_VERTICES) return { ok: false, reason: 'too-complex' };
+  for (const tolerance of tolerances) {
+    const points = simplifyPolyline(flat, tolerance);
+    if (points && points.length / 2 <= maxVertices) return { ok: true, points, tolerance, vertexCount: points.length / 2 };
+  }
+  return { ok: false, reason: 'too-complex' };
+}
+
+/**
+ * Cyrus-Beck clip of the segment a-b to a convex polygon given as a flat `[x, y, ...]` outline, in either
+ * winding. Exact (no tolerance): the returned ends lie on the outline where the segment crosses it. The
+ * segment's parameter range is returned too (`t0` and `t1`, both within 0..1 of the original a-b), so a
+ * caller can tell a cut end from an original one. A segment that only touches the outline returns a
+ * zero-length result (`t0 === t1`); one that misses it, a degenerate outline or non-finite input returns null.
+ * @param {{x:number,y:number}} a
+ * @param {{x:number,y:number}} b
+ * @param {number[]} outline at least three vertices of a convex polygon
+ * @returns {{ t0: number, t1: number, a: {x:number,y:number}, b: {x:number,y:number} } | null}
+ */
+export function clipSegmentToConvex(a, b, outline) {
+  if (!a || !b || ![a.x, a.y, b.x, b.y].every(finite) || !isFlatPolyline(outline) || outline.length < 6) return null;
+  const count = outline.length / 2;
+  let area2 = 0;
+  for (let i = 0; i < count; i++) {
+    const j = (i + 1) % count;
+    area2 += outline[2 * i] * outline[2 * j + 1] - outline[2 * j] * outline[2 * i + 1];
+  }
+  if (!(Math.abs(area2) > 0)) return null;
+  const side = area2 > 0 ? 1 : -1;
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  let t0 = 0;
+  let t1 = 1;
+  for (let i = 0; i < count; i++) {
+    const j = (i + 1) % count;
+    const ex = outline[2 * j] - outline[2 * i];
+    const ey = outline[2 * j + 1] - outline[2 * i + 1];
+    // Inside is the left of each edge for a counter-clockwise outline; `side` flips it for a clockwise one.
+    const at = side * (ex * (a.y - outline[2 * i + 1]) - ey * (a.x - outline[2 * i]));
+    const rate = side * (ex * dy - ey * dx);
+    if (rate === 0) {
+      if (at < 0) return null;
+      continue;
+    }
+    const t = -at / rate;
+    if (rate > 0) {
+      if (t > t0) t0 = t;
+    } else if (t < t1) {
+      t1 = t;
+    }
+    if (t0 > t1) return null;
+  }
+  const point = t => ({ x: a.x + dx * t, y: a.y + dy * t });
+  return { t0, t1, a: t0 === 0 ? { x: a.x, y: a.y } : point(t0), b: t1 === 1 ? { x: b.x, y: b.y } : point(t1) };
+}

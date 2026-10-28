@@ -2766,10 +2766,11 @@ const sameAnnotationContent = (a, b) => JSON.stringify({ ...a, updatedAt: 0 }) =
 /**
  * Apply a pure record edit to one stored annotation of the given type and commit it. An edit that changes
  * nothing writes nothing. `placement`, when given, is a write-time rule judged on the edited record against
- * the committed layout; it returns the reason to refuse the write, or null.
- * @returns {{ ok: true, pack: any, annotation: any, unchanged?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' | 'unresolved' | 'too-short' }}
+ * the committed layout; it returns the reason to refuse the write, or null. With `commit` false nothing is
+ * written: the result is the same verdict (`dryRun`), so a gesture can preview whether its edit would be accepted.
+ * @returns {{ ok: true, pack: any, annotation: any, unchanged?: true, dryRun?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' | 'unresolved' | 'too-short' }}
  */
-function editStoredAnnotation(packId, annotationId, type, edit, placement = null) {
+function editStoredAnnotation(packId, annotationId, type, edit, placement = null, commit = true) {
   const previousPack = getById(packId);
   if (!previousPack) return { ok: false, reason: 'pack-not-found' };
   const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
@@ -2780,6 +2781,7 @@ function editStoredAnnotation(packId, annotationId, type, edit, placement = null
   if (sameAnnotationContent(edited, current[index])) return { ok: true, pack: previousPack, annotation: current[index], unchanged: true };
   const problem = placement ? placement(edited, previousPack) : null;
   if (problem) return { ok: false, reason: problem };
+  if (!commit) return { ok: true, pack: previousPack, annotation: edited, dryRun: true };
   const next = current.map((record, i) => (i === index ? edited : record));
   return { ok: true, pack: commitAnnotations(previousPack, next), annotation: edited };
 }
@@ -2830,15 +2832,15 @@ export function setCalloutOffset(packId, annotationId, offset) {
  * must resolve against the committed layout and be at least MIN_ARROW_LENGTH_INCHES apart, otherwise
  * nothing is written. Exactly one record is written, or nothing.
  * @param {string} packId
- * @param {{ start?: any, end?: any, color?: string, width?: string }} [input]
+ * @param {{ start?: any, end?: any, color?: string, width?: string, style?: string }} [input]
  * @returns {{ ok: true, annotation: any, pack: any } | { ok: false, reason: 'pack-not-found' | 'limit' | 'invalid' | 'unresolved' | 'too-short' }}
  */
-export function addArrow(packId, { start, end, color, width } = {}) {
+export function addArrow(packId, { start, end, color, width, style } = {}) {
   const previousPack = getById(packId);
   if (!previousPack) return { ok: false, reason: 'pack-not-found' };
   const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
   if (current.length >= CoreAnnotations.MAX_ANNOTATIONS_PER_PACK) return { ok: false, reason: 'limit' };
-  const record = CoreAnnotations.createArrowRecord({ id: Utils.uuid(), start, end, color, width, now: Date.now() });
+  const record = CoreAnnotations.createArrowRecord({ id: Utils.uuid(), start, end, color, width, style, now: Date.now() });
   const checked = CoreAnnotations.validateAnnotationCollection([record]);
   if (!checked.ok) return { ok: false, reason: 'invalid' };
   const annotation = checked.annotations[0];
@@ -2847,7 +2849,7 @@ export function addArrow(packId, { start, end, color, width } = {}) {
   return { ok: true, annotation, pack: commitAnnotations(previousPack, [...current, annotation]) };
 }
 
-/** Edit an arrow's color, width or visibility. Its endpoints are never touched, so no placement rule applies. */
+/** Edit an arrow's color, width, line style or visibility. Its endpoints are never touched, so no placement rule applies. */
 export function updateArrow(packId, annotationId, patch) {
   return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_ARROW,
     (record, now) => CoreAnnotations.editArrowRecord(record, patch, now));
@@ -2863,6 +2865,68 @@ export function moveArrowEndpoint(packId, annotationId, which, anchor) {
   return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_ARROW,
     (record, now) => CoreAnnotations.replaceArrowEndpoint(record, which, anchor, now),
     (edited, pack) => CoreAnnotations.arrowPlacementProblem(edited, anchorResolutionContext(pack), which));
+}
+
+/**
+ * Create one freehand stroke from a finished gesture. `anchor` is the first vertex (a Measurement anchor on
+ * the surface the gesture started on), `face` the cargo face for a cargo anchor, and `rawPoints` the sampled
+ * surface-local `[u, v, ...]` positions after it. The raw samples are simplified within the stated error
+ * budget and quantized (CoreAnnotations.prepareDrawStroke); a stroke that cannot fit is refused as
+ * `too-complex`, never truncated. The stroke must also resolve Valid now (the anchor resolves and one
+ * patch holds every vertex) and run at least MIN_DRAW_LENGTH_INCHES. Exactly one record is written, or nothing.
+ * @param {string} packId
+ * @param {{ anchor?: any, face?: string, rawPoints?: number[], color?: string, width?: string, style?: string }} [input]
+ * @returns {{ ok: true, annotation: any, pack: any, tolerance: number }
+ *   | { ok: false, reason: 'pack-not-found' | 'limit' | 'points-limit' | 'invalid' | 'too-short' | 'too-complex' | 'unresolved' }}
+ */
+export function addDraw(packId, { anchor, face, rawPoints, color, width, style } = {}) {
+  const previousPack = getById(packId);
+  if (!previousPack) return { ok: false, reason: 'pack-not-found' };
+  const current = CoreAnnotations.normalizeAnnotations(previousPack.annotations);
+  if (current.length >= CoreAnnotations.MAX_ANNOTATIONS_PER_PACK) return { ok: false, reason: 'limit' };
+  const prepared = CoreAnnotations.prepareDrawStroke({ anchor, face, rawPoints });
+  if ('reason' in prepared) return { ok: false, reason: prepared.reason };
+  const record = CoreAnnotations.createDrawRecord({
+    id: Utils.uuid(), anchor, face, points: prepared.points, color, width, style, now: Date.now(),
+  });
+  const checked = CoreAnnotations.validateAnnotationCollection([record]);
+  if (!checked.ok) return { ok: false, reason: 'invalid' };
+  const annotation = checked.annotations[0];
+  if (CoreAnnotations.drawVertexTotal(current) + CoreAnnotations.drawVertexCount(annotation) > CoreAnnotations.MAX_DRAW_VERTICES_PER_PACK) {
+    return { ok: false, reason: 'points-limit' };
+  }
+  const problem = CoreAnnotations.drawPlacementProblem(annotation, anchorResolutionContext(previousPack));
+  if (problem) return { ok: false, reason: problem };
+  return { ok: true, annotation, pack: commitAnnotations(previousPack, [...current, annotation]), tolerance: prepared.tolerance };
+}
+
+/**
+ * Edit a stroke's color, width, line style or visibility. Its surface, face and vertices are carried over untouched, so
+ * no placement rule applies and a stroke that needs review can still be restyled or hidden.
+ */
+export function updateDraw(packId, annotationId, patch) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_DRAW,
+    (record, now) => CoreAnnotations.editDrawRecord(record, patch, now));
+}
+
+/**
+ * Move a whole stroke rigidly by one in-plane offset `(du, dv)` (inches, snapped to the 0.01 in grid) on the
+ * surface it is already attached to. The moved stroke must be a valid record AND resolve Valid against the
+ * committed layout (every vertex on the one cargo face, cap, floor or wall patch it belongs to): otherwise the
+ * whole move is refused, never clamped, trimmed or re-attached. Exactly one annotation-only write, or none; an
+ * offset that snaps to zero is `unchanged` and writes nothing. Cargo is never touched.
+ */
+export function moveDraw(packId, annotationId, du, dv) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_DRAW,
+    (record, now) => CoreAnnotations.translateDrawRecord(record, du, dv, now),
+    (edited, pack) => CoreAnnotations.drawPlacementProblem(edited, anchorResolutionContext(pack)));
+}
+
+/** The verdict moveDraw would give for this offset right now, without writing: what a drag previews. */
+export function checkDrawMove(packId, annotationId, du, dv) {
+  return editStoredAnnotation(packId, annotationId, CoreAnnotations.ANNOTATION_TYPE_DRAW,
+    (record, now) => CoreAnnotations.translateDrawRecord(record, du, dv, now),
+    (edited, pack) => CoreAnnotations.drawPlacementProblem(edited, anchorResolutionContext(pack)), false);
 }
 
 /** Deliberate, individual deletion (also removes an unreadable recovery record). Cargo is never touched. */
@@ -2882,7 +2946,7 @@ export function deleteAnnotation(packId, annotationId) {
  * Put back a record that deleteAnnotation returned (the panel's one-level Undo). The record goes through
  * the same strict gate as import, keeps its ID and returns to its position, and is refused if the plan
  * changed in a way that makes that wrong (the ID is taken again, or the cap is reached).
- * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'exists' | 'limit' | 'invalid' }}
+ * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'exists' | 'limit' | 'points-limit' | 'invalid' }}
  */
 export function restoreAnnotation(packId, record, index) {
   const previousPack = getById(packId);
@@ -2892,6 +2956,9 @@ export function restoreAnnotation(packId, record, index) {
   const checked = CoreAnnotations.validateAnnotationCollection([record]);
   if (!checked.ok) return { ok: false, reason: 'invalid' };
   if (current.some(existing => existing.id === checked.annotations[0].id)) return { ok: false, reason: 'exists' };
+  if (CoreAnnotations.drawVertexTotal(current) + CoreAnnotations.drawVertexTotal(checked.annotations) > CoreAnnotations.MAX_DRAW_VERTICES_PER_PACK) {
+    return { ok: false, reason: 'points-limit' };
+  }
   const at = Math.max(0, Math.min(Number.isInteger(index) ? index : current.length, current.length));
   const next = [...current.slice(0, at), checked.annotations[0], ...current.slice(at)];
   return { ok: true, pack: commitAnnotations(previousPack, next) };

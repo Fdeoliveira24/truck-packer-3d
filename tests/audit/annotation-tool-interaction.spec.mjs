@@ -4105,6 +4105,48 @@ test('freehand Draw mode: a primary drag draws one stroke on a cargo face withou
   assert.deepEqual(errors, []);
 });
 
+test('Phase 0: opening a callout for editing while Draw is armed ends Draw, restores the camera, writes no stroke, and a later deliberate Drawing still works', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await cameraSettled(page);
+  await seed(page, [{ title: 'Edit while drawing', ground: [260, 80] }]);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 1);
+  const before = await page.evaluate(() => ({ cases: window.probe.casesJson() }));
+
+  // Draw is armed (the camera gate is on), then the saved callout is selected and its editor opened.
+  await armDraw(page);
+  assert.equal(await rotateEnabled(page), false, 'Draw armed: a primary drag draws, so the camera gate is on');
+  await page.click('.tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-card.is-selected [data-act="edit"]');
+  await page.click('.tp3d-annot-card.is-selected [data-act="edit"]');
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  assert.equal(await drawState(page), 'off', 'opening the callout editor ends the armed Draw tool');
+  assert.equal(await rotateEnabled(page), true, 'the camera gate is released through the existing mechanism');
+  assert.equal(await page.inputValue('.tp3d-annot-editor__input'), 'Edit while drawing');
+
+  // A drag over open ground while the editor is open never creates a Drawing (a drag on cargo would be ordinary cargo movement).
+  await dragThrough(page, GROUND_STROKE);
+  assert.equal(await count(page), 1, 'a drag while editing a callout writes no record');
+  assert.equal(await page.evaluate(() => window.probe.annotations().some(r => r.type === 'draw')), false);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is untouched');
+
+  // The draft is intact: saving changes only the callout's title.
+  await page.fill('.tp3d-annot-editor__input', 'Edited after Draw');
+  await page.click('.tp3d-annot-btn--primary');
+  await page.waitForFunction(() => window.probe.annotations()[0].title === 'Edited after Draw');
+  assert.equal(await count(page), 1, 'saving the edit does not create another annotation');
+  assert.equal(await page.evaluate(() => window.probe.annotations()[0].type), 'callout');
+
+  // A deliberate Drawing afterwards works.
+  await armDraw(page);
+  await dragThrough(page, TOP_STROKE_A);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  assert.deepEqual(await page.evaluate(() => window.probe.annotations().map(r => r.type)), ['callout', 'draw']);
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is untouched');
+  assert.deepEqual(errors, []);
+});
+
 test('freehand Move View, modified drags, the wheel and the other buttons keep navigating, and none of them starts a stroke', { timeout: 240000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());

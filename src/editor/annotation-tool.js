@@ -1452,13 +1452,18 @@ export function createAnnotationTool({
       return;
     }
     if (draft) cancelDraft();
+    // Editing a callout ends every armed creator (Arrow, Draw, Re-attach): an unfinished stroke or arrow is cancelled without a
+    // write, and the camera gate Draw holds is released through applyViewGate().
+    cancelStroke();
+    cancelMoveDrag();
     cancelArrowTail();
-    if (tool === 'arrow') {
-      tool = null;
-      hover = null;
-      updateCursor();
-    }
+    tool = null;
+    hover = null;
+    press = null;
     reattachId = null;
+    reattachWhich = null;
+    applyViewGate();
+    updateCursor();
     draft = {
       editId: id,
       hiddenAtOpen: record.hidden === true,

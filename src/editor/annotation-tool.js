@@ -76,6 +76,7 @@ import {
   DRAW_WIDTHS,
   LINE_STYLES,
   MAX_ANNOTATIONS_PER_PACK,
+  MAX_ANNOTATION_NAME_LENGTH,
   MAX_CALLOUT_DESCRIPTION_LENGTH,
   MAX_CALLOUT_TITLE_LENGTH,
   MAX_CARD_OFFSET_PX,
@@ -279,6 +280,8 @@ export function createAnnotationTool({
   let draft = null; // the editor card: a new callout or an edit of an existing one
   let selectedId = null;
   const collapsedIds = new Set(); // session-only: callouts folded to their header; never saved, never changes the hidden flag or selection
+  let renamingId = null; // the arrow or drawing whose name is being typed in its row; nothing is written until it is committed
+  let revealedId = null; // the selection whose row was last revealed: a selection change reveals its row once, never per frame
   let display = 'markers'; // view-level: 'markers' | 'labels' | 'cards'; not saved with the Load Plan
   let showMode = 'all'; // view-level: 'all' | 'selected' | 'off'; never saved, never overrides a record's own hidden flag
   let lastCustomColor = null; // the custom color last picked in this session, offered again by the swatch
@@ -388,9 +391,10 @@ export function createAnnotationTool({
   };
   const isCallout = record => Boolean(record) && record.type === ANNOTATION_TYPE_CALLOUT;
   const isArrow = record => Boolean(record) && record.type === ANNOTATION_TYPE_ARROW;
-  const arrowName = id => `Arrow ${arrowNumbers.get(id) || ''}`.trim();
+  // A custom name replaces the generated one everywhere an arrow or a drawing is named; without one the generated name stays.
+  const arrowName = id => { const named = recordById(id); return named && named.name ? named.name : `Arrow ${arrowNumbers.get(id) || ''}`.trim(); };
   const isDraw = record => Boolean(record) && record.type === ANNOTATION_TYPE_DRAW;
-  const drawName = id => `Drawing ${drawNumbers.get(id) || ''}`.trim();
+  const drawName = id => { const named = recordById(id); return named && named.name ? named.name : `Drawing ${drawNumbers.get(id) || ''}`.trim(); };
   const isStyled = record => isArrow(record) || isDraw(record);
 
   // The refusal wording names what is being placed: an arrow end or a callout marker.
@@ -574,6 +578,8 @@ export function createAnnotationTool({
     closePanel();
     selectedId = null;
     collapsedIds.clear();
+    renamingId = null;
+    revealedId = null;
     clearDeleted();
     records = [];
     results = [];
@@ -1853,6 +1859,60 @@ export function createAnnotationTool({
       return;
     }
     writeHidden(id);
+  }
+
+  /** Scrolls the nearest scrolling ancestor just far enough to show a row. Called on a selection change only, never per frame. */
+  function revealRow(row) {
+    if (!row || !row.el.isConnected) return;
+    let scroller = row.el.parentElement;
+    while (scroller && scroller !== doc.body) {
+      if (/(auto|scroll)/.test(doc.defaultView.getComputedStyle(scroller).overflowY) && scroller.scrollHeight > scroller.clientHeight) break;
+      scroller = scroller.parentElement;
+    }
+    if (!scroller || scroller === doc.body) return;
+    const box = scroller.getBoundingClientRect();
+    const item = row.el.getBoundingClientRect();
+    if (box.height === 0) return;
+    if (item.top < box.top) scroller.scrollTop -= box.top - item.top;
+    else if (item.bottom > box.bottom) scroller.scrollTop += item.bottom - box.bottom;
+  }
+
+  /** Opens the inline rename of an arrow or a drawing in its own row. Nothing is written until the name is committed. */
+  function startRename(id) {
+    const reason = blockedReason();
+    if (reason) {
+      notice(blockedMessage(reason));
+      return;
+    }
+    const record = recordById(id);
+    if (!isArrow(record) && !isDraw(record)) return;
+    renamingId = id;
+    renderPanel();
+  }
+
+  /**
+   * Ends an inline rename. A commit writes the name through the same arrow or drawing update as every other look
+   * change; a blank name removes the custom name so the generated one shows again. Escape (commit false) writes nothing.
+   */
+  function finishRename(id, value, commit, { refocus = false } = {}) {
+    if (renamingId !== id) return;
+    renamingId = null;
+    const pack = currentPack();
+    const record = recordById(id);
+    if (commit && pack && record && !blockedReason() && (isArrow(record) || isDraw(record))) {
+      clearDeleted();
+      const outcome = isArrow(record)
+        ? PackLibrary.updateArrow(pack.id, id, { name: value })
+        : PackLibrary.updateDraw(pack.id, id, { name: value });
+      if (!outcome.ok) {
+        UIComponents.showToast(`Could not rename this ${isArrow(record) ? 'arrow' : 'drawing'}.`, 'error', { title: 'Annotations' });
+      }
+    }
+    renderPanel();
+    if (refocus) {
+      const row = rows.get(id);
+      if (row && typeof row.edit.focus === 'function') row.edit.focus({ preventScroll: true });
+    }
   }
 
   function writeHidden(id) {
@@ -3191,6 +3251,13 @@ export function createAnnotationTool({
     const sub = htmlEl('span', 'tp3d-annot-row__sub');
     text.append(name, sub);
     selectButton.append(badge, text);
+    // An arrow or a drawing is renamed in place: this field replaces the name while it is being typed.
+    const nameInput = htmlEl('input', 'tp3d-annot-row__rename');
+    nameInput.type = 'text';
+    nameInput.maxLength = MAX_ANNOTATION_NAME_LENGTH;
+    nameInput.autocomplete = 'off';
+    nameInput.spellcheck = false;
+    nameInput.hidden = true;
     const actions = htmlEl('div', 'tp3d-annot-row__actions');
     const eye = iconButton('tp3d-annot-row__eye', 'fa-solid fa-eye', 'Hide');
     const edit = iconButton('tp3d-annot-row__edit', 'fa-solid fa-pen', 'Edit');
@@ -3215,11 +3282,28 @@ export function createAnnotationTool({
       issue.appendChild(line);
       ends[which] = { line, text: reason, button };
     });
-    el.append(selectButton, actions, issue);
-    const row = { el, select: selectButton, badge, name, sub, eye, edit, remove, issue, issueText, reattach, ends, id: null, eyeIcon: eye.firstChild };
-    selectButton.addEventListener('click', () => select(row.id, { toggle: true }));
+    el.append(selectButton, nameInput, actions, issue);
+    const row = { el, select: selectButton, badge, name, sub, nameInput, eye, edit, remove, issue, issueText, reattach, ends, id: null, eyeIcon: eye.firstChild, renaming: false };
+    // Picking a row from the list ends a pending Arrow tail (an unfinished creation) and leaves the armed tool as it is.
+    selectButton.addEventListener('click', () => {
+      cancelArrowTail();
+      select(row.id, { toggle: true });
+    });
     eye.addEventListener('click', () => toggleHidden(row.id));
-    edit.addEventListener('click', () => openEditor(row.id));
+    // The same control edits a callout in the full editor and renames an arrow or a drawing in its row.
+    edit.addEventListener('click', () => (isCallout(recordById(row.id)) ? openEditor(row.id) : startRename(row.id)));
+    // Typing never reaches the scene or the other shortcuts: Enter commits, Escape cancels, leaving the field commits.
+    nameInput.addEventListener('keydown', ev => {
+      ev.stopPropagation();
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        finishRename(row.id, nameInput.value, true, { refocus: true });
+      } else if (ev.key === 'Escape') {
+        ev.preventDefault();
+        finishRename(row.id, '', false, { refocus: true });
+      }
+    });
+    nameInput.addEventListener('blur', () => finishRename(row.id, nameInput.value, true));
     // A click event with detail 0 is a keyboard activation (Enter / Space).
     remove.addEventListener('click', ev => removeAnnotation(row.id, ev.detail === 0));
     reattach.addEventListener('click', () => startReattach(row.id));
@@ -3277,7 +3361,7 @@ export function createAnnotationTool({
     row.select.title = callout ? 'Select to show its card' : (arrow ? 'Select to edit its ends, color and width' : (draw ? 'Select to edit its color and width' : ''));
 
     setHidden(row.eye, !supported);
-    setHidden(row.edit, !callout);
+    setHidden(row.edit, !supported);
     row.eye.disabled = blocked;
     row.edit.disabled = blocked || viewOff;
     row.remove.disabled = blocked;
@@ -3288,8 +3372,24 @@ export function createAnnotationTool({
       setAttr(row.eye, 'aria-label', `${hiddenNow ? 'Show' : 'Hide'} ${title}`);
       row.eye.title = hiddenNow ? 'Show' : 'Hide';
     }
-    if (callout) setAttr(row.edit, 'aria-label', `Edit ${title}`);
+    const editVerb = callout ? 'Edit' : 'Rename';
+    row.edit.title = editVerb;
+    setAttr(row.edit, 'aria-label', `${editVerb} ${title}`);
     setAttr(row.remove, 'aria-label', `Delete ${title}`);
+
+    // An arrow or a drawing being renamed shows its name field. The field is filled and focused once, when the rename starts.
+    const renaming = (arrow || draw) && renamingId === record.id;
+    const starting = renaming && !row.renaming;
+    row.renaming = renaming;
+    setHidden(row.nameInput, !renaming);
+    if (starting) {
+      const generated = arrow ? `Arrow ${arrowNumbers.get(record.id) || ''}`.trim() : `Drawing ${drawNumbers.get(record.id) || ''}`.trim();
+      row.nameInput.value = record.name || '';
+      row.nameInput.placeholder = generated;
+      row.nameInput.setAttribute('aria-label', `Name for ${generated}. Leave blank to use that name.`);
+      row.nameInput.focus();
+      row.nameInput.select();
+    }
 
     // A callout reports one reason and one Re-attach; an arrow reports each end that cannot be placed on its own.
     const issueReason = result ? result.reason : 'unreadable';
@@ -3418,6 +3518,11 @@ export function createAnnotationTool({
       row.el.remove();
       rows.delete(id);
     });
+    // A record picked from the scene gets its row shown once, when the selection changes. Otherwise the list stays where the user scrolled it.
+    if (selectedId !== revealedId) {
+      revealedId = selectedId;
+      if (selectedId) revealRow(rows.get(selectedId));
+    }
     applyPanelPosition(); // rows or collapsing change the panel size: keep it inside the viewport
     syncPanelFlow();
   }

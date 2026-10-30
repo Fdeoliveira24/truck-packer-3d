@@ -6469,6 +6469,26 @@ body.tp3d-shared-modal-lock #app .nav {
   display: none;
 }
 
+/* An arrow or a drawing renamed in its own row: the field sits under the name, aligned with it. */
+.tp3d-annot-row__rename {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  box-sizing: border-box;
+  height: 28px;
+  margin: 0 12px 10px 44px;
+  padding: 0 8px;
+  border: 1px solid var(--accent-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-weight: var(--font-medium);
+}
+
+.tp3d-annot-row__rename[hidden] {
+  display: none;
+}
+
 .tp3d-annot-row__issue .tp3d-annot-btn {
   margin-top: 8px;
 }

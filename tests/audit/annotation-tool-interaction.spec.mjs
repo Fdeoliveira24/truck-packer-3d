@@ -6966,3 +6966,100 @@ test('annotation drawing look: a Dotted line is clean dots with no ring, a Dashe
   assert.equal(await writes(page), 0, 'nothing here wrote a record');
   assert.deepEqual(errors, []);
 });
+
+test('an arrow and a drawing are renamed in their own row: Enter saves one name, Escape and a blank name are handled, the cargo and the geometry never change and typing never reaches the scene', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await seedDraw(page);
+  await page.waitForSelector('.tp3d-annot-row[data-type="arrow"]');
+  await page.waitForSelector('.tp3d-annot-row[data-type="draw"]');
+  const rowName = type => page.evaluate(t2 => document.querySelector(`.tp3d-annot-row[data-type="${t2}"] .tp3d-annot-row__name`).textContent, type);
+  const stored = type => page.evaluate(t2 => window.probe.annotations().find(record => record.type === t2), type);
+  const casesBefore = await page.evaluate(() => window.probe.casesJson());
+  const arrowBefore = await stored('arrow');
+  const drawBefore = await stored('draw');
+  assert.equal(await rowName('arrow'), 'Arrow 1');
+  assert.equal(await rowName('draw'), 'Drawing 1');
+
+  // Enter saves one name; focus returns to the row's Rename control; nothing else changes.
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__rename:not([hidden])');
+  assert.equal(await page.evaluate(() => document.activeElement.classList.contains('tp3d-annot-row__rename')), true, 'the name field takes focus');
+  await page.keyboard.type('Left pallet');
+  await page.keyboard.press('Delete');
+  await page.keyboard.type('x');
+  await page.keyboard.press('Backspace');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.probe.annotations().find(record => record.type === 'arrow').name === 'Left pallet');
+  assert.equal(await rowName('arrow'), 'Left pallet');
+  assert.equal(await page.evaluate(() => document.activeElement.classList.contains('tp3d-annot-row__edit')), true, 'Enter returns focus to the Rename control');
+  const arrowAfter = await stored('arrow');
+  assert.deepEqual({ ...arrowAfter, name: undefined, updatedAt: undefined }, { ...arrowBefore, name: undefined, updatedAt: undefined }, 'only the name and its edit time changed');
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 2, 'Delete while typing removed nothing');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.casesJson())), JSON.stringify(casesBefore), 'cargo is untouched');
+
+  // Escape cancels a rename without writing.
+  await page.click('.tp3d-annot-row[data-type="draw"] .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-row[data-type="draw"] .tp3d-annot-row__rename:not([hidden])');
+  await page.keyboard.type('Not saved');
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-row[data-type="draw"] .tp3d-annot-row__rename').hidden);
+  assert.equal(await rowName('draw'), 'Drawing 1', 'Escape keeps the generated name');
+  assert.deepEqual(await stored('draw'), drawBefore, 'Escape writes nothing');
+  assert.equal(await page.evaluate(() => document.activeElement.classList.contains('tp3d-annot-row__edit')), true);
+
+  // A blank name removes the custom one, so the generated name comes back.
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__edit');
+  await page.waitForSelector('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__rename:not([hidden])');
+  await page.fill('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__rename', '   ');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.probe.annotations().find(record => record.type === 'arrow').name === undefined);
+  assert.equal(await rowName('arrow'), 'Arrow 1', 'a blank name restores the generated name');
+
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a rename is not a cargo Undo step');
+  assert.deepEqual(errors, []);
+});
+
+test('a record picked in the scene is revealed in a scrolled list once, the user scroll is otherwise kept, and a list pick ends a pending arrow tail while the tool stays armed', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const specs = Array.from({ length: 12 }, (_, i) => ({ title: `Note ${i + 1}`, cargo: 'cargo-a', local: { x: -18 + (i % 4) * 10, y: 16, z: -8 + Math.floor(i / 4) * 8 } }));
+  const saved = await seed(page, specs);
+  await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-row').length === 12);
+  const list = '.tp3d-annot-panel__list';
+  assert.equal(await page.evaluate(sel => { const el = document.querySelector(sel); return el.scrollHeight > el.clientHeight; }, list), true, 'the list scrolls');
+
+  // A pick in the scene scrolls the last row into the list, from the top.
+  await page.evaluate(sel => { document.querySelector(sel).scrollTop = 0; }, list);
+  const last = saved[saved.length - 1].id;
+  await page.waitForFunction(id => { const pin = document.querySelector(`.tp3d-annot-pin[data-annot-id="${id}"]`); return pin && !pin.hidden; }, last);
+  await page.click(`.tp3d-annot-pin[data-annot-id="${last}"]`);
+  await page.waitForSelector(`.tp3d-annot-row[data-annot-id="${last}"] .tp3d-annot-row__select[aria-pressed="true"]`);
+  const shown = await page.evaluate(id => {
+    const list2 = document.querySelector('.tp3d-annot-panel__list').getBoundingClientRect();
+    const row = document.querySelector(`.tp3d-annot-row[data-annot-id="${id}"]`).getBoundingClientRect();
+    return row.top >= list2.top - 1 && row.bottom <= list2.bottom + 1;
+  }, last);
+  assert.equal(shown, true, 'the selected row is revealed in the list');
+
+  // The user's own scroll is kept: nothing scrolls the list back while nothing changes.
+  await page.evaluate(sel => { document.querySelector(sel).scrollTop = 0; }, list);
+  await page.waitForTimeout(400);
+  assert.equal(await page.evaluate(sel => document.querySelector(sel).scrollTop, list), 0, 'a manual scroll is not overridden');
+
+  // A pending arrow tail is ended by a list pick; the Arrow tool stays armed and nothing is written.
+  const before = (await page.evaluate(() => window.probe.annotations())).length;
+  await page.click('.tp3d-annot-seg__btn[data-tool="arrow"]');
+  await page.waitForFunction(() => /arrow tail/i.test(window.probe.hint()));
+  await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
+  await page.waitForFunction(() => window.probe.hint() !== '' && /arrow head|where the arrow/i.test(window.probe.hint()));
+  await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__select');
+  await page.waitForFunction(() => /arrow tail/i.test(window.probe.hint()));
+  assert.equal(await tailShown(page), false, 'the pending tail is ended');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 'the Arrow tool stays armed');
+  assert.equal((await page.evaluate(() => window.probe.annotations())).length, before, 'nothing was written');
+  assert.deepEqual(errors, []);
+});

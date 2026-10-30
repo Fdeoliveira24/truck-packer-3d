@@ -534,7 +534,7 @@ test('one click on the trash icon deletes immediately and never leaves a focus r
   await page.waitForFunction(() => window.probe.measurements().length === 1);
   assert.equal(await page.evaluate(() => window.probe.measurements()[0].id), second);
   // A concise toast says so; a measurement has no Undo, because no verified restore path exists.
-  assert.equal(await page.locator('.toast-message').last().textContent(), 'Measurement deleted.');
+  assert.equal(await page.locator('.toast-message').last().textContent(), 'Measurement deleted. This cannot be undone.');
   assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'no Undo is offered for a measurement');
   assert.equal(await page.evaluate(id => !document.querySelector(`[data-measurement-id="${id}"]`), first), true, 'the row left the panel');
   assert.equal(await page.evaluate(() => !!document.activeElement.closest('#editor-measure-panel')), false,

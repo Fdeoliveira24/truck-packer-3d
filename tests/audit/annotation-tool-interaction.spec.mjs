@@ -7339,3 +7339,47 @@ test('a stale Arrow grip cannot edit before the next render: arming a creation t
   assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 'and nothing else was created');
   assert.deepEqual(errors, []);
 });
+
+test('an automatically placed callout card keeps its Edit and Collapse buttons clear of the camera and zoom controls, so an ordinary click reaches them', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'Folded', ...TOP_OF_A, description: 'A card that could land under the camera controls' }]);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-card.is-selected');
+  await frames(page, 3);
+  for (const act of ['edit', 'collapse']) {
+    const reached = await page.evaluate(sel => {
+      const button = document.querySelector(`.tp3d-annot-card.is-selected [data-act="${sel}"]`);
+      const r = button.getBoundingClientRect();
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return Boolean(hit) && (hit === button || button.contains(hit));
+    }, act);
+    assert.equal(reached, true, `the card's ${act} button is the element under its own centre`);
+  }
+  await page.click('.tp3d-annot-card.is-selected [data-act="collapse"]');
+  await page.waitForSelector('.tp3d-annot-card.is-collapsed');
+  assert.deepEqual(errors, []);
+});
+
+test('an Undo toast keeps its Undo through its visible lifetime: a click on its message leaves it, Enter on the focused Undo restores exactly once', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'Kept', ground: [520, 10] }]);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__delete');
+  await page.waitForFunction(() => window.probe.annotations().length === 0);
+  const toast = page.locator('.toast', { hasText: 'Callout deleted.' });
+  await toast.locator('.toast-message').click();
+  assert.equal(await toast.locator('.toast-btn', { hasText: 'Undo' }).count(), 1, 'a body click keeps the Undo');
+  await toast.locator('.toast-btn', { hasText: 'Undo' }).focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  await frames(page, 3);
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 1, 'restored exactly once');
+  await page.waitForFunction(() => ![...document.querySelectorAll('.toast-btn')].some(b => b.textContent === 'Undo'), null, { timeout: 5000 });
+  assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'the Undo is spent once its toast leaves');
+  assert.deepEqual(errors, []);
+});

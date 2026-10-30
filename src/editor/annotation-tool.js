@@ -5245,7 +5245,7 @@ export function createAnnotationTool({
    */
   function panelObstacle(resultsBox = resultsObstacles()) {
     if (!els.layer || !doc) return null;
-    const found = panelRectsNow().concat(statusObstacle(), resultsBox);
+    const found = panelRectsNow().concat(statusObstacle(), resultsBox, controlsObstacle());
     return found.length ? found : null;
   }
 

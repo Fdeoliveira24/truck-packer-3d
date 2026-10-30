@@ -1360,7 +1360,7 @@ export function createMeasurementTool({
     }
     setStatus('');
     // A concise toast, the same as the other annotation feedback. Measurement deletion has no Undo: no verified restore path exists.
-    UIComponents.showToast('Measurement deleted.', 'info', { title: 'Measurements' });
+    UIComponents.showToast('Measurement deleted. This cannot be undone.', 'info', { title: 'Measurements' });
     if (!viaKeyboard) return;
     // Keep keyboard focus in the panel: the next row, else the previous, else the header.
     const next = records[Math.min(index, records.length - 1)];

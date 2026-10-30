@@ -278,6 +278,7 @@ export function createAnnotationTool({
   let viewGate = null; // { controls, prior } while this tool holds OrbitControls' rotation off (Draw mode, or a press a saved drawing took)
   let draft = null; // the editor card: a new callout or an edit of an existing one
   let selectedId = null;
+  const collapsedIds = new Set(); // session-only: callouts folded to their header; never saved, never changes the hidden flag or selection
   let display = 'markers'; // view-level: 'markers' | 'labels' | 'cards'; not saved with the Load Plan
   let showMode = 'all'; // view-level: 'all' | 'selected' | 'off'; never saved, never overrides a record's own hidden flag
   let lastCustomColor = null; // the custom color last picked in this session, offered again by the swatch
@@ -572,6 +573,7 @@ export function createAnnotationTool({
     showMode = 'all';
     closePanel();
     selectedId = null;
+    collapsedIds.clear();
     clearDeleted();
     records = [];
     results = [];
@@ -590,6 +592,15 @@ export function createAnnotationTool({
    * annotation owns Delete and no cargo can be deleted as a side effect. Refused while the Editor holds a
    * provisional pose, because clearing the cargo selection would abandon that hold.
    */
+  /** Folds a callout to its header, or opens it again. Session-only: selection, the hidden flag and the Load Plan are untouched. */
+  function toggleCollapsed(id) {
+    if (!id || !recordById(id)) return;
+    if (collapsedIds.has(id)) collapsedIds.delete(id);
+    else collapsedIds.add(id);
+    visDirty = true;
+    refreshOverlay();
+  }
+
   function select(id, { toggle = false } = {}) {
     let target = id && recordById(id) ? id : null;
     if (toggle && target && selectedId === target) target = null;
@@ -2028,6 +2039,7 @@ export function createAnnotationTool({
       reattachWhich = null;
     }
     if (selectedId === id) selectedId = null;
+    collapsedIds.delete(id);
     const outcome = PackLibrary.deleteAnnotation(pack.id, id);
     if (!outcome.ok) {
       renderPanel();
@@ -2795,7 +2807,7 @@ export function createAnnotationTool({
       if (act && layer.contains(act)) {
         const id = act.closest('.tp3d-annot-card')?.dataset.annotId;
         if (act.dataset.act === 'edit') openEditor(id);
-        else if (act.dataset.act === 'collapse') select(null);
+        else if (act.dataset.act === 'collapse') toggleCollapsed(id);
         return;
       }
       const grip = ev.target.closest && ev.target.closest('.tp3d-annot-handle');
@@ -4493,9 +4505,8 @@ export function createAnnotationTool({
     const collapse = htmlEl('button', 'tp3d-annot-card__btn');
     collapse.type = 'button';
     collapse.dataset.act = 'collapse';
-    collapse.title = 'Collapse callout';
-    collapse.setAttribute('aria-label', 'Collapse callout');
-    collapse.appendChild(iconEl('fa-solid fa-chevron-up'));
+    const chevron = iconEl('fa-solid fa-chevron-up');
+    collapse.appendChild(chevron);
     head.append(swatch, title, edit, collapse);
     const desc = htmlEl('div', 'tp3d-annot-card__desc');
     const foot = htmlEl('div', 'tp3d-annot-card__foot');
@@ -4504,7 +4515,7 @@ export function createAnnotationTool({
     foot.append(iconEl('fa-solid fa-cube'), target, behind);
     card.append(head, desc, foot);
     els.layer.appendChild(card);
-    return { card, swatch, title, edit, collapse, desc, target, behind };
+    return { card, swatch, title, edit, collapse, chevron, desc, foot, target, behind };
   }
 
   function getView(id) {
@@ -4696,7 +4707,8 @@ export function createAnnotationTool({
     const parts = view.cardParts;
     const { record } = entry;
     const targetName = anchorTargetName(record.anchor);
-    const key = `${record.title}\n${record.description || ''}\n${record.color}\n${entry.number}\n${targetName}\n${cardW}`;
+    const collapsed = collapsedIds.has(record.id);
+    const key = `${record.title}\n${record.description || ''}\n${record.color}\n${entry.number}\n${targetName}\n${cardW}\n${collapsed}`;
     const wasHidden = parts.card.hidden;
     if (wasHidden) parts.card.hidden = false;
     if (view.cardKey !== key) {
@@ -4707,15 +4719,24 @@ export function createAnnotationTool({
       setText(parts.swatch, String(entry.number));
       setText(parts.title, record.title);
       setText(parts.desc, record.description || '');
-      setHidden(parts.desc, !record.description);
       setText(parts.target, targetName);
+      // A folded card keeps only its header: the title and swatch stay, the body and footer are hidden.
+      toggleClass(parts.card, 'is-collapsed', collapsed);
+      setHidden(parts.desc, collapsed || !record.description);
+      setHidden(parts.foot, collapsed);
+      parts.chevron.className = `fa-solid fa-chevron-${collapsed ? 'down' : 'up'}`;
+      const foldLabel = `${collapsed ? 'Expand' : 'Collapse'} callout`;
+      setAttr(parts.collapse, 'aria-label', foldLabel);
+      setAttr(parts.collapse, 'title', foldLabel);
+      setAttr(parts.collapse, 'aria-expanded', collapsed ? 'false' : 'true');
       view.cardSize = null;
     }
     toggleClass(parts.card, 'is-selected', selected);
     toggleClass(parts.card, 'is-behind', behind);
     setHidden(parts.behind, !behind);
-    setHidden(parts.edit, !selected);
-    setHidden(parts.collapse, !selected);
+    setHidden(parts.edit, !selected || collapsed);
+    // The fold control stays for a selected callout and for a folded one, so a folded card can always be opened again.
+    setHidden(parts.collapse, !selected && !collapsed);
     if (!view.cardSize || view.cardSize.w !== cardW) {
       // Measured once per content change (not per frame): the placement needs the real height.
       view.cardSize = { w: cardW, h: parts.card.offsetHeight || estimateCardHeight(record.description, cardW) };
@@ -4858,8 +4879,10 @@ export function createAnnotationTool({
 
     // 3. Which cards are shown: selected, kept expanded and (in Cards mode) every visible one, within a budget.
     const editingId = draft && draft.editId;
+    // A folded callout keeps its header in every display mode, so Markers and Labels never hide it on its own.
     const wantsCard = entry => entry.record.id !== editingId &&
-      (entry.selected || entry.record.keepExpanded || display === 'cards') && (entry.view.front || entry.selected || entry.record.keepExpanded);
+      (entry.selected || entry.record.keepExpanded || collapsedIds.has(entry.record.id) || display === 'cards') &&
+      (entry.view.front || entry.selected || entry.record.keepExpanded || collapsedIds.has(entry.record.id));
     const candidates = entries.filter(wantsCard).sort((a, b) =>
       (Number(b.selected) - Number(a.selected)) ||
       (Number(b.record.keepExpanded) - Number(a.record.keepExpanded)) ||

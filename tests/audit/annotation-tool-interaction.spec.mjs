@@ -766,7 +766,56 @@ test('Markers, Labels and Cards are view-level, kept-expanded and Hide are saved
   assert.deepEqual(errors, []);
 });
 
-test('Labels mode in a crowded view draws only labels that cover no other label or marker; every marker stays', { timeout: 150000 }, async t => {
+test('a callout folds to its header and opens again: selection, hidden flag and saved records never change, and a folded card stays in Markers, Labels and Cards', { timeout: 180000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seed(page, [{ title: 'Folded', ...TOP_OF_A, description: 'A long description that the header hides' }, { title: 'Other', ...TOP_OF_B }]);
+  await page.waitForSelector('.tp3d-annot-row >> nth=1');
+  await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-card.is-selected');
+  const stored = JSON.stringify(await page.evaluate(() => window.probe.annotations()));
+  const foldButton = '.tp3d-annot-card.is-selected .tp3d-annot-card__btn[data-act="collapse"]';
+
+  await page.click(foldButton);
+  await page.waitForSelector('.tp3d-annot-card.is-collapsed');
+  const folded = await page.evaluate(() => {
+    const card = document.querySelector('.tp3d-annot-card.is-collapsed');
+    const visibleOf = sel => { const el = card.querySelector(sel); return el && !el.hidden && getComputedStyle(el).display !== 'none'; };
+    return {
+      cardShown: !card.hidden && card.getBoundingClientRect().height > 0,
+      title: card.querySelector('.tp3d-annot-card__title').textContent,
+      desc: visibleOf('.tp3d-annot-card__desc'),
+      foot: visibleOf('.tp3d-annot-card__foot'),
+      selected: card.classList.contains('is-selected'),
+      expanded: card.querySelector('[data-act="collapse"]').getAttribute('aria-expanded'),
+    };
+  });
+  assert.deepEqual(folded, { cardShown: true, title: 'Folded', desc: false, foot: false, selected: true, expanded: 'false' });
+  assert.equal(await page.getAttribute('.tp3d-annot-row:first-child .tp3d-annot-row__select', 'aria-pressed'), 'true', 'folding keeps the record selected');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.annotations())), stored, 'folding writes nothing and changes no hidden flag or anchor');
+
+  // Selecting the other record in Markers leaves the folded one as its header, not gone.
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select[aria-pressed="true"]');
+  for (const mode of ['Markers', 'Labels', 'Cards']) {
+    await page.click(`.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("${mode}")`);
+    await page.waitForFunction(() => document.querySelector('.tp3d-annot-card.is-collapsed:not([hidden])'));
+    assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-card.is-collapsed').classList.contains('is-selected')), false, `${mode}: the folded card is no longer selected`);
+  }
+
+  // Opening it again restores the body; nothing was written.
+  await page.click('.tp3d-annot-card.is-collapsed .tp3d-annot-card__btn[data-act="collapse"]');
+  await page.waitForFunction(() => !document.querySelector('.tp3d-annot-card.is-collapsed'));
+  assert.equal(await page.evaluate(() => {
+    const card = [...document.querySelectorAll('.tp3d-annot-card')].find(el => el.querySelector('.tp3d-annot-card__title').textContent === 'Folded');
+    return Boolean(card) && !card.querySelector('.tp3d-annot-card__desc').hidden && !card.querySelector('.tp3d-annot-card__foot').hidden;
+  }), true, 'the body and footer come back');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.annotations())), stored, 'opening again writes nothing');
+  assert.deepEqual(errors, []);
+});
+
+test('Labels mode in a crowded view draws only labels that cover no other label or marker; every marker stays',{ timeout: 150000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);

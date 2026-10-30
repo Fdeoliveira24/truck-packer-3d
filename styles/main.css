@@ -5567,6 +5567,10 @@ body.tp3d-shared-modal-lock #app .nav {
   line-height: 1.3;
 }
 
+.tp3d-annot-card__foot[hidden] {
+  display: none;
+}
+
 .tp3d-annot-card__foot i {
   font-size: 10px;
 }

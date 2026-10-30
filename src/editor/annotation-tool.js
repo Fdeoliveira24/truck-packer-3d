@@ -765,6 +765,7 @@ export function createAnnotationTool({
       flowObserver.observe(els.panel);
     }
     sync();
+    settle();
     const unreadable = records.filter(record => record.type === ANNOTATION_TYPE_UNREADABLE).length;
     if (unreadable) {
       UIComponents.showToast(
@@ -852,6 +853,8 @@ export function createAnnotationTool({
   function setTool(key) {
     const def = TOOL_DEFS.find(item => item.key === key);
     if (!def || !def.available) return;
+    // Measurement creation holds the canvas: it ends first (a pending first point is dropped, nothing is written).
+    if (tool !== key && sceneOwnedElsewhere() && typeof els.endOtherScene === 'function') els.endOtherScene();
     const reason = blockedReason();
     if (reason && tool !== key) {
       notice(blockedMessage(reason));
@@ -1457,6 +1460,37 @@ export function createAnnotationTool({
     showEditor();
     setStatus('', { sticky: true });
     refreshOverlay();
+  }
+
+  /**
+   * New Measurement is about to start. The armed Callout, Arrow or Draw tool ends and an open card closes, but an edited card
+   * is discarded only after the owner agrees. Declining keeps the draft and the armed tool; nothing is written.
+   */
+  function releaseForMeasurement() {
+    const finish = () => {
+      cancelStroke();
+      cancelMoveDrag();
+      cancelPinDrag();
+      cancelCardDrag();
+      cancelArrowTail();
+      if (draft) cancelDraft();
+      tool = null;
+      reattachId = null;
+      reattachWhich = null;
+      hover = null;
+      press = null;
+      applyViewGate();
+      updateCursor();
+      visDirty = true;
+      refreshOverlay();
+      return true;
+    };
+    if (!(draft && draftIsDirty())) return Promise.resolve(finish());
+    return confirmDiscard({
+      title: 'Discard changes?',
+      message: 'Starting a measurement closes the open callout editor and discards its unsaved changes.',
+      okLabel: 'Discard and measure',
+    }).then(confirmed => (confirmed ? finish() : false));
   }
 
   function cancelDraft(message = '') {
@@ -2942,6 +2976,19 @@ export function createAnnotationTool({
     panel.style.top = `${next.y}px`;
   }
 
+  /**
+   * A dragged panel never settles over the other manager: after a drag, a layout change or an opening, the screen names a clear
+   * spot (`{ x, y }` in this host) or asks for the default place (`'reset'`). Nothing moves when the panel is already clear.
+   */
+  function settle() {
+    if (!els.panel || els.panel.hidden || typeof els.avoidOther !== 'function' || compact) return;
+    const spot = els.avoidOther(els.panel);
+    if (spot === 'reset') panelPosition = null;
+    else if (spot) panelPosition = clampPanelPosition(spot);
+    else return;
+    applyPanelPosition();
+  }
+
   function attachPanelDrag(handle) {
     handle.addEventListener('pointerdown', ev => {
       if (ev.button !== 0 || !els.panel || compact) return;
@@ -2976,6 +3023,7 @@ export function createAnnotationTool({
         window.removeEventListener('pointercancel', onEnd);
         if (els.panel) els.panel.classList.remove('is-dragging');
         if (!moved) return;
+        settle();
         // The click that follows a drag released over the title must not toggle the panel.
         suppressToggleClick = true;
         window.setTimeout(() => { suppressToggleClick = false; }, 0);
@@ -5250,6 +5298,8 @@ export function createAnnotationTool({
     togglePanel,
     syncVisibility,
     isPanelOpen: () => panelOpen,
+    releaseForMeasurement,
+    settle,
     isActive,
     hasDraft: () => Boolean(draft),
     // 'off' | 'armed' | 'move' | 'stroking' | 'frozen': read-only, for the Editor and tests.

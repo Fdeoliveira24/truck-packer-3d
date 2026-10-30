@@ -5265,12 +5265,47 @@ export function createEditorScreen({
           );
         });
       }
+      // The two floating managers never cover each other. A dragged panel that lands on the other one moves to the nearest clear spot
+      // in its host, or gives its position back to the default when there is none. Only the panel that moved is changed.
+      const apartRects = (a, b) => a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+      const avoidManagerOverlap = panel => {
+        const other = document.getElementById(panel.id === 'editor-measure-panel' ? 'editor-annotation-panel' : 'editor-measure-panel');
+        if (!other || other.hidden || !other.getClientRects().length || !panel.getClientRects().length) return null;
+        const host = panel.offsetParent;
+        if (!host) return null;
+        const d = panel.getBoundingClientRect();
+        const o = other.getBoundingClientRect();
+        if (apartRects(d, o)) return null;
+        const h = host.getBoundingClientRect();
+        const gap = 10;
+        const spots = [
+          { left: o.left - gap - d.width, top: d.top },
+          { left: o.right + gap, top: d.top },
+          { left: d.left, top: o.bottom + gap },
+          { left: d.left, top: o.top - gap - d.height },
+        ].map(p => ({ ...p, right: p.left + d.width, bottom: p.top + d.height }));
+        const fits = spots.filter(p => p.left >= h.left && p.top >= h.top && p.right <= h.right && p.bottom <= h.bottom && apartRects(p, o));
+        if (!fits.length) return 'reset';
+        fits.sort((a, b) => Math.hypot(a.left - d.left, a.top - d.top) - Math.hypot(b.left - d.left, b.top - d.top));
+        return { x: fits[0].left - h.left - host.clientLeft, y: fits[0].top - h.top - host.clientTop };
+      };
+      let settleTimer = null;
+      window.addEventListener('resize', () => {
+        window.clearTimeout(settleTimer);
+        settleTimer = window.setTimeout(() => {
+          if (MeasurementTool) MeasurementTool.settle();
+          if (AnnotationTool) AnnotationTool.settle();
+        }, 120);
+      });
       if (MeasurementTool && btnMeasure) {
         MeasurementTool.bind({
+          avoidOther: avoidManagerOverlap,
           button: btnMeasure,
           panel: document.getElementById('editor-measure-panel'),
           labels: document.getElementById('editor-measure-labels'),
           viewport: viewportEl,
+          // New Measurement ends an armed Callout, Arrow or Draw first; a dirty callout draft asks before it closes.
+          canStart: () => (AnnotationTool ? AnnotationTool.releaseForMeasurement() : true),
           // The load-status popover closes on Escape first; Measurement Mode exits on the next one.
           escapeOwnedElsewhere: () => validationPopoverOpen,
           // A live drag, gizmo stroke or held case displays cargo away from its committed pose.
@@ -5279,17 +5314,18 @@ export function createEditorScreen({
         btnMeasure.addEventListener('click', ev => {
           ev.stopPropagation();
           UIComponents.closeAllDropdowns();
-          const wasActive = MeasurementTool.isActive();
-          if (!wasActive && !PackLibrary.getById(StateStore.get('currentPackId'))) {
-            UIComponents.showToast(NO_LOAD_PLAN_MESSAGE, 'warning', { title: 'Measurements' });
-            return;
-          }
-          // Only one scene tool owns pointer input: starting Measurement closes the Annotations panel (its
-          // saved callouts stay drawn; an unsaved callout is dropped without writing).
-          if (!wasActive && AnnotationTool) AnnotationTool.closePanel();
-          MeasurementTool.toggle();
-          if (!wasActive && !MeasurementTool.isActive()) {
-            UIComponents.showToast('The 3D view is not ready yet.', 'info', { title: 'Measurements' });
+          // The toolbar button shows or hides the Measurements manager. It never starts a measurement: that is the panel's
+          // New Measurement control. The Annotations panel is left alone, so both managers can be open.
+          if (MeasurementTool.isManagerOpen()) {
+            MeasurementTool.closeManager();
+          } else {
+            if (!PackLibrary.getById(StateStore.get('currentPackId'))) {
+              UIComponents.showToast(NO_LOAD_PLAN_MESSAGE, 'warning', { title: 'Measurements' });
+              return;
+            }
+            if (!MeasurementTool.openManager()) {
+              UIComponents.showToast('The 3D view is not ready yet.', 'info', { title: 'Measurements' });
+            }
           }
           // Measurement Mode takes over the pointer, and returns it on exit: drop stale hover emphasis.
           if (InteractionManager && typeof InteractionManager.resetHover === 'function') InteractionManager.resetHover();
@@ -5300,6 +5336,7 @@ export function createEditorScreen({
         AnnotationTool.bind({
           button: btnAnnotations,
           panel: document.getElementById('editor-annotation-panel'),
+          avoidOther: avoidManagerOverlap,
           layer: document.getElementById('editor-annotation-layer'),
           viewport: viewportEl,
           // The load-status popover closes on Escape first; the Annotations tool takes the next one.
@@ -5311,6 +5348,8 @@ export function createEditorScreen({
           // A read-only question: does Measurement Mode own the scene's gestures right now? Saved callouts stay
           // drawn but take no input while it does.
           isSceneToolOwnedElsewhere: () => Boolean(MeasurementTool && MeasurementTool.isActive()),
+          // Arming a creator here ends an unfinished Measurement creation (no write), so only one creator is ever armed.
+          endOtherScene: () => { if (MeasurementTool && MeasurementTool.isActive()) MeasurementTool.cancelCreation(); },
         });
         btnAnnotations.addEventListener('click', ev => {
           ev.stopPropagation();
@@ -5320,8 +5359,6 @@ export function createEditorScreen({
             UIComponents.showToast(NO_LOAD_PLAN_MESSAGE, 'warning', { title: 'Annotations' });
             return;
           }
-          // Only one scene tool owns pointer input: opening Annotations leaves Measurement Mode.
-          if (!wasOpen && MeasurementTool && MeasurementTool.isActive()) MeasurementTool.exit();
           AnnotationTool.togglePanel();
           if (!wasOpen && !AnnotationTool.isPanelOpen()) {
             UIComponents.showToast('The 3D view is not ready yet.', 'info', { title: 'Annotations' });

@@ -204,6 +204,14 @@ async function openEditor(browser, viewport = { width: 1400, height: 900 }, { pr
   return { page, errors };
 }
 
+// Measurements is a manager (toolbar button) and creation is its own control (New measurement): creating needs both.
+const startMeasuring = async page => {
+  const managerOpen = await page.evaluate(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+  if (!managerOpen) await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+  await page.click('#editor-measure-new');
+  await page.waitForFunction(() => document.getElementById('editor-measure-new').getAttribute('aria-pressed') === 'true');
+};
 const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 const point = (page, x, y, z) => page.evaluate(([px, py, pz]) => window.probe.screenOf(px, py, pz), [x, y, z]);
 const count = page => page.evaluate(() => window.probe.annotations().length);
@@ -2179,21 +2187,27 @@ test('Annotations and Measurement never own the scene together, and saved callou
   const { page, errors } = await openArmed(browser);
   await seed(page, [{ title: 'Drawn', ground: [520, 10] }]);
   await page.waitForSelector('.tp3d-annot-pin:not(.is-draft):not([hidden])');
+  // Opening the Measurements manager leaves the Annotations panel open and the Callout tool armed: no creation starts.
   await page.click('#btn-editor-measure');
   await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
-  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'false', 'starting Measurement closes the Annotations panel');
-  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), true);
+  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'true', 'both managers can be open');
+  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false, 'opening the manager starts no measurement');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 'the Callout tool is still armed');
+  // New measurement ends the armed Callout tool (no write) and arms creation.
+  await page.click('#editor-measure-new');
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
   assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), false, 'and disarms the Callout tool');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), false, 'the Annotations manager stays open');
   assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length), 1, 'saved callouts stay drawn');
   await click(page, await point(page, ...GROUND_A));
   await page.waitForFunction(() => /second point/i.test(document.querySelector('.tp3d-measure-panel__hint').textContent));
   assert.equal(await count(page), 1, 'a click in Measurement Mode never starts a callout');
   assert.equal(await editorClosed(page), true);
 
+  // Closing the Annotations manager does not end a measurement that is being placed.
   await page.click('#btn-editor-annotations');
-  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'false');
-  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'true', 'opening Annotations leaves Measurement Mode');
-  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false);
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'false');
+  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), true, 'the measurement tool is unaffected by closing Annotations');
   assert.deepEqual(errors, []);
 });
 
@@ -2204,6 +2218,115 @@ const lineCentre = page => page.evaluate(() => {
   const n = group.querySelector('.tp3d-measure-svg__line').getAttribute('d').match(/-?\d+(\.\d+)?/g).map(Number);
   const origin = document.getElementById('editor-measure-labels').getBoundingClientRect();
   return { x: origin.left + (n[0] + n[2]) / 2, y: origin.top + (n[1] + n[3]) / 2 };
+});
+
+test('Measurements and Annotations open side by side without covering each other, in either order, at desktop, constrained and narrow sizes; the New measurement control is reachable', { timeout: 420000 }, async t => {
+  const rectsOf = page => page.evaluate(() => {
+    const box = id => { const b = document.getElementById(id).getBoundingClientRect(); return { x: b.left, y: b.top, right: b.right, bottom: b.bottom }; };
+    return { measure: box('editor-measure-panel'), annot: box('editor-annotation-panel') };
+  });
+  const apart = (a, b) => a.right <= b.x || b.right <= a.x || a.bottom <= b.y || b.bottom <= a.y;
+  for (const viewport of [{ width: 1400, height: 900 }, { width: 1100, height: 620 }, { width: 640, height: 700 }]) {
+    for (const order of ['measurements-first', 'annotations-first']) {
+      const label = `${viewport.width}x${viewport.height} ${order}`;
+      const browser = await launch();
+      try {
+        const { page, errors } = await openEditor(browser, viewport);
+        await cameraSettled(page);
+        const clickMeasure = () => page.click('#btn-editor-measure');
+        const clickAnnotations = () => page.click('#btn-editor-annotations');
+        if (order === 'measurements-first') { await clickMeasure(); await clickAnnotations(); } else { await clickAnnotations(); await clickMeasure(); }
+        await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true' && document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+        const rects = await rectsOf(page);
+        assert.equal(apart(rects.measure, rects.annot), true, `${label}: the two panels do not overlap (${JSON.stringify(rects)})`);
+        // Callout, Arrow and Draw are each fully inside the Annotations panel (none clipped at its edge).
+        const tools = await page.evaluate(() => {
+          const panel = document.getElementById('editor-annotation-panel').getBoundingClientRect();
+          return [...document.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].map(b => { const r = b.getBoundingClientRect(); return { name: b.textContent.trim(), inside: r.left >= panel.left && r.right <= panel.right, visible: r.width > 0 }; });
+        });
+        assert.deepEqual(tools.map(tool => [tool.name, tool.inside, tool.visible]), [['Callout', true, true], ['Arrow', true, true], ['Draw', true, true]], `${label}: all three tools fit in the panel`);
+        assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false, `${label}: opening managers starts no measurement`);
+        // Trusted clicks: Playwright would report an interception here if another panel covered the control.
+        await page.click('#editor-measure-new');
+        await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+        await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+        await page.waitForFunction(() => window.probe.AnnotationTool.isActive() && !window.probe.MeasurementTool.isActive());
+        assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), false, `${label}: the Annotations manager stays open`);
+        assert.deepEqual(errors, [], label);
+      } finally {
+        await browser.close();
+      }
+    }
+  }
+});
+
+test('a Measurements panel dragged onto Annotations settles in a clear spot, and a resize keeps both managers reachable', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openEditor(browser, { width: 1400, height: 900 });
+  await cameraSettled(page);
+  await page.click('#btn-editor-annotations');
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true' && document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
+  const rects = () => page.evaluate(() => {
+    const box = id => { const b = document.getElementById(id).getBoundingClientRect(); return { x: b.left, y: b.top, right: b.right, bottom: b.bottom }; };
+    return { measure: box('editor-measure-panel'), annot: box('editor-annotation-panel') };
+  });
+  const apart = (a, b) => a.right <= b.x || b.right <= a.x || a.bottom <= b.y || b.bottom <= a.y;
+  // Drag the Measurements grip so the panel is released over the Annotations panel's tool row.
+  const grip = await page.locator('#editor-measure-panel .tp3d-measure-panel__grip').boundingBox();
+  const annot = await page.locator('#editor-annotation-panel').boundingBox();
+  await page.mouse.move(grip.x + grip.width / 2, grip.y + grip.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(annot.x + annot.width * 0.5, annot.y + 150, { steps: 12 });
+  await page.mouse.up();
+  await frames(page, 3);
+  let r = await rects();
+  assert.equal(apart(r.measure, r.annot), true, `after the drag the panels are apart (${JSON.stringify(r)})`);
+  await page.click('#editor-measure-new'); // a trusted click: nothing covers the control
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+  await page.keyboard.press('Escape');
+  await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
+
+  // A narrower window: the managers re-settle without losing either one, and the Annotations tools stay clickable.
+  await page.setViewportSize({ width: 1100, height: 620 });
+  await frames(page, 6);
+  r = await rects();
+  assert.equal(apart(r.measure, r.annot), true, `after the resize the panels are apart (${JSON.stringify(r)})`);
+  await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.isActive());
+  assert.deepEqual(errors, []);
+});
+
+test('a dirty callout draft survives a passive manager and a declined switch; confirming discards it and starts the measurement without a write', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openArmed(browser);
+  const before = await count(page);
+  await click(page, await point(page, ...GROUND_A));
+  await page.waitForSelector('.tp3d-annot-editor:not([hidden])');
+  await page.fill('.tp3d-annot-editor__input', 'Keep me');
+  // Opening Measurements (a passive manager) does not discard the draft.
+  await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+  assert.equal(await page.inputValue('.tp3d-annot-editor__input'), 'Keep me', 'the draft is untouched by opening the manager');
+  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false, 'and no measurement is started');
+  // New measurement asks first. Declining keeps the draft and the armed Callout tool.
+  await page.click('#editor-measure-new');
+  await dialogButton(page, 'Keep editing').click();
+  await frames(page, 3);
+  assert.equal(await page.inputValue('.tp3d-annot-editor__input'), 'Keep me', 'declining keeps the draft');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 'the Callout tool stays armed');
+  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), false);
+  assert.equal(await count(page), before, 'nothing was written');
+  // Confirming discards the draft, ends the Callout tool and starts the measurement.
+  await page.click('#editor-measure-new');
+  await dialogButton(page, 'Discard and measure').click();
+  await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), false, 'the Callout tool yields');
+  assert.equal(await page.evaluate(() => !document.querySelector('.tp3d-annot-editor') || document.querySelector('.tp3d-annot-editor').hidden), true, 'the draft closed');
+  assert.equal(await count(page), before, 'discarding wrote no callout');
+  assert.deepEqual(errors, []);
 });
 
 test('Annotations and a saved measurement are on screen together, and only the tool that owns the scene receives input', { timeout: 240000 }, async t => {
@@ -2245,10 +2368,10 @@ test('Annotations and a saved measurement are on screen together, and only the t
   await page.waitForSelector('.tp3d-annot-card.is-selected, .tp3d-annot-pin.is-selected');
 
   // 2. The ruler takes the scene: callouts stay drawn but cannot be touched; the ruler gets the click, Delete and Escape.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
   await frames(page);
-  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'false', 'the Annotations panel closes');
+  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'true', 'the Annotations manager stays open beside the ruler; only the scene is handed over');
   assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1], 'both stay drawn while the ruler is on');
   assert.deepEqual(await layerState(), { viewOnly: true, inert: true }, 'callouts are view only while the ruler owns the scene');
   const live = await stacking();
@@ -2279,13 +2402,16 @@ test('Annotations and a saved measurement are on screen together, and only the t
   assert.equal(await ruler(), false, 'selecting a callout never starts the ruler');
 
   // 4. Opening Annotations from the ruler leaves the ruler: both remain on screen and the Callout tool owns clicks.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
   await page.click('#btn-editor-annotations');
-  await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
+  await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'false');
   await frames(page);
+  assert.equal(await page.evaluate(() => window.probe.MeasurementTool.isActive()), true, 'closing Annotations does not end a measurement under way');
   assert.deepEqual([await drawnPins(), await drawnLines()], [2, 1]);
-  assert.deepEqual(await layerState(), { viewOnly: false, inert: false });
+  // The ruler owns the scene while its creation is armed, so the callouts are view-only even with their manager open.
+  assert.deepEqual(await layerState(), { viewOnly: true, inert: true }, 'callouts are view only while the ruler owns the scene');
+  if (await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'false')) await page.click('#btn-editor-annotations');
   await page.click('.tp3d-annot-seg__btn[data-tool="callout"]');
   await page.waitForFunction(() => /place a callout/i.test(window.probe.hint()));
   const onLine = await lineCentre(page);
@@ -3028,7 +3154,7 @@ test('an unfinished arrow is dropped without writing by Escape (one owner per pr
   await page.evaluate(() => { window.probe.CaseScene.isTransientPreview = window.__preview; });
   await page.waitForFunction(() => !/paused/.test(window.probe.hint()));
   await startArrow();
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
   await page.waitForFunction(() => { const dot = document.querySelector('.tp3d-annot-arrow__tail'); return !dot || dot.style.display === 'none'; });
   assert.equal(await tailShown(page), false, 'Measurement Mode takes the scene: the tail is gone');
@@ -3308,7 +3434,7 @@ test('arrows and a saved measurement are on screen together; while Measurement M
   assert.ok(stacking.lines < stacking.annotations, 'the saved line is drawn beneath the arrow layer');
 
   // Measurement Mode takes the scene: the arrow stays drawn as a view, its handles take no input, Delete and Escape are the ruler's.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
   await frames(page, 3);
   assert.deepEqual([(await arrowGraphics(page)).length, await drawnLines()], [1, 1], 'both stay drawn while the ruler is on');
@@ -4957,11 +5083,11 @@ test('freehand and the ruler: a saved measurement and a stroke are on screen tog
   assert.equal((await drawGroups(page)).length, 1);
   assert.equal(await rotateEnabled(page), false);
 
-  // The ruler takes the scene: Annotations closes, Draw ends and rotation returns, the stroke stays drawn but cannot take input.
-  await page.click('#btn-editor-measure');
+  // The ruler takes the scene: Draw ends and rotation returns, the Annotations manager stays open, and the stroke stays drawn but cannot take input.
+  await startMeasuring(page);
   await page.waitForFunction(() => window.probe.MeasurementTool.isActive());
   await page.waitForFunction(() => window.probe.AnnotationTool.drawingState() === 'off');
-  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'false');
+  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed')), 'true', 'the Annotations manager stays open');
   assert.equal(await rotateEnabled(page), true, 'the ruler gets a normal camera');
   await frames(page, 4);
   assert.equal(await lines(), 1);
@@ -4977,8 +5103,8 @@ test('freehand and the ruler: a saved measurement and a stroke are on screen tog
   await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
   assert.equal(await saved(), before, 'neither tool wrote anything');
 
-  // Back to Annotations: Draw can be armed again and the ruler's saved line is still there.
-  await page.click('#btn-editor-annotations');
+  // Back to Annotations: Draw can be armed again and the ruler's saved line is still there. Its manager stayed open through the ruler.
+  if (await page.evaluate(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'false')) await page.click('#btn-editor-annotations');
   await page.waitForFunction(() => document.getElementById('btn-editor-annotations').getAttribute('aria-pressed') === 'true');
   await armDraw(page);
   assert.equal(await lines(), 1);
@@ -5760,7 +5886,7 @@ test('annotation drawing move: a saved drawing is selected by clicking its line 
     assert.equal(await writes(page), 0, `${tool}: nothing was written`);
     await page.evaluate(() => window.probe.StateStore.set({ selectedInstanceIds: [] }, { skipHistory: true }));
   }
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
   assert.equal(await lineUnder(page, reach), false, 'Measurement owns the pointer');
   await page.mouse.move(reach.x, reach.y);

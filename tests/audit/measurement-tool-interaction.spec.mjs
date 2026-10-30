@@ -204,13 +204,22 @@ async function openEditor(browser) {
 
 const launch = () => chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
 
+// Measurements is a manager (toolbar button) and creation is its own control (New measurement): creating needs both.
+async function startMeasuring(page) {
+  const managerOpen = await page.evaluate(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+  if (!managerOpen) await page.click('#btn-editor-measure');
+  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+  await page.click('#editor-measure-new');
+  await page.waitForFunction(() => document.getElementById('editor-measure-new').getAttribute('aria-pressed') === 'true');
+}
+
 // A page already showing Measurement Mode with the camera settled (hover/pick need a rendered frame).
 async function openMeasuring(browser) {
   const { page, errors } = await openEditor(browser);
   await page.waitForFunction(() => document.querySelector('#viewport canvas') && window.probe.SceneManager.getCamera());
   const rect = await page.evaluate(() => window.probe.box('#viewport canvas'));
   await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h - 30);
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
   return { page, errors, rect };
 }
@@ -326,7 +335,8 @@ test('a background thumbnail capture never blocks or cancels a measurement, whil
   assert.equal(await count(page), 2, 'editing resumes when the operation ends');
 });
 
-const modeIsOff = () => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'false';
+// Creation armed = the New measurement control is pressed (the toolbar button only shows the manager).
+const modeIsOff = () => document.getElementById('editor-measure-new').getAttribute('aria-pressed') === 'false';
 // What the measurement overlay is drawing right now: segment kinds, visible labels, visible markers.
 const overlayState = page => page.evaluate(() => ({
   segments: [...document.querySelectorAll('.tp3d-measure-svg__segment')]
@@ -334,7 +344,7 @@ const overlayState = page => page.evaluate(() => ({
   labels: [...document.querySelectorAll('.tp3d-measure-label')].filter(label => !label.hidden).length,
   markers: [...document.querySelectorAll('.tp3d-measure-svg__marker')].filter(marker => marker.style.display !== 'none').length,
 }));
-const modeIsOn = () => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true';
+const modeIsOn = () => document.getElementById('editor-measure-new').getAttribute('aria-pressed') === 'true';
 
 test('one Escape fully exits Measurement Mode: unfinished work is dropped, saved measurements stay, and no other Escape owner sees the key', { timeout: 120000 }, async t => {
   const browser = await launch();
@@ -345,7 +355,7 @@ test('one Escape fully exits Measurement Mode: unfinished work is dropped, saved
   await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h / 2);
   await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
   await page.waitForFunction(() => window.probe.selection().includes('cargo-b'));
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
 
   await measure(page, await point(page, ...GROUND_A), await point(page, ...GROUND_B));
@@ -357,7 +367,8 @@ test('one Escape fully exits Measurement Mode: unfinished work is dropped, saved
   await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
   await page.keyboard.press('Escape');
   await page.waitForFunction(modeIsOff);
-  assert.equal(await page.evaluate(() => document.getElementById('editor-measure-panel').hidden), true, 'the panel hides like a manual toggle-off');
+  assert.equal(await page.evaluate(() => document.getElementById('editor-measure-panel').hidden), false, 'Escape ends creation only: the Measurements manager stays open');
+  assert.equal(await page.evaluate(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed')), 'true');
   assert.deepEqual(await overlayState(page), { segments: ['is-saved'], labels: 1, markers: 0 },
     'only the saved line and its label stay (view only): the unfinished point, preview, ghost, markers and grips are gone');
   assert.equal(JSON.stringify(await page.evaluate(() => window.probe.measurements())), saved, 'saved measurements are preserved and the unfinished one never appears');
@@ -373,7 +384,7 @@ test('one Escape fully exits Measurement Mode: unfinished work is dropped, saved
   assert.equal(await count(page), 1);
 
   // Turning the mode back on shows the saved measurement again.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-row').length === 1 &&
     document.querySelectorAll('.tp3d-measure-svg__segment').length === 1);
@@ -386,7 +397,7 @@ test('one Escape fully exits Measurement Mode: unfinished work is dropped, saved
   assert.equal(await count(page), 1);
 
   // Undo with an unfinished Point A cancels only that point; cargo history is untouched.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   await click(page, await point(page, ...GROUND_A));
   await page.waitForFunction(() => /second point/i.test(window.probe.hint()));
@@ -415,7 +426,7 @@ test('Escape yields to a dropdown or a text field that owns it, and the next Esc
   await page.waitForFunction(modeIsOff);
 
   // The load-status popover owns Escape the same way.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   await page.evaluate(() => document.getElementById('editor-validation-status-btn').click());
   await page.waitForFunction(() => !document.getElementById('editor-validation-popover').hidden);
@@ -426,7 +437,7 @@ test('Escape yields to a dropdown or a text field that owns it, and the next Esc
   await page.waitForFunction(modeIsOff);
 
   // A rename field owns Escape: it cancels the edit, the mode stays.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   const name = await page.evaluate(() => window.probe.measurements()[0].label);
   await page.click('.tp3d-measure-row__rename');
@@ -443,27 +454,29 @@ test('Escape never sends focus to the ruler: it returns to the 3D viewport from 
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openMeasuring(browser);
-  // A mouse click on the ruler leaves focus there.
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'btn-editor-measure');
+  // A click on New measurement leaves focus on that control.
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'editor-measure-new');
   await page.keyboard.press('Escape');
   await page.waitForFunction(modeIsOff);
   assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport', 'focus moved to the viewport, not kept on or sent to the ruler');
   const ring = () => page.evaluate(() => getComputedStyle(document.getElementById('viewport')).outlineStyle);
   assert.equal(await ring(), 'none', 'after mouse use the Escape press paints no focus frame around the 3D view');
 
-  // Focus inside the panel (which is about to hide) also returns to the viewport.
-  await page.click('#btn-editor-measure');
+  // Focus inside the manager: Escape ends creation, the manager stays open, and focus still returns to the viewport.
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   await measure(page, await point(page, ...GROUND_A), await point(page, ...GROUND_B));
   await page.click('.tp3d-measure-panel__toggle');
   assert.equal(await page.evaluate(() => !!document.activeElement.closest('#editor-measure-panel')), true);
   await page.keyboard.press('Escape');
   await page.waitForFunction(modeIsOff);
-  assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport');
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'viewport', 'focus returns to the 3D viewport, not to the ruler');
   assert.equal(await ring(), 'none', 'and none from the panel either');
 
   // Keyboard use keeps its visible focus: the ring shows, and its marker never lingers once focus moves on.
-  await page.focus('#btn-editor-measure');
+  // The manager is still open (its earlier collapse is undone), so the keyboard arms creation from its New measurement control.
+  if (await page.evaluate(() => document.querySelector('.tp3d-measure-panel__body').hidden)) await page.click('.tp3d-measure-panel__toggle');
+  await page.focus('#editor-measure-new');
   await page.keyboard.press('Enter');
   await page.waitForFunction(modeIsOn);
   await page.keyboard.press('Escape');
@@ -484,7 +497,7 @@ test('cargo keys stay available in the mode; a pending point that loses its carg
   await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h / 2);
   await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
   await page.waitForFunction(() => window.probe.selection().includes('cargo-b'));
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   await measure(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')), await point(page, ...GROUND_B));
   const saved = JSON.stringify(await page.evaluate(() => window.probe.measurements()));
@@ -584,7 +597,7 @@ test('endpoint repositioning: a grip drag re-anchors, Escape restores, and cargo
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is still untouched');
 
   // Back in the mode the measurement is still there, and its list row selects it (grips come back).
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-measure-svg__segment.is-selected').length === 0);
   await page.click('.tp3d-measure-row__select');
@@ -601,7 +614,7 @@ test('G5 the overlay is SVG/DOM above the canvas: no scene objects are added and
   await page.evaluate(() => window.probe.measurements()); // read path only
   const rect = await page.evaluate(() => window.probe.box('#viewport canvas'));
   await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h - 30);
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
   await measure(page, await point(page, ...GROUND_A), await point(page, ...GROUND_B));
   await page.waitForFunction(() => [...document.querySelectorAll('.tp3d-measure-label')].some(label => !label.hidden));
@@ -692,7 +705,7 @@ const selectCargo = async (page, rect, id) => {
   await page.mouse.move(rect.x + rect.w / 2, rect.y + rect.h / 2);
   await click(page, await page.evaluate(cargoId => window.probe.cargoPoint(cargoId), id));
   await page.waitForFunction(cargoId => window.probe.selection().includes(cargoId), id);
-  await page.click('#btn-editor-measure'); // on
+  await startMeasuring(page); // on
   await page.waitForFunction(modeIsOn);
 };
 const pending = page => page.evaluate(() => /second point/i.test(window.probe.hint()));
@@ -852,7 +865,7 @@ const heldState = (page, id) => page.evaluate(cargoId => {
     mode: document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true',
   };
 }, id);
-const modeOn = page => page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'true');
+const modeOn = page => page.waitForFunction(() => document.getElementById('editor-measure-new').getAttribute('aria-pressed') === 'true');
 const cargoBounds = (page, id) => page.evaluate(cargoId => {
   const q = window.probe;
   const inst = q.PackLibrary.getById('fixture-pack').cases.find(c => c.id === cargoId);
@@ -877,7 +890,7 @@ test('P2-7 a real held case (gizmo stroke) is never measured from its transient 
   assert.equal(await page.evaluate(() => window.probe.casesJson()), original, 'the held pose is scene-only: the Load Plan still stores the committed pose');
 
   // Measurement Mode on top of the hold: cargo picks are refused, other surfaces still work.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await modeOn(page);
   const heldPoint = await page.evaluate(() => window.probe.cargoPoint('cargo-a'));
   await click(page, heldPoint);
@@ -893,7 +906,7 @@ test('P2-7 a real held case (gizmo stroke) is never measured from its transient 
 
   // The first Esc belongs to Measurement Mode; the hold is untouched. The second cancels the hold.
   await viewportKey(page, 'Escape');
-  await page.waitForFunction(() => document.getElementById('btn-editor-measure').getAttribute('aria-pressed') === 'false');
+  await page.waitForFunction(modeIsOff);
   const afterFirst = await heldState(page, 'cargo-a');
   assert.deepEqual([afterFirst.provisional, afterFirst.sceneY > afterFirst.committedY + 50], [true, true], 'leaving the mode does not touch the held case');
   await viewportKey(page, 'Escape');
@@ -905,7 +918,7 @@ test('P2-7 a real held case (gizmo stroke) is never measured from its transient 
   assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a cancelled hold leaves no Undo step');
 
   // Normal measurement creation resumes, anchored to the committed surface.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await modeOn(page);
   await measure(page, await point(page, ...GROUND_A), await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
   const [saved] = await page.evaluate(() => window.probe.measurements());
@@ -925,7 +938,7 @@ test('P2-7 a real held case placed with Enter while the ruler is on: picks resum
   const original = await page.evaluate(() => window.probe.casesJson());
   await page.click('#btn-editor-measure');
   await holdCaseWithGizmo(page, rect, 'cargo-a');
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await modeOn(page);
   await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
   await page.waitForFunction(() => /held case/i.test(window.probe.hint()));
@@ -1249,7 +1262,7 @@ test('view only: a saved line stays after the ruler is turned off and is purely 
   assert.deepEqual(await page.evaluate(() => window.__liveListeners()), []);
 
   // Turning the ruler back on finds the same line and lets it be edited again.
-  await page.click('#btn-editor-measure');
+  await startMeasuring(page);
   await page.waitForFunction(modeIsOn);
   assert.deepEqual(await overlayState(page), SAVED_ONLY);
   assert.equal(await page.evaluate(() => window.probe.measurements().length), 1);

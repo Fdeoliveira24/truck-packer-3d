@@ -4401,6 +4401,7 @@ body.tp3d-shared-modal-lock #app .nav {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
+  container-type: inline-size; /* the floating managers lay out by this box's width */
 }
 
 #viewport {
@@ -4596,7 +4597,7 @@ body.tp3d-shared-modal-lock #app .nav {
 .tp3d-measure-panel {
   position: absolute;
   top: 64px;
-  right: 58px;
+  left: 14px; /* Measurements sits on the left; Annotations keeps the right, so both can stay open */
   z-index: 6;
   display: flex;
   flex-direction: column;
@@ -4731,6 +4732,43 @@ body.tp3d-shared-modal-lock #app .nav {
 /* Guidance appears only when something is relevant; when empty it takes no space but stays a live region.
    The dot is decorative: neutral by default, orange (data-tone="active") while a gesture is under way or
    something needs attention, green (data-tone="success") after a save. */
+/* New measurement arms creation. Neutral by design: armed is a stronger border and weight, never an accent colour. */
+.tp3d-measure-panel__new {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 14px 8px;
+  height: 30px;
+  padding: 0 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--bg-elevated);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: var(--font-semibold);
+  cursor: pointer;
+}
+
+.tp3d-measure-panel__new[aria-pressed="true"] {
+  border-color: var(--text-primary);
+}
+
+.tp3d-measure-panel__new:hover:not(:disabled) {
+  background: var(--bg-hover);
+}
+
+.tp3d-measure-panel__new:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.tp3d-measure-panel__new:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
 .tp3d-measure-panel__hint,
 .tp3d-measure-panel__notice {
   padding: 0 14px 12px;
@@ -10916,4 +10954,50 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-billing-payment-desc {
   font-size: var(--text-sm);
+}
+
+/* Floating managers: Measurements on the left, Annotations on the right (desktop), so opening either order never stacks them.
+   The 3D viewport's own width decides (a container query): narrow ones split it between the two, very narrow ones stack them. Dragging still places a panel inline. */
+@container (max-width: 720px) {
+  .tp3d-measure-panel {
+    left: 10px;
+    width: auto;
+    max-width: calc(50% - 15px);
+  }
+
+  .tp3d-annot-panel {
+    right: 58px; /* clears the viewport's right-side controls */
+    width: auto;
+    max-width: calc(50% - 63px);
+    left: auto;
+  }
+
+  /* The tool row fills the panel's content box (its margins stay inside it), so Draw is never clipped. */
+  .tp3d-annot-seg--tools {
+    display: flex;
+    min-width: 0;
+    box-sizing: border-box;
+  }
+
+  .tp3d-annot-seg--tools .tp3d-annot-seg__btn {
+    flex: 1 1 0;
+    min-width: 0;
+    padding-inline: 4px;
+    white-space: nowrap;
+  }
+}
+
+@container (max-width: 480px) {
+  .tp3d-measure-panel,
+  .tp3d-annot-panel {
+    width: auto;
+    max-width: calc(100% - 78px);
+    left: 10px;
+    right: auto;
+    max-height: calc((100% - 150px) / 2);
+  }
+
+  .tp3d-annot-panel {
+    top: calc(64px + (100% - 150px) / 2 + 10px);
+  }
 }

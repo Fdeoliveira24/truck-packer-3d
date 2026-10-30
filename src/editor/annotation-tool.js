@@ -150,6 +150,7 @@ const DRAW_FIT_MIN = 0.7;
 const DRAW_EDGE_PX = Object.freeze({ neutral: 3, dotted: 1.5, selected: 1.5 });
 const DRAW_SELECTED_EDGE_PER_PX = 0.3;
 const DRAW_EDGE_FLOOR_PX = 1.5;
+const ARROW_DOTTED_HALO_PX = DRAW_EDGE_PX.dotted; // a Dotted arrow's neutral shaft edge in screen pixels, in total (as a Dotted drawing's)
 const DRAW_OCCLUSION_RAYS_PER_STROKE = 5;
 const DRAW_OCCLUSION_RAYS_PER_TICK = 60;
 const PIN_RECT_PX = 24;
@@ -4425,8 +4426,11 @@ export function createAnnotationTool({
     if (!shape) return;
     setAttr(graphic.group, 'data-line-style', style);
     const halo = selected && !occluded ? 2 : 4;
+    // A Dotted shaft gets the same neutral edge as a Dotted drawing (DRAW_EDGE_PX.dotted, 1.5 px in total), so the dots read alike.
+    // The head keeps its own halo: it is solid, and it is what shows the direction.
+    const shaftHalo = style === 'dotted' && !(selected && !occluded) ? ARROW_DOTTED_HALO_PX : halo;
     setStyleProp(graphic.shaft, 'strokeWidth', `${shape.shaftWidth}px`);
-    setStyleProp(graphic.under, 'strokeWidth', `${shape.shaftWidth + halo}px`);
+    setStyleProp(graphic.under, 'strokeWidth', `${shape.shaftWidth + shaftHalo}px`);
     setStyleProp(graphic.underHead, 'strokeWidth', `${halo}px`);
     // Only the shaft and its halo take the pattern; the head and its halo stay solid so the direction always reads.
     paintLinePattern(graphic, style, shape.shaftWidth, graphic.shaft, graphic.under);

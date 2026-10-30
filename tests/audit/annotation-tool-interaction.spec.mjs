@@ -5612,7 +5612,7 @@ test('annotation line style: Arrows and Drawings offer Weight and Style, a recor
   assert.deepEqual([(await lookControls(page, 'arrow')).weight, (await lookControls(page, 'arrow')).style], ['Thin', 'Dotted']);
   await select(drawDotted.id);
   assert.deepEqual(await lookControls(page, 'draw'), {
-    shown: true, title: 'Drawing 2 look', labels: ['Weight', 'Style'], weights: ['Thin', 'Regular', 'Bold'], styles: ['Solid', 'Dashed', 'Dotted'], weight: 'Regular', style: 'Dotted',
+    shown: true, title: 'Drawing: Drawing 2 — Selected', labels: ['Weight', 'Style'], weights: ['Thin', 'Regular', 'Bold'], styles: ['Solid', 'Dashed', 'Dotted'], weight: 'Regular', style: 'Dotted',
   });
   assert.equal(await writes(page), 0, 'looking at records writes nothing');
   // The selection edge follows the line's own pattern and stays apart from a plain one.
@@ -7134,5 +7134,63 @@ test('appearance contexts: new Arrow and Drawing defaults never change a saved r
   await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Markers")');
   assert.equal(JSON.stringify([await record('arrow'), await record('draw')]), looksBefore, 'Callout display changes no arrow or drawing');
   assert.equal(await page.textContent('.tp3d-annot-panel__view-label >> nth=2'), 'Callout display');
+  assert.deepEqual(errors, []);
+});
+
+test('a Dotted arrow has the same neutral edge as a Dotted drawing, and its hit regions and saved geometry are unchanged', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const arrow = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  const drawing = await seedDraw(page, { ground: [100, 70], rest: [140, 78, 180, 66] });
+  await page.evaluate(([a, d]) => {
+    const pack = window.probe.PackLibrary.getById('fixture-pack');
+    window.probe.PackLibrary.updateArrow(pack.id, a, { style: 'dotted' });
+    window.probe.PackLibrary.updateDraw(pack.id, d, { style: 'dotted' });
+  }, [arrow.id, drawing.id]);
+  await page.waitForFunction(() => window.probe.annotations().filter(r => r.style === 'dotted').length === 2);
+  await frames(page, 3);
+  const widths = await page.evaluate(() => {
+    const px = (el, prop) => parseFloat(getComputedStyle(el)[prop]);
+    const arrowEl = document.querySelector('.tp3d-annot-arrow[data-line-style="dotted"]');
+    const drawEl = document.querySelector('.tp3d-annot-draw[data-line-style="dotted"]') || document.querySelector('.tp3d-annot-draw__under')?.closest('[data-line-style]');
+    const arrowHalo = px(arrowEl.querySelector('.tp3d-annot-arrow__under'), 'strokeWidth') - px(arrowEl.querySelector('.tp3d-annot-arrow__shaft'), 'strokeWidth');
+    const drawHalo = drawEl ? px(drawEl.querySelector('.tp3d-annot-draw__under'), 'strokeWidth') - px(drawEl.querySelector('.tp3d-annot-draw__line'), 'strokeWidth') : null;
+    return { arrowHalo, drawHalo, hit: getComputedStyle(arrowEl.querySelector('.tp3d-annot-arrow__shaft')).pointerEvents };
+  });
+  assert.ok(Math.abs(widths.arrowHalo - 1.5) < 0.01, `a Dotted arrow shaft edge is 1.5 px in total (${widths.arrowHalo})`);
+  assert.notEqual(widths.drawHalo, null, 'the Dotted drawing is found');
+  assert.ok(Math.abs(widths.arrowHalo - widths.drawHalo) < 0.01, 'the same edge as a Dotted drawing');
+  assert.equal(widths.hit, 'none', 'the arrow is never a pointer target: its hit regions are unchanged');
+  assert.deepEqual(errors, []);
+});
+
+test('a selected arrow with a long name at 640x700 keeps its look controls inside the panel: the name ends in an ellipsis and every weight, style and color control is reachable', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser, { width: 640, height: 700 });
+  const arrow = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.evaluate(id => {
+    const pack = window.probe.PackLibrary.getById('fixture-pack');
+    window.probe.PackLibrary.updateArrow(pack.id, id, { name: 'A very long arrow name that must not push the controls out of the panel' });
+  }, arrow.id);
+  await page.waitForFunction(() => window.probe.annotations().some(r => r.name && r.name.startsWith('A very long')));
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-panel__arrow:not([hidden])');
+  await frames(page, 3);
+  const fit = await page.evaluate(() => {
+    const panel = document.getElementById('editor-annotation-panel').getBoundingClientRect();
+    const title = document.querySelector('.tp3d-annot-panel__arrow-title');
+    const controls = [...document.querySelectorAll('.tp3d-annot-panel__arrow .tp3d-annot-seg__btn, .tp3d-annot-panel__arrow .tp3d-annot-swatch')];
+    const inside = el => { const r = el.getBoundingClientRect(); return r.width > 0 && r.left >= panel.left - 1 && r.right <= panel.right + 1; };
+    return {
+      truncated: title.scrollWidth > title.clientWidth && getComputedStyle(title).textOverflow === 'ellipsis',
+      controls: controls.length,
+      outside: controls.filter(el => !inside(el)).length,
+    };
+  });
+  assert.equal(fit.truncated, true, 'the long name ends in an ellipsis');
+  assert.equal(fit.controls, 12, 'three weights, three styles and six color swatches are shown');
+  assert.equal(fit.outside, 0, 'no weight, style or color control overflows the panel');
   assert.deepEqual(errors, []);
 });

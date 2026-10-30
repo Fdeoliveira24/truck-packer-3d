@@ -6246,49 +6246,6 @@ body.tp3d-shared-modal-lock #app .nav {
   color: var(--text-secondary);
 }
 
-/* Present sits at the end of the Show row, apart from the All / Selected / Off control it follows. */
-.tp3d-annot-panel__present {
-  flex: none;
-  margin-left: auto;
-}
-
-/* Present is a viewing mode: this pill is the way out. It is a sibling of the (inert) annotation layer, above the viewport
-   toolbar, at the bottom center; annotation-tool.js moves it up over AutoPack Results when that holds the spot. */
-.tp3d-annot-present-exit {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 7;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  height: 32px;
-  padding: 0 14px;
-  border: 1px solid var(--border-subtle);
-  border-radius: 999px;
-  background: var(--bg-elevated);
-  color: var(--text-primary);
-  box-shadow: var(--shadow-md);
-  font: inherit;
-  font-size: 12px;
-  font-weight: var(--font-semibold);
-  white-space: nowrap;
-  cursor: pointer;
-}
-
-.tp3d-annot-present-exit[hidden] {
-  display: none;
-}
-
-.tp3d-annot-present-exit:hover {
-  background: var(--bg-hover);
-}
-
-.tp3d-annot-present-exit:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
-}
-
 .tp3d-annot-panel__list {
   flex: 1 1 auto;
   min-height: 0;

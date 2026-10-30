@@ -49,15 +49,6 @@
  *     edit: it never blocks annotations or cancels an unfinished one.
  *   - Annotations stay drawn while the Measurement Tool owns the scene, but only as a view: markers and cards
  *     take no pointer or keyboard input until that mode ends (the Editor wires `isSceneToolOwnedElsewhere`).
- *   - Present is a viewing mode of this session only: never saved, never a property of a record, and it writes nothing.
- *     The panel, selection handles, end grips, previews and card buttons are hidden, and the layer goes inert, while the saved
- *     annotations stay drawn per the Show and Callouts settings and the selection is kept (so Show Selected still shows it).
- *     The camera keeps navigating, but cargo is read-only: the Editor's pointer and keyboard routing asks `isPresenting()` and
- *     never selects, drags, highlights or edits cargo meanwhile (OrbitControls is untouched), and Present will not start over a
- *     live drag or held case. An "Exit presentation view" control, a sibling of the inert layer, sits bottom center and
- *     rides above the AutoPack Results card; it and Escape end Present. Present will not start over an unfinished gesture,
- *     asks before it drops an editor with unsaved changes, and ends (the panel returns) on a Load Plan, workspace or screen
- *     change, Settings > Show Annotations off, an operation or preview that pauses annotations, or Measurement Mode.
  *   - Cargo anchors are only ever picked from, and resolved against, COMMITTED poses; while the Editor
  *     owns a provisional pose a pick on cargo is refused. Overlay positions follow the pose the scene
  *     displays so a marker never floats away from cargo that is being dragged or animated.
@@ -173,11 +164,6 @@ const PANEL_SHEET_MAX_FRACTION = 0.46; // the compact panel's own max-height (st
 const PANEL_LIMIT_PROPERTY = '--tp3d-annot-panel-limit'; // the desktop panel's extra max-height (styles/main.css)
 const PANEL_MAX_HEIGHT_PX = 520; // the desktop panel's own max-height is min(this, the layer's height - the inset below)
 const PANEL_MAX_HEIGHT_INSET_PX = 140;
-const PRESENT_EXIT_BOTTOM_PX = 14; // the Exit control's distance from the layer's bottom edge (the Editor's own corner controls use the same)
-const PRESENT_EXIT_GAP_PX = 6; // the clear gap it keeps above whatever holds the spot (AutoPack Results, the review button)
-const PRESENT_BUSY_NOTICE = 'Finish or cancel what you are placing before presenting.';
-const PRESENT_HELD_NOTICE = 'Place or cancel the held case before presenting.';
-const PRESENT_EXIT_LABEL = 'Exit presentation view';
 const MIN_RAY_LENGTH = 1e-6;
 const HELD_POSE_NOTICE = 'Place or cancel the held case before working with annotations on cargo.';
 const AMBIGUOUS_CARGO_NOTICE = 'This cargo shares its ID with another item in the Load Plan, so a callout cannot be attached to it.';
@@ -329,8 +315,6 @@ export function createAnnotationTool({
   let panelShift = { x: 0, y: 0 }; // display-only shift (px) that keeps the desktop panel off AutoPack Results
   let panelBehindEditor = false; // the desktop panel yields to an open editor card it would otherwise hide (display only)
   let panelParts = null;
-  let presenting = false; // Present: a viewing mode of this session only; the panel and editing controls are hidden, nothing is saved
-  let presentExit = null; // the "Exit presentation view" button: a sibling of the layer, so the inert layer never covers or disables it
   let panelObserver = null;
   let flowObserver = null;
   let suppressToggleClick = false;
@@ -752,8 +736,6 @@ export function createAnnotationTool({
     layerObserver = null;
     if (layerParts && layerParts.svg.parentNode) layerParts.svg.parentNode.removeChild(layerParts.svg);
     layerParts = null;
-    if (presentExit && presentExit.parentNode) presentExit.parentNode.removeChild(presentExit);
-    presentExit = null;
   }
 
   // ==========================================================================
@@ -799,7 +781,6 @@ export function createAnnotationTool({
    */
   function closePanel() {
     const wasOpen = panelOpen;
-    endPresent({ panel: false }); // the panel is closing, so nothing is brought back
     cancelStroke();
     cancelMoveDrag();
     cancelPinDrag();
@@ -836,11 +817,6 @@ export function createAnnotationTool({
   }
 
   function togglePanel() {
-    if (presenting) {
-      // The panel is hidden, not closed: the toolbar button brings it back (and the editing controls) rather than closing it.
-      endPresent();
-      return true;
-    }
     if (panelOpen) {
       closePanel();
       return false;
@@ -1994,136 +1970,6 @@ export function createAnnotationTool({
     if (mode === 'off') refocusViewportIfLost();
   }
 
-  // ==========================================================================
-  // SECTION: PRESENT (a viewing mode of this session: nothing in it writes)
-  // ==========================================================================
-  /** Why Present cannot start right now (the text to show), or '' when it can. */
-  function presentRefusal() {
-    const reason = blockedReason();
-    if (reason) return blockedMessage(reason);
-    if (sceneOwnedElsewhere()) return 'Finish measuring before presenting.';
-    // A live drag, gizmo stroke or held case is never abandoned or committed by starting Present: it is finished or cancelled first.
-    if (provisionalPoseActive()) return PRESENT_HELD_NOTICE;
-    if (stroke || pinDrag || cardDrag || editorDrag || reattachId || arrowTail) return PRESENT_BUSY_NOTICE;
-    return '';
-  }
-
-  /**
-   * The Present button. An armed tool with nothing in progress is simply put down; an unfinished stroke, arrow, re-attach or
-   * drag is refused. An editor with unsaved changes is only closed after the owner agrees, and declining changes nothing.
-   */
-  function requestPresent() {
-    if (presenting || !panelOpen || !toolShown || showMode === 'off') return;
-    const refusal = presentRefusal();
-    if (refusal) {
-      notice(refusal);
-      return;
-    }
-    if (draft && draftIsDirty()) {
-      const epoch = sessionEpoch;
-      const openDraft = draft;
-      confirmDiscard({
-        title: 'Discard changes?',
-        message: 'Presenting closes the open callout editor and discards its unsaved changes.',
-        okLabel: 'Discard and present',
-      }).then(confirmed => {
-        // The answer belongs to the session and editor that asked: a Load Plan change, a different editor or Show Off in the
-        // meantime makes it void, and anything that began meanwhile still refuses.
-        if (!confirmed || epoch !== sessionEpoch || draft !== openDraft || presenting || showMode === 'off') return;
-        const late = presentRefusal();
-        if (late) notice(late);
-        else beginPresent();
-      });
-      return;
-    }
-    beginPresent();
-  }
-
-  function beginPresent() {
-    if (presenting || !panelOpen || !toolShown || !inEditor() || !currentPack() || presentRefusal()) return;
-    if (draft) cancelDraft();
-    cancelMoveDrag();
-    tool = null;
-    hover = null;
-    press = null;
-    presenting = true;
-    CaseScene.setHover(null);
-    if (typeof els.resetCargoHover === 'function') els.resetCargoHover();
-    applyViewGate();
-    updateCursor();
-    if (els.panel) els.panel.hidden = true; // hidden, not closed: its place, size and state come back as they were
-    syncInputOwnership();
-    const exit = presentExitControl();
-    if (exit) {
-      exit.hidden = false;
-      exit.focus({ preventScroll: true });
-    }
-    setStatus('', { sticky: true });
-    visDirty = true;
-    refreshOverlay();
-  }
-
-  /**
-   * Leave Present: the Exit control goes, the layer takes input again and the panel returns where it was. Nothing was written, so
-   * there is nothing to undo; the selection, Show and Callouts settings are what they were. `panel: false` leaves the panel hidden
-   * (it is closing); `focus` puts keyboard focus back on the Present button. Returns whether Present was on.
-   */
-  function endPresent({ panel = true, focus = false } = {}) {
-    if (!presenting) return false;
-    const exitHadFocus = Boolean(presentExit && doc && presentExit.contains(doc.activeElement));
-    presenting = false;
-    if (presentExit) presentExit.hidden = true;
-    syncInputOwnership();
-    visDirty = true;
-    if (!panel) return true;
-    if (panelOpen && els.panel) els.panel.hidden = false;
-    renderPanel();
-    refreshOverlay();
-    const button = panelParts && panelParts.presentButton;
-    if ((focus || exitHadFocus) && button && !button.disabled && panelOpen) button.focus({ preventScroll: true });
-    else refocusViewportIfLost();
-    return true;
-  }
-
-  /** The "Exit presentation view" button, built the first time Present starts. It is a sibling of the layer, which is inert while presenting. */
-  function presentExitControl() {
-    if (presentExit && presentExit.isConnected) return presentExit;
-    const host = els.layer && els.layer.parentElement;
-    if (!host || !doc) return null;
-    const button = htmlEl('button', 'tp3d-annot-present-exit');
-    button.type = 'button';
-    button.hidden = true;
-    button.title = `${PRESENT_EXIT_LABEL} (Esc)`;
-    button.append(iconEl('fa-solid fa-xmark'), htmlEl('span', '', PRESENT_EXIT_LABEL));
-    button.addEventListener('click', () => endPresent({ focus: true }));
-    host.appendChild(button);
-    presentExit = button;
-    return button;
-  }
-
-  /**
-   * Bottom center of the layer, lifted over whatever already holds that spot (the AutoPack Results card or its restore button, the
-   * review button): a blocker only ever moves it up, so it stays where the owner looks for it, clear of every control that matters.
-   */
-  function placePresentExit(blockers, viewport) {
-    const button = presentExitControl();
-    if (!button) return;
-    if (button.hidden) button.hidden = false;
-    const w = button.offsetWidth;
-    const h = button.offsetHeight;
-    if (!w || !h) return;
-    let rect = { x: (viewport.width - w) / 2, y: viewport.height - PRESENT_EXIT_BOTTOM_PX - h, w, h };
-    for (let pass = 0; pass <= blockers.length; pass += 1) {
-      const current = rect;
-      const hit = blockers.find(box => overlapArea(current, box) > 0);
-      if (!hit) break;
-      rect = { ...current, y: hit.y - PRESENT_EXIT_GAP_PX - h };
-    }
-    rect = clampRect(rect, viewport);
-    const transform = `translate(${rect.x.toFixed(1)}px, ${rect.y.toFixed(1)}px)`;
-    if (button.style.transform !== transform) button.style.transform = transform;
-  }
-
   /**
    * A single click deletes: no confirm step, and the one-level Undo button in the panel brings it back.
    * Cargo is never touched. Focus only moves on when the delete came from the keyboard.
@@ -2468,12 +2314,12 @@ export function createAnnotationTool({
   // ==========================================================================
   /**
    * Whether a saved stroke may take a press right now. Derived, never stored: no armed tool or re-attach
-   * (those own the canvas gestures), no unsaved stroke, open editor or other drag, no Present, no Measurement, not Show Off and
+   * (those own the canvas gestures), no unsaved stroke, open editor or other drag, no Measurement, not Show Off and
    * not paused. Each of those either owns the pointer or leaves the strokes out of reach.
    */
   function drawHitReachable() {
     return toolShown && inEditor() && !tool && !reattachId && !stroke && !draft && !pinDrag && !cardDrag &&
-      !presenting && !sceneOwnedElsewhere() && showMode !== 'off' && !blockedReason();
+      !sceneOwnedElsewhere() && showMode !== 'off' && !blockedReason();
   }
 
   /** The same, and no move already under way: what a new press on a stroke needs. */
@@ -2814,7 +2660,7 @@ export function createAnnotationTool({
     }
     const pack = currentPack();
     const record = recordById(finished.id);
-    if (!pack || pack.id !== finished.packId || finished.epoch !== sessionEpoch || !toolShown || showMode === 'off' || presenting ||
+    if (!pack || pack.id !== finished.packId || finished.epoch !== sessionEpoch || !toolShown || showMode === 'off' ||
         sceneOwnedElsewhere() || provisionalPoseActive() || !record || moveShapeOf(record) !== finished.shape) {
       setStatus('The drawing changed, so the move was cancelled.');
       return;
@@ -2958,7 +2804,7 @@ export function createAnnotationTool({
   // SECTION: KEYBOARD OWNERSHIP (capture phase)
   // ==========================================================================
   function ownsEscape() {
-    return Boolean(presenting || stroke || moveDrag || pinDrag || cardDrag || draft || reattachId || arrowTail || tool || selectedId);
+    return Boolean(stroke || moveDrag || pinDrag || cardDrag || draft || reattachId || arrowTail || tool || selectedId);
   }
 
   function onKeyDownCapture(ev) {
@@ -2980,7 +2826,7 @@ export function createAnnotationTool({
       return;
     }
     if (key === 'delete' || key === 'backspace') {
-      if (!selectedId || draft || presenting || isTypingTarget(ev.target)) return; // Present is view-only: nothing is deleted
+      if (!selectedId || draft || isTypingTarget(ev.target)) return;
       const target = ev.target;
       const owned = target === els.viewport || Boolean(els.layer && els.layer.contains(target)) ||
         Boolean(els.panel && els.panel.contains(target));
@@ -3002,11 +2848,6 @@ export function createAnnotationTool({
 
   /** One Escape press closes exactly one owner. */
   function closeOneOwner() {
-    if (presenting) {
-      // Present has nothing else under way (it never starts over a gesture), so leaving it is the whole Escape; the selection stays.
-      endPresent();
-      return;
-    }
     if (stroke) {
       // An unfinished stroke goes before the armed Draw tool does.
       cancelStroke('Drawing cancelled.');
@@ -3233,10 +3074,6 @@ export function createAnnotationTool({
 
     const show = htmlEl('div', 'tp3d-annot-panel__view');
     show.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Show'));
-    const presentButton = htmlEl('button', 'tp3d-annot-btn tp3d-annot-btn--small tp3d-annot-panel__present', 'Present');
-    presentButton.type = 'button';
-    presentButton.title = 'Hide the panel and editing controls to show the annotations';
-    presentButton.addEventListener('click', requestPresent);
     const showGroup = segmented('Show annotations', 'tp3d-annot-seg--small tp3d-annot-seg--show');
     const showButtons = SHOW_MODES.map(([key, label]) => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
@@ -3245,7 +3082,7 @@ export function createAnnotationTool({
       showGroup.appendChild(button);
       return { key, button };
     });
-    show.append(showGroup, presentButton);
+    show.append(showGroup);
 
     const view = htmlEl('div', 'tp3d-annot-panel__view');
     view.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Callouts'));
@@ -3269,7 +3106,7 @@ export function createAnnotationTool({
     rows.clear();
     panelParts = {
       root: els.panel, head, toggle: toggleButton, chevron, count, body,
-      toolButtons, drawModeRow, drawModeButtons, hint, undoBar, undoText, showButtons, presentButton, displayButtons, empty, warning, list,
+      toolButtons, drawModeRow, drawModeButtons, hint, undoBar, undoText, showButtons, displayButtons, empty, warning, list,
       arrowOptions: null, arrowTitle: null, widthButtons: [], arrowColors: null,
       drawOptions: null, drawTitle: null, drawWidthButtons: [], drawStyleButtons: [], drawColors: null,
     };
@@ -3482,7 +3319,6 @@ export function createAnnotationTool({
       button.disabled = Boolean(blockedNow);
     });
     parts.showButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', showMode === key ? 'true' : 'false'));
-    parts.presentButton.disabled = showMode === 'off' || Boolean(blockedNow); // nothing to present while Off or paused
     parts.displayButtons.forEach(({ key, button }) => setAttr(button, 'aria-pressed', display === key ? 'true' : 'false'));
 
     const hintText = guidanceText(blockedNow);
@@ -3722,7 +3558,6 @@ export function createAnnotationTool({
       clearDeleted();
       selectedId = null; // hidden graphics leave nothing selected
       visDirty = true;
-      endPresent(); // nothing is drawn while paused, so the Exit control must not be left behind
     }
     applyViewGate();
     renderPanel();
@@ -3739,15 +3574,12 @@ export function createAnnotationTool({
     const owned = sceneOwnedElsewhere();
     if (els.layer) {
       toggleClass(els.layer, 'is-view-only', owned);
-      toggleClass(els.layer, 'is-presenting', presenting);
-      // Present is a view too: markers and cards take no input, so a click or drag goes to the canvas underneath.
-      const inert = owned || presenting;
+      const inert = owned;
       if ('inert' in els.layer && els.layer.inert !== inert) els.layer.inert = inert;
     }
     if (owned === lastOwnedElsewhere) return;
     lastOwnedElsewhere = owned;
     if (!owned) return;
-    endPresent();
     cancelStroke();
     cancelMoveDrag();
     cancelPinDrag();
@@ -3773,7 +3605,7 @@ export function createAnnotationTool({
 
   function wantsLoop() {
     return bound && toolShown && inEditor() && Boolean(currentPack()) &&
-      (panelOpen || presenting || draft || tool || reattachId || pinDrag || cardDrag || stroke || moveDrag || drawableIds.size > 0);
+      (panelOpen || draft || tool || reattachId || pinDrag || cardDrag || stroke || moveDrag || drawableIds.size > 0);
   }
 
   function ensureLoop() {
@@ -4316,7 +4148,7 @@ export function createAnnotationTool({
     entries.forEach(({ record, view, selected }) => {
       const moving = Boolean(moveDrag && moveDrag.moved && moveDrag.id === record.id);
       paintDraw(view.graphic, view.d, {
-        color: record.color, width: record.width, style: lineStyleOf(record), selected: selected && !presenting,
+        color: record.color, width: record.width, style: lineStyleOf(record), selected: selected,
         occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, span: view.extent.span,
       });
     });
@@ -4540,7 +4372,7 @@ export function createAnnotationTool({
   function drawArrows(entries, width, height) {
     const gripsAllowed = !isActive() && !sceneOwnedElsewhere();
     entries.forEach(({ record, view, projection, selected: isSelected }) => {
-      const selected = isSelected && !presenting; // Present draws the saved look: no selected edge, no end handles
+      const selected = isSelected;
       paintArrow(view.graphic, projection.shape, { color: record.color, style: lineStyleOf(record), selected, occluded: !view.front });
       view.shown = true;
       ['start', 'end'].forEach(which => {
@@ -4993,7 +4825,6 @@ export function createAnnotationTool({
     const pinRects = entries.map(entry => ({ id: entry.record.id, x: entry.view.screen.x - PIN_RECT_PX / 2, y: entry.view.screen.y - PIN_RECT_PX / 2, w: PIN_RECT_PX, h: PIN_RECT_PX }));
     const resultsBox = resultsObstacles();
     fitPanel(resultsBox, viewport);
-    if (presenting) placePresentExit(resultsBox.concat(statusObstacle()), viewport);
     const panelBox = panelObstacle(resultsBox);
     const labelIds = display === 'markers' ? new Set() : fitLabels(
       entries.filter(entry => entry.view.front && !shownIds.has(entry.record.id))
@@ -5002,9 +4833,8 @@ export function createAnnotationTool({
       panelBox ? pinRects.concat(panelBox.map(box => ({ id: '', ...box }))) : pinRects, width);
     entries.forEach(entry => {
       const showLabel = labelIds.has(entry.record.id);
-      // Present keeps the selection (Show Selected still follows it) but draws none of its chrome: the saved look only.
       updatePin(entry.view, entry, {
-        selected: entry.selected && !presenting,
+        selected: entry.selected,
         hollow: !entry.view.front && !entry.selected,
         dragging: entry.dragging,
         chipText: showLabel ? entry.record.title : '',
@@ -5016,7 +4846,7 @@ export function createAnnotationTool({
     const activeLeaders = new Set();
     shown.forEach(entry => {
       const { view, record } = entry;
-      const size = updateCardContent(view, entry, cardW, !view.front, entry.selected && !presenting);
+      const size = updateCardContent(view, entry, cardW, !view.front, entry.selected);
       const marker = { x: view.screen.x, y: view.screen.y };
       let rect;
       if (cardDrag && cardDrag.id === record.id && cardDrag.rect) {
@@ -5037,7 +4867,7 @@ export function createAnnotationTool({
       const d = line ? `M${line.x1.toFixed(1)} ${line.y1.toFixed(1)}L${line.x2.toFixed(1)} ${line.y2.toFixed(1)}` : '';
       setPath(leader.under, d);
       setPath(leader.line, d);
-      toggleClass(leader.line, 'is-selected', entry.selected && !presenting);
+      toggleClass(leader.line, 'is-selected', entry.selected);
     });
     entries.forEach(entry => {
       if (shownIds.has(entry.record.id)) return;
@@ -5055,7 +4885,7 @@ export function createAnnotationTool({
     });
 
     // 5. The overflow notice, the new-callout marker and editor card, the hover mark and its tip, the drag ghost.
-    setHidden(parts.overflow, overflow <= 0 || presenting);
+    setHidden(parts.overflow, overflow <= 0);
     if (overflow > 0) {
       setText(parts.overflowText, `${overflow} more ${overflow === 1 ? 'callout is' : 'callouts are'} shown without a card. Zoom in or hide some to see their cards.`);
     }
@@ -5424,7 +5254,6 @@ export function createAnnotationTool({
     hasDraft: () => Boolean(draft),
     // 'off' | 'armed' | 'move' | 'stroking' | 'frozen': read-only, for the Editor and tests.
     // Read-only, for the Editor's interaction routing: while true, cargo is never selected, dragged, highlighted or edited from the viewport.
-    isPresenting: () => presenting,
     drawingState: () => (stroke ? stroke.phase : (tool === 'draw' ? (drawView === 'move' ? 'move' : 'armed') : 'off')),
     // 'idle' | 'pressed' (a press on a saved drawing, not yet a drag) | 'moving' | 'blocked' (carried to a place it cannot take): read-only, for tests.
     moveState: () => (moveDrag ? (moveDrag.moved ? (moveDrag.valid ? 'moving' : 'blocked') : 'pressed') : 'idle'),

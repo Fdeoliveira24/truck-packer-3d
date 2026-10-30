@@ -7247,3 +7247,95 @@ test('annotation deletion is a toast with Undo for a callout, an arrow and a dra
   assert.equal(await count(), 2, 'and the record stays deleted');
   assert.deepEqual(errors, []);
 });
+
+test('a deletion Undo never outlives its Editor session: with the panel closed, after a workspace swap, after leaving the Editor and after A to B to A, the old Undo restores nothing; a valid Undo in the same session still restores', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const undoToast = () => page.locator('.toast-btn', { hasText: 'Undo' }).last();
+  const count = () => page.evaluate(() => window.probe.annotations().length);
+  // The record is deleted with the management panel CLOSED: select its scene pin, then press Delete.
+  const deleteOnlyRecord = async () => {
+    if (!(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden))) await page.click('#btn-editor-annotations');
+    await page.waitForFunction(() => document.getElementById('editor-annotation-panel').hidden);
+    await seed(page, [{ title: 'Only', ground: [520, 10] }]);
+    await page.waitForFunction(() => window.probe.annotations().length === 1);
+    await page.waitForFunction(() => { const pin = document.querySelector('.tp3d-annot-pin:not(.is-draft):not([hidden])'); return Boolean(pin); });
+    await page.click('.tp3d-annot-pin:not(.is-draft):not([hidden])');
+    await page.keyboard.press('Delete');
+    await page.waitForFunction(() => window.probe.annotations().length === 0);
+    await undoToast().waitFor();
+  };
+  const staleRestoresNothing = async label => {
+    await undoToast().click();
+    await page.waitForFunction(() => [...document.querySelectorAll('.toast-message')].at(-1)?.textContent === 'That deletion can no longer be undone.');
+    assert.equal(await count(), 0, `${label}: the old Undo wrote nothing`);
+  };
+
+  // 1. Workspace swap of the same Load Plan.
+  await deleteOnlyRecord();
+  await page.evaluate(() => window.probe.StateStore.replace(window.probe.StateStore.snapshot()));
+  await staleRestoresNothing('workspace swap');
+
+  // 2. Leaving the Editor screen and coming back to the same Load Plan.
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
+  await deleteOnlyRecord();
+  await page.evaluate(() => { window.probe.StateStore.set({ currentScreen: 'home' }, { skipHistory: true }); window.probe.StateStore.set({ currentScreen: 'editor' }, { skipHistory: true }); });
+  await staleRestoresNothing('leaving and returning');
+
+  // 3. Load Plan A to B and back to A.
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
+  await deleteOnlyRecord();
+  await page.evaluate(() => {
+    const copy = window.probe.PackLibrary.duplicate('fixture-pack');
+    window.probe.StateStore.set({ currentPackId: copy.id }, { skipHistory: true });
+    window.probe.StateStore.set({ currentPackId: 'fixture-pack' }, { skipHistory: true });
+  });
+  await staleRestoresNothing('A to B to A');
+
+  // 4. A valid Undo in the same session still restores the record.
+  await page.click('#btn-editor-annotations');
+  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
+  await seed(page, [{ title: 'Kept', ground: [520, 10] }]);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  await page.click('.tp3d-annot-row .tp3d-annot-row__delete');
+  await page.waitForFunction(() => window.probe.annotations().length === 0);
+  await undoToast().click();
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  assert.equal((await page.evaluate(() => window.probe.annotations()))[0].title, 'Kept', 'a same-session Undo restores the record');
+  assert.deepEqual(errors, []);
+});
+
+test('a stale Arrow grip cannot edit before the next render: arming a creation tool hides the grips at once, and a pointer already aimed at the old grip writes nothing and starts nothing', { timeout: 240000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select');
+  await page.waitForFunction(() => window.probe.AnnotationTool.selectedId() !== null);
+  const before = JSON.stringify(await page.evaluate(() => window.probe.annotations()));
+  const cargoBefore = await page.evaluate(() => window.probe.casesJson());
+  // All in one task: the tool is armed and the old grip is pointed at before any animation frame can run.
+  const result = await page.evaluate(() => {
+    const grip = document.querySelector('.tp3d-annot-handle[data-end="end"]');
+    const rect = grip.getBoundingClientRect();
+    document.querySelector('.tp3d-annot-seg__btn[data-tool="arrow"]').click();
+    const hiddenNow = getComputedStyle(grip).display === 'none' || grip.hidden || !grip.isConnected;
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const init = { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, pointerId: 91, pointerType: 'mouse', isPrimary: true };
+    grip.dispatchEvent(new PointerEvent('pointerdown', init));
+    window.dispatchEvent(new PointerEvent('pointermove', { ...init, clientX: x + 60, clientY: y + 30 }));
+    window.dispatchEvent(new PointerEvent('pointerup', { ...init, clientX: x + 60, clientY: y + 30 }));
+    return { hiddenNow };
+  });
+  assert.equal(result.hiddenNow, true, 'arming Arrow hides the grips at once, not on the next frame');
+  await page.waitForFunction(() => window.probe.AnnotationTool.isActive() === true);
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.annotations())), before, 'the stale grip wrote nothing');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'cargo is untouched');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 'and nothing else was created');
+  assert.deepEqual(errors, []);
+});

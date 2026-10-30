@@ -705,6 +705,7 @@ export function createAnnotationTool({
     StateStore.subscribe(changes => {
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
         sessionEpoch += 1;
+        clearDeleted(); // a pending deletion Undo belongs to the session it was made in, whatever else is left on screen
         showMode = 'all'; // the view mode ends with the Load Plan session it belonged to
         cancelMoveDrag();
         if (panelOpen || selectedId || draft || records.length) resetSession();
@@ -887,6 +888,7 @@ export function createAnnotationTool({
     setStatus('', { sticky: true });
     applyViewGate();
     updateCursor();
+    refreshOverlay();
   }
 
   function setTool(key) {
@@ -918,6 +920,7 @@ export function createAnnotationTool({
     setStatus('', { sticky: true });
     applyViewGate();
     updateCursor();
+    refreshOverlay();
   }
 
   /** Draw mode: a primary drag draws. Move View: it orbits, and no stroke can start. Switching ends any unfinished stroke. */
@@ -2129,7 +2132,7 @@ export function createAnnotationTool({
     }
     clearDeleted();
     // The Undo belongs to this one deletion: its identity, not any toast on screen, decides whether it can still restore anything.
-    const pending = { packId: pack.id, record: outcome.removed, index: outcome.index };
+    const pending = { packId: pack.id, record: outcome.removed, index: outcome.index, epoch: sessionEpoch };
     lastDeleted = pending;
     deletedTimer = window.setTimeout(() => {
       if (lastDeleted === pending) lastDeleted = null;
@@ -2162,7 +2165,7 @@ export function createAnnotationTool({
    * deletion that is still held can restore anything; an older or expired toast restores nothing and says so.
    */
   function undoDelete(pending) {
-    if (!pending || pending !== lastDeleted) {
+    if (!pending || pending !== lastDeleted || pending.epoch !== sessionEpoch) {
       UIComponents.showToast('That deletion can no longer be undone.', 'info', { title: 'Annotations' });
       return;
     }
@@ -2298,6 +2301,9 @@ export function createAnnotationTool({
       const record = recordById(id);
       const result = resultById(id);
       if (!(which ? isArrow(record) : isCallout(record)) || !result || result.status !== ANNOTATION_STATUS.VALID || blockedReason()) return;
+      // A grip belongs to the selected arrow only. A grip still on screen after another tool was armed, or after the selection
+      // moved on, must never start an edit, whatever the render timing.
+      if (which && (selectedId !== id || tool || sceneOwnedElsewhere())) return;
       poseKey = which ? arrowPoseKey(pack, record) : cargoPoseKey(pack, record.anchor);
     }
     const target = ev.currentTarget || ev.target;

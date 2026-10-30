@@ -127,6 +127,8 @@ const HOVER_PICK_INTERVAL_MS = 40;
 const OCCLUSION_INTERVAL_MS = 100;
 const STATUS_VISIBLE_MS = 3200;
 const UNDO_VISIBLE_MS = 12000;
+// The deletion toast leaves this long before its Undo expires, so no toast still offers an Undo that can no longer restore anything.
+const UNDO_TOAST_MARGIN_MS = 500;
 const NOTICE_INTERVAL_MS = 1400;
 const OFFSCREEN_MARGIN_PX = 30;
 // Freehand strokes. A sample is taken when the pointer has moved this far on screen since the last one, and a jump
@@ -2126,13 +2128,19 @@ export function createAnnotationTool({
       return;
     }
     clearDeleted();
-    lastDeleted = { packId: pack.id, record: outcome.removed, index: outcome.index };
+    // The Undo belongs to this one deletion: its identity, not any toast on screen, decides whether it can still restore anything.
+    const pending = { packId: pack.id, record: outcome.removed, index: outcome.index };
+    lastDeleted = pending;
     deletedTimer = window.setTimeout(() => {
-      lastDeleted = null;
+      if (lastDeleted === pending) lastDeleted = null;
       deletedTimer = null;
-      renderPanel();
     }, UNDO_VISIBLE_MS);
     setStatus('', { sticky: true });
+    UIComponents.showToast(`${annotationNoun(outcome.removed)} deleted.`, 'info', {
+      title: 'Annotations',
+      duration: UNDO_VISIBLE_MS - UNDO_TOAST_MARGIN_MS,
+      actions: [{ label: 'Undo', onClick: () => undoDelete(pending) }],
+    });
     if (!viaKeyboard) return;
     const next = records[Math.min(index, records.length - 1)];
     const row = next ? rows.get(next.id) : null;
@@ -2141,10 +2149,29 @@ export function createAnnotationTool({
     else refocusViewportIfLost();
   }
 
-  /** The panel's one-level Undo for a delete: the same record, ID and position, independent of cargo history. */
-  function undoDelete() {
-    const pending = lastDeleted;
-    if (!pending) return;
+  /** The noun a toast uses for a record: a callout, an arrow, a drawing or an annotation that could not be read. */
+  function annotationNoun(record) {
+    if (record.type === ANNOTATION_TYPE_CALLOUT) return 'Callout';
+    if (record.type === ANNOTATION_TYPE_ARROW) return 'Arrow';
+    if (record.type === ANNOTATION_TYPE_DRAW) return 'Drawing';
+    return 'Unreadable annotation';
+  }
+
+  /**
+   * The one-level Undo of the deletion toast: the same record, ID and position, independent of cargo history. Only the newest
+   * deletion that is still held can restore anything; an older or expired toast restores nothing and says so.
+   */
+  function undoDelete(pending) {
+    if (!pending || pending !== lastDeleted) {
+      UIComponents.showToast('That deletion can no longer be undone.', 'info', { title: 'Annotations' });
+      return;
+    }
+    const pack = currentPack();
+    if (!pack || pack.id !== pending.packId) {
+      clearDeleted();
+      UIComponents.showToast('That deletion can no longer be undone.', 'info', { title: 'Annotations' });
+      return;
+    }
     const reason = blockedReason();
     if (reason) {
       notice(blockedMessage(reason));
@@ -2153,11 +2180,15 @@ export function createAnnotationTool({
     const outcome = PackLibrary.restoreAnnotation(pending.packId, pending.record, pending.index);
     clearDeleted();
     if (!outcome.ok) {
-      setStatus(outcome.reason === 'limit' ? 'The annotation limit is reached, so it could not be restored.' : 'It could not be restored.');
+      UIComponents.showToast(outcome.reason === 'limit'
+        ? 'The annotation limit is reached, so it could not be restored.'
+        : 'It could not be restored.', 'error', { title: 'Annotations' });
       return;
     }
-    if (pending.record.type === ANNOTATION_TYPE_CALLOUT || pending.record.type === ANNOTATION_TYPE_ARROW || pending.record.type === ANNOTATION_TYPE_DRAW) adoptSelection(pending.record.id);
-    setStatus('Restored.', { tone: 'success' });
+    adoptSelection(pending.record.id);
+    renderPanel();
+    refreshOverlay();
+    UIComponents.showToast(`${annotationNoun(pending.record)} restored.`, 'success', { title: 'Annotations' });
   }
 
   /**
@@ -3207,15 +3238,6 @@ export function createAnnotationTool({
     hint.setAttribute('role', 'status');
     hint.setAttribute('aria-live', 'polite');
 
-    const undoBar = htmlEl('div', 'tp3d-annot-panel__undo');
-    undoBar.hidden = true;
-    undoBar.setAttribute('role', 'status');
-    const undoText = htmlEl('span');
-    const undoButton = htmlEl('button', 'tp3d-annot-panel__undo-btn', 'Undo');
-    undoButton.type = 'button';
-    undoButton.addEventListener('click', undoDelete);
-    undoBar.append(undoText, undoButton);
-
     const show = htmlEl('div', 'tp3d-annot-panel__view');
     show.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Show'));
     const showGroup = segmented('Show annotations', 'tp3d-annot-seg--small tp3d-annot-seg--show');
@@ -3244,13 +3266,13 @@ export function createAnnotationTool({
     const warning = htmlEl('div', 'tp3d-annot-panel__notice', "Some saved annotations couldn't be read. The original data is kept until you delete it.");
     warning.hidden = true;
     const list = htmlEl('ul', 'tp3d-annot-panel__list');
-    body.append(toolGroup, drawModeRow, hint, undoBar, show, view, warning, empty, list);
+    body.append(toolGroup, drawModeRow, hint, show, view, warning, empty, list);
 
     els.panel.replaceChildren(head, body);
     rows.clear();
     panelParts = {
       root: els.panel, head, toggle: toggleButton, chevron, count, body,
-      toolButtons, drawModeRow, drawModeButtons, hint, undoBar, undoText, showButtons, displayButtons, empty, warning, list,
+      toolButtons, drawModeRow, drawModeButtons, hint, showButtons, displayButtons, empty, warning, list,
       arrowOptions: null, arrowTitle: null, widthButtons: [], arrowColors: null,
       drawOptions: null, drawTitle: null, drawWidthButtons: [], drawStyleButtons: [], drawColors: null,
     };
@@ -3511,16 +3533,6 @@ export function createAnnotationTool({
     if ((parts.hint.dataset.tone || '') !== hintTone) {
       if (hintTone) parts.hint.dataset.tone = hintTone;
       else delete parts.hint.dataset.tone;
-    }
-    setHidden(parts.undoBar, !lastDeleted);
-    if (lastDeleted) {
-      const deletedType = lastDeleted.record.type;
-      let deletedText = 'Unreadable annotation deleted.';
-      if (deletedType === ANNOTATION_TYPE_CALLOUT) deletedText = 'Callout deleted. Cargo is unchanged.';
-      else if (deletedType === ANNOTATION_TYPE_ARROW) deletedText = 'Arrow deleted. Cargo is unchanged.';
-      else if (deletedType === ANNOTATION_TYPE_DRAW) deletedText = 'Drawing deleted. Cargo is unchanged.';
-      setText(parts.undoText, deletedText);
-      parts.undoBar.querySelector('button').disabled = Boolean(blockedNow);
     }
     setHidden(parts.empty, records.length > 0);
     setHidden(parts.warning, !records.some(record => record.type === ANNOTATION_TYPE_UNREADABLE));

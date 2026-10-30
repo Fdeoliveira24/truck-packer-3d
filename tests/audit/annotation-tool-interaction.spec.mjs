@@ -468,14 +468,14 @@ test('selecting an annotation clears the cargo selection, selecting cargo clears
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'no cargo was deleted');
   assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'and no cargo Undo step exists');
-  assert.match(await page.locator('.tp3d-annot-panel__undo').textContent(), /Callout deleted\. Cargo is unchanged\./);
+  assert.match(await page.locator('.toast-message').last().textContent(), /Callout deleted\./);
 
   // The panel's one-level Undo brings back the same record in the same place, independent of cargo history.
-  await page.click('.tp3d-annot-panel__undo-btn');
+  await clickUndo(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
   const restored = await page.evaluate(() => window.probe.annotations());
   assert.deepEqual([restored[0].id, restored[0].title], [first.id, 'On the ground']);
-  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-panel__undo').hidden), true);
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-panel__undo')), null, 'no inline undo row remains in the panel');
 
   // Cargo clicked: the annotation is deselected.
   await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-a')));
@@ -1322,7 +1322,7 @@ test('selecting an annotation by marker drag or by deletion Undo always clears t
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__delete');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-a'], 'deleting alone leaves the cargo selection');
-  await page.click('.tp3d-annot-panel__undo-btn');
+  await clickUndo(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
   assert.ok(await isSelected(), 'the restored callout is selected');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'and the cargo is not');
@@ -1332,7 +1332,7 @@ test('selecting an annotation by marker drag or by deletion Undo always clears t
   await page.keyboard.press('Delete');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.deepEqual(await page.evaluate(() => window.probe.cargoIds().length), 2, 'Delete acts on the annotation only');
-  await page.click('.tp3d-annot-panel__undo-btn');
+  await clickUndo(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
 
   // Deselecting either owner leaves nothing selected.
@@ -1347,7 +1347,7 @@ test('selecting an annotation by marker drag or by deletion Undo always clears t
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__delete');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   await page.evaluate(() => { window.__hold = window.probe.InteractionManager.hasProvisionalPose; window.probe.InteractionManager.hasProvisionalPose = () => true; });
-  await page.click('.tp3d-annot-panel__undo-btn');
+  await clickUndo(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-a'], 'the held pose keeps its cargo selection');
   assert.equal(await isSelected(), null, 'and the callout is not selected beside it');
@@ -1393,6 +1393,8 @@ const toastsOnScreen = page => page.evaluate(() => [...document.querySelectorAll
   const r = el.getBoundingClientRect();
   return { text: el.textContent.trim().replace(/\s+/g, ' ').slice(0, 120), box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] };
 }));
+// The deletion's Undo is the action of the newest toast that offers one.
+const clickUndo = page => page.locator('.toast-btn', { hasText: 'Undo' }).last().click();
 const quietToasts = async (page, message, t) => {
   const seen = await toastsOnScreen(page);
   if (!seen.length) return;
@@ -2223,8 +2225,8 @@ test('unreadable stored annotations are preserved, flagged and deletable; writin
   assert.equal(after.at(-1).id, added.id);
   await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__delete');
   await page.waitForFunction(() => window.probe.annotations().length === 2);
-  assert.match(await page.locator('.tp3d-annot-panel__undo').textContent(), /Unreadable annotation deleted/);
-  await page.click('.tp3d-annot-panel__undo-btn');
+  assert.match(await page.locator('.toast-message').last().textContent(), /Unreadable annotation deleted/);
+  await clickUndo(page);
   await page.waitForFunction(() => window.probe.annotations().length === 3);
   assert.deepEqual((await page.evaluate(() => window.probe.annotations())).filter(r => r.type === 'unreadable').map(r => r.original), raw, 'Undo restores it verbatim');
   assert.deepEqual(errors, []);
@@ -5023,8 +5025,8 @@ test('freehand saved strokes: they persist across tool exit and re-entry, follow
   await page.waitForFunction(id => !window.probe.annotations().some(r => r.id === id), onCargo.id);
   assert.equal(await groupFor(page, onCargo.id), null);
   assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore, 'Delete never touches cargo');
-  assert.match(await page.locator('.tp3d-annot-panel__undo').textContent(), /Drawing deleted\. Cargo is unchanged\./);
-  await page.click('.tp3d-annot-panel__undo-btn');
+  assert.match(await page.locator('.toast-message').last().textContent(), /Drawing deleted\./);
+  await clickUndo(page);
   await page.waitForFunction(id => window.probe.annotations().some(r => r.id === id), onCargo.id);
   assert.equal(await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id)), onCargo.id), deletedJson, 'the identical record is back');
   assert.deepEqual(await page.evaluate(() => window.probe.annotations().map(r => r.type)), ['draw', 'draw', 'callout', 'arrow'], 'in its place');
@@ -5414,7 +5416,7 @@ test('freehand the panel is operable from the keyboard: arm Draw, switch Draw an
   await page.focus(`${rowFor(stroke.id)} .tp3d-annot-row__delete`);
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.probe.annotations().length === 0);
-  await page.focus('.tp3d-annot-panel__undo-btn');
+  await page.locator('.toast-btn', { hasText: 'Undo' }).last().focus();
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore, 'cargo is untouched by any of it');
@@ -7192,5 +7194,56 @@ test('a selected arrow with a long name at 640x700 keeps its look controls insid
   assert.equal(fit.truncated, true, 'the long name ends in an ellipsis');
   assert.equal(fit.controls, 12, 'three weights, three styles and six color swatches are shown');
   assert.equal(fit.outside, 0, 'no weight, style or color control overflows the panel');
+  assert.deepEqual(errors, []);
+});
+
+test('annotation deletion is a toast with Undo for a callout, an arrow and a drawing: no inline row, Undo restores the same record in place, cargo never changes, an older toast cannot restore, and an expired one offers nothing', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const [first, second] = await seed(page, [{ title: 'First', ...TOP_OF_A }, { title: 'Second', ground: [520, 10] }]);
+  const arrow = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  const drawing = await seedDraw(page);
+  await page.waitForFunction(() => window.probe.annotations().length === 4);
+  const cargoBefore = await page.evaluate(() => window.probe.casesJson());
+  const before = await page.evaluate(() => window.probe.annotations());
+  const deleteRow = id => page.click(`.tp3d-annot-row[data-annot-id="${id}"] .tp3d-annot-row__delete`);
+  const lastToast = () => page.locator('.toast-message').last().textContent();
+  const count = () => page.evaluate(() => window.probe.annotations().length);
+  const noInlineRow = () => page.evaluate(() => document.querySelector('.tp3d-annot-panel__undo') === null);
+
+  // Drawing: the toast names it and offers Undo; the panel gets no inline row; Undo restores exactly that record and place.
+  await deleteRow(drawing.id);
+  await page.waitForFunction(() => window.probe.annotations().length === 3);
+  assert.equal(await lastToast(), 'Drawing deleted.');
+  assert.equal(await noInlineRow(), true, 'no persistent Deleted-Undo row in the panel');
+  await clickUndo(page);
+  await page.waitForFunction(() => window.probe.annotations().length === 4);
+  assert.deepEqual(await page.evaluate(() => window.probe.annotations()), before, 'Undo restores the same record, ID and place');
+  assert.equal(await lastToast(), 'Drawing restored.');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'Undo never changes cargo');
+
+  // Arrow, then Callout: the older Arrow toast is stale once a newer deletion exists.
+  await deleteRow(arrow.id);
+  await page.waitForFunction(() => window.probe.annotations().length === 3);
+  assert.equal(await lastToast(), 'Arrow deleted.');
+  await deleteRow(second.id);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  assert.equal(await lastToast(), 'Callout deleted.');
+  await page.locator('.toast', { hasText: 'Arrow deleted.' }).locator('.toast-btn', { hasText: 'Undo' }).click();
+  assert.equal(await lastToast(), 'That deletion can no longer be undone.', 'an older Undo says so');
+  assert.equal(await count(), 2, 'and restores nothing');
+  await clickUndo(page);
+  await page.waitForFunction(() => window.probe.annotations().length === 3);
+  assert.equal(await lastToast(), 'Callout restored.');
+  assert.deepEqual((await page.evaluate(() => window.probe.annotations().map(r => r.id))).sort(), [first.id, second.id, drawing.id].sort(), 'the newest deletion restores only its own record');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'cargo is still unchanged');
+
+  // An expired deletion: once its toast has gone, nothing offers Undo.
+  await deleteRow(first.id);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  await page.waitForTimeout(12500);
+  assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'an expired deletion offers no Undo');
+  assert.equal(await count(), 2, 'and the record stays deleted');
   assert.deepEqual(errors, []);
 });

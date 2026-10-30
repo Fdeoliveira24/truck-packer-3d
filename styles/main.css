@@ -6193,7 +6193,6 @@ body.tp3d-shared-modal-lock #app .nav {
 
 /* Guidance appears only when something is relevant; when empty it takes no space but stays a live region. */
 .tp3d-annot-panel__hint,
-.tp3d-annot-panel__undo,
 .tp3d-annot-panel__notice,
 .tp3d-annot-panel__empty {
   padding: 0 14px 10px;
@@ -6233,33 +6232,9 @@ body.tp3d-shared-modal-lock #app .nav {
   content: none;
 }
 
-.tp3d-annot-panel__undo {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.tp3d-annot-panel__undo[hidden],
 .tp3d-annot-panel__notice[hidden],
 .tp3d-annot-panel__empty[hidden] {
   display: none;
-}
-
-.tp3d-annot-panel__undo-btn {
-  padding: 2px 4px;
-  border: 0;
-  background: transparent;
-  color: var(--text-primary);
-  font: inherit;
-  font-weight: var(--font-bold);
-  text-decoration: underline;
-  cursor: pointer;
-}
-
-.tp3d-annot-panel__undo-btn:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 
 .tp3d-annot-panel__notice {

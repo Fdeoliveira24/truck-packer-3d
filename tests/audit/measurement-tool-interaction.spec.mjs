@@ -236,6 +236,15 @@ async function measure(page, a, b) {
 }
 const GROUND_A = [100, 0, 70];
 const GROUND_B = [260, 0, 80];
+// The one step a committed write made: Undo reverts exactly that write and Redo restores exactly its result.
+const oneStepRoundTrip = async (page, label) => {
+  const packs = () => page.evaluate(() => JSON.stringify(window.probe.StateStore.get('packLibrary')));
+  const after = await packs();
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, `${label}: one Undo step`);
+  assert.notEqual(await packs(), after, `${label}: Undo reverts it`);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true, `${label}: Redo replays it`);
+  assert.equal(await packs(), after, `${label}: Redo restores the result`);
+};
 
 test('G6 two clicks save one measurement, return to Ready and leave cargo, selection, camera and Undo untouched', { timeout: 90000 }, async t => {
   const browser = await launch();
@@ -265,7 +274,7 @@ test('G6 two clicks save one measurement, return to Ready and leave cargo, selec
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is never moved');
   assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'clicking never orbits the camera');
   assert.ok(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited) > before.edited, 'lastEdited is updated');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'no cargo Undo step was created');
+  await oneStepRoundTrip(page, 'the measurement creation');
   assert.doesNotMatch(await page.evaluate(() => window.probe.hint()), /second point/i, 'back to Ready for Point A');
 
   // Consecutive, independent measurements.
@@ -534,8 +543,14 @@ test('one click on the trash icon deletes immediately and never leaves a focus r
   await page.waitForFunction(() => window.probe.measurements().length === 1);
   assert.equal(await page.evaluate(() => window.probe.measurements()[0].id), second);
   // A concise toast says so; a measurement has no Undo, because no verified restore path exists.
-  assert.equal(await page.locator('.toast-message').last().textContent(), 'Measurement deleted. This cannot be undone.');
-  assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'no Undo is offered for a measurement');
+  assert.equal(await page.locator('.toast-message').last().textContent(), 'Measurement deleted.');
+  assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'the notification offers no Undo of its own');
+  // The shared history brings the measurement back from the keyboard, and Redo removes it again.
+  await page.focus('#viewport');
+  await page.keyboard.press('Control+z');
+  await page.waitForFunction(() => window.probe.measurements().length === 2);
+  await page.keyboard.press('Control+Shift+z');
+  await page.waitForFunction(() => window.probe.measurements().length === 1);
   assert.equal(await page.evaluate(id => !document.querySelector(`[data-measurement-id="${id}"]`), first), true, 'the row left the panel');
   assert.equal(await page.evaluate(() => !!document.activeElement.closest('#editor-measure-panel')), false,
     'a mouse delete leaves no focus (and so no focus ring) in the panel');
@@ -581,7 +596,7 @@ test('endpoint repositioning: a grip drag re-anchors, Escape restores, and cargo
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is never moved by an endpoint drag');
   assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'the drag never orbits the camera');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), before.selection, 'and never selects cargo');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'no cargo Undo step');
+  await oneStepRoundTrip(page, 'the endpoint move');
 
   // Escape mid-drag drops the drag, leaves the mode and writes nothing.
   const snapshot = JSON.stringify(await page.evaluate(() => window.probe.measurements()));
@@ -930,7 +945,7 @@ test('P2-7 a real held case (gizmo stroke) is never measured from its transient 
   assert.equal(resolved.status, 'valid');
   assert.ok(onBox(resolved.end, await cargoBounds(page, 'cargo-a')), `the point is on the committed cargo surface, not the transient pose: ${JSON.stringify(resolved.end)}`);
   assert.equal(await page.evaluate(() => window.probe.casesJson()), original, 'measuring never changes the cargo');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'and adds no cargo Undo step');
+  await oneStepRoundTrip(page, 'the measurement');
   assert.deepEqual(errors, []);
 });
 
@@ -961,16 +976,20 @@ test('P2-7 a real held case placed with Enter while the ruler is on: picks resum
   assert.ok(onBox((await page.evaluate(() => window.probe.resolved()[0])).end, await cargoBounds(page, 'cargo-a')));
 
   // Cargo Undo/Redo is a cargo operation: it never erases or resurrects the measurement.
+  // Newest first: the measurement itself, then placing the case. Undo and Redo walk those steps in order.
   const history = await page.evaluate(() => {
     const store = window.probe.StateStore;
-    const undone = store.undo();
-    const afterUndo = { measurements: window.probe.measurements().length, status: window.probe.resolved()[0].status };
-    const redone = store.redo();
-    return { undone, afterUndo, redone, afterRedo: { measurements: window.probe.measurements().length, status: window.probe.resolved()[0].status } };
+    const measure = () => ({ measurements: window.probe.measurements().length, status: window.probe.resolved()[0]?.status ?? null });
+    const undoneMeasurement = store.undo();
+    const undoneCase = store.undo();
+    const afterUndo = measure();
+    const redone = [store.redo(), store.redo()];
+    return { undoneMeasurement, undoneCase, afterUndo, redone, afterRedo: measure() };
   });
-  assert.equal(history.undone, true, 'placing the case was one cargo Undo step');
-  assert.deepEqual(history.afterUndo, { measurements: 1, status: 'valid' });
-  assert.deepEqual(history.afterRedo, { measurements: 1, status: 'valid' });
+  assert.deepEqual([history.undoneMeasurement, history.undoneCase], [true, true], 'the measurement, then placing the case, were two steps');
+  assert.deepEqual(history.afterUndo, { measurements: 0, status: null }, 'Undo back past the measurement removes it');
+  assert.deepEqual(history.redone, [true, true]);
+  assert.deepEqual(history.afterRedo, { measurements: 1, status: 'valid' }, 'Redo restores it, valid on the placed case');
   assert.equal(await page.evaluate(() => window.probe.casesJson()), original);
   assert.deepEqual(errors, []);
 });

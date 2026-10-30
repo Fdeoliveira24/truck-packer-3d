@@ -126,9 +126,6 @@ const CARD_DRAG_THRESHOLD_PX = 4;
 const HOVER_PICK_INTERVAL_MS = 40;
 const OCCLUSION_INTERVAL_MS = 100;
 const STATUS_VISIBLE_MS = 3200;
-const UNDO_VISIBLE_MS = 12000;
-// The deletion toast leaves this long before its Undo expires, so no toast still offers an Undo that can no longer restore anything.
-const UNDO_TOAST_MARGIN_MS = 500;
 const NOTICE_INTERVAL_MS = 1400;
 const OFFSCREEN_MARGIN_PX = 30;
 // Freehand strokes. A sample is taken when the pointer has moved this far on screen since the last one, and a jump
@@ -284,6 +281,7 @@ export function createAnnotationTool({
   let selectedId = null;
   const collapsedIds = new Set(); // session-only: callouts folded to their header; never saved, never changes the hidden flag or selection
   let renamingId = null; // the arrow or drawing whose name is being typed in its row; nothing is written until it is committed
+  let colorPreview = null; // { id, color }: the color a picker is showing for the selected arrow or drawing; render-only, never stored
   let revealedId = null; // the selection whose row was last revealed: a selection change reveals its row once, never per frame
   let display = 'markers'; // view-level: 'markers' | 'labels' | 'cards'; not saved with the Load Plan
   let showMode = 'all'; // view-level: 'all' | 'selected' | 'off'; never saved, never overrides a record's own hidden flag
@@ -312,8 +310,6 @@ export function createAnnotationTool({
   let lastBlockedReason = null;
   let sessionEpoch = 0; // bumped whenever the Load Plan session ends: a pending dialog answer from an older one is ignored
   let graphicsHidden = true; // the overlay is empty while annotations are paused
-  let lastDeleted = null; // { packId, record, index } for the panel's one-level Undo
-  let deletedTimer = null;
   let keyboardModality = false;
   let suppressClick = false;
   let compact = false;
@@ -569,11 +565,6 @@ export function createAnnotationTool({
   // ==========================================================================
   // SECTION: SESSION (what the tool remembers while the Editor is open)
   // ==========================================================================
-  function clearDeleted() {
-    lastDeleted = null;
-    if (deletedTimer) window.clearTimeout(deletedTimer);
-    deletedTimer = null;
-  }
 
   function resetSession() {
     sessionEpoch += 1;
@@ -583,7 +574,6 @@ export function createAnnotationTool({
     collapsedIds.clear();
     renamingId = null;
     revealedId = null;
-    clearDeleted();
     records = [];
     results = [];
     numbers = new Map();
@@ -611,6 +601,7 @@ export function createAnnotationTool({
   }
 
   function select(id, { toggle = false } = {}) {
+    colorPreview = null;
     let target = id && recordById(id) ? id : null;
     if (toggle && target && selectedId === target) target = null;
     if (target && showMode === 'off') {
@@ -691,7 +682,6 @@ export function createAnnotationTool({
         cancelMoveDrag('The cargo changed, so the move was cancelled.');
       }
     }
-    if (lastDeleted && lastDeleted.packId !== pack.id) clearDeleted();
     visDirty = true;
     renderPanel();
     ensureLoop();
@@ -705,7 +695,6 @@ export function createAnnotationTool({
     StateStore.subscribe(changes => {
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
         sessionEpoch += 1;
-        clearDeleted(); // a pending deletion Undo belongs to the session it was made in, whatever else is left on screen
         showMode = 'all'; // the view mode ends with the Load Plan session it belonged to
         cancelMoveDrag();
         if (panelOpen || selectedId || draft || records.length) resetSession();
@@ -815,7 +804,6 @@ export function createAnnotationTool({
     hover = null;
     press = null;
     panelOpen = false;
-    clearDeleted();
     if (statusTimer) window.clearTimeout(statusTimer);
     statusTimer = null;
     statusMessage = '';
@@ -877,6 +865,7 @@ export function createAnnotationTool({
    * An open callout draft is not touched here: its own confirm flow decides it.
    */
   function endCreation() {
+    colorPreview = null;
     if (!tool) return;
     cancelStroke();
     cancelMoveDrag();
@@ -1117,7 +1106,6 @@ export function createAnnotationTool({
     }
     clearCargoSelection();
     selectedId = null;
-    clearDeleted();
     const startWorld = picked.world;
     stroke = {
       phase: 'stroking', pointerId: ev.pointerId, pointerType: ev.pointerType || 'mouse', packId: pack.id, epoch: sessionEpoch,
@@ -1320,7 +1308,6 @@ export function createAnnotationTool({
       else UIComponents.showToast('Could not save this drawing.', 'error', { title: 'Annotations' });
       return;
     }
-    clearDeleted();
     hover = null;
     hoverDirty = true;
     // The saved drawing is not selected: the tool stays armed and the next drag starts another one.
@@ -1407,7 +1394,6 @@ export function createAnnotationTool({
       }
       return;
     }
-    clearDeleted();
     arrowTail = null;
     hover = null;
     hoverDirty = true;
@@ -1592,7 +1578,6 @@ export function createAnnotationTool({
       }
       id = outcome.annotation.id;
     }
-    clearDeleted();
     const target = anchorTargetName(draft.anchor);
     const wasEdit = Boolean(draft.editId);
     const restore = Boolean(editorParts && editorParts.root.contains(doc.activeElement));
@@ -1611,7 +1596,22 @@ export function createAnnotationTool({
    * swatch that opens the browser's native color picker. `getColor` reads the color being edited (null when nothing
    * is), `onPick` receives the chosen color and `sync` shows a color as the pressed one.
    */
-  function buildColorPicker({ ariaLabel, getColor, onPick }) {
+  /** The color an arrow or drawing is painted with: the picker's live preview for the selected record, otherwise its stored color. */
+  function paintColorOf(record) {
+    return colorPreview && record && colorPreview.id === record.id ? colorPreview.color : record.color;
+  }
+
+  /** Set (or with null, clear) the live color preview of the selected arrow or drawing. Nothing is written. */
+  function setColorPreview(color) {
+    const record = recordById(selectedId);
+    const next = color && (isArrow(record) || isDraw(record)) ? { id: record.id, color } : null;
+    if (colorPreview && next && colorPreview.id === next.id && colorPreview.color === next.color) return;
+    if (!colorPreview && !next) return;
+    colorPreview = next;
+    refreshOverlay();
+  }
+
+  function buildColorPicker({ ariaLabel, getColor, onPick, onPreview }) {
     const root = htmlEl('div', 'tp3d-annot-swatches');
     root.setAttribute('role', 'group');
     root.setAttribute('aria-label', ariaLabel);
@@ -1643,13 +1643,24 @@ export function createAnnotationTool({
       const current = getColor();
       if (current != null && !isCustomAnnotationColor(current) && lastCustomColor) onPick(lastCustomColor);
     });
+    // A native color picker fires `input` for every move of its pointer. Those events only preview the color; the one
+    // completed choice is the `change` event, which writes once (one undoable step), or nothing when it is unchanged.
     customInput.addEventListener('input', () => {
+      if (getColor() == null) return;
+      const picked = customInput.value.toLowerCase();
+      if (!isCustomAnnotationColor(picked)) return;
+      onPreview(picked);
+    });
+    customInput.addEventListener('change', () => {
+      onPreview(null);
       if (getColor() == null) return;
       const picked = customInput.value.toLowerCase();
       if (!isCustomAnnotationColor(picked)) return;
       lastCustomColor = picked;
       onPick(picked);
     });
+    // A picker closed without a change (a cancelled choice) leaves nothing behind.
+    customInput.addEventListener('blur', () => onPreview(null));
     customSwatch.appendChild(customInput);
     root.appendChild(customSwatch);
     function showColor(color) {
@@ -1730,6 +1741,8 @@ export function createAnnotationTool({
     const colorPicker = buildColorPicker({
       ariaLabel: 'Callout color',
       getColor: () => (draft ? draft.color : null),
+      // A callout's color is held in the open draft, which is not stored until Save: it keeps its live preview.
+      onPreview: color => { if (color && draft) { draft.color = color; syncEditorFields({ keepInputs: true }); } },
       onPick: color => {
         draft.color = color;
         syncEditorFields({ keepInputs: true });
@@ -1925,7 +1938,6 @@ export function createAnnotationTool({
     const pack = currentPack();
     const record = recordById(id);
     if (commit && pack && record && !blockedReason() && (isArrow(record) || isDraw(record))) {
-      clearDeleted();
       const outcome = isArrow(record)
         ? PackLibrary.updateArrow(pack.id, id, { name: value })
         : PackLibrary.updateDraw(pack.id, id, { name: value });
@@ -1945,7 +1957,6 @@ export function createAnnotationTool({
     const pack = currentPack();
     const record = recordById(id);
     if (!pack || !(isCallout(record) || isStyled(record))) return;
-    clearDeleted();
     const patch = { hidden: !record.hidden };
     let outcome;
     if (isArrow(record)) outcome = PackLibrary.updateArrow(pack.id, id, patch);
@@ -1974,7 +1985,6 @@ export function createAnnotationTool({
       }
       const pack = currentPack();
       if (!pack) return;
-      clearDeleted();
       const outcome = PackLibrary.updateArrow(pack.id, record.id, patch);
       if (!outcome.ok) UIComponents.showToast('Could not change this arrow.', 'error', { title: 'Annotations' });
       return;
@@ -2002,7 +2012,6 @@ export function createAnnotationTool({
       }
       const pack = currentPack();
       if (!pack) return;
-      clearDeleted();
       const outcome = PackLibrary.updateDraw(pack.id, record.id, patch);
       if (!outcome.ok) UIComponents.showToast('Could not change this drawing.', 'error', { title: 'Annotations' });
       return;
@@ -2130,20 +2139,8 @@ export function createAnnotationTool({
       renderPanel();
       return;
     }
-    clearDeleted();
-    // The Undo belongs to this one deletion: its identity, not any toast on screen, decides whether it can still restore anything.
-    const pending = { packId: pack.id, record: outcome.removed, index: outcome.index, epoch: sessionEpoch };
-    lastDeleted = pending;
-    deletedTimer = window.setTimeout(() => {
-      if (lastDeleted === pending) lastDeleted = null;
-      deletedTimer = null;
-    }, UNDO_VISIBLE_MS);
+    UIComponents.showToast(`${annotationNoun(outcome.removed)} deleted.`, 'info', { title: 'Annotations' });
     setStatus('', { sticky: true });
-    UIComponents.showToast(`${annotationNoun(outcome.removed)} deleted.`, 'info', {
-      title: 'Annotations',
-      duration: UNDO_VISIBLE_MS - UNDO_TOAST_MARGIN_MS,
-      actions: [{ label: 'Undo', onClick: () => undoDelete(pending) }],
-    });
     if (!viaKeyboard) return;
     const next = records[Math.min(index, records.length - 1)];
     const row = next ? rows.get(next.id) : null;
@@ -2158,40 +2155,6 @@ export function createAnnotationTool({
     if (record.type === ANNOTATION_TYPE_ARROW) return 'Arrow';
     if (record.type === ANNOTATION_TYPE_DRAW) return 'Drawing';
     return 'Unreadable annotation';
-  }
-
-  /**
-   * The one-level Undo of the deletion toast: the same record, ID and position, independent of cargo history. Only the newest
-   * deletion that is still held can restore anything; an older or expired toast restores nothing and says so.
-   */
-  function undoDelete(pending) {
-    if (!pending || pending !== lastDeleted || pending.epoch !== sessionEpoch) {
-      UIComponents.showToast('That deletion can no longer be undone.', 'info', { title: 'Annotations' });
-      return;
-    }
-    const pack = currentPack();
-    if (!pack || pack.id !== pending.packId) {
-      clearDeleted();
-      UIComponents.showToast('That deletion can no longer be undone.', 'info', { title: 'Annotations' });
-      return;
-    }
-    const reason = blockedReason();
-    if (reason) {
-      notice(blockedMessage(reason));
-      return;
-    }
-    const outcome = PackLibrary.restoreAnnotation(pending.packId, pending.record, pending.index);
-    clearDeleted();
-    if (!outcome.ok) {
-      UIComponents.showToast(outcome.reason === 'limit'
-        ? 'The annotation limit is reached, so it could not be restored.'
-        : 'It could not be restored.', 'error', { title: 'Annotations' });
-      return;
-    }
-    adoptSelection(pending.record.id);
-    renderPanel();
-    refreshOverlay();
-    UIComponents.showToast(`${annotationNoun(pending.record)} restored.`, 'success', { title: 'Annotations' });
   }
 
   /**
@@ -2254,7 +2217,6 @@ export function createAnnotationTool({
     }
     const record = recordById(id);
     if (!pack || !record) return false;
-    clearDeleted();
     if (isArrow(record)) {
       if (which !== 'start' && which !== 'end') return false;
       const moved = PackLibrary.moveArrowEndpoint(pack.id, id, which, picked.anchor);
@@ -2435,7 +2397,6 @@ export function createAnnotationTool({
     }
     if (!pack || !recordById(finished.id) || !finished.offset) return;
     const clamp = value => Math.max(-MAX_CARD_OFFSET_PX, Math.min(MAX_CARD_OFFSET_PX, value));
-    clearDeleted();
     const outcome = PackLibrary.setCalloutOffset(pack.id, finished.id, { dx: clamp(finished.offset.dx), dy: clamp(finished.offset.dy) });
     if (!outcome.ok) UIComponents.showToast('Could not move this card.', 'error', { title: 'Annotations' });
     else setStatus('Card moved. The callout stays attached to its cargo.', { tone: 'success' });
@@ -2840,7 +2801,6 @@ export function createAnnotationTool({
       setStatus('The drawing was left where it was.');
       return;
     }
-    clearDeleted();
     const outcome = PackLibrary.moveDraw(pack.id, finished.id, judged.du, judged.dv);
     if (!outcome.ok) {
       if (outcome.reason === 'invalid' || outcome.reason === 'unresolved') notice(DRAW_MOVE_REFUSED);
@@ -3257,7 +3217,8 @@ export function createAnnotationTool({
     show.append(showGroup);
 
     const view = htmlEl('div', 'tp3d-annot-panel__view');
-    view.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Callout display'));
+    // Visible text stays on one line in the fixed label column; the group keeps the accessible name "Callout display".
+    view.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Callouts'));
     const displayGroup = segmented('Callout display', 'tp3d-annot-seg--small tp3d-annot-seg--display');
     const displayButtons = DISPLAY_MODES.map(([key, label]) => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
@@ -3624,6 +3585,7 @@ export function createAnnotationTool({
       ariaLabel: 'Arrow color',
       getColor: () => { const selectedArrow = recordById(selectedId); return isArrow(selectedArrow) ? selectedArrow.color : arrowStyle.color; },
       onPick: color => setArrowStyle({ color }),
+      onPreview: color => setColorPreview(color),
     });
     colors.root.classList.add('tp3d-annot-panel__arrow-colors');
     options.append(title, widthRow, styleRow, colors.root);
@@ -3678,6 +3640,7 @@ export function createAnnotationTool({
       ariaLabel: 'Drawing color',
       getColor: () => { const selectedDraw = recordById(selectedId); return isDraw(selectedDraw) ? selectedDraw.color : drawStyle.color; },
       onPick: color => setDrawStyle({ color }),
+      onPreview: color => setColorPreview(color),
     });
     colors.root.classList.add('tp3d-annot-panel__draw-colors');
     options.append(title, widthRow, styleRow, colors.root);
@@ -3762,7 +3725,6 @@ export function createAnnotationTool({
         hover = null;
         updateCursor();
       }
-      clearDeleted();
       selectedId = null; // hidden graphics leave nothing selected
       visDirty = true;
     }
@@ -4355,7 +4317,7 @@ export function createAnnotationTool({
     entries.forEach(({ record, view, selected }) => {
       const moving = Boolean(moveDrag && moveDrag.moved && moveDrag.id === record.id);
       paintDraw(view.graphic, view.d, {
-        color: record.color, width: record.width, style: lineStyleOf(record), selected: selected,
+        color: paintColorOf(record), width: record.width, style: lineStyleOf(record), selected: selected,
         occluded: !view.front && !moving, moving, invalid: moving && !moveDrag.valid, span: view.extent.span,
       });
     });
@@ -4583,7 +4545,7 @@ export function createAnnotationTool({
     const gripsAllowed = !isActive() && !sceneOwnedElsewhere();
     entries.forEach(({ record, view, projection, selected: isSelected }) => {
       const selected = isSelected;
-      paintArrow(view.graphic, projection.shape, { color: record.color, style: lineStyleOf(record), selected, occluded: !view.front });
+      paintArrow(view.graphic, projection.shape, { color: paintColorOf(record), style: lineStyleOf(record), selected, occluded: !view.front });
       view.shown = true;
       ['start', 'end'].forEach(which => {
         const screen = which === 'start' ? projection.tail : projection.head;
@@ -5075,7 +5037,8 @@ export function createAnnotationTool({
       } else if (record.offset) {
         rect = rectFromOffset(marker, record.offset, size, viewport);
       } else {
-        const occupied = [...pinRects.filter(pinRect => pinRect.id !== record.id), ...placed, ...(panelBox || [])];
+        // A saved card also keeps clear of the camera and zoom stack, so its Edit and Collapse buttons stay reachable.
+        const occupied = [...pinRects.filter(pinRect => pinRect.id !== record.id), ...placed, ...(panelBox || []), ...controlsObstacle()];
         const auto = autoPlace({ marker, size, viewport, occupied, previousSlot: view.slot });
         view.slot = auto.slot;
         rect = { x: auto.x, y: auto.y, w: auto.w, h: auto.h };
@@ -5245,7 +5208,7 @@ export function createAnnotationTool({
    */
   function panelObstacle(resultsBox = resultsObstacles()) {
     if (!els.layer || !doc) return null;
-    const found = panelRectsNow().concat(statusObstacle(), resultsBox, controlsObstacle());
+    const found = panelRectsNow().concat(statusObstacle(), resultsBox);
     return found.length ? found : null;
   }
 

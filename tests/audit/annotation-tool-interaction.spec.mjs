@@ -64,7 +64,7 @@ const Utils = { ...CoreUtils, ...BrowserUtils };
 const StateStore = {
   init: CoreStateStore.init, get: CoreStateStore.get, set: CoreStateStore.set, replace: CoreStateStore.replace,
   snapshot: CoreStateStore.snapshot, resetHistory: CoreStateStore.resetHistory, undo: CoreStateStore.undo,
-  redo: CoreStateStore.redo, subscribe: CoreStateStore.subscribe,
+  redo: CoreStateStore.redo, subscribe: CoreStateStore.subscribe, undoDepth: CoreStateStore.undoDepth,
 };
 
 const cases = Defaults.seedCases().slice(0, 2);
@@ -357,9 +357,12 @@ test('creating a callout: a click opens the editor, Cancel writes nothing, Save 
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is never moved');
   assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'placing never orbits the camera');
   assert.ok(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited) > before.edited, 'lastEdited is updated');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'no cargo Undo step was created');
+  assert.equal(await page.evaluate(() => window.probe.hint()), 'Callout saved to Ground.', 'the save confirms itself');
+  await oneStepRoundTrip(page, 'the callout save');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'cargo selection is untouched');
 
+  // Selection is not part of the history: after the Redo the saved callout is selected again from its row.
+  await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__select');
   // The saved callout is selected: its card is expanded, the marker numbered, the list row present.
   await page.waitForSelector('.tp3d-annot-card.is-selected');
   const view = await page.evaluate(() => ({
@@ -371,7 +374,7 @@ test('creating a callout: a click opens the editor, Cancel writes nothing, Save 
     badge: document.querySelector('.tp3d-annot-panel__count').textContent,
     hint: window.probe.hint(),
   }));
-  assert.deepEqual(view, { card: 'Unload first', desc: 'Rear doors', target: 'Ground', pin: '1', rows: 1, badge: '1', hint: 'Callout saved to Ground.' });
+  assert.deepEqual(view, { card: 'Unload first', desc: 'Rear doors', target: 'Ground', pin: '1', rows: 1, badge: '1', hint: '' });
   assert.deepEqual(errors, []);
 });
 
@@ -467,11 +470,11 @@ test('selecting an annotation clears the cargo selection, selecting cargo clears
   await page.keyboard.press('Delete');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'no cargo was deleted');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'and no cargo Undo step exists');
+  await oneStepRoundTrip(page, 'the deletion');
   assert.match(await page.locator('.toast-message').last().textContent(), /Callout deleted\./);
 
   // The panel's one-level Undo brings back the same record in the same place, independent of cargo history.
-  await clickUndo(page);
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
   const restored = await page.evaluate(() => window.probe.annotations());
   assert.deepEqual([restored[0].id, restored[0].title], [first.id, 'On the ground']);
@@ -561,7 +564,7 @@ test('dragging a card changes only its screen offset: the anchor, the marker and
   assert.deepEqual(dragged.anchor, saved.anchor, 'the anchor never changes');
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is never moved');
   assert.equal(await page.evaluate(() => window.probe.camera()), before.camera);
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a card move is not a cargo Undo step');
+  await oneStepRoundTrip(page, 'the card move');
   const markerAfter = await pinCentreOf(page);
   assert.ok(Math.abs(markerAfter.x - markerBefore.x) < 1 && Math.abs(markerAfter.y - markerBefore.y) < 1, 'the marker did not move');
   const cardAfter = await page.locator('.tp3d-annot-card.is-selected').boundingBox();
@@ -721,13 +724,18 @@ test('Needs Review and Unresolved callouts stay stored and flagged, are never dr
   const [reattached] = await page.evaluate(() => window.probe.annotations());
   assert.deepEqual([reattached.anchor.kind, reattached.anchor.surface, reattached.title], ['space', 'ground', 'On case A'], 'the same callout, on its new surface');
   assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'cargo is never touched');
-  // Cargo Undo restores the cargo (and the Case library of that moment); annotations are carried across unchanged.
+  // Newest first: the re-attach, then the cargo removal that made the callout need review.
   const afterReattach = JSON.stringify(await page.evaluate(() => window.probe.annotations()));
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'the earlier cargo delete is the only cargo history step');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'the re-attach is undone first');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'then the cargo removal');
   await page.waitForFunction(() => window.probe.resolved().every(r => r.status === 'valid'));
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 3);
-  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.annotations())), afterReattach, 'Undo neither erases nor rolls back an annotation edit (the re-attach stays)');
-  assert.deepEqual((await page.evaluate(() => window.probe.annotations()))[1], JSON.parse(stored)[1], 'and the callout that needed review is Valid again, exactly as it was stored');
+  assert.deepEqual((await page.evaluate(() => window.probe.annotations()))[1], JSON.parse(stored)[1], 'the callout is Valid again, exactly as it was stored');
+  // Redo replays the cargo removal and then the re-attach, to exactly the state that was saved.
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true, 'Redo replays the removal, then the re-attach');
+  await page.waitForFunction(() => window.probe.resolved()[0].status === 'valid');
+  assert.equal(JSON.stringify(await page.evaluate(() => window.probe.annotations())), afterReattach, 'Redo restores the re-attached callout exactly');
   assert.deepEqual(errors, []);
 });
 
@@ -759,7 +767,7 @@ test('Markers, Labels and Cards are view-level, kept-expanded and Hide are saved
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 2);
   assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__sub').textContent), 'Ground · Hidden');
   assert.equal(await page.getAttribute('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__eye', 'aria-label'), 'Show Plain C');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'Hide is not a cargo Undo step');
+  await oneStepRoundTrip(page, 'the hide');
   await page.click('.tp3d-annot-row:nth-child(3) .tp3d-annot-row__eye');
   await page.waitForFunction(() => window.probe.annotations()[2].hidden === false);
   await page.waitForFunction(() => document.querySelectorAll('.tp3d-annot-pin:not(.is-draft):not([hidden])').length === 3);
@@ -1007,7 +1015,9 @@ test('Show All / Selected / Off is view state: it filters the overlay, never wri
   // None of the mode changes wrote anything, bumped lastEdited or became a cargo Undo step.
   assert.deepEqual(await snapshot(), afterHide);
   assert.equal(afterHide.cases, base.cases);
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false);
+  // The newest step is the Hide itself: no mode change added one, so Undo reverts the Hide and Redo restores it.
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'the Hide is the newest step');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true);
 
   // Back to All (the kept-expanded callout shows its card again).
   await showButton(page, 'All').click();
@@ -1094,6 +1104,7 @@ test('Markers / Labels / Cards switch cleanly in every state: identity, numberin
   await page.waitForSelector('.tp3d-annot-card.is-selected');
   await page.waitForTimeout(300);
   const base = await page.evaluate(() => ({ json: JSON.stringify(window.probe.annotations()), edited: window.probe.PackLibrary.getById('fixture-pack').lastEdited }));
+  const depthBefore = await historyDepth(page);
   const state = async () => page.evaluate(() => {
     const visible = sel => [...document.querySelectorAll(sel)].filter(el => !el.hidden);
     const pins = visible('.tp3d-annot-pin:not(.is-draft)');
@@ -1124,7 +1135,7 @@ test('Markers / Labels / Cards switch cleanly in every state: identity, numberin
       assert.deepEqual(now.chips, [], 'Markers: no labels');
       assert.equal(now.cards.length, 2, 'Markers: only the selected and kept-expanded cards');
     } else if (mode === 'Labels') {
-      assert.ok(now.chips.length >= 1, 'Labels: titles beside markers');
+      assert.ok(now.chips.length >= 1, `Labels: titles beside markers (chips ${JSON.stringify(now.chips)}, cards ${now.cards.length})`);
       assert.equal(now.cards.length, 2, 'Labels: the selected and kept-expanded cards only');
       assert.ok(!now.chips.some(text => /Selected one|Kept open/.test(text)), 'Labels: a callout with a card has no duplicate label');
     } else {
@@ -1152,7 +1163,7 @@ test('Markers / Labels / Cards switch cleanly in every state: identity, numberin
   assert.equal(new Set(afterCamera.cards).size, afterCamera.cards.length);
   assert.equal(afterCamera.selectedCards, 1);
   assert.deepEqual(afterCamera.numbers, ['1', '2', '3', '4', '5']);
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'view switching is not a cargo Undo step');
+  assert.equal(await historyDepth(page), depthBefore, 'display switching and camera moves add no history step');
   assert.deepEqual(errors, []);
 });
 
@@ -1322,17 +1333,20 @@ test('selecting an annotation by marker drag or by deletion Undo always clears t
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__delete');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-a'], 'deleting alone leaves the cargo selection');
-  await clickUndo(page);
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
-  assert.ok(await isSelected(), 'the restored callout is selected');
-  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'and the cargo is not');
+  assert.equal(await isSelected(), null, 'Undo restores the data, not the selection (selection is not part of the history)');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-a'], 'Undo leaves the cargo selection as it was');
+  // Picking the restored callout from its row takes the selection from the cargo: arrow keys then cannot reach the cargo.
+  await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
+  assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'selecting the callout clears the cargo selection');
   await page.focus('#viewport');
   await page.keyboard.press('ArrowRight');
   assert.equal(await cargoJson(), base, 'arrow keys do not reach cargo');
   await page.keyboard.press('Delete');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.deepEqual(await page.evaluate(() => window.probe.cargoIds().length), 2, 'Delete acts on the annotation only');
-  await clickUndo(page);
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
 
   // Deselecting either owner leaves nothing selected.
@@ -1347,7 +1361,7 @@ test('selecting an annotation by marker drag or by deletion Undo always clears t
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__delete');
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   await page.evaluate(() => { window.__hold = window.probe.InteractionManager.hasProvisionalPose; window.probe.InteractionManager.hasProvisionalPose = () => true; });
-  await clickUndo(page);
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), ['cargo-a'], 'the held pose keeps its cargo selection');
   assert.equal(await isSelected(), null, 'and the callout is not selected beside it');
@@ -1393,8 +1407,20 @@ const toastsOnScreen = page => page.evaluate(() => [...document.querySelectorAll
   const r = el.getBoundingClientRect();
   return { text: el.textContent.trim().replace(/\s+/g, ' ').slice(0, 120), box: [Math.round(r.left), Math.round(r.top), Math.round(r.width), Math.round(r.height)] };
 }));
-// The deletion's Undo is the action of the newest toast that offers one.
-const clickUndo = page => page.locator('.toast-btn', { hasText: 'Undo' }).last().click();
+// How many Undo steps are available (read-only: the state, selection included, is not touched).
+const historyDepth = page => page.evaluate(() => window.probe.StateStore.undoDepth());
+// The one step a committed write made: Undo reverts exactly that write and Redo restores exactly its result.
+const oneStepRoundTrip = async (page, label) => {
+  const packs = () => page.evaluate(() => JSON.stringify(window.probe.StateStore.get('packLibrary')));
+  const after = await packs();
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, `${label}: one Undo step`);
+  assert.notEqual(await packs(), after, `${label}: Undo reverts it`);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true, `${label}: Redo replays it`);
+  assert.equal(await packs(), after, `${label}: Redo restores the result`);
+};
+// Undo and Redo are the shared history's keyboard commands. They run from the viewport, never from a text field.
+const undoByKeyboard = async page => { await page.focus('#viewport'); await page.keyboard.press('Control+z'); };
+const redoByKeyboard = async page => { await page.focus('#viewport'); await page.keyboard.press('Control+Shift+z'); };
 const quietToasts = async (page, message, t) => {
   const seen = await toastsOnScreen(page);
   if (!seen.length) return;
@@ -2226,7 +2252,7 @@ test('unreadable stored annotations are preserved, flagged and deletable; writin
   await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__delete');
   await page.waitForFunction(() => window.probe.annotations().length === 2);
   assert.match(await page.locator('.toast-message').last().textContent(), /Unreadable annotation deleted/);
-  await clickUndo(page);
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 3);
   assert.deepEqual((await page.evaluate(() => window.probe.annotations())).filter(r => r.type === 'unreadable').map(r => r.original), raw, 'Undo restores it verbatim');
   assert.deepEqual(errors, []);
@@ -2540,7 +2566,7 @@ test('dragging a marker onto another surface re-attaches that callout only: Esca
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is never moved');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'and never selected');
   assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'a marker drag never orbits');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a re-attach is not a cargo Undo step');
+  await oneStepRoundTrip(page, 'the re-attach');
   assert.equal(await page.evaluate(() => document.querySelectorAll('.tp3d-annot-card.is-selected').length), 1, 'the callout stays selected');
   assert.deepEqual(errors, []);
 });
@@ -2914,7 +2940,7 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
   assert.ok(near(saved.end.position.x, GROUND_B[0], 1.5) && near(saved.end.position.z, GROUND_B[2], 1.5), 'the head is where the second click was');
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo is never moved');
   assert.ok(await page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited) > before.edited, 'lastEdited is updated');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'no cargo Undo step was created');
+  await oneStepRoundTrip(page, 'the arrow creation');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'cargo selection is untouched');
   assert.equal(await tailShown(page), false);
   assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed'), 'true', 'the tool stays armed for the next arrow');
@@ -3065,10 +3091,12 @@ test('an arrow joins two surfaces, follows cargo that moves, and its end handles
   assert.equal(await page.evaluate(() => window.probe.casesJson()), before.cases, 'cargo never moves');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'and is never selected');
   assert.equal(await page.evaluate(() => window.probe.camera()), before.camera, 'a handle drag never orbits');
-  // The only Undo step is this test's own cargo move; the handle drag added none, and Undo leaves the arrow as moved.
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'the cargo move above is the one step');
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a handle drag is not a cargo Undo step');
-  assert.equal((await page.evaluate(() => window.probe.annotations()))[0].end.instanceId, 'cargo-b', 'Undo never takes back an arrow edit');
+  // Newest first: the handle drag (one arrow edit), then the cargo move above. Redo replays both, to the arrow as moved.
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'the handle drag is the newest step');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'then the cargo move');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true);
+  assert.equal((await page.evaluate(() => window.probe.annotations()))[0].end.instanceId, 'cargo-b', 'Redo restores the arrow edit');
   assert.match(await page.evaluate(() => window.probe.hint()), /Arrow head moved/);
   assert.equal((await arrowGraphics(page)).length, 1);
   assert.equal((await gripsShown(page)).length, 2, 'the arrow stays selected');
@@ -4822,7 +4850,12 @@ test('freehand cancellation: every interruption ends the unfinished stroke witho
     ['closing the panel', async () => { await toolButtonClick('#btn-editor-annotations'); }, 'off'],
     ['Show Off', async () => { await toolButtonClick('.tp3d-annot-seg--show .tp3d-annot-seg__btn:nth-child(3)'); }, 'off', async () => { await toolButtonClick('.tp3d-annot-seg--show .tp3d-annot-seg__btn:nth-child(1)'); }],
     ['Settings Show Annotations off', async () => { await setShowAnnotations(page, false); }, 'off', async () => { await setShowAnnotations(page, true); }],
-    ['Measurement Mode', async () => { await toolButtonClick('#btn-editor-measure'); }, 'off', async () => { await toolButtonClick('#btn-editor-measure'); }],
+    // Since Phase 1 the Measure button only opens the manager; starting a measurement (New) is what takes the scene. These are
+    // DOM clicks, like the other toolbar rows: the stroke above holds the pointer down, so a pointer click cannot complete here.
+    ['Measurement Mode', async () => {
+      if (!(await page.evaluate(() => window.probe.MeasurementTool.isManagerOpen()))) await toolButtonClick('#btn-editor-measure');
+      await toolButtonClick('#editor-measure-new');
+    }, 'off', async () => { await toolButtonClick('#editor-measure-new'); }],
     ['an AutoPack operation', async () => { await page.evaluate(() => { window.__op = window.probe.OperationLifecycle.beginOperation('autopacking'); }); }, 'off', async () => { await page.evaluate(() => window.probe.OperationLifecycle.finishOperation(window.__op)); }],
     ['a transient preview', async () => { await page.evaluate(() => { window.__tp = window.probe.CaseScene.isTransientPreview; window.probe.CaseScene.isTransientPreview = () => true; }); }, 'off', async () => { await page.evaluate(() => { window.probe.CaseScene.isTransientPreview = window.__tp; }); }],
     ['a held cargo pose', async () => { await page.evaluate(() => { window.__hold = window.probe.InteractionManager.hasProvisionalPose; window.probe.InteractionManager.hasProvisionalPose = () => true; }); }, 'armed', async () => { await page.evaluate(() => { window.probe.InteractionManager.hasProvisionalPose = window.__hold; }); }],
@@ -5026,7 +5059,7 @@ test('freehand saved strokes: they persist across tool exit and re-entry, follow
   assert.equal(await groupFor(page, onCargo.id), null);
   assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore, 'Delete never touches cargo');
   assert.match(await page.locator('.toast-message').last().textContent(), /Drawing deleted\./);
-  await clickUndo(page);
+  await undoByKeyboard(page);
   await page.waitForFunction(id => window.probe.annotations().some(r => r.id === id), onCargo.id);
   assert.equal(await page.evaluate(id => JSON.stringify(window.probe.annotations().find(r => r.id === id)), onCargo.id), deletedJson, 'the identical record is back');
   assert.deepEqual(await page.evaluate(() => window.probe.annotations().map(r => r.type)), ['draw', 'draw', 'callout', 'arrow'], 'in its place');
@@ -5416,8 +5449,7 @@ test('freehand the panel is operable from the keyboard: arm Draw, switch Draw an
   await page.focus(`${rowFor(stroke.id)} .tp3d-annot-row__delete`);
   await page.keyboard.press('Enter');
   await page.waitForFunction(() => window.probe.annotations().length === 0);
-  await page.locator('.toast-btn', { hasText: 'Undo' }).last().focus();
-  await page.keyboard.press('Enter');
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.equal(await page.evaluate(() => window.probe.casesJson()), casesBefore, 'cargo is untouched by any of it');
   assert.deepEqual(errors, []);
@@ -7026,7 +7058,7 @@ test('an arrow and a drawing are renamed in their own row: Enter saves one name,
   await page.waitForFunction(() => window.probe.annotations().find(record => record.type === 'arrow').name === undefined);
   assert.equal(await rowName('arrow'), 'Arrow 1', 'a blank name restores the generated name');
 
-  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), false, 'a rename is not a cargo Undo step');
+  await oneStepRoundTrip(page, 'the rename');
   assert.deepEqual(errors, []);
 });
 
@@ -7135,7 +7167,7 @@ test('appearance contexts: new Arrow and Drawing defaults never change a saved r
   await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Labels")');
   await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Markers")');
   assert.equal(JSON.stringify([await record('arrow'), await record('draw')]), looksBefore, 'Callout display changes no arrow or drawing');
-  assert.equal(await page.textContent('.tp3d-annot-panel__view-label >> nth=2'), 'Callout display');
+  assert.equal(await page.getAttribute('.tp3d-annot-seg--display', 'aria-label'), 'Callout display', 'the display group is named for what it controls');
   assert.deepEqual(errors, []);
 });
 
@@ -7197,7 +7229,7 @@ test('a selected arrow with a long name at 640x700 keeps its look controls insid
   assert.deepEqual(errors, []);
 });
 
-test('annotation deletion is a toast with Undo for a callout, an arrow and a drawing: no inline row, Undo restores the same record in place, cargo never changes, an older toast cannot restore, and an expired one offers nothing', { timeout: 300000 }, async t => {
+test('annotation deletion is feedback only and Undo/Redo is the shared history: the toast has no Undo, the keyboard restores the exact record and Redo deletes it again, and cargo never changes', { timeout: 300000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);
@@ -7210,101 +7242,39 @@ test('annotation deletion is a toast with Undo for a callout, an arrow and a dra
   const deleteRow = id => page.click(`.tp3d-annot-row[data-annot-id="${id}"] .tp3d-annot-row__delete`);
   const lastToast = () => page.locator('.toast-message').last().textContent();
   const count = () => page.evaluate(() => window.probe.annotations().length);
-  const noInlineRow = () => page.evaluate(() => document.querySelector('.tp3d-annot-panel__undo') === null);
 
-  // Drawing: the toast names it and offers Undo; the panel gets no inline row; Undo restores exactly that record and place.
+  // Drawing: a plain notification, no Undo button and no inline row; the keyboard Undo restores exactly that record and place.
   await deleteRow(drawing.id);
   await page.waitForFunction(() => window.probe.annotations().length === 3);
   assert.equal(await lastToast(), 'Drawing deleted.');
-  assert.equal(await noInlineRow(), true, 'no persistent Deleted-Undo row in the panel');
-  await clickUndo(page);
+  assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'the notification offers no Undo of its own');
+  assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-panel__undo') === null), true, 'no inline row either');
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 4);
   assert.deepEqual(await page.evaluate(() => window.probe.annotations()), before, 'Undo restores the same record, ID and place');
-  assert.equal(await lastToast(), 'Drawing restored.');
   assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'Undo never changes cargo');
-
-  // Arrow, then Callout: the older Arrow toast is stale once a newer deletion exists.
-  await deleteRow(arrow.id);
+  await redoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 3);
+  assert.equal(await page.evaluate(id => window.probe.annotations().some(r => r.id === id), drawing.id), false, 'Redo deletes it again');
+
+  // Mixed chronology: arrow deletion, callout deletion; Undo walks back newest first; Redo replays in order.
+  await deleteRow(arrow.id);
+  await page.waitForFunction(() => window.probe.annotations().length === 2);
   assert.equal(await lastToast(), 'Arrow deleted.');
   await deleteRow(second.id);
-  await page.waitForFunction(() => window.probe.annotations().length === 2);
+  await page.waitForFunction(() => window.probe.annotations().length === 1);
   assert.equal(await lastToast(), 'Callout deleted.');
-  await page.locator('.toast', { hasText: 'Arrow deleted.' }).locator('.toast-btn', { hasText: 'Undo' }).click();
-  assert.equal(await lastToast(), 'That deletion can no longer be undone.', 'an older Undo says so');
-  assert.equal(await count(), 2, 'and restores nothing');
-  await clickUndo(page);
-  await page.waitForFunction(() => window.probe.annotations().length === 3);
-  assert.equal(await lastToast(), 'Callout restored.');
-  assert.deepEqual((await page.evaluate(() => window.probe.annotations().map(r => r.id))).sort(), [first.id, second.id, drawing.id].sort(), 'the newest deletion restores only its own record');
-  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'cargo is still unchanged');
-
-  // An expired deletion: once its toast has gone, nothing offers Undo.
-  await deleteRow(first.id);
+  await undoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 2);
-  await page.waitForTimeout(12500);
-  assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'an expired deletion offers no Undo');
-  assert.equal(await count(), 2, 'and the record stays deleted');
-  assert.deepEqual(errors, []);
-});
-
-test('a deletion Undo never outlives its Editor session: with the panel closed, after a workspace swap, after leaving the Editor and after A to B to A, the old Undo restores nothing; a valid Undo in the same session still restores', { timeout: 300000 }, async t => {
-  const browser = await launch();
-  t.after(() => browser.close());
-  const { page, errors } = await openPanel(browser);
-  const undoToast = () => page.locator('.toast-btn', { hasText: 'Undo' }).last();
-  const count = () => page.evaluate(() => window.probe.annotations().length);
-  // The record is deleted with the management panel CLOSED: select its scene pin, then press Delete.
-  const deleteOnlyRecord = async () => {
-    if (!(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden))) await page.click('#btn-editor-annotations');
-    await page.waitForFunction(() => document.getElementById('editor-annotation-panel').hidden);
-    await seed(page, [{ title: 'Only', ground: [520, 10] }]);
-    await page.waitForFunction(() => window.probe.annotations().length === 1);
-    await page.waitForFunction(() => { const pin = document.querySelector('.tp3d-annot-pin:not(.is-draft):not([hidden])'); return Boolean(pin); });
-    await page.click('.tp3d-annot-pin:not(.is-draft):not([hidden])');
-    await page.keyboard.press('Delete');
-    await page.waitForFunction(() => window.probe.annotations().length === 0);
-    await undoToast().waitFor();
-  };
-  const staleRestoresNothing = async label => {
-    await undoToast().click();
-    await page.waitForFunction(() => [...document.querySelectorAll('.toast-message')].at(-1)?.textContent === 'That deletion can no longer be undone.');
-    assert.equal(await count(), 0, `${label}: the old Undo wrote nothing`);
-  };
-
-  // 1. Workspace swap of the same Load Plan.
-  await deleteOnlyRecord();
-  await page.evaluate(() => window.probe.StateStore.replace(window.probe.StateStore.snapshot()));
-  await staleRestoresNothing('workspace swap');
-
-  // 2. Leaving the Editor screen and coming back to the same Load Plan.
-  await page.click('#btn-editor-annotations');
-  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
-  await deleteOnlyRecord();
-  await page.evaluate(() => { window.probe.StateStore.set({ currentScreen: 'home' }, { skipHistory: true }); window.probe.StateStore.set({ currentScreen: 'editor' }, { skipHistory: true }); });
-  await staleRestoresNothing('leaving and returning');
-
-  // 3. Load Plan A to B and back to A.
-  await page.click('#btn-editor-annotations');
-  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
-  await deleteOnlyRecord();
-  await page.evaluate(() => {
-    const copy = window.probe.PackLibrary.duplicate('fixture-pack');
-    window.probe.StateStore.set({ currentPackId: copy.id }, { skipHistory: true });
-    window.probe.StateStore.set({ currentPackId: 'fixture-pack' }, { skipHistory: true });
-  });
-  await staleRestoresNothing('A to B to A');
-
-  // 4. A valid Undo in the same session still restores the record.
-  await page.click('#btn-editor-annotations');
-  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
-  await seed(page, [{ title: 'Kept', ground: [520, 10] }]);
+  assert.equal(await page.evaluate(id => window.probe.annotations().some(r => r.id === id), second.id), true, 'the Callout comes back first');
+  await undoByKeyboard(page);
+  await page.waitForFunction(() => window.probe.annotations().length === 3);
+  assert.equal(await page.evaluate(id => window.probe.annotations().some(r => r.id === id), arrow.id), true, 'then the Arrow');
+  await redoByKeyboard(page);
+  await redoByKeyboard(page);
   await page.waitForFunction(() => window.probe.annotations().length === 1);
-  await page.click('.tp3d-annot-row .tp3d-annot-row__delete');
-  await page.waitForFunction(() => window.probe.annotations().length === 0);
-  await undoToast().click();
-  await page.waitForFunction(() => window.probe.annotations().length === 1);
-  assert.equal((await page.evaluate(() => window.probe.annotations()))[0].title, 'Kept', 'a same-session Undo restores the record');
+  assert.equal(await page.evaluate(() => window.probe.casesJson()), cargoBefore, 'cargo is still unchanged');
+  assert.equal(await count(), 1);
   assert.deepEqual(errors, []);
 });
 
@@ -7363,23 +7333,38 @@ test('an automatically placed callout card keeps its Edit and Collapse buttons c
   assert.deepEqual(errors, []);
 });
 
-test('an Undo toast keeps its Undo through its visible lifetime: a click on its message leaves it, Enter on the focused Undo restores exactly once', { timeout: 180000 }, async t => {
+test('a custom arrow color is one undo step: input events only preview, one change is one step, an unchanged or cancelled choice is none, and Undo and Redo restore the color', { timeout: 180000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);
-  await seed(page, [{ title: 'Kept', ground: [520, 10] }]);
+  await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
   await page.waitForFunction(() => window.probe.annotations().length === 1);
-  await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__delete');
-  await page.waitForFunction(() => window.probe.annotations().length === 0);
-  const toast = page.locator('.toast', { hasText: 'Callout deleted.' });
-  await toast.locator('.toast-message').click();
-  assert.equal(await toast.locator('.toast-btn', { hasText: 'Undo' }).count(), 1, 'a body click keeps the Undo');
-  await toast.locator('.toast-btn', { hasText: 'Undo' }).focus();
-  await page.keyboard.press('Enter');
-  await page.waitForFunction(() => window.probe.annotations().length === 1);
-  await frames(page, 3);
-  assert.equal(await page.evaluate(() => window.probe.annotations().length), 1, 'restored exactly once');
-  await page.waitForFunction(() => ![...document.querySelectorAll('.toast-btn')].some(b => b.textContent === 'Undo'), null, { timeout: 5000 });
-  assert.equal(await page.locator('.toast-btn', { hasText: 'Undo' }).count(), 0, 'the Undo is spent once its toast leaves');
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-panel__arrow:not([hidden])');
+  const color = () => page.evaluate(() => window.probe.annotations()[0].color);
+  const original = await color();
+  const picker = '.tp3d-annot-panel__arrow input[type="color"]';
+  // Several native input events, then one change: the preview moves, the record moves once.
+  await page.evaluate(sel => {
+    const el = document.querySelector(sel);
+    for (const value of ['#111111', '#222222', '#12ab34']) { el.value = value; el.dispatchEvent(new Event('input', { bubbles: true })); }
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  }, picker);
+  await page.waitForFunction(() => window.probe.annotations()[0].color === '#12ab34');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true, 'the chosen color is one step');
+  assert.equal(await color(), original, 'Undo restores the previous color');
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 1, 'and the arrow itself is still there: the color was one step, not several');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), true);
+  assert.equal(await color(), '#12ab34', 'Redo restores the chosen color');
+  // A change that leaves the color as it is is no step at all.
+  await page.evaluate(sel => { const el = document.querySelector(sel); el.value = '#12ab34'; el.dispatchEvent(new Event('change', { bubbles: true })); }, picker);
+  await frames(page, 2);
+  assert.equal(await page.evaluate(() => window.probe.StateStore.redo()), false, 'an unchanged choice added no step (nothing was undone to redo)');
+  // A cancelled choice (input, then the picker closes without a change) writes nothing and leaves no preview.
+  await page.evaluate(sel => { const el = document.querySelector(sel); el.value = '#abcdef'; el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('blur')); }, picker);
+  await frames(page, 2);
+  assert.equal(await color(), '#12ab34', 'a cancelled choice never reaches the record');
+  assert.equal(await page.evaluate(() => window.probe.StateStore.undo()), true);
+  assert.equal(await page.evaluate(() => window.probe.annotations().length), 1, 'the undo that follows is the color step, not the cancelled one');
   assert.deepEqual(errors, []);
 });

@@ -2660,9 +2660,8 @@ export function resolveMeasurements(packOrId) {
 function commitMeasurements(previousPack, measurements) {
   const now = Date.now();
   const pack = { ...previousPack, measurements, lastEdited: now };
-  StateStore.markMeasurementEdit(previousPack.id, now);
+  // A completed measurement edit is one step of the shared Undo/Redo history.
   StateStore.set({ packLibrary: getPacks().map(p => (p === previousPack ? pack : p)) }, {
-    skipHistory: true,
     notification: { type: 'pack-measurements', previousPack, pack },
   });
   return pack;
@@ -2704,7 +2703,7 @@ export function renameMeasurement(packId, measurementId, label) {
  * Reposition one endpoint of a completed measurement onto a new anchor. A measurement-only edit:
  * it bumps lastEdited, stays out of cargo Undo/Redo, and never touches cargo. The new anchor is
  * validated and an invalid one writes nothing.
- * @returns {{ ok: true, pack: any } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' }}
+ * @returns {{ ok: true, pack: any, unchanged?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' }}
  */
 export function moveMeasurementEndpoint(packId, measurementId, which, anchor) {
   const previousPack = getById(packId);
@@ -2716,6 +2715,10 @@ export function moveMeasurementEndpoint(packId, measurementId, which, anchor) {
   }
   const moved = CoreMeasurements.replaceMeasurementEndpoint(current[index], which, anchor, Date.now());
   if (!moved) return { ok: false, reason: 'invalid' };
+  // The same content at the same place is no edit: no write, no history step, and the time of the last edit stays.
+  if (JSON.stringify({ ...moved, updatedAt: 0 }) === JSON.stringify({ ...current[index], updatedAt: 0 })) {
+    return { ok: true, pack: previousPack, unchanged: true };
+  }
   const next = current.map((record, i) => (i === index ? moved : record));
   return { ok: true, pack: commitMeasurements(previousPack, next) };
 }
@@ -2753,9 +2756,8 @@ export function resolveAnnotations(packOrId) {
 function commitAnnotations(previousPack, annotations) {
   const now = Date.now();
   const pack = { ...previousPack, annotations, lastEdited: now };
-  StateStore.markAnnotationEdit(previousPack.id, now);
+  // A completed annotation edit is one step of the shared Undo/Redo history.
   StateStore.set({ packLibrary: getPacks().map(p => (p === previousPack ? pack : p)) }, {
-    skipHistory: true,
     notification: { type: 'pack-annotations', previousPack, pack },
   });
   return pack;

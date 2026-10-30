@@ -4732,6 +4732,7 @@ body.tp3d-shared-modal-lock #app .nav {
 /* Guidance appears only when something is relevant; when empty it takes no space but stays a live region.
    The dot is decorative: neutral by default, orange (data-tone="active") while a gesture is under way or
    something needs attention, green (data-tone="success") after a save. */
+
 /* New measurement arms creation. Neutral by design: armed is a stronger border and weight, never an accent colour. */
 .tp3d-measure-panel__new {
   align-self: flex-start;

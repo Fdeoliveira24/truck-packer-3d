@@ -3096,7 +3096,7 @@ export function createAnnotationTool({
     });
     view.appendChild(displayGroup);
 
-    const empty = htmlEl('div', 'tp3d-annot-panel__empty', 'No annotations yet. A callout marks a spot, an arrow points from one place to another, and a drawing is a freehand line. Annotations are notes only and do not change the load.');
+    const empty = htmlEl('div', 'tp3d-annot-panel__empty', 'No annotations yet. Choose a tool above to add one. Annotations never change the load.');
     const warning = htmlEl('div', 'tp3d-annot-panel__notice', "Some saved annotations couldn't be read. The original data is kept until you delete it.");
     warning.hidden = true;
     const list = htmlEl('ul', 'tp3d-annot-panel__list');

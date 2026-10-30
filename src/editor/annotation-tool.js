@@ -867,6 +867,25 @@ export function createAnnotationTool({
     return true;
   }
 
+  /**
+   * A user's choice of an existing annotation (a row, a marker or a card head) ends an armed creation tool and any unfinished
+   * placement, without writing. The selection then owns the controls, and creation resumes only when the user arms a tool again.
+   * An open callout draft is not touched here: its own confirm flow decides it.
+   */
+  function endCreation() {
+    if (!tool) return;
+    cancelStroke();
+    cancelMoveDrag();
+    cancelArrowTail();
+    tool = null;
+    hover = null;
+    hoverDirty = true;
+    press = null;
+    setStatus('', { sticky: true });
+    applyViewGate();
+    updateCursor();
+  }
+
   function setTool(key) {
     const def = TOOL_DEFS.find(item => item.key === key);
     if (!def || !def.available) return;
@@ -2879,13 +2898,17 @@ export function createAnnotationTool({
       const pin = ev.target.closest && ev.target.closest('.tp3d-annot-pin');
       if (pin && layer.contains(pin)) {
         if (pin.dataset.annotId === DRAFT_ID) return;
+        endCreation();
         select(pin.dataset.annotId, { toggle: true });
         return;
       }
       const head = ev.target.closest && ev.target.closest('.tp3d-annot-card__head');
       if (head && layer.contains(head)) {
         const id = head.closest('.tp3d-annot-card').dataset.annotId;
-        if (id !== selectedId) select(id);
+        if (id !== selectedId) {
+          endCreation();
+          select(id);
+        }
       }
     });
     layer.addEventListener('pointerover', ev => {
@@ -3205,7 +3228,7 @@ export function createAnnotationTool({
     show.append(showGroup);
 
     const view = htmlEl('div', 'tp3d-annot-panel__view');
-    view.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Callouts'));
+    view.appendChild(htmlEl('span', 'tp3d-annot-panel__view-label', 'Callout display'));
     const displayGroup = segmented('Callout display', 'tp3d-annot-seg--small tp3d-annot-seg--display');
     const displayButtons = DISPLAY_MODES.map(([key, label]) => {
       const button = htmlEl('button', 'tp3d-annot-seg__btn', label);
@@ -3286,7 +3309,7 @@ export function createAnnotationTool({
     const row = { el, select: selectButton, badge, name, sub, nameInput, eye, edit, remove, issue, issueText, reattach, ends, id: null, eyeIcon: eye.firstChild, renaming: false };
     // Picking a row from the list ends a pending Arrow tail (an unfinished creation) and leaves the armed tool as it is.
     selectButton.addEventListener('click', () => {
-      cancelArrowTail();
+      endCreation();
       select(row.id, { toggle: true });
     });
     eye.addEventListener('click', () => toggleHidden(row.id));
@@ -3661,7 +3684,7 @@ export function createAnnotationTool({
     const color = editing ? editing.color : drawStyle.color;
     const width = editing ? editing.width : drawStyle.width;
     const lineStyle = editing ? lineStyleOf(editing) : drawStyle.style;
-    setText(parts.drawTitle, editing ? `${drawName(editing.id)} look` : 'New drawings look');
+    setText(parts.drawTitle, editing ? `Drawing: ${drawName(editing.id)} — Selected` : 'New Drawing — Defaults');
     parts.drawColors.sync(color);
     parts.drawWidthButtons.forEach(({ key, button }) => {
       setAttr(button, 'aria-pressed', width === key ? 'true' : 'false');
@@ -3688,7 +3711,7 @@ export function createAnnotationTool({
     const color = editing ? editing.color : arrowStyle.color;
     const width = editing ? editing.width : arrowStyle.width;
     const lineStyle = editing ? lineStyleOf(editing) : arrowStyle.style;
-    setText(parts.arrowTitle, editing ? `${arrowName(editing.id)} look` : 'New arrows look');
+    setText(parts.arrowTitle, editing ? `Arrow: ${arrowName(editing.id)} — Selected` : 'New Arrow — Defaults');
     parts.arrowColors.sync(color);
     parts.widthButtons.forEach(({ key, button }) => {
       setAttr(button, 'aria-pressed', width === key ? 'true' : 'false');

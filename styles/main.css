@@ -6545,10 +6545,14 @@ body.tp3d-shared-modal-lock #app .nav {
 
 .tp3d-annot-panel__arrow-title,
 .tp3d-annot-panel__draw-title {
+  min-width: 0;
   padding: 0 14px 8px;
   color: var(--text-secondary);
   font-size: 11px;
   font-weight: var(--font-semibold);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap; /* a long name ends in an ellipsis instead of pushing the controls */
 }
 
 .tp3d-annot-panel__arrow-colors,

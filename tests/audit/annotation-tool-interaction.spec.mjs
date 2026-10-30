@@ -2872,7 +2872,7 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
   assert.deepEqual(await page.evaluate(() => [...document.querySelectorAll('.tp3d-annot-seg--tools .tp3d-annot-seg__btn')].map(b => b.disabled)), [false, false, false], 'Callout, Arrow and Draw are all available');
   await armArrow(page);
   assert.equal(await page.getAttribute('.tp3d-annot-seg__btn[data-tool="arrow"]', 'aria-pressed'), 'true');
-  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New arrows look', 'the look controls are for the next arrow while none is selected');
+  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New Arrow — Defaults', 'the look controls are for the next arrow while none is selected');
 
   // A drag that orbits the camera is not a click: it places nothing.
   const cameraBefore = await page.evaluate(() => window.probe.camera());
@@ -2924,11 +2924,14 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
   const row = await rowOf(page, 0);
   assert.deepEqual([row.name, row.sub, row.selected, row.flagged], ['Arrow 1', 'Ground → Ground', false, false], 'the row is named, numbered and says where it is attached');
   assert.equal(await page.locator('.tp3d-annot-panel__count').textContent(), '1');
-  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New arrows look', 'with no arrow selected the look controls are for the next arrows');
+  assert.equal(await page.locator('.tp3d-annot-panel__arrow-title').textContent(), 'New Arrow — Defaults', 'with no arrow selected the look controls are for the next arrows');
   const stored = () => page.evaluate(() => JSON.stringify(window.probe.annotations()));
   const edited = () => page.evaluate(() => window.probe.PackLibrary.getById('fixture-pack').lastEdited);
   const placeArrow = async (from, to) => {
     const count = await page.evaluate(() => window.probe.annotations().length);
+    // Arming ends the grips of a picked arrow on the next render: wait until the start point is clear of them.
+    const start = await point(page, ...from);
+    await page.waitForFunction(({ x, y }) => document.elementFromPoint(x, y) === document.querySelector('#viewport canvas'), start);
     await click(page, await freePoint(page, [from]));
     await page.waitForFunction(() => /arrow should point/i.test(window.probe.hint()));
     await click(page, await freePoint(page, [to]));
@@ -2954,7 +2957,7 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
 
   // A selected arrow is edited on its own: one record changes, the others and the defaults do not.
   await page.click('.tp3d-annot-row:nth-child(1) .tp3d-annot-row__select');
-  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow 1 look');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow: Arrow 1 — Selected');
   const beforeEdit = await page.evaluate(() => window.probe.annotations());
   await page.click('.tp3d-annot-panel__arrow .tp3d-annot-swatch[data-color="blue"]');
   await page.click('.tp3d-annot-seg--width .tp3d-annot-seg__btn[data-width="thin"]');
@@ -2963,6 +2966,8 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
   assert.deepEqual([afterEdit[0].id, afterEdit[0].start, afterEdit[0].end, afterEdit[0].createdAt], [saved.id, saved.start, saved.end, saved.createdAt], 'only the look changed; the ends are untouched');
   assert.deepEqual(afterEdit.slice(1), beforeEdit.slice(1), 'no other arrow is written');
   assert.equal(afterEdit.length, 3, 'editing never adds or removes a record');
+  // Picking an arrow ended the Arrow tool: creation resumes only by arming it again.
+  await armArrow(page);
   const fourth = await placeArrow(GROUND_B, GROUND_A);
   assert.deepEqual([fourth.color, fourth.width], ['red', 'bold'], 'editing an arrow did not change what new arrows start with');
   assert.equal(await selectedRows(), 0, 'starting an arrow ends the selection');
@@ -2970,12 +2975,13 @@ test('creating an arrow: two clicks save exactly one record, orbiting never crea
 
   // A custom color is one more color: stored as #rrggbb, drawn with it, and again only for the arrow being edited.
   await page.click('.tp3d-annot-row:nth-child(2) .tp3d-annot-row__select');
-  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow 2 look');
+  await page.waitForFunction(() => document.querySelector('.tp3d-annot-panel__arrow-title').textContent === 'Arrow: Arrow 2 — Selected');
   await page.fill('.tp3d-annot-panel__arrow .tp3d-annot-swatch__input', '#12ab34');
   await page.waitForFunction(() => window.probe.annotations()[1].color === '#12ab34');
   await frames(page, 3);
   assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-arrow.is-selected .tp3d-annot-arrow__shaft')).stroke), 'rgb(18, 171, 52)');
   assert.equal(await page.evaluate(() => getComputedStyle(document.querySelector('.tp3d-annot-arrow.is-selected .tp3d-annot-arrow__shaft')).strokeWidth), '5px', 'bold is a constant 5 screen pixels');
+  await armArrow(page);
   const fifth = await placeArrow(GROUND_A, GROUND_B);
   assert.deepEqual([fifth.color, fifth.width], ['red', 'bold'], 'a custom color on one arrow is not a new default');
   assert.deepEqual(errors, []);
@@ -3209,8 +3215,8 @@ test('an unfinished arrow is dropped without writing by Escape (one owner per pr
   assert.equal(await tailShown(page), false, 'Measurement Mode takes the scene: the tail is gone');
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !window.probe.MeasurementTool.isActive());
-  await page.click('#btn-editor-annotations');
-  await page.waitForFunction(() => !document.getElementById('editor-annotation-panel').hidden);
+  // Measurement Mode leaves the Annotations panel open beside it (Phase 1), so nothing needs reopening here.
+  assert.equal(await page.evaluate(() => document.getElementById('editor-annotation-panel').hidden), false, 'the Annotations panel stays open beside Measurement Mode');
   await nothingWritten('Measurement Mode');
 
   // A cargo pose change under the tail, and a pointer interaction that is cancelled.
@@ -4215,7 +4221,7 @@ test('freehand Draw mode: a primary drag draws one stroke on a cargo face withou
   assert.equal(panel.pressed, 'true');
   assert.deepEqual(panel.mode, [['Draw', 'true'], ['Move View', 'false']]);
   assert.equal(panel.modeShown, true);
-  assert.equal(panel.look, 'New drawings look');
+  assert.equal(panel.look, 'New Drawing — Defaults');
   assert.equal(panel.lookShown, true);
   assert.equal(panel.arrowLookShown, false, 'the arrow look controls stay out of the way');
   assert.equal(panel.cursor, 'crosshair');
@@ -4990,7 +4996,7 @@ test('freehand saved strokes: they persist across tool exit and re-entry, follow
   await page.waitForSelector(`${rowFor(onCargo.id)}.is-selected`);
   assert.equal((await groupFor(page, onCargo.id)).selected, true);
   assert.equal((await groupFor(page, onGround.id)).selected, false);
-  assert.equal(await page.locator('.tp3d-annot-panel__draw-title').textContent(), 'Drawing 1 look');
+  assert.equal(await page.locator('.tp3d-annot-panel__draw-title').textContent(), 'Drawing: Drawing 1 — Selected');
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'a drawing never selects cargo');
   assert.equal(await page.evaluate(() => document.querySelector('.tp3d-annot-panel__arrow')?.hidden ?? true), true, 'the arrow look controls stay out of the way');
 
@@ -5085,7 +5091,7 @@ test('freehand creation defaults are separate for Drawings and Arrows, are sessi
     arrowColor: document.querySelector('.tp3d-annot-panel__arrow-colors .tp3d-annot-swatch[aria-pressed="true"]')?.dataset.color || '',
     arrowWidth: document.querySelector('.tp3d-annot-seg--width .tp3d-annot-seg__btn[aria-pressed="true"]')?.dataset.width || '',
   }));
-  assert.deepEqual(await lookState(), { drawTitle: 'New drawings look', drawShown: true, drawColor: 'ink', drawWidth: 'regular', arrowShown: false, arrowColor: '', arrowWidth: '' });
+  assert.deepEqual(await lookState(), { drawTitle: 'New Drawing — Defaults', drawShown: true, drawColor: 'ink', drawWidth: 'regular', arrowShown: false, arrowColor: '', arrowWidth: '' });
   await page.click('.tp3d-annot-panel__draw-colors .tp3d-annot-swatch[data-color="green"]');
   await page.click('.tp3d-annot-seg--draw-width .tp3d-annot-seg__btn[data-draw-width="thin"]');
   assert.deepEqual([(await lookState()).drawColor, (await lookState()).drawWidth], ['green', 'thin']);
@@ -5598,7 +5604,7 @@ test('annotation line style: Arrows and Drawings offer Weight and Style, a recor
   // Selecting a legacy arrow shows it as Solid and writes nothing; selecting a styled one shows its own Weight and Style.
   await select(legacy.id);
   assert.deepEqual(await lookControls(page, 'arrow'), {
-    shown: true, title: 'Arrow 1 look', labels: ['Weight', 'Style'], weights: ['Thin', 'Regular', 'Bold'], styles: ['Solid', 'Dashed', 'Dotted'], weight: 'Regular', style: 'Solid',
+    shown: true, title: 'Arrow: Arrow 1 — Selected', labels: ['Weight', 'Style'], weights: ['Thin', 'Regular', 'Bold'], styles: ['Solid', 'Dashed', 'Dotted'], weight: 'Regular', style: 'Solid',
   });
   await select(dashed.id);
   assert.deepEqual([(await lookControls(page, 'arrow')).weight, (await lookControls(page, 'arrow')).style], ['Bold', 'Dashed']);
@@ -5646,7 +5652,7 @@ test('annotation line style: Arrows and Drawings offer Weight and Style, a recor
 
   // New arrows and new drawings have their own session defaults, apart from each other and from any record: choosing one writes nothing.
   await armArrow(page);
-  assert.deepEqual([(await lookControls(page, 'arrow')).title, (await lookControls(page, 'arrow')).style], ['New arrows look', 'Solid'], 'new arrows start Solid');
+  assert.deepEqual([(await lookControls(page, 'arrow')).title, (await lookControls(page, 'arrow')).style], ['New Arrow — Defaults', 'Solid'], 'new arrows start Solid');
   await page.click('.tp3d-annot-seg--line .tp3d-annot-seg__btn[data-line-style="dashed"]');
   assert.equal(await writes(page), 4, 'choosing a default writes nothing');
   const placeArrow = async (from, to) => {
@@ -5661,7 +5667,7 @@ test('annotation line style: Arrows and Drawings offer Weight and Style, a recor
   assert.deepEqual([created.type, created.style], ['arrow', 'dashed'], 'the next arrow takes the chosen Style');
   assert.equal(await writes(page), 5, 'and costs one write');
   await armDraw(page);
-  assert.deepEqual([(await lookControls(page, 'draw')).title, (await lookControls(page, 'draw')).style], ['New drawings look', 'Solid'], 'drawings keep their own default: the arrow choice did not leak');
+  assert.deepEqual([(await lookControls(page, 'draw')).title, (await lookControls(page, 'draw')).style], ['New Drawing — Defaults', 'Solid'], 'drawings keep their own default: the arrow choice did not leak');
   await page.click('.tp3d-annot-seg--draw-line .tp3d-annot-seg__btn[data-draw-line-style="dotted"]');
   assert.equal(await writes(page), 5);
   await dragThrough(page, FLOOR_STROKE);
@@ -5755,7 +5761,7 @@ test('annotation drawing move: a saved drawing is selected by clicking its line 
   await page.waitForFunction(id => window.probe.AnnotationTool.selectedId() === id, top.id);
   assert.equal((await moveLook(page, top.id)).selected, true, 'the selected edge is the existing one');
   assert.match(await page.locator(`${rowFor(top.id)}`).getAttribute('class'), /is-selected/);
-  assert.equal((await lookControls(page, 'draw')).title, 'Drawing 1 look');
+  assert.equal((await lookControls(page, 'draw')).title, 'Drawing: Drawing 1 — Selected');
   assert.deepEqual({ ...await dataOf(page), selected: null }, { ...start, selected: null }, 'selecting wrote nothing and moved nothing');
   assert.equal(await writes(page), 0);
   assert.deepEqual(await page.evaluate(() => window.probe.selection()), [], 'cargo was not selected');
@@ -7022,7 +7028,7 @@ test('an arrow and a drawing are renamed in their own row: Enter saves one name,
   assert.deepEqual(errors, []);
 });
 
-test('a record picked in the scene is revealed in a scrolled list once, the user scroll is otherwise kept, and a list pick ends a pending arrow tail while the tool stays armed', { timeout: 300000 }, async t => {
+test('a record picked in the scene is revealed in a scrolled list once, the user scroll is otherwise kept, and a list pick ends a pending arrow tail and the armed tool, without writing', { timeout: 300000 }, async t => {
   const browser = await launch();
   t.after(() => browser.close());
   const { page, errors } = await openPanel(browser);
@@ -7057,9 +7063,76 @@ test('a record picked in the scene is revealed in a scrolled list once, the user
   await click(page, await page.evaluate(() => window.probe.cargoPoint('cargo-b')));
   await page.waitForFunction(() => window.probe.hint() !== '' && /arrow head|where the arrow/i.test(window.probe.hint()));
   await page.click('.tp3d-annot-row:first-child .tp3d-annot-row__select');
-  await page.waitForFunction(() => /arrow tail/i.test(window.probe.hint()));
+  await page.waitForFunction(() => !/arrow tail/i.test(window.probe.hint()));
   assert.equal(await tailShown(page), false, 'the pending tail is ended');
-  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), true, 'the Arrow tool stays armed');
+  assert.equal(await page.evaluate(() => window.probe.AnnotationTool.isActive()), false, 'picking an existing record ends the armed Arrow tool');
   assert.equal((await page.evaluate(() => window.probe.annotations())).length, before, 'nothing was written');
+  assert.deepEqual(errors, []);
+});
+
+test('appearance contexts: new Arrow and Drawing defaults never change a saved record, a selected record changes only itself, and Callout display never changes a look', { timeout: 300000 }, async t => {
+  const browser = await launch();
+  t.after(() => browser.close());
+  const { page, errors } = await openPanel(browser);
+  const arrowSeed = await seedArrow(page, [GROUND_A[0], GROUND_A[2]], [GROUND_B[0], GROUND_B[2]]);
+  const drawSeed = await seedDraw(page);
+  await page.evaluate(([a, d]) => {
+    const pack = window.probe.PackLibrary.getById('fixture-pack');
+    window.probe.PackLibrary.updateArrow(pack.id, a, { name: 'Left pallet' });
+    window.probe.PackLibrary.updateDraw(pack.id, d, { name: 'Floor mark' });
+  }, [arrowSeed.id, drawSeed.id]);
+  await page.waitForFunction(() => window.probe.annotations().some(r => r.name === 'Floor mark'));
+  const record = type => page.evaluate(t2 => window.probe.annotations().find(r => r.type === t2), type);
+  const pressed = sel => page.evaluate(s2 => document.querySelector(s2).getAttribute('aria-pressed'), sel);
+  const title = sel => page.evaluate(s2 => document.querySelector(s2).textContent, sel);
+  const arrowBefore = await record('arrow');
+  const drawBefore = await record('draw');
+
+  // New Arrow defaults: only the next arrow changes.
+  await page.click('.tp3d-annot-seg__btn[data-tool="arrow"]');
+  await page.waitForSelector('.tp3d-annot-panel__arrow:not([hidden])');
+  assert.equal(await title('.tp3d-annot-panel__arrow-title'), 'New Arrow — Defaults');
+  await page.click('.tp3d-annot-panel__arrow .tp3d-annot-seg__btn[data-width="bold"]');
+  assert.equal(await pressed('.tp3d-annot-panel__arrow .tp3d-annot-seg__btn[data-width="bold"]'), 'true');
+  assert.deepEqual(await record('arrow'), arrowBefore, 'a default never edits a saved arrow');
+  await page.click('.tp3d-annot-seg__btn[data-tool="arrow"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.isActive() === false);
+
+  // Selected Arrow: its own controls, and only that arrow changes.
+  await page.click('.tp3d-annot-row[data-type="arrow"] .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-panel__arrow:not([hidden])');
+  assert.equal(await title('.tp3d-annot-panel__arrow-title'), 'Arrow: Left pallet — Selected');
+  assert.equal(await pressed('.tp3d-annot-panel__arrow .tp3d-annot-seg__btn[data-width="regular"]'), 'true', 'the selected arrow shows its own weight');
+  await page.click('.tp3d-annot-panel__arrow .tp3d-annot-seg__btn[data-width="thin"]');
+  await page.waitForFunction(() => window.probe.annotations().find(r => r.type === 'arrow').width === 'thin');
+  assert.equal((await record('draw')).width, drawBefore.width, 'the drawing is untouched');
+
+  // New Drawing defaults: separate from arrows, and they never edit a saved drawing.
+  await page.click('.tp3d-annot-row[data-type="draw"] .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-panel__draw:not([hidden])');
+  assert.equal(await title('.tp3d-annot-panel__draw-title'), 'Drawing: Floor mark — Selected');
+  await page.click('.tp3d-annot-seg__btn[data-tool="draw"]');
+  await page.waitForSelector('.tp3d-annot-panel__draw:not([hidden])');
+  assert.equal(await title('.tp3d-annot-panel__draw-title'), 'New Drawing — Defaults', 'arming Draw starts from the defaults, not the selected drawing');
+  await page.click('.tp3d-annot-panel__draw .tp3d-annot-seg__btn[data-draw-line-style="dotted"]');
+  assert.equal(await pressed('.tp3d-annot-panel__draw .tp3d-annot-seg__btn[data-draw-line-style="dotted"]'), 'true');
+  assert.equal((await record('draw')).style, drawBefore.style, 'a drawing default never edits a saved drawing');
+  await page.click('.tp3d-annot-seg__btn[data-tool="draw"]');
+  await page.waitForFunction(() => window.probe.AnnotationTool.isActive() === false);
+  assert.equal(await page.isVisible('.tp3d-annot-panel__drawmode'), false, 'Draw / Move View appears only while Draw is armed');
+
+  // Selected Drawing: its own style, and the arrow keeps its own look.
+  await page.click('.tp3d-annot-row[data-type="draw"] .tp3d-annot-row__select');
+  await page.waitForSelector('.tp3d-annot-panel__draw:not([hidden])');
+  await page.click('.tp3d-annot-panel__draw .tp3d-annot-seg__btn[data-draw-line-style="dashed"]');
+  await page.waitForFunction(() => window.probe.annotations().find(r => r.type === 'draw').style === 'dashed');
+  assert.equal((await record('arrow')).width, 'thin', 'the arrow keeps the look it was given');
+
+  // Callout display is a view setting: switching it never changes a saved look.
+  const looksBefore = JSON.stringify([await record('arrow'), await record('draw')]);
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Labels")');
+  await page.click('.tp3d-annot-seg--display .tp3d-annot-seg__btn:has-text("Markers")');
+  assert.equal(JSON.stringify([await record('arrow'), await record('draw')]), looksBefore, 'Callout display changes no arrow or drawing');
+  assert.equal(await page.textContent('.tp3d-annot-panel__view-label >> nth=2'), 'Callout display');
   assert.deepEqual(errors, []);
 });

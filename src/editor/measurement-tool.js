@@ -114,7 +114,8 @@ export function createMeasurementTool({
   // ==========================================================================
   let els = { button: null, panel: null, labels: null, viewport: null };
   let bound = false;
-  let active = false;
+  let active = false; // creation armed: the canvas accepts New Measurement's points (and owns its gestures)
+  let managerOpen = false; // the Measurements manager is shown: saved records can be selected, renamed and deleted; nothing is created
   let pending = null; // { anchor, world: THREE.Vector3, poseKey } — Point A of a measurement being created
   let selectedId = null; // the completed measurement that shows grips
   let drag = null; // { id, which, pointerId, candidate, dirty, poseKeys } — an endpoint being repositioned
@@ -684,6 +685,7 @@ export function createMeasurementTool({
   function enter() {
     if (active || !inEditor() || !currentPack() || !SceneManager.getScene() || !getCanvas()) return false;
     active = true;
+    managerOpen = true;
     pending = null;
     drag = null;
     selectedId = null;
@@ -696,7 +698,8 @@ export function createMeasurementTool({
     keyboardModality = Boolean(entryFocus && typeof entryFocus.matches === 'function' && entryFocus.matches(':focus-visible'));
     lastBlockedReason = blockedReason();
     CaseScene.setHover(null);
-    if (els.button) els.button.setAttribute('aria-pressed', 'true');
+    syncButton();
+    syncNewButton();
     if (els.labels) els.labels.classList.add('is-active');
     ensureSvg();
     if (doc) {
@@ -744,10 +747,9 @@ export function createMeasurementTool({
       doc.removeEventListener('keydown', onKeyDownCapture, true);
       doc.removeEventListener('pointerdown', onPointerDownCapture, true);
     }
-    if (els.button) els.button.setAttribute('aria-pressed', 'false');
     if (els.labels) els.labels.classList.remove('is-active');
-    if (els.panel) els.panel.hidden = true;
-    if (panelObserver) {
+    if (els.panel) els.panel.hidden = !managerOpen;
+    if (!managerOpen && panelObserver) {
       panelObserver.disconnect();
       panelObserver = null;
     }
@@ -763,6 +765,9 @@ export function createMeasurementTool({
       disposeAllVisuals();
     }
     if (wasActive) updateCursor();
+    syncButton();
+    syncNewButton();
+    if (managerOpen) renderPanel();
     return wasActive;
   }
 
@@ -772,6 +777,72 @@ export function createMeasurementTool({
       return false;
     }
     return enter();
+  }
+
+  /** The toolbar button's aria-pressed: whether the Measurements manager is open (creation has its own control). */
+  function syncButton() {
+    if (els.button) els.button.setAttribute('aria-pressed', managerOpen ? 'true' : 'false');
+  }
+
+  /** The New measurement control reflects creation, even while the panel is hidden (its state is read when it is shown again). */
+  function syncNewButton() {
+    if (!panelParts || !panelParts.newButton) return;
+    panelParts.newButton.setAttribute('aria-pressed', active ? 'true' : 'false');
+    const label = active ? 'Stop measuring' : 'New measurement';
+    if (panelParts.newButton.lastChild.textContent !== label) panelParts.newButton.lastChild.textContent = label;
+  }
+
+  /** Show the Measurements manager. It lists, selects, renames and deletes saved measurements and creates nothing. */
+  function openManager() {
+    if (managerOpen || !bound || !inEditor() || !currentPack() || !els.panel) return false;
+    managerOpen = true;
+    els.panel.hidden = false;
+    const host = panelHost();
+    if (host && typeof ResizeObserver === 'function' && !panelObserver) {
+      panelObserver = new ResizeObserver(() => applyPanelPosition());
+      panelObserver.observe(host);
+    }
+    syncButton();
+    sync();
+    settle();
+    ensureLoop();
+    return true;
+  }
+
+  /** Hide the Measurements manager. Creation ends too (a pending first point is dropped, nothing is written); saved lines stay drawn. */
+  function closeManager() {
+    managerOpen = false;
+    exit();
+    if (els.panel) els.panel.hidden = true;
+    if (panelObserver) {
+      panelObserver.disconnect();
+      panelObserver = null;
+    }
+    syncButton();
+    ensureLoop();
+    return true;
+  }
+
+  /** The panel's New Measurement control: arms creation, or stops it when it is already armed. */
+  function startFromPanel() {
+    if (active) {
+      exit();
+      renderPanel();
+      return;
+    }
+    if (!managerOpen) return;
+    // Another creator (Callout, Arrow, Draw) may hold the canvas: it ends first, unless it holds an unsaved draft the owner keeps.
+    const gate = typeof els.canStart === 'function' ? els.canStart() : true;
+    Promise.resolve(gate).then(ok => {
+      if (!ok || !managerOpen || active) return;
+      if (!enter()) setStatus('The 3D view is not ready yet.');
+    });
+  }
+
+  /** Stop creation without writing (the manager stays open). Used when another creator takes the canvas. */
+  function cancelCreation() {
+    if (!active) return false;
+    return exit();
   }
 
   // ==========================================================================
@@ -1105,6 +1176,19 @@ export function createMeasurementTool({
     panel.style.top = `${next.y}px`;
   }
 
+  /**
+   * A dragged panel never settles over the other manager: after a drag, a layout change or an opening, the screen names a clear
+   * spot (`{ x, y }` in this host) or asks for the default place (`'reset'`). Nothing moves when the panel is already clear.
+   */
+  function settle() {
+    if (!els.panel || els.panel.hidden || typeof els.avoidOther !== 'function') return;
+    const spot = els.avoidOther(els.panel);
+    if (spot === 'reset') panelPosition = null;
+    else if (spot) panelPosition = clampPanelPosition(spot);
+    else return;
+    applyPanelPosition();
+  }
+
   function attachPanelDrag(handle) {
     handle.addEventListener('pointerdown', ev => {
       if (ev.button !== 0 || !els.panel) return;
@@ -1137,6 +1221,7 @@ export function createMeasurementTool({
         window.removeEventListener('pointercancel', onEnd);
         if (els.panel) els.panel.classList.remove('is-dragging');
         if (!moved) return;
+        settle();
         // The click that follows a drag released over the title must not toggle the panel.
         suppressToggleClick = true;
         window.setTimeout(() => { suppressToggleClick = false; }, 0);
@@ -1200,11 +1285,21 @@ export function createMeasurementTool({
     warning.textContent = "Some saved measurements couldn't be read. The original data is kept until you delete it.";
     const list = doc.createElement('ul');
     list.className = 'tp3d-measure-panel__list';
-    body.append(hint, warning, list);
+    const newButton = doc.createElement('button');
+    newButton.type = 'button';
+    newButton.id = 'editor-measure-new';
+    newButton.className = 'tp3d-measure-panel__new';
+    newButton.setAttribute('aria-pressed', 'false');
+    const newIcon = doc.createElement('i');
+    newIcon.className = 'fa-solid fa-plus';
+    newIcon.setAttribute('aria-hidden', 'true');
+    newButton.append(newIcon, doc.createTextNode(' '), doc.createElement('span'));
+    newButton.addEventListener('click', startFromPanel);
+    body.append(newButton, hint, warning, list);
 
     els.panel.replaceChildren(head, body);
     rows.clear();
-    panelParts = { root: els.panel, head, toggle: toggleButton, chevron, count, body, hint, warning, list };
+    panelParts = { root: els.panel, head, toggle: toggleButton, chevron, count, body, hint, warning, list, newButton };
     return panelParts;
   }
 
@@ -1263,7 +1358,8 @@ export function createMeasurementTool({
       renderPanel();
       return;
     }
-    setStatus('Measurement deleted.');
+    setStatus('');
+    UIComponents.showToast('Measurement deleted.', 'info', { title: 'Measurements' });
     if (!viaKeyboard) return;
     // Keep keyboard focus in the panel: the next row, else the previous, else the header.
     const next = records[Math.min(index, records.length - 1)];
@@ -1363,6 +1459,7 @@ export function createMeasurementTool({
     if (drag) return 'Drag to a new position. Esc cancels.';
     if (pending) return 'Click the second point. Esc cancels.';
     if (records.length >= MAX_MEASUREMENTS_PER_PACK) return `Limit of ${MAX_MEASUREMENTS_PER_PACK} measurements reached. Delete one to add another.`;
+    if (!active) return records.length ? '' : 'No measurements yet. Choose New measurement to add one.';
     if (!records.length) return 'Click two points to measure a distance.';
     return '';
   }
@@ -1376,13 +1473,15 @@ export function createMeasurementTool({
   }
 
   function renderPanel() {
-    if (!active || !doc) return;
+    if ((!active && !managerOpen) || !doc) return;
     const parts = ensurePanel();
     if (!parts) return;
     const blockedNow = blockedReason();
 
     const countText = records.length ? String(records.length) : ''; // no badge for zero
     if (parts.count.textContent !== countText) parts.count.textContent = countText;
+    syncNewButton();
+    parts.newButton.disabled = Boolean(blockedNow);
     parts.toggle.setAttribute('aria-expanded', panelCollapsed ? 'false' : 'true');
     const chevronClass = `fa-solid fa-chevron-${panelCollapsed ? 'down' : 'up'} tp3d-measure-panel__chevron`;
     if (parts.chevron.className !== chevronClass) parts.chevron.className = chevronClass;
@@ -1429,7 +1528,7 @@ export function createMeasurementTool({
       records = [];
       results = [];
       syncedPackId = null;
-      if (active) exit();
+      if (active || managerOpen) closeManager();
       return;
     }
     records = PackLibrary.getMeasurements(pack);
@@ -1449,7 +1548,7 @@ export function createMeasurementTool({
         if (poseKeys.some((key, i) => key !== drag.poseKeys[i])) cancelDrag('The cargo changed, so the move was cancelled.');
       }
     }
-    if (active) renderPanel();
+    if (active || managerOpen) renderPanel();
     ensureLoop();
   }
 
@@ -1472,7 +1571,7 @@ export function createMeasurementTool({
   function syncVisibility() {
     const show = PreferencesManager.get().showMeasurementTool !== false;
     toolShown = show;
-    if (!show && active) exit();
+    if (!show && (active || managerOpen)) closeManager();
     if (els.button) els.button.hidden = !show;
     ensureLoop(); // showing the tool again brings its saved lines back; hiding it ends the view-only loop by itself
     return show;
@@ -1484,8 +1583,8 @@ export function createMeasurementTool({
     bound = true;
     StateStore.subscribe(changes => {
       if (changes._replace || !inEditor() || Object.prototype.hasOwnProperty.call(changes, 'currentPackId')) {
-        if (active) {
-          exit();
+        if (active || managerOpen) {
+          closeManager();
           return;
         }
         // Another Load Plan, a workspace swap or the Editor closing: the saved lines belong to the old one.
@@ -1497,7 +1596,7 @@ export function createMeasurementTool({
         }
         return;
       }
-      if (!active) return;
+      if (!active && !managerOpen) return;
       if (changes._undo || changes._redo) {
         if (drag) cancelDrag('Undo or redo cancelled the move.');
         cancelPending('Undo or redo cancelled the unfinished measurement.');
@@ -1530,6 +1629,11 @@ export function createMeasurementTool({
     toggle,
     exit,
     destroy,
+    openManager,
+    closeManager,
+    cancelCreation,
+    settle,
+    isManagerOpen: () => managerOpen,
     isActive: () => active,
     hasPending: () => Boolean(pending),
     onPointerDown,

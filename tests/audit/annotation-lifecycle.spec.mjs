@@ -1,9 +1,10 @@
 /**
  * @file annotation-lifecycle.spec.mjs
  * @description Pins how Annotations V1 data lives inside a Load Plan: the normalizer whitelist, writes that
- *   stay outside cargo Undo/Redo and never roll `lastEdited` back, derived validity when cargo, Cases or the
- *   truck change, duplicate and import instance-ID remapping, and export/backup projection plus strict
- *   restore validation. The pure model and layout are pinned in annotation-core.spec.mjs.
+ *   are Undo/Redo steps in the same chronological history as cargo edits and restore their exact
+ *   `lastEdited`, derived validity when cargo, Cases or the truck change, duplicate and import instance-ID
+ *   remapping, and export/backup projection plus strict restore validation. The pure model and layout are
+ *   pinned in annotation-core.spec.mjs.
  */
 
 import test from 'node:test';
@@ -59,6 +60,11 @@ const snapshotOf = () => JSON.stringify([StateStore.get('packLibrary'), StateSto
 const emptyDestination = () => StateStore.init({
   currentScreen: 'packs', currentPackId: null, caseLibrary: [CASE], folderLibrary: [], preferences: {}, packLibrary: [],
 });
+// A strictly increasing clock: every write gets its own, later `lastEdited`, so each step's exact time can be asserted.
+const tickingClock = t => {
+  let now = 1000;
+  t.mock.method(Date, 'now', () => (now += 10));
+};
 
 // ============================================================================
 // SECTION: NORMALIZATION (G1) AND RECOVERY
@@ -181,30 +187,37 @@ test('the per-plan maximum of 200 is enforced on creation and a malformed callou
   assert.equal(PackLibrary.restoreAnnotation('A', callout('late'), 0).reason, 'limit');
 });
 
-test('cargo Undo/Redo keeps annotations and never rolls lastEdited back past an annotation edit', () => {
+test('cargo and callout edits undo and redo in order, each restoring its exact lastEdited', t => {
+  tickingClock(t);
   seed();
   PackLibrary.addCallout('A', note('First'));
+  const afterFirst = stored('A').lastEdited;
   StateStore.set({ packLibrary: StateStore.get('packLibrary').map(p => (p.id === 'A' ? { ...p, notes: 'cargo edit' } : p)) });
   const second = PackLibrary.addCallout('A', note('Second', ground(5, 5)));
   assert.equal(second.ok, true);
+  const afterSecond = stored('A').lastEdited;
   PackLibrary.setCalloutOffset('A', second.annotation.id, { dx: 20, dy: 20 });
-  const editedAt = stored('A').lastEdited;
+  const afterMove = stored('A').lastEdited;
+  assert.ok(123 < afterFirst && afterFirst < afterSecond && afterSecond < afterMove, 'each callout edit has its own, later time');
   // Newest first: the card move, then the second callout, then the cargo edit.
   assert.equal(StateStore.undo(), true, 'the card move is undone first');
   assert.equal(PackLibrary.getAnnotations('A')[1].offset, null, 'the card is back where it was');
+  assert.equal(stored('A').lastEdited, afterSecond, 'with the time the Pack had before the move');
   assert.equal(StateStore.undo(), true, 'then the second callout');
   assert.equal(PackLibrary.getAnnotations('A').length, 1);
+  assert.equal(stored('A').lastEdited, afterFirst, 'with the time the Pack had before the second callout');
   assert.equal(StateStore.undo(), true, 'then the cargo edit');
   assert.equal(stored('A').notes, undefined);
   assert.equal(PackLibrary.getAnnotations('A').length, 1, 'the earlier callout is kept');
-  assert.ok(stored('A').lastEdited >= editedAt, 'lastEdited never moves backward');
+  assert.equal(stored('A').lastEdited, afterFirst, 'the cargo edit never touched lastEdited');
   assert.equal(StateStore.redo(), true);
   assert.equal(StateStore.redo(), true);
+  assert.equal(stored('A').lastEdited, afterSecond);
   assert.equal(StateStore.redo(), true);
   assert.equal(stored('A').notes, 'cargo edit');
   assert.equal(PackLibrary.getAnnotations('A').length, 2);
   assert.deepEqual(PackLibrary.getAnnotations('A')[1].offset, { dx: 20, dy: 20 }, 'the latest card position is restored');
-  assert.ok(stored('A').lastEdited >= editedAt);
+  assert.equal(stored('A').lastEdited, afterMove, 'Redo restores the time of the move');
 });
 
 test('measurements and annotations are independent collections: neither edit touches the other', () => {
@@ -727,29 +740,36 @@ test('arrows share the per-plan maximum of 200 with callouts and recovery record
   assert.equal(PackLibrary.getAnnotations('B').length, 1);
 });
 
-test('cargo Undo/Redo keeps arrows and never rolls lastEdited back past an arrow edit', () => {
+test('cargo and arrow edits undo and redo in order, each restoring its exact lastEdited', t => {
+  tickingClock(t);
   seed();
   PackLibrary.addArrow('A', { start: ground(0, 60), end: ground(40, 60) });
+  const afterFirst = stored('A').lastEdited;
   StateStore.set({ packLibrary: StateStore.get('packLibrary').map(p => (p.id === 'A' ? { ...p, notes: 'cargo edit' } : p)) });
   const second = PackLibrary.addArrow('A', { start: ground(5, 5), end: floorAnchor(50) });
+  const afterSecond = stored('A').lastEdited;
   PackLibrary.updateArrow('A', second.annotation.id, { width: 'bold', hidden: true });
-  const editedAt = stored('A').lastEdited;
+  const afterLook = stored('A').lastEdited;
+  assert.ok(123 < afterFirst && afterFirst < afterSecond && afterSecond < afterLook, 'each arrow edit has its own, later time');
   // Newest first: the arrow's look, then the second arrow, then the cargo edit.
   assert.equal(StateStore.undo(), true, 'the look edit is undone first');
   assert.notEqual(PackLibrary.getAnnotations('A')[1].width, 'bold');
+  assert.equal(stored('A').lastEdited, afterSecond, 'with the time the Pack had before the look edit');
   assert.equal(StateStore.undo(), true, 'then the second arrow');
   assert.equal(PackLibrary.getAnnotations('A').length, 1);
+  assert.equal(stored('A').lastEdited, afterFirst, 'with the time the Pack had before the second arrow');
   assert.equal(StateStore.undo(), true, 'then the cargo edit');
   assert.equal(stored('A').notes, undefined);
   assert.equal(PackLibrary.getAnnotations('A').length, 1, 'the earlier arrow is kept');
-  assert.ok(stored('A').lastEdited >= editedAt, 'lastEdited never moves backward');
+  assert.equal(stored('A').lastEdited, afterFirst, 'the cargo edit never touched lastEdited');
   assert.equal(StateStore.redo(), true);
   assert.equal(StateStore.redo(), true);
+  assert.equal(stored('A').lastEdited, afterSecond);
   assert.equal(StateStore.redo(), true);
   assert.equal(stored('A').notes, 'cargo edit');
   assert.equal(PackLibrary.getAnnotations('A').length, 2);
   assert.deepEqual([PackLibrary.getAnnotations('A')[1].width, PackLibrary.getAnnotations('A')[1].hidden], ['bold', true], 'the latest edit is restored');
-  assert.ok(stored('A').lastEdited >= editedAt);
+  assert.equal(stored('A').lastEdited, afterLook, 'Redo restores the time of the look edit');
 });
 
 test('each arrow end follows its own cargo: moving, deleting or resizing one flags the arrow, never edits or relocates it', () => {
@@ -1129,30 +1149,37 @@ test('strokes share the 200-record cap, are limited to 256 vertices each and 3,0
   assert.equal(PackLibrary.restoreAnnotation('P', removed.removed, removed.index).ok, true, 'room again');
 });
 
-test('cargo Undo/Redo keeps strokes and never rolls lastEdited back past a stroke edit; delete can be put back once', () => {
+test('cargo and stroke edits undo and redo in order, each restoring its exact lastEdited; delete can be put back once', t => {
+  tickingClock(t);
   seed();
   const crate = placeCrate();
   PackLibrary.addDraw('A', crateGesture(crate.id));
+  const afterFirst = stored('A').lastEdited;
   StateStore.set({ packLibrary: StateStore.get('packLibrary').map(p => (p.id === 'A' ? { ...p, notes: 'cargo edit' } : p)) });
   const second = PackLibrary.addDraw('A', floorGesture({ color: 'blue' }));
   assert.equal(second.ok, true);
+  const afterSecond = stored('A').lastEdited;
   PackLibrary.updateDraw('A', second.annotation.id, { width: 'bold' });
-  const editedAt = stored('A').lastEdited;
+  const afterStyle = stored('A').lastEdited;
+  assert.ok(123 < afterFirst && afterFirst < afterSecond && afterSecond < afterStyle, 'each stroke edit has its own, later time');
   const strokes = JSON.stringify(PackLibrary.getAnnotations('A'));
   // Newest first: the stroke's style, then the second stroke, then the cargo edit.
   assert.equal(StateStore.undo(), true, 'the style edit is undone first');
+  assert.equal(stored('A').lastEdited, afterSecond, 'with the time the Pack had before the style edit');
   assert.equal(StateStore.undo(), true, 'then the second stroke');
   assert.equal(PackLibrary.getAnnotations('A').length, 1);
+  assert.equal(stored('A').lastEdited, afterFirst, 'with the time the Pack had before the second stroke');
   assert.equal(StateStore.undo(), true, 'then the cargo edit');
   assert.equal(stored('A').notes, undefined);
   assert.equal(PackLibrary.getAnnotations('A').length, 1, 'the earlier stroke is kept');
-  assert.ok(stored('A').lastEdited >= editedAt, 'lastEdited never moves backward');
+  assert.equal(stored('A').lastEdited, afterFirst, 'the cargo edit never touched lastEdited');
   assert.equal(StateStore.redo(), true);
   assert.equal(StateStore.redo(), true);
+  assert.equal(stored('A').lastEdited, afterSecond);
   assert.equal(StateStore.redo(), true);
   assert.equal(stored('A').notes, 'cargo edit');
   assert.equal(JSON.stringify(PackLibrary.getAnnotations('A')), strokes, 'the strokes and their style are restored exactly');
-  assert.ok(stored('A').lastEdited >= editedAt);
+  assert.equal(stored('A').lastEdited, afterStyle, 'Redo restores the time of the style edit');
   // Deleting is deliberate and individual; putting it back keeps the ID, the position and every vertex.
   const removed = PackLibrary.deleteAnnotation('A', second.annotation.id);
   assert.deepEqual(PackLibrary.getAnnotations('A').map(r => r.type), ['draw']);

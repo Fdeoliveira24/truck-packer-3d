@@ -2594,9 +2594,9 @@ export function updateEditorView(packId, view) {
 // ============================================================================
 // SECTION: MEASUREMENTS (Measurement Tool V1)
 // ============================================================================
-// Measurements are authored Load Plan content, but they live outside cargo Undo/Redo: edits are
-// written with skipHistory, bump lastEdited, and are carried across Undo/Redo by the StateStore.
-// They never touch cargo, stats, thumbnails, AutoPack or any assessment.
+// Measurements are authored Load Plan content stored beside cargo. Each completed edit bumps lastEdited
+// and is one step of the same chronological Undo/Redo history as cargo edits, which restores the whole
+// recorded Pack, lastEdited included. They never touch cargo, stats, thumbnails, AutoPack or any assessment.
 
 /** Normalized, never-destructive measurement list (unreadable records are wrapped, not dropped). */
 export function getMeasurements(packOrId) {
@@ -2701,8 +2701,8 @@ export function renameMeasurement(packId, measurementId, label) {
 
 /**
  * Reposition one endpoint of a completed measurement onto a new anchor. A measurement-only edit:
- * it bumps lastEdited, stays out of cargo Undo/Redo, and never touches cargo. The new anchor is
- * validated and an invalid one writes nothing.
+ * it bumps lastEdited, is one Undo/Redo step (none when nothing changed), and never touches cargo.
+ * The new anchor is validated and an invalid one writes nothing.
  * @returns {{ ok: true, pack: any, unchanged?: true } | { ok: false, reason: 'pack-not-found' | 'not-found' | 'invalid' }}
  */
 export function moveMeasurementEndpoint(packId, measurementId, which, anchor) {
@@ -2736,9 +2736,9 @@ export function deleteMeasurement(packId, measurementId) {
 // SECTION: ANNOTATIONS (Annotations V1)
 // ============================================================================
 // Annotations are authored Load Plan content, stored separately from cargo and measurements. Like
-// measurements they live outside cargo Undo/Redo: edits are written with skipHistory, bump lastEdited,
-// and are carried across Undo/Redo by the StateStore. They never touch cargo, stats, thumbnails, AutoPack
-// or any assessment, and every write is validated by the same strict collection gate import uses.
+// measurements, each completed edit bumps lastEdited and is one step of the same chronological Undo/Redo
+// history as cargo edits. They never touch cargo, stats, thumbnails, AutoPack or any assessment, and every
+// write is validated by the same strict collection gate import uses.
 
 /** Normalized, never-destructive annotation list (unreadable records are wrapped, not dropped). */
 export function getAnnotations(packOrId) {

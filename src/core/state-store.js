@@ -19,10 +19,13 @@ let state = null;
 let history = [];
 let historyPointer = -1;
 const subscribers = [];
-// Pack fields that describe the current view or derived preview, not the authored history: Undo/Redo keeps
-// the current value of each (a stale camera or thumbnail must never come back with an old entry).
-const CURRENT_PACK_FIELDS = Object.freeze([
-  'editorView', 'thumbnail', 'thumbnailRenderVersion', 'thumbnailUpdatedAt', 'thumbnailSource',
+// Pack fields that describe the current view, not the authored history: Undo/Redo keeps the current value
+// (a stale camera must never come back with an old entry).
+const CURRENT_PACK_FIELDS = Object.freeze(['editorView']);
+// A derived preview depicts the cargo of the history entry it was captured for, so Undo/Redo restore the
+// preview that entry holds. Automatic captures add no step: set() carries them into the entry that is current.
+const PREVIEW_PACK_FIELDS = Object.freeze([
+  'thumbnail', 'thumbnailRenderVersion', 'thumbnailUpdatedAt', 'thumbnailSource',
   'thumbnailVisualSignature', 'thumbnailViewSignature',
 ]);
 
@@ -66,7 +69,24 @@ function set(patch, options = {}) {
   }
   state = next;
   if (significant) pushHistory(historySlice(next));
+  else carryPreviewIntoCurrentEntry(next, options.notification);
   if (!options.skipNotify) notify(patch, state, options.notification);
+}
+
+// A derived preview write (automatic capture, no history step) belongs to the state it was captured for, which
+// is the entry that is current when it lands. Only that Pack's preview fields go into that one entry, so no
+// step is added, Redo is untouched, and Undo/Redo later bring back the image that matches the restored cargo.
+// The write is trusted only when it is the exact Pack object this set() just placed in the state.
+function carryPreviewIntoCurrentEntry(nextState, notification) {
+  if (notification?.type !== 'pack-preview') return;
+  const written = notification.pack;
+  if (!written || typeof written !== 'object' || !written.id) return;
+  if (!(nextState.packLibrary || []).includes(written)) return;
+  const entryPack = (history[historyPointer]?.packLibrary || []).find(pack => pack && pack.id === written.id);
+  if (!entryPack) return;
+  PREVIEW_PACK_FIELDS.forEach(key => {
+    if (Object.hasOwn(written, key)) entryPack[key] = deepClone(written[key]);
+  });
 }
 
 function replace(nextState, options = {}) {
@@ -103,14 +123,12 @@ function restoreCargoHistory(entry) {
     if (!pack || typeof pack !== 'object') return pack;
     const current = currentPacks.get(pack.id);
     if (!current) return pack;
-    // Authored content (cargo, measurements, annotations) comes from the entry. View and preview fields stay current.
+    // The whole recorded Pack comes from the entry (cargo, measurements, annotations, lastEdited, preview).
+    // Only the camera stays current.
     const next = { ...pack };
     CURRENT_PACK_FIELDS.forEach(key => {
       if (Object.hasOwn(current, key)) next[key] = deepClone(current[key]);
     });
-    // lastEdited never moves backward: an Undo cannot restore an older business timestamp over a newer edit.
-    const currentEdited = Number(current.lastEdited);
-    if (Number.isFinite(currentEdited) && !(Number(next.lastEdited) >= currentEdited)) next.lastEdited = currentEdited;
     return next;
   });
   return restored;

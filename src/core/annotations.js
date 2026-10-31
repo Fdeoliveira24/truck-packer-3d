@@ -7,7 +7,7 @@
  *   An annotation is informational authored content ("this is what the crew should know here"). It never
  *   influences cargo, collision, handling rules, assessment, Space Utilization, AutoPack or the existing
  *   PDF. Annotations belong to exactly one Load Plan, are stored separately from cargo and measurements,
- *   and live outside cargo Undo/Redo (see core/state-store.js).
+ *   and each completed edit is one step of the same Undo/Redo history as cargo (see core/state-store.js).
  *
  *   V1A stores one record type, `callout`: a titled note attached to a point on a supported surface.
  *   The point is a Measurement anchor (core/measurements.js) so the cargo identity policy, truck shell

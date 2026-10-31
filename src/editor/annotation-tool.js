@@ -20,10 +20,12 @@
  *     the canvas.
  *   - Selecting an annotation clears the cargo selection and selecting cargo clears the annotation, so
  *     Delete acts on the annotation only when it owns the selection and never deletes cargo as a side
- *     effect. Ctrl/Cmd+Z stays cargo history; only an unfinished marker or card drag is cancelled by it.
- *     Deleting a callout offers a one-level Undo button in the panel, independent of cargo history.
+ *     effect. Undo and Redo (Ctrl/Cmd+Z, Ctrl/Cmd+Shift+Z) are the shared StateStore history's: a committed
+ *     annotation edit is one step in the same history as cargo and measurements, and an unfinished marker or
+ *     card drag, re-attach, arrow tail or stroke is cancelled by them without writing. Deleting an annotation
+ *     shows a notification toast only; the toast carries no Undo button of its own.
  *   - One Escape closes one owner, in this order: a modal, dropdown, text field or popover that owns it
- *     (they keep it), the presentation view, an unfinished drag, the editor card, a pending re-attach, a
+ *     (they keep it), an unfinished drag, the editor card, a pending re-attach, a
  *     pending arrow tail, the armed tool, the annotation selection. Anything else is left to the existing
  *     handlers (cargo deselection, drawers).
  *   - An arrow is two surface anchors drawn as an SVG shaft and head in this same layer (never a Three.js
@@ -2110,7 +2112,8 @@ export function createAnnotationTool({
   }
 
   /**
-   * A single click deletes: no confirm step, and the one-level Undo button in the panel brings it back.
+   * A single click deletes: no confirm step. The toast only reports it; the shared StateStore Undo (Ctrl/Cmd+Z)
+   * brings it back, in order with cargo, measurement and other annotation edits.
    * Cargo is never touched. Focus only moves on when the delete came from the keyboard.
    */
   function removeAnnotation(id, viaKeyboard = false) {
